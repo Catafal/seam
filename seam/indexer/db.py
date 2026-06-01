@@ -5,13 +5,14 @@ All operations use explicit connections (no connection pool) — caller controls
 
 Key design decisions:
 - init_db verifies FTS5 availability before running the schema script.
-- init_db runs a guarded migration for v1 -> v2 (adds edges.confidence column).
+- init_db runs guarded migrations: v1->v2 (edges.confidence), v2->v3 (comments table).
 - upsert_file is a single transaction: INSERT OR REPLACE the file row,
-  DELETE old symbols/edges, then re-insert. Triggers handle FTS sync.
-- delete_file DELETE FROM files cascades to symbols/edges via FK; FTS
+  DELETE old symbols/edges/comments, then re-insert. Triggers handle FTS sync.
+- delete_file DELETE FROM files cascades to symbols/edges/comments via FK; FTS
   triggers fire on each symbol DELETE.
 - Edge["source"] -> source_name, Edge["target"] -> target_name (see CONTRACT.md).
 - Edge["confidence"] -> edges.confidence (schema v2 addition).
+- Comment["marker"/"text"/"line"] -> comments table (schema v3 addition).
 """
 
 import logging
@@ -21,7 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from seam.indexer.graph import Edge, Symbol
+    from seam.indexer.graph import Comment, Edge, Symbol
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,9 @@ def _run_migration_v1_to_v2(conn: sqlite3.Connection) -> None:
             # extract under the new resolver via a re-index for accurate tags.
             conn.execute("ALTER TABLE edges ADD COLUMN confidence TEXT NOT NULL DEFAULT 'INFERRED'")
             conn.execute("UPDATE metadata SET value = '2' WHERE key = 'schema_version'")
+            # Commit this migration's own work so the chain is order-independent and
+            # the ALTER does not rely on a later migration's commit to persist.
+            conn.commit()
             logger.info(
                 "Migrated Seam index v1->v2 (added edges.confidence). Existing edges marked "
                 "INFERRED; run 'seam init' to re-index for accurate confidence tags."
@@ -81,6 +85,37 @@ def _run_migration_v1_to_v2(conn: sqlite3.Connection) -> None:
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(
             "Seam DB migration v1->v2 failed; run 'seam init' to rebuild the index"
+        ) from exc
+
+
+def _run_migration_v2_to_v3(conn: sqlite3.Connection) -> None:
+    """Guarded migration: bump schema_version from 2 to 3 (adds comments table).
+
+    The comments table itself is created by the schema script's CREATE TABLE IF NOT EXISTS,
+    which runs on every init_db call before this function is reached. This guard only
+    bumps schema_version exactly once, and logs an info message telling the user to
+    re-index to populate the new table.
+
+    Idempotent: if schema_version >= 3 already, the migration is skipped silently.
+    Fail-loud: raises RuntimeError on any error so the caller knows the DB is bad.
+    """
+    try:
+        row = conn.execute("SELECT value FROM metadata WHERE key = 'schema_version'").fetchone()
+        version = int(row["value"]) if row else 0
+
+        if version < 3:
+            # The comments table was already created by the schema script above.
+            # Just bump the version and inform the operator.
+            conn.execute("UPDATE metadata SET value = '3' WHERE key = 'schema_version'")
+            conn.commit()
+            logger.info(
+                "Migrated Seam index v%d->v3 (added comments table). Existing indexes "
+                "have no comments; run 'seam init' to populate semantic comment data.",
+                version,
+            )
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "Seam DB migration v2->v3 failed; run 'seam init' to rebuild the index"
         ) from exc
 
 
@@ -117,6 +152,9 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     # Run v1->v2 migration guard (adds edges.confidence if absent on an existing db).
     _run_migration_v1_to_v2(conn)
 
+    # Run v2->v3 migration guard (bumps schema_version; comments table already created).
+    _run_migration_v2_to_v3(conn)
+
     return conn
 
 
@@ -127,6 +165,7 @@ def upsert_file(
     file_hash: str,
     symbols: "list[Symbol]",
     edges: "list[Edge]",
+    comments: "list[Comment] | None" = None,
 ) -> None:
     """Atomically replace all data for a file. Idempotent: safe to call twice.
 
@@ -135,12 +174,15 @@ def upsert_file(
          across re-index (INSERT OR REPLACE would churn the autoincrement id
          and strand child rows). Captures new mtime + indexed_at.
       2. Retrieve the file_id for this path.
-      3. DELETE existing edges AND symbols for that file_id. Both are deleted
-         explicitly (deleting symbols does NOT cascade to edges — edges hang
-         off files, not symbols). FTS triggers fire per-symbol DELETE.
+      3. DELETE existing edges, symbols, and comments for that file_id. Both
+         edges and symbols are deleted explicitly (deleting symbols does NOT
+         cascade to edges — edges hang off files, not symbols). FTS triggers
+         fire per-symbol DELETE. Comments are FK-cascaded but deleted explicitly
+         for clarity and symmetry with the other child tables.
       4. INSERT new symbols.
       5. INSERT new edges mapping Edge['source'] -> source_name,
                                   Edge['target'] -> target_name.
+      6. INSERT new comments (schema v3). Each Comment has marker, text, line.
     """
     mtime = filepath.stat().st_mtime
     indexed_at = time.time()
@@ -167,8 +209,11 @@ def upsert_file(
         # 3. Delete old children explicitly. Edges must be deleted directly:
         #    deleting symbols does NOT remove edges (edges reference files, not
         #    symbols). FTS triggers fire on each symbol DELETE to stay in sync.
+        #    Comments are also deleted explicitly for symmetry (FK cascade would
+        #    also handle them, but explicit is clearer and consistent).
         conn.execute("DELETE FROM edges WHERE file_id = ?", (file_id,))
         conn.execute("DELETE FROM symbols WHERE file_id = ?", (file_id,))
+        conn.execute("DELETE FROM comments WHERE file_id = ?", (file_id,))
 
         # 4. Insert symbols
         conn.executemany(
@@ -210,11 +255,19 @@ def upsert_file(
             ],
         )
 
+        # 6. Insert comments (schema v3). Defaults to [] when not provided
+        #    (e.g. callers that haven't been updated yet for backward compat).
+        for comment in (comments or []):
+            conn.execute(
+                "INSERT INTO comments (file_id, line, marker, text) VALUES (?, ?, ?, ?)",
+                (file_id, comment["line"], comment["marker"], comment["text"]),
+            )
+
 
 def delete_file(conn: sqlite3.Connection, filepath: Path) -> None:
-    """Remove a file and all its symbols/edges from the index.
+    """Remove a file and all its symbols, edges, and comments from the index.
 
-    Cascade (FK ON DELETE CASCADE) removes symbols and edges automatically.
+    Cascade (FK ON DELETE CASCADE) removes symbols, edges, and comments automatically.
     FTS triggers fire on each symbol DELETE, keeping FTS in sync.
     Silently succeeds if the path was never indexed.
     """

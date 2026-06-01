@@ -14,6 +14,10 @@ trace   — Shortest call/dependency path from one symbol to another, with per-h
            confidence (EXTRACTED | INFERRED | AMBIGUOUS).
 changes — Pre-commit risk check: map git diff to changed symbols, run impact
            analysis, report an overall risk level (low/medium/high/critical).
+
+Commands (Phase 1b — semantic comment nodes)
+---------------------------------------------
+why     — Show WHY/HACK/NOTE/TODO/FIXME comments near a file location or symbol.
 """
 
 import logging
@@ -49,6 +53,7 @@ from seam.analysis.impact import (
 )
 from seam.indexer.db import connect, init_db
 from seam.indexer.pipeline import index_one_file, walk_project
+from seam.query.comments import why as comments_why
 from seam.server.mcp import create_server
 
 app = typer.Typer(
@@ -733,3 +738,121 @@ def changes_cmd(
                 f"[{confidence_color}]{entry['confidence']}[/{confidence_color}]  "
                 f"[dim]d={entry['distance']}[/dim]"
             )
+
+
+# ── seam why ──────────────────────────────────────────────────────────────────
+
+
+def _parse_why_target(target: str) -> tuple[str, int | None]:
+    """Parse a CLI target string into (file_path, line | None).
+
+    Accepts:
+      'path/to/file.py'      → ('path/to/file.py', None)
+      'path/to/file.py:42'   → ('path/to/file.py', 42)
+
+    Splits on the LAST ':' only. If the part after the last ':' is not a valid
+    integer, the entire string is treated as a file path with no line.
+    """
+    # Split on the last ':' to handle paths that may contain ':' (e.g. Windows drives)
+    last_colon = target.rfind(":")
+    if last_colon != -1:
+        maybe_line = target[last_colon + 1:]
+        try:
+            line = int(maybe_line)
+            return target[:last_colon], line
+        except ValueError:
+            pass
+    return target, None
+
+
+@app.command(name="why")
+def why_cmd(
+    target: str = typer.Argument(
+        "",
+        help="File path or 'file:line'. Examples: app.py, app.py:42. "
+        "Optional when --symbol is given.",
+    ),
+    symbol: str = typer.Option(
+        "",
+        "--symbol",
+        "-s",
+        help="Symbol name (alternative to a file target)",
+    ),
+    path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
+    db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+) -> None:
+    """Show semantic comments (WHY/HACK/NOTE/TODO/FIXME) near a file location or symbol.
+
+    Examples:
+      seam why app.py                  -- all semantic comments in app.py
+      seam why app.py:42               -- comments near line 42
+      seam why --symbol my_func        -- comments inside or above my_func
+    """
+    project_root = Path(path).resolve()
+    db_root = Path(db_dir).resolve() if db_dir else project_root
+    db_path = config.get_db_path(db_root)
+
+    if not db_path.exists():
+        console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
+        raise typer.Exit(code=1)
+
+    # Parse the positional target into file + optional line
+    file_arg, line_arg = _parse_why_target(target)
+
+    # `target` is an OPTIONAL positional (default "") so `seam why --symbol foo`
+    # works without a file. At least one of file/symbol must be provided — we
+    # validate that below, after parsing.
+    resolved_symbol = symbol.strip() if symbol else None
+
+    # Resolve the file path to absolute so it matches DB stored paths
+    resolved_file: str | None = None
+    if file_arg:
+        resolved_file = str((project_root / file_arg).resolve())
+
+    # If neither resolved_file nor resolved_symbol is set after parsing, error out
+    if not resolved_file and not resolved_symbol:
+        console.print("[red]Error:[/red] Provide a file path or --symbol.")
+        raise typer.Exit(code=1)
+
+    try:
+        conn = connect(db_path)
+    except sqlite3.Error as exc:
+        console.print(f"[red]Failed to open database:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        hits = comments_why(
+            conn,
+            file=resolved_file,
+            line=line_arg,
+            symbol=resolved_symbol,
+        )
+    finally:
+        conn.close()
+
+    if not hits:
+        console.print("[dim]No semantic comments found[/dim]")
+        return
+
+    # Render results: marker  line  text (file is context, usually already known)
+    for hit in hits:
+        # Relativize path for display
+        try:
+            rel_file = str(Path(hit["file"]).relative_to(project_root))
+        except ValueError:
+            rel_file = hit["file"]
+
+        marker_color = {
+            "WHY": "cyan",
+            "HACK": "yellow",
+            "NOTE": "blue",
+            "TODO": "green",
+            "FIXME": "red",
+        }.get(hit["marker"], "white")
+
+        console.print(
+            f"[{marker_color}]{hit['marker']}[/{marker_color}]"
+            f"  [dim]line {hit['line']}[/dim]"
+            f"  [dim]{rel_file}[/dim]"
+            f"  {hit['text']}"
+        )

@@ -30,12 +30,33 @@ Confidence tagging (Phase 1 — issue #3):
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import Literal, TypedDict
 
 from tree_sitter import Node
 
 logger = logging.getLogger(__name__)
+
+# ── Semantic comment markers (WHY-extraction feature, Phase 1b) ───────────────
+
+# Fixed set of marker keywords. Matched case-insensitively at the START of the
+# comment body (after stripping the delimiter and leading whitespace), followed
+# by ':', whitespace, or end-of-string — so 'whyever' and 'notes' are NOT matched.
+SEMANTIC_MARKERS: frozenset[str] = frozenset({"WHY", "HACK", "NOTE", "TODO", "FIXME"})
+
+# Pre-compiled regex: ^(WHY|HACK|NOTE|TODO|FIXME)(?::|((?=\s)|$))(.*)
+# Group 1 = marker keyword (case-insensitive).
+# Group 2 = whitespace-lookahead capture (always zero-width; used only for the
+#           no-colon branch of the alternation — not consumed in _match_marker).
+# Group 3 = remainder text after the marker and optional ':' (may be empty).
+# The alternation (?::|(?=\s)|$) means the marker must be followed by exactly
+# ':', OR by a whitespace character (lookahead), OR end of string. This blocks
+# prefix matches like 'whyever' (the 'r' after 'why' fails all three branches).
+_MARKER_RE = re.compile(
+    r"^(WHY|HACK|NOTE|TODO|FIXME)(?::|((?=\s)|$))(.*)",
+    re.IGNORECASE | re.DOTALL,
+)
 
 # Confidence level for an edge — persisted in the DB, exposed via MCP.
 Confidence = Literal["EXTRACTED", "INFERRED", "AMBIGUOUS"]
@@ -57,6 +78,17 @@ class Edge(TypedDict):
     file: str
     line: int
     confidence: Confidence  # Confidence value: EXTRACTED | INFERRED | AMBIGUOUS
+
+
+class Comment(TypedDict):
+    """A semantic comment extracted from source code during indexing.
+
+    Only WHY/HACK/NOTE/TODO/FIXME-tagged comments are stored — plain
+    comments are ignored. Marker is normalized to UPPERCASE.
+    """
+    marker: str  # Normalized: WHY | HACK | NOTE | TODO | FIXME
+    text: str    # Body after the marker (and optional colon), stripped
+    line: int    # 1-based line number in the source file
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
@@ -605,6 +637,134 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
     return edges
 
 
+# ── Comment extraction ────────────────────────────────────────────────────────
+
+
+def _match_marker(body: str) -> tuple[str, str] | None:
+    """Try to match a semantic marker at the start of a stripped comment body.
+
+    Args:
+        body: Comment text after stripping the delimiter (#, //, /*, */) and
+              leading whitespace.
+
+    Returns:
+        (marker_upper, text) if matched, or None if no marker found.
+
+    The regex requires the marker to be followed by ':', whitespace, or
+    end-of-string — so 'whyever' and 'notes' are NOT matched.
+    """
+    m = _MARKER_RE.match(body)
+    if not m:
+        return None
+    marker = m.group(1).upper()
+    # Group 3 holds the text after the marker (and optional colon).
+    text = (m.group(3) or "").strip()
+    return marker, text
+
+
+def _strip_py_comment(raw: str) -> str:
+    """Strip the leading '#' delimiter and whitespace from a Python comment."""
+    # raw is e.g. "# WHY: reason" -> "WHY: reason"
+    return raw.lstrip("#").strip()
+
+
+def _strip_ts_line_comment(raw: str) -> str:
+    """Strip the leading '//' delimiter and whitespace from a TS/JS line comment."""
+    return raw.lstrip("/").strip()
+
+
+def _block_comment_lines(raw: str) -> list[tuple[int, str]]:
+    """Return (line_offset, cleaned_body) for each non-empty line of a /* */ block.
+
+    line_offset is the 0-based line index from the block's first line (the line
+    holding '/*'), so callers can compute the true source line of a marker that
+    sits on line 2+ of a JSDoc-style block:
+
+        /*                <- offset 0
+         * summary        <- offset 1
+         * WHY: reason     <- offset 2  (this is where the marker really is)
+         */               <- offset 3
+
+    Each line has the /*, */ and leading '*' decorations stripped. Empty lines
+    are omitted. We scan EVERY line (not just the first) so a marker anywhere in
+    a block comment is detected, and its line_offset ensures the stored line
+    number points at the marker, not at the '/*' opener.
+    """
+    out: list[tuple[int, str]] = []
+    for i, line in enumerate(raw.splitlines()):
+        s = line.strip()
+        if s.startswith("/*"):
+            s = s[2:]
+        if s.endswith("*/"):
+            s = s[:-2]
+        s = s.strip().lstrip("*").strip()
+        if s:
+            out.append((i, s))
+    return out
+
+
+def _extract_comments_python(root: Node, filepath: Path) -> list[Comment]:
+    """Walk a Python AST and collect matched semantic comment nodes."""
+    comments: list[Comment] = []
+
+    def _walk(node: Node) -> None:
+        if node.type == "comment":
+            raw = _text(node)
+            body = _strip_py_comment(raw)
+            result = _match_marker(body)
+            if result is not None:
+                marker, text = result
+                comments.append(Comment(
+                    marker=marker,
+                    text=text,
+                    line=node.start_point[0] + 1,  # tree-sitter rows are 0-based
+                ))
+        for child in node.children:
+            _walk(child)
+
+    for child in root.children:
+        _walk(child)
+
+    return comments
+
+
+def _extract_comments_typescript(root: Node, filepath: Path) -> list[Comment]:
+    """Walk a TypeScript/JS AST and collect matched semantic comment nodes.
+
+    Handles both // line comments and /* */ block comments. For block comments,
+    EVERY line is scanned (not just the first), so a marker on line 2+ of a
+    JSDoc-style block is detected, and its stored line number points at the
+    marker's real line rather than at the '/*' opener.
+    """
+    comments: list[Comment] = []
+
+    def _walk(node: Node) -> None:
+        if node.type == "comment":
+            raw = _text(node)
+            base_row = node.start_point[0] + 1  # 1-based row of the comment's first line
+            if raw.startswith("/*"):
+                # Block comment: scan every line; emit one Comment per matched line.
+                for offset, body in _block_comment_lines(raw):
+                    result = _match_marker(body)
+                    if result is not None:
+                        marker, text = result
+                        comments.append(Comment(marker=marker, text=text, line=base_row + offset))
+            else:
+                # Line comment (// ...) — single body, single potential match.
+                body = _strip_ts_line_comment(raw) if raw.startswith("//") else raw.strip()
+                result = _match_marker(body)
+                if result is not None:
+                    marker, text = result
+                    comments.append(Comment(marker=marker, text=text, line=base_row))
+        for child in node.children:
+            _walk(child)
+
+    for child in root.children:
+        _walk(child)
+
+    return comments
+
+
 # ── Public API ─────────────────────────────────────────────────────────────────
 
 
@@ -625,6 +785,36 @@ def extract_symbols(node: object, language: str, filepath: Path) -> list[Symbol]
             return _extract_symbols_python(node, filepath)
         elif language in ("typescript", "javascript"):
             return _extract_symbols_typescript(node, filepath)
+    except Exception:  # noqa: BLE001
+        return []
+    return []
+
+
+def extract_comments(node: object, language: str, filepath: Path) -> list[Comment]:
+    """Extract semantic comments from an AST root node.
+
+    Only WHY/HACK/NOTE/TODO/FIXME-tagged comments are returned; plain comments
+    are silently ignored. The marker is normalized to UPPERCASE. Text is the
+    body after the marker (and optional colon), stripped of whitespace.
+
+    Args:
+        node:     tree-sitter root node returned by parser.parse_*(path).
+        language: 'python' | 'typescript' | 'javascript'
+        filepath: resolved absolute Path to the source file (not used in extraction
+                  but kept for API symmetry with extract_symbols/extract_edges).
+
+    Returns list of Comment TypedDicts (may be empty, never raises).
+
+    False-positive guard: '# whyever' and '# notes' are NOT matched — the marker
+    must be followed by ':', whitespace, or end-of-string, not by more word chars.
+    """
+    if not isinstance(node, Node):
+        return []
+    try:
+        if language == "python":
+            return _extract_comments_python(node, filepath)
+        elif language in ("typescript", "javascript"):
+            return _extract_comments_typescript(node, filepath)
     except Exception:  # noqa: BLE001
         return []
     return []

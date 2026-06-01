@@ -15,7 +15,7 @@ from pathlib import Path
 
 import seam.config as config
 from seam.indexer.db import upsert_file
-from seam.indexer.graph import extract_edges, extract_symbols
+from seam.indexer.graph import extract_comments, extract_edges, extract_symbols
 from seam.indexer.parser import parse_javascript, parse_python, parse_typescript
 
 logger = logging.getLogger(__name__)
@@ -100,8 +100,10 @@ def index_one_file(conn: sqlite3.Connection, path: Path) -> tuple[int, int] | No
         # Pass symbols so extract_edges can resolve confidence (EXTRACTED/AMBIGUOUS/INFERRED)
         # against the same-file symbol set. Cross-file ambiguity is handled at query time.
         edges = extract_edges(root, language, path, symbols=symbols)
+        # Extract semantic comments (WHY/HACK/NOTE/TODO/FIXME); never raises.
+        comments = extract_comments(root, language, path)
 
-        upsert_file(conn, path, language, file_hash, symbols, edges)
+        upsert_file(conn, path, language, file_hash, symbols, edges, comments)
         return len(symbols), len(edges)
 
     except Exception as exc:  # noqa: BLE001 — one bad file must not abort the run
