@@ -27,6 +27,8 @@ from seam.analysis.changes import (
 )
 from seam.analysis.flows import EdgeHop
 from seam.query import engine
+from seam.query.clusters import cluster_members as query_cluster_members
+from seam.query.clusters import list_clusters as query_list_clusters
 from seam.query.comments import why as comments_why
 
 logger = logging.getLogger(__name__)
@@ -158,7 +160,10 @@ def handle_seam_context(
         "docstring": result["docstring"],
         "callers": result["callers"],
         "callees": result["callees"],
-        "ambiguous": result["ambiguous"],  # Phase 1: True when name collision detected
+        "ambiguous": result["ambiguous"],       # Phase 1: True when name collision detected
+        "cluster_id": result["cluster_id"],     # Phase 2: None when not clustered
+        "cluster_label": result["cluster_label"],  # Phase 2: None when not clustered
+        "cluster_peers": result["cluster_peers"],  # Phase 2: [] when not clustered / solo
     }
 
 
@@ -543,4 +548,45 @@ def handle_seam_why(
             "text": hit["text"],
         }
         for hit in hits
+    ]
+
+
+def handle_seam_clusters(
+    conn: sqlite3.Connection,
+    root: Path,
+    cluster_id: int | None = None,
+) -> list[dict[str, Any]]:
+    """Handler for the seam_clusters MCP tool.
+
+    With no cluster_id:  returns [{id, label, size}] for all clusters.
+    With a cluster_id:   returns [{name, file, line, kind}] for that cluster's members.
+    File paths in member rows are relativized to root.
+
+    Args:
+        conn:       Open SQLite connection.
+        root:       Project root for path relativization.
+        cluster_id: Optional. When provided, returns member symbols of that cluster.
+
+    Returns:
+        List of cluster summary dicts (no id) or member dicts (with relativized file).
+        Empty list when no clusters exist or the cluster ID is unknown.
+    """
+    if cluster_id is None:
+        # List all clusters — no file paths to relativize
+        clusters = query_list_clusters(conn)
+        return [
+            {"id": c["id"], "label": c["label"], "size": c["size"]}
+            for c in clusters
+        ]
+
+    # List members of a specific cluster — relativize file paths
+    members = query_cluster_members(conn, cluster_id)
+    return [
+        {
+            "name": m["name"],
+            "file": _relativize(m["file"], root),
+            "line": m["line"],
+            "kind": m["kind"],
+        }
+        for m in members
     ]

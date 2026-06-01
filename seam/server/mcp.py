@@ -1,4 +1,4 @@
-"""MCP server setup — FastMCP stdio transport, seven tools registered.
+"""MCP server setup — FastMCP stdio transport, eight tools registered.
 
 Creates and configures the MCP server instance.
 Tool handlers in tools.py are thin adapters; this module wires them to FastMCP.
@@ -7,14 +7,15 @@ Usage (from cli/main.py):
     server = create_server(conn, root)
     server.run(transport="stdio")
 
-Tools registered (Phase 0 + Phase 1 + Phase 1b):
+Tools registered (Phase 0 + Phase 1 + Phase 1b + Phase 2):
     seam_query    — FTS5 + 1-hop graph expansion search
-    seam_context  — 360-degree symbol view (callers, callees, location)
+    seam_context  — 360-degree symbol view (callers, callees, location, cluster)
     seam_search   — full-text search (FTS5 BM25)
     seam_impact   — blast-radius analysis by risk tier (Phase 1)
     seam_trace    — shortest call/dependency path between two symbols (Phase 1)
     seam_changes  — git diff → changed symbols → risk level (Phase 1)
     seam_why      — semantic comments (WHY/HACK/NOTE/TODO/FIXME) near a location (Phase 1b)
+    seam_clusters — list clusters or members of a cluster (Phase 2)
 
 Design:
 - One FastMCP instance per process; connection is injected at creation time.
@@ -33,6 +34,7 @@ from mcp.server.fastmcp import FastMCP
 from seam.analysis.changes import DEFAULT_BASE_REF
 from seam.server.tools import (
     handle_seam_changes,
+    handle_seam_clusters,
     handle_seam_context,
     handle_seam_impact,
     handle_seam_query,
@@ -54,11 +56,12 @@ _CHANGES_BASE_REF_DEFAULT = DEFAULT_BASE_REF
 
 
 def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
-    """Configure and return a FastMCP server with all seven Seam tools registered.
+    """Configure and return a FastMCP server with all eight Seam tools registered.
 
     Phase 0:  seam_query, seam_context, seam_search
     Phase 1:  seam_impact, seam_trace, seam_changes
     Phase 1b: seam_why
+    Phase 2:  seam_clusters
 
     Args:
         conn: Open SQLite connection to the Seam index DB.
@@ -202,5 +205,27 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         Use before editing a function to read the documented intent and known caveats.
         """
         return handle_seam_why(conn, root, file=file, line=line, symbol=symbol)
+
+    @mcp.tool()
+    def seam_clusters(cluster_id: int | None = None) -> Any:
+        """List all code clusters (functional areas) or the members of one cluster.
+
+        With no argument: returns [{id, label, size}] — an overview of all detected
+        functional areas in the codebase, sorted by id.
+
+        With cluster_id: returns [{name, file, line, kind}] — all symbols that belong
+        to that cluster, with file paths relative to the project root.
+
+        Clusters are computed during `seam init` using Louvain community detection over
+        the call/import graph. Each cluster represents a cohesive group of symbols that
+        frequently call or import each other.
+
+        Returns an empty list (not an error) when the index has no cluster data —
+        either the repo has no symbols, or `seam init` hasn't been run yet.
+
+        Use this to understand the codebase's functional areas before diving into a
+        specific subsystem. Then use seam_context to see a symbol's cluster peers.
+        """
+        return handle_seam_clusters(conn, root, cluster_id=cluster_id)
 
     return mcp

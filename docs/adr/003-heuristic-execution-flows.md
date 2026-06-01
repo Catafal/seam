@@ -27,3 +27,7 @@ Specific reasons:
 - Flow quality depends on edge extraction quality (import + call edges from tree-sitter).
 - Dynamic dispatch (Python's `__getattr__`, TypeScript generics) will produce incomplete flows — this is acceptable and documented.
 - Phase 2 can add an optional LLM naming layer as a plugin without changing the core graph.
+
+## Update (Phase 2)
+
+The optional LLM naming layer described in the "Alternatives Rejected" section above is now implemented and shipped as opt-in, not just planned. It is disabled by default (`SEAM_CLUSTER_NAMING=deterministic`) and runs only during `seam init` (never in the MCP server's read path). Any LLM error falls back silently to the deterministic label — `seam init` cannot be aborted by a naming failure. See ADR-007 for the full design and implementation details.

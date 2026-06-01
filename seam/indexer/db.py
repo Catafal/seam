@@ -88,6 +88,48 @@ def _run_migration_v1_to_v2(conn: sqlite3.Connection) -> None:
         ) from exc
 
 
+def _run_migration_v3_to_v4(conn: sqlite3.Connection) -> None:
+    """Guarded migration: add clusters table + symbols.cluster_id column (v3 → v4).
+
+    The clusters table is created by the schema script's CREATE TABLE IF NOT EXISTS,
+    which runs on every init_db call before this function is reached.
+    This guard handles the additive ALTER TABLE for cluster_id on existing symbols
+    tables, and bumps schema_version to '4' exactly once.
+
+    WHY: symbols tables from v1-v3 were created WITHOUT cluster_id. Since
+    CREATE TABLE IF NOT EXISTS is idempotent (it skips if the table exists),
+    we must ALTER the existing table to add the column. The schema script's
+    CREATE TABLE includes cluster_id for new databases, but existing databases
+    need the ALTER TABLE path here.
+
+    Idempotent: if schema_version >= 4 already, skipped silently.
+    Fail-loud: raises RuntimeError on any error so the caller knows the DB is bad.
+    """
+    try:
+        row = conn.execute("SELECT value FROM metadata WHERE key = 'schema_version'").fetchone()
+        version = int(row["value"]) if row else 0
+
+        if version < 4:
+            # Add cluster_id column to symbols if absent (existing DBs won't have it).
+            col_names = {r["name"] for r in conn.execute("PRAGMA table_info(symbols)").fetchall()}
+            if "cluster_id" not in col_names:
+                conn.execute("ALTER TABLE symbols ADD COLUMN cluster_id INTEGER")
+
+            # The clusters table is already created by the schema script above;
+            # just bump the version and inform the operator.
+            conn.execute("UPDATE metadata SET value = '4' WHERE key = 'schema_version'")
+            conn.commit()
+            logger.info(
+                "Migrated Seam index v%d->v4 (added clusters table + symbols.cluster_id). "
+                "Run 'seam init' to compute cluster assignments.",
+                version,
+            )
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "Seam DB migration v3->v4 failed; run 'seam init' to rebuild the index"
+        ) from exc
+
+
 def _run_migration_v2_to_v3(conn: sqlite3.Connection) -> None:
     """Guarded migration: bump schema_version from 2 to 3 (adds comments table).
 
@@ -154,6 +196,9 @@ def init_db(db_path: Path) -> sqlite3.Connection:
 
     # Run v2->v3 migration guard (bumps schema_version; comments table already created).
     _run_migration_v2_to_v3(conn)
+
+    # Run v3->v4 migration guard (adds clusters table + symbols.cluster_id column).
+    _run_migration_v3_to_v4(conn)
 
     return conn
 

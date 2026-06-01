@@ -35,16 +35,28 @@ Local code intelligence MCP server — indexes codebases with tree-sitter, store
 ```
 seam/config.py               ← all settings (env vars with defaults)
                                 SEAM_LANGUAGE_MAP: .py .ts .tsx .js .mjs .cjs .go .rs
-seam/cli/main.py             ← Typer CLI (init, start, status)
+                                SEAM_CLUSTER_NAMING: "deterministic" | "llm" (default: deterministic)
+                                SEAM_LLM_API_KEY: optional, required for llm naming
+                                SEAM_LLM_MODEL: default "gpt-4o-mini"
+                                SEAM_CLUSTER_MIN_SIZE: min community size (default: 2)
+seam/cli/main.py             ← Typer CLI (init, start, status, impact, trace, changes, why, clusters)
 seam/indexer/parser.py       ← tree-sitter parsing (Python, TypeScript, JavaScript, Go, Rust)
 seam/indexer/graph_common.py ← LEAF: shared TypedDicts (Symbol/Edge/Comment), helpers
 seam/indexer/graph_go_rust.py← Go + Rust extractors (imports graph_common only)
 seam/indexer/graph.py        ← Python/TS dispatchers; re-exports types from graph_common;
                                 imports Go/Rust extractors from graph_go_rust
 seam/indexer/pipeline.py     ← shared parse→extract→upsert path (CLI + watcher)
+seam/indexer/cluster_index.py← clustering orchestration bridge (Phase 2)
+                                index_clusters(conn, ...) → int; called by seam init only
 seam/indexer/db.py           ← SQLite write (init_db, upsert_file, delete_file)
+seam/analysis/clustering.py  ← LEAF: pure-Python Louvain community detection (Phase 2)
+                                detect_communities(nodes, edges) → {name: cluster_id}
+seam/analysis/cluster_naming.py ← LEAF: deterministic + opt-in LLM cluster labeling (Phase 2)
 seam/query/engine.py         ← query(), context(), search() — read path
-seam/server/tools.py         ← MCP tool handlers (thin adapters → engine)
+                                context() enriched with cluster_id/label/peers (Phase 2)
+seam/query/clusters.py       ← cluster read queries (Phase 2): list_clusters, cluster_members,
+                                cluster_peers; guards pre-v4 indexes
+seam/server/tools.py         ← MCP tool handlers (thin adapters → engine + clusters)
 seam/watcher/daemon.py       ← watchdog daemon (debounced re-index)
 tests/fixtures/              ← sample.py, sample.ts, sample.go, sample.rs
 ```
@@ -66,12 +78,31 @@ tests/fixtures/              ← sample.py, sample.ts, sample.go, sample.rs
 - **Edges use string names** (not symbol IDs) — required for independent re-indexing
 
 ## Current Phase
-Phase 0 — implementing parser layer + SQLite + MCP server.
-See `progress.txt` for current task. See `IMPLEMENTATION_PLAN.md` for full build sequence.
-Next step: **Step 2.1 — db.py schema + upsert + delete**
+Phase 2 complete — graph community detection (clustering) shipped.
+Schema at v4. 517 tests passing. Gate green.
+See `progress.txt` for session history. Next: benchmarking / v0.1.0 release prep.
+
+## MCP Tools
+- `seam_query` — FTS5 + 1-hop graph expansion (Phase 0)
+- `seam_context` — symbol 360-degree view, now enriched with cluster_id/label/peers (Phase 2)
+- `seam_search` — full-text FTS5 search (Phase 0)
+- `seam_impact` — blast-radius analysis by risk tier (Phase 1)
+- `seam_trace` — shortest call/dependency path (Phase 1)
+- `seam_changes` — git diff → changed symbols → risk level (Phase 1)
+- `seam_why` — semantic comments WHY/HACK/NOTE/TODO/FIXME (Phase 1b)
+- `seam_clusters` — list functional areas or drill into one cluster (Phase 2)
 
 ## Known Gotchas
-<!-- Filled during build -->
+- **Clusters recomputed only on full `seam init`**: the file watcher does NOT recompute
+  clusters after per-file edits. New symbols after `seam init` get `cluster_id=NULL` until
+  the next full re-index. Run `seam init` again to refresh clusters.
+- **Homonym collapse**: the community detection graph is keyed on symbol NAME (not file+name),
+  matching the `edges` table. Two files both defining a symbol named `helper` share one graph
+  node — both get the same `cluster_id`. Visible in `clusters.size` (counts DB rows, not names).
+- **SEAM_CLUSTER_MIN_SIZE default is 2**: pure singletons (symbols with no edges) are NOT
+  persisted as clusters by default. Set to 1 to retain every symbol in its own cluster.
+- **LLM naming is index-time only**: the MCP server read path is always 100% local.
+  `SEAM_CLUSTER_NAMING=llm` only affects the `seam init` post-pass.
 
 ## GitNexus: Code Intelligence (MCP)
 This project is indexed. Use GitNexus MCP tools before coding on existing code.

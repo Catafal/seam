@@ -1,10 +1,12 @@
--- Seam SQLite Schema (v3 — Phase 1b)
+-- Seam SQLite Schema (v4 — Phase 2: clustering)
 -- Run via db.py:init_db() — idempotent (CREATE TABLE IF NOT EXISTS).
 -- FTS5 is required; init_db() verifies availability before proceeding.
 -- Schema v2 adds: edges.confidence (DEFAULT 'INFERRED').
 -- Schema v3 adds: comments table (WHY/HACK/NOTE/TODO/FIXME semantic comments).
+-- Schema v4 adds: clusters table + symbols.cluster_id (graph community detection).
 -- Migration from v1: db.py:_run_migration_v1_to_v2() (guarded ALTER TABLE).
 -- Migration from v2: db.py:_run_migration_v2_to_v3() (guards schema_version bump).
+-- Migration from v3: db.py:_run_migration_v3_to_v4() (adds clusters table + cluster_id).
 
 PRAGMA journal_mode = WAL;      -- Write-ahead logging for concurrent reads
 PRAGMA foreign_keys = ON;
@@ -32,7 +34,8 @@ CREATE TABLE IF NOT EXISTS symbols (
     kind        TEXT NOT NULL,          -- 'function' | 'class' | 'method' | 'interface' | 'type'
     start_line  INTEGER NOT NULL,
     end_line    INTEGER NOT NULL,
-    docstring   TEXT                    -- First docstring/JSDoc block if present; NULL otherwise
+    docstring   TEXT,                   -- First docstring/JSDoc block if present; NULL otherwise
+    cluster_id  INTEGER                 -- FK to clusters.id; NULL until clustering post-pass runs
 );
 
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
@@ -99,6 +102,19 @@ CREATE TABLE IF NOT EXISTS comments (
 -- Index to speed up file-scoped lookups (the dominant query pattern).
 CREATE INDEX IF NOT EXISTS idx_comments_file_id ON comments(file_id);
 
+-- ── Clusters ─────────────────────────────────────────────────────────────────
+-- One row per community detected during `seam init` clustering post-pass.
+-- Populated after the full indexing loop, not per-file. Cleared and repopulated
+-- on each full `seam init`. Watcher does NOT recompute clusters.
+CREATE TABLE IF NOT EXISTS clusters (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    label         TEXT NOT NULL,        -- Human-readable label (deterministic or LLM-generated)
+    size          INTEGER NOT NULL,     -- Number of member symbols
+    naming_source TEXT NOT NULL         -- 'deterministic' | 'llm'
+);
+
+CREATE INDEX IF NOT EXISTS idx_clusters_id ON clusters(id);
+
 -- ── Metadata ─────────────────────────────────────────────────────────────────
 -- Key-value store for index metadata (version, created_at, etc.)
 CREATE TABLE IF NOT EXISTS metadata (
@@ -107,9 +123,9 @@ CREATE TABLE IF NOT EXISTS metadata (
 );
 
 -- NOTE: INSERT OR IGNORE does not update existing rows. Fresh DBs are seeded at
--- the CURRENT schema version ('3') so a brand-new `seam init` is born current and
--- does NOT trigger the v2->v3 migration's "run seam init to populate" advisory.
+-- the CURRENT schema version ('4') so a brand-new `seam init` is born current and
+-- does NOT trigger any migration advisory.
 -- Existing older DBs keep their stored version; db.py migrations bump them in place.
 INSERT OR IGNORE INTO metadata(key, value) VALUES
-    ('schema_version', '3'),
+    ('schema_version', '4'),
     ('seam_version',   '0.1.0');

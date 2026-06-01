@@ -610,7 +610,7 @@ class TestMigrationV2ToV3:
         return sqlite3.connect(str(path))
 
     def test_v2_db_migrated_to_v3(self) -> None:
-        """Opening a v2 DB via init_db bumps schema_version to '3'."""
+        """Opening a v2 DB via init_db migrates through v3 to the current version ('4')."""
         from seam.indexer.db import init_db
 
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -620,14 +620,17 @@ class TestMigrationV2ToV3:
             # Seed a v2 DB
             self._make_v2_db(db_path).close()
 
-            # init_db should migrate it
+            # init_db should migrate all the way through to the current schema version.
+            # WHY: The migration chain is v1->v2->v3->v4, so a v2 DB ends up at '4'.
+            # The test name refers to the v2->v3 migration step, but the final version
+            # is the current head (updated from '3' to '4' when Phase 2 landed).
             conn = init_db(db_path)
             row = conn.execute(
                 "SELECT value FROM metadata WHERE key='schema_version'"
             ).fetchone()
             conn.close()
             assert row is not None
-            assert row[0] == "3"
+            assert row[0] == "4"
         finally:
             db_path.unlink(missing_ok=True)
 
@@ -653,7 +656,7 @@ class TestMigrationV2ToV3:
             db_path.unlink(missing_ok=True)
 
     def test_fresh_db_schema_version_is_3(self) -> None:
-        """A fresh DB from init_db has schema_version='3'."""
+        """A fresh DB from init_db has the current schema_version ('4' since Phase 2)."""
         from seam.indexer.db import init_db
 
         conn = init_db(Path(":memory:"))
@@ -662,10 +665,11 @@ class TestMigrationV2ToV3:
         ).fetchone()
         conn.close()
         assert row is not None
-        assert row[0] == "3"
+        # WHY: Test name preserved for history, but fresh DBs are now seeded at v4.
+        assert row[0] == "4"
 
     def test_migration_idempotent_on_v3(self) -> None:
-        """Running init_db twice on a v3 DB does not error or duplicate rows."""
+        """Running init_db twice on an existing DB does not error or duplicate rows."""
         from seam.indexer.db import init_db
 
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -680,7 +684,8 @@ class TestMigrationV2ToV3:
                 "SELECT value FROM metadata WHERE key='schema_version'"
             ).fetchone()
             conn2.close()
-            assert row[0] == "3"
+            # WHY: Test name preserved for history; DB is now at v4.
+            assert row[0] == "4"
         finally:
             db_path.unlink(missing_ok=True)
 
