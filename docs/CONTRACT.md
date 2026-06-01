@@ -64,7 +64,7 @@ class ContextResult(TypedDict):
 
 ## Storage schema
 
-`docs/database/schema.sql` is authoritative. Schema version is `2` (Phase 1).
+`docs/database/schema.sql` is authoritative. Schema version is `3` (Phase 1b — adds `comments` table).
 
 **Phase 1 change:** `edges` table has a new column:
 ```sql
@@ -394,6 +394,117 @@ This is raised (not returned) when the repo_root is not a git repository
 or git is unavailable. The handler converts it to
 `{"error": "NOT_A_GIT_REPO", "message": "..."}`.
 The CLI converts it to a `console.print("[red]Not a git repository:[/red] ...")`.
+
+## Semantic comment nodes (Phase 1b — seam_why)
+
+### Schema v3 — comments table
+
+Added in Phase 1b. Defined in `docs/database/schema.sql`.
+
+```sql
+CREATE TABLE IF NOT EXISTS comments (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    line    INTEGER NOT NULL,   -- 1-based line number in the source file
+    marker  TEXT NOT NULL,      -- Normalized UPPERCASE: WHY|HACK|NOTE|TODO|FIXME
+    text    TEXT NOT NULL       -- Body after the marker (and optional colon), stripped
+);
+CREATE INDEX IF NOT EXISTS idx_comments_file_id ON comments(file_id);
+```
+
+Key points:
+- Cascade-deleted when the parent `files` row is removed (`ON DELETE CASCADE`).
+- `upsert_file` deletes the file's existing comments then re-inserts atomically
+  (same pattern as symbols and edges — re-index replaces, never accumulates).
+- No FTS: lookup is by `file_id + line BETWEEN low AND high` (proximity), not full-text.
+
+**Migration:** `_run_migration_v2_to_v3` in `db.py` bumps `schema_version` from `'2'`
+to `'3'` on existing DBs exactly once, then logs an advisory to run `seam init` to
+populate the now-empty `comments` table. Fresh DBs are seeded at `schema_version='3'`
+directly (via `INSERT OR IGNORE`) so a brand-new `seam init` is born current and does
+NOT emit the migration advisory. The migration is additive (no data loss).
+
+### Comment extraction contract
+
+`extract_comments(node, language, filepath) -> list[Comment]` in `seam/indexer/graph.py`.
+
+```python
+class Comment(TypedDict):
+    marker: str   # Normalized UPPERCASE: WHY | HACK | NOTE | TODO | FIXME
+    text:   str   # Body after the marker (and optional colon), stripped
+    line:   int   # 1-based line number in the source file
+```
+
+**Marker set (fixed):** `WHY`, `HACK`, `NOTE`, `TODO`, `FIXME`.
+
+**Matching rule:** Marker is matched case-insensitively at the START of the comment
+body (after stripping the delimiter and leading whitespace), followed by `':'`,
+whitespace, or end-of-string. This means:
+- `# WHY: reason` → matched (WHY followed by `:`)
+- `# hack workaround` → matched (hack followed by space)
+- `# NOTE` → matched (NOTE at end-of-string)
+- `# whyever` → NOT matched (`r` after `why` is a word char)
+- `# notes on algo` → NOT matched (`s` after `note` is a word char)
+
+Stored marker is normalized to UPPERCASE. Only marked comments are stored; plain
+comments are silently ignored.
+
+**Language support:**
+- Python: `#` line comments (one body, one potential match).
+- TypeScript/JavaScript: `//` line comments (single body) and `/* */` block comments.
+  Block comments are scanned **line-by-line** — every non-empty body line is checked.
+  A marker on line 2+ of a JSDoc-style block is detected, and its stored `line` points
+  at the marker's real line (not at the `/*` opener). Each matched line in a block
+  becomes a separate `Comment` entry.
+
+**Never raises:** returns `[]` on any parse trouble (consistent with `extract_symbols`
+and `extract_edges`).
+
+### why() contract
+
+`why(conn, *, file=None, line=None, symbol=None) -> list[CommentHit]`
+Defined in `seam/query/comments.py`.
+
+```python
+class CommentHit(TypedDict):
+    file:   str   # Absolute path (DB-stored); handler/CLI relativizes before output.
+    line:   int   # 1-based line number.
+    marker: str   # Normalized UPPERCASE: WHY | HACK | NOTE | TODO | FIXME.
+    text:   str   # Comment body after the marker (and optional colon), stripped.
+```
+
+**Lookup modes** (at least one of `file`/`symbol` required; omitting both raises `ValueError`):
+
+| Mode | Condition | Query |
+|------|-----------|-------|
+| file only | `file` given, `line` is None | All comments for that file |
+| file + line | `file` and `line` given | Comments within `[line - RADIUS, line + RADIUS]` |
+| symbol | `symbol` given | Comments within `[start_line - LEAD, end_line]` of the symbol |
+
+**Constants** (module-level in `seam/query/comments.py`, not env-driven):
+
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| `RADIUS` | `15` | ±lines from the queried line in file+line mode |
+| `LEAD`   | `5`  | Lines above `start_line` included in symbol mode to capture pre-symbol rationale |
+
+**Path matching:** `why()` does exact string matching on `files.path` (DB-stored absolute
+paths). Callers (handler, CLI) must resolve user-supplied paths to absolute before calling.
+
+**Missing-table guard:** `connect()` (used by `seam start`, `seam status`, `seam why`)
+opens a bare connection and does NOT run the schema script — only `init_db()` does. A
+pre-1b index (schema v2) opened via `connect()` has no `comments` table; querying it
+would raise `OperationalError`. `why()` detects the missing table via `sqlite_master`
+and returns `[]` with a warning log instead of raising — the MCP/CLI contract is an
+empty list ("no recorded rationale"), not an error. Run `seam init` to migrate and
+populate the table.
+
+**Ambiguity on symbol lookup:** When multiple symbols share the same name, the first by
+`(files.path, symbols.id)` is used — deterministic ordering, consistent with
+`engine.context()`.
+
+**Symbol mode with `line`:** When `symbol` is given, `line` is ignored — symbol mode uses
+the symbol's own line range `[start_line - LEAD, end_line]`.
 
 ## Drift rule
 

@@ -1,4 +1,4 @@
-"""MCP server setup — FastMCP stdio transport, six tools registered.
+"""MCP server setup — FastMCP stdio transport, seven tools registered.
 
 Creates and configures the MCP server instance.
 Tool handlers in tools.py are thin adapters; this module wires them to FastMCP.
@@ -7,13 +7,14 @@ Usage (from cli/main.py):
     server = create_server(conn, root)
     server.run(transport="stdio")
 
-Tools registered (Phase 0 + Phase 1):
+Tools registered (Phase 0 + Phase 1 + Phase 1b):
     seam_query    — FTS5 + 1-hop graph expansion search
     seam_context  — 360-degree symbol view (callers, callees, location)
     seam_search   — full-text search (FTS5 BM25)
     seam_impact   — blast-radius analysis by risk tier (Phase 1)
     seam_trace    — shortest call/dependency path between two symbols (Phase 1)
     seam_changes  — git diff → changed symbols → risk level (Phase 1)
+    seam_why      — semantic comments (WHY/HACK/NOTE/TODO/FIXME) near a location (Phase 1b)
 
 Design:
 - One FastMCP instance per process; connection is injected at creation time.
@@ -37,6 +38,7 @@ from seam.server.tools import (
     handle_seam_query,
     handle_seam_search,
     handle_seam_trace,
+    handle_seam_why,
 )
 
 # Limit defaults/bounds (mirrors tools.py constants — kept local to avoid circular import)
@@ -52,10 +54,11 @@ _CHANGES_BASE_REF_DEFAULT = DEFAULT_BASE_REF
 
 
 def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
-    """Configure and return a FastMCP server with all six Seam tools registered.
+    """Configure and return a FastMCP server with all seven Seam tools registered.
 
-    Phase 0: seam_query, seam_context, seam_search
-    Phase 1: seam_impact, seam_trace, seam_changes
+    Phase 0:  seam_query, seam_context, seam_search
+    Phase 1:  seam_impact, seam_trace, seam_changes
+    Phase 1b: seam_why
 
     Args:
         conn: Open SQLite connection to the Seam index DB.
@@ -175,5 +178,29 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         Returns NOT_A_GIT_REPO error when run outside a git repository.
         """
         return handle_seam_changes(conn, root, base_ref=base_ref, scope=scope)
+
+    @mcp.tool()
+    def seam_why(
+        file: str | None = None,
+        line: int | None = None,
+        symbol: str | None = None,
+    ) -> Any:
+        """Return semantic comments (WHY/HACK/NOTE/TODO/FIXME) near a location or symbol.
+
+        Lookup modes (at least one of file or symbol is required):
+          file only        — all semantic comments in that file.
+          file + line      — comments within ±15 lines of that line number.
+          symbol           — comments inside the symbol's body and just above its definition.
+
+        Result fields per comment:
+          file    — path relative to project root.
+          line    — 1-based line number.
+          marker  — WHY | HACK | NOTE | TODO | FIXME.
+          text    — comment body after the marker, stripped.
+
+        Returns an empty list (not an error) when a file/symbol has no semantic comments.
+        Use before editing a function to read the documented intent and known caveats.
+        """
+        return handle_seam_why(conn, root, file=file, line=line, symbol=symbol)
 
     return mcp

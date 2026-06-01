@@ -27,6 +27,7 @@ from seam.analysis.changes import (
 )
 from seam.analysis.flows import EdgeHop
 from seam.query import engine
+from seam.query.comments import why as comments_why
 
 logger = logging.getLogger(__name__)
 
@@ -494,3 +495,52 @@ def handle_seam_changes(
         # partial=True when changed symbols exceeded the cap (see ChangeReport docstring).
         "partial": report["partial"],
     }
+
+
+def handle_seam_why(
+    conn: sqlite3.Connection,
+    root: Path,
+    file: str | None = None,
+    line: int | None = None,
+    symbol: str | None = None,
+) -> list[dict[str, Any]] | dict[str, Any]:
+    """Handler for the seam_why MCP tool.
+
+    Returns semantic comments (WHY/HACK/NOTE/TODO/FIXME) near a file location
+    or a symbol. At least one of file or symbol is required.
+
+    Args:
+        conn:   Open SQLite connection.
+        root:   Project root — used to resolve relative file paths to absolute,
+                and to relativize output file paths.
+        file:   File path (relative to root or absolute). When provided, the
+                handler resolves it against root before passing to why().
+        line:   Line number (1-based). Only meaningful with file.
+        symbol: Symbol name to look up.
+
+    Returns:
+        List of comment dicts (file relativized to root) — empty list is valid.
+        Error dict {"error": "INVALID_INPUT", ...} when neither file nor symbol given.
+    """
+    # Validate: at least one of file/symbol is required
+    if file is None and symbol is None:
+        return _invalid_input("at least one of 'file' or 'symbol' is required")
+
+    # Resolve file path against root so why() gets an absolute path matching
+    # the DB's stored absolute paths (indexed at absolute-path time).
+    abs_file: str | None = None
+    if file is not None:
+        abs_file = str((root / file).resolve()) if not Path(file).is_absolute() else file
+
+    hits = comments_why(conn, file=abs_file, line=line, symbol=symbol)
+
+    # Relativize file paths for MCP consumers (consistent with other tools)
+    return [
+        {
+            "file": _relativize(hit["file"], root),
+            "line": hit["line"],
+            "marker": hit["marker"],
+            "text": hit["text"],
+        }
+        for hit in hits
+    ]

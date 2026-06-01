@@ -395,5 +395,65 @@ tools:
         condition: root is not a git repository or git is not available
 
   seam_why:
-    status: PHASE_2
-    description: Return semantic comments (# WHY:, # HACK:, # NOTE:) near a file location.
+    status: IMPLEMENTED
+    phase: 1b
+    description: |
+      Return semantic comments (WHY/HACK/NOTE/TODO/FIXME) near a file location or a symbol.
+      Comments are extracted at index time from Python # line comments and TypeScript //
+      and /* */ block comments. Only marker-tagged comments are stored — plain comments
+      are ignored, so an empty result genuinely means "no recorded rationale here."
+
+      Lookup modes (at least one of file or symbol is required):
+        file only     — all semantic comments in that file.
+        file + line   — comments within ±15 lines of that line number (RADIUS=15).
+        symbol        — comments in [start_line - 5, end_line] of the resolved symbol
+                        (LEAD=5 captures pre-symbol rationale comments just above the def).
+
+      Marker set (fixed; matched case-insensitively, optional trailing colon):
+        WHY, HACK, NOTE, TODO, FIXME
+      Matching rule: marker must be followed by ':', whitespace, or end-of-string so
+      partial words like 'whyever' or 'notes' do NOT produce a false match.
+      Stored marker is normalized to UPPERCASE.
+    input:
+      file:
+        type: string
+        required: false
+        description: |
+          File path (relative to project root or absolute). At least one of
+          file or symbol must be supplied — omitting both is INVALID_INPUT.
+      line:
+        type: integer
+        required: false
+        description: |
+          1-based line number. Only meaningful when file is also provided.
+          When supplied, returns comments within ±RADIUS (15) lines of this line.
+          Ignored when symbol is given (symbol mode uses the symbol's own line range).
+      symbol:
+        type: string
+        required: false
+        description: |
+          Symbol name to look up (e.g. "my_func", "UserService.validate"). When
+          multiple symbols share the name, the first by (file path, symbol id) is used —
+          deterministic, matching seam_context behaviour. At least one of file or
+          symbol must be supplied.
+    output:
+      type: array
+      items:
+        file:
+          type: string
+          description: Relative path from project root (consistent with other tools).
+        line:
+          type: integer
+          description: 1-based line number of the comment in the source file.
+        marker:
+          type: string
+          enum: [WHY, HACK, NOTE, TODO, FIXME]
+          description: Normalized UPPERCASE marker keyword.
+        text:
+          type: string
+          description: Comment body after the marker (and optional colon), stripped.
+      empty_ok: true
+      empty_message: "No semantic comments found for the given location or symbol."
+    errors:
+      - code: INVALID_INPUT
+        condition: neither file nor symbol is provided

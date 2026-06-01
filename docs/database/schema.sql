@@ -1,8 +1,10 @@
--- Seam SQLite Schema (v2 — Phase 1 Core)
+-- Seam SQLite Schema (v3 — Phase 1b)
 -- Run via db.py:init_db() — idempotent (CREATE TABLE IF NOT EXISTS).
 -- FTS5 is required; init_db() verifies availability before proceeding.
 -- Schema v2 adds: edges.confidence (DEFAULT 'INFERRED').
+-- Schema v3 adds: comments table (WHY/HACK/NOTE/TODO/FIXME semantic comments).
 -- Migration from v1: db.py:_run_migration_v1_to_v2() (guarded ALTER TABLE).
+-- Migration from v2: db.py:_run_migration_v2_to_v3() (guards schema_version bump).
 
 PRAGMA journal_mode = WAL;      -- Write-ahead logging for concurrent reads
 PRAGMA foreign_keys = ON;
@@ -82,6 +84,21 @@ CREATE TRIGGER IF NOT EXISTS symbols_au AFTER UPDATE ON symbols BEGIN
     VALUES (new.id, new.name, new.docstring);
 END;
 
+-- ── Comments ─────────────────────────────────────────────────────────────────
+-- Semantic comments extracted during indexing: WHY/HACK/NOTE/TODO/FIXME markers.
+-- Cascade-deleted when the parent file is removed or re-indexed.
+-- No FTS: lookup is by file_id + line range (proximity), not full-text.
+CREATE TABLE IF NOT EXISTS comments (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    line    INTEGER NOT NULL,           -- 1-based line number in the source file
+    marker  TEXT NOT NULL,              -- Normalized UPPERCASE: WHY|HACK|NOTE|TODO|FIXME
+    text    TEXT NOT NULL               -- Comment body after the marker (and optional colon), stripped
+);
+
+-- Index to speed up file-scoped lookups (the dominant query pattern).
+CREATE INDEX IF NOT EXISTS idx_comments_file_id ON comments(file_id);
+
 -- ── Metadata ─────────────────────────────────────────────────────────────────
 -- Key-value store for index metadata (version, created_at, etc.)
 CREATE TABLE IF NOT EXISTS metadata (
@@ -89,6 +106,10 @@ CREATE TABLE IF NOT EXISTS metadata (
     value   TEXT NOT NULL
 );
 
+-- NOTE: INSERT OR IGNORE does not update existing rows. Fresh DBs are seeded at
+-- the CURRENT schema version ('3') so a brand-new `seam init` is born current and
+-- does NOT trigger the v2->v3 migration's "run seam init to populate" advisory.
+-- Existing older DBs keep their stored version; db.py migrations bump them in place.
 INSERT OR IGNORE INTO metadata(key, value) VALUES
-    ('schema_version', '2'),
+    ('schema_version', '3'),
     ('seam_version',   '0.1.0');
