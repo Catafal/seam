@@ -22,7 +22,9 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from seam.analysis.changes import DEFAULT_BASE_REF
 from seam.server.tools import (
+    handle_seam_changes,
     handle_seam_context,
     handle_seam_impact,
     handle_seam_query,
@@ -36,6 +38,10 @@ _SEARCH_LIMIT_DEFAULT = 20
 _IMPACT_DEPTH_DEFAULT = 3
 _IMPACT_DIRECTION_DEFAULT = "upstream"
 _TRACE_DEPTH_DEFAULT = 10
+_CHANGES_SCOPE_DEFAULT = "working"
+# Import DEFAULT_BASE_REF from analysis.changes instead of redefining it
+# to avoid drift when the canonical default changes.
+_CHANGES_BASE_REF_DEFAULT = DEFAULT_BASE_REF
 
 
 def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
@@ -122,5 +128,30 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         and which need manual verification.
         """
         return handle_seam_trace(conn, source, target, root, max_depth=max_depth)
+
+    @mcp.tool()
+    def seam_changes(
+        scope: str = _CHANGES_SCOPE_DEFAULT,
+        base_ref: str = _CHANGES_BASE_REF_DEFAULT,
+    ) -> Any:
+        """Pre-commit risk check — map git diff to affected symbols and risk level.
+
+        Diffs the working tree / staged set / branch against a git ref, maps each
+        changed line range to the symbols it touched, runs impact analysis, and
+        returns an overall risk level:
+          low      — no downstream dependents found
+          medium   — transitive dependents (MAY_NEED_TESTING)
+          high     — indirect dependents (LIKELY_AFFECTED)
+          critical — direct dependents (WILL_BREAK)
+
+        scope values:
+          working — git diff (unstaged working tree vs index)
+          staged  — git diff --cached (staged changes only)
+          branch  — git diff <base_ref>...HEAD (entire branch vs base ref)
+
+        Use before committing to understand what your changes break.
+        Returns NOT_A_GIT_REPO error when run outside a git repository.
+        """
+        return handle_seam_changes(conn, root, base_ref=base_ref, scope=scope)
 
     return mcp

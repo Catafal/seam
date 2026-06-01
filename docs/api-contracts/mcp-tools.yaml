@@ -273,9 +273,84 @@ tools:
       - code: INVALID_INPUT
         condition: target is empty string or whitespace-only
 
-  seam_detect_changes:
-    status: PHASE_1_PENDING
-    description: Pre-commit scope check — map git diff to affected execution flows.
+  seam_changes:
+    status: IMPLEMENTED
+    description: |
+      Pre-commit risk check — map git diff to affected symbols and produce an overall
+      risk level. Diffs the working tree / staged set / branch against a git ref,
+      maps each changed line range to the symbols it touched, runs impact analysis,
+      and returns a risk level (low / medium / high / critical).
+      Returns NOT_A_GIT_REPO when run outside a git repository.
+    input:
+      scope:
+        type: string
+        required: false
+        default: "working"
+        enum: [working, staged, branch]
+        description: |
+          working — unstaged working-tree changes (git diff)
+          staged  — staged changes (git diff --cached)
+          branch  — all changes on this branch vs base_ref (git diff <base_ref>...HEAD)
+      base_ref:
+        type: string
+        required: false
+        default: "main"
+        description: |
+          Git ref for scope=branch comparisons (e.g. "main", "origin/main", "v1.2").
+          Ignored for scope=working and scope=staged.
+    output:
+      type: object
+      fields:
+        changed_symbols:
+          type: array
+          description: Symbols whose line ranges overlap changed lines.
+          items:
+            name:          symbol name (or "<module:file.py>" for module-level changes)
+            file:          relative path from project root (or null)
+            kind:          symbol kind (function | class | method | module | ...)
+            start_line:    symbol definition start (0 for module-level synthetic entries)
+            end_line:      symbol definition end (0 for module-level synthetic entries)
+            changed_lines: list of new-file line numbers overlapping this symbol
+        new_files:
+          type: array
+          items: string
+          description: Relative paths of added or untracked files.
+        affected:
+          type: array
+          description: Upstream dependents of changed symbols (from impact analysis).
+          items:
+            name:       symbol name
+            file:       relative path from project root (null if not indexed)
+            tier:       WILL_BREAK | LIKELY_AFFECTED | MAY_NEED_TESTING
+            confidence: EXTRACTED | INFERRED | AMBIGUOUS
+            distance:   hops from the nearest changed symbol
+        risk_level:
+          type: string
+          enum: [low, medium, high, critical]
+          description: |
+            Rollup of the highest impact tier across all changed symbols:
+              low      — no downstream dependents found
+              medium   — MAY_NEED_TESTING (transitive dependents, d>=3)
+              high     — LIKELY_AFFECTED (indirect dependents, d=2)
+              critical — WILL_BREAK (direct dependents, d=1)
+            Attenuated to "medium" when ALL affected symbols have AMBIGUOUS confidence
+            (uncertain inputs cap the verdict confidence — see ChangeReport in CONTRACT.md).
+        ambiguous_warning:
+          type: boolean
+          description: |
+            True when ANY affected symbol has AMBIGUOUS edge confidence.
+            Signals the risk estimate is uncertain; recommend manual review.
+        scope:    the scope used (echoed back for agent convenience)
+        base_ref: the base ref used (echoed back; only meaningful for scope=branch)
+      empty_ok: true
+      empty_message: "No changes detected for scope '{scope}'"
+    errors:
+      - code: INVALID_INPUT
+        condition: scope is not one of working, staged, branch
+      - code: INVALID_INPUT
+        condition: base_ref is empty string or whitespace-only
+      - code: NOT_A_GIT_REPO
+        condition: root is not a git repository or git is not available
 
   seam_why:
     status: PHASE_2

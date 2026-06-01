@@ -249,6 +249,65 @@ the caller should flag this hop as "verify by reading the code".
 
 Error shape on blank source or target: `{"error": "INVALID_INPUT", "message": "..."}`.
 
+## detect_changes types (Phase 1 — Slice 7)
+
+Defined in `seam/analysis/changes.py`.
+
+```python
+class ChangedSymbol(TypedDict):
+    name: str            # symbol name; "<module:file.py>" for module-level changes
+    file: str            # absolute path to source file
+    kind: str            # function | class | method | module (synthetic)
+    start_line: int      # 0 for synthetic module-level entries
+    end_line: int        # 0 for synthetic module-level entries
+    changed_lines: list[int]  # new-file line numbers overlapping this symbol's range
+
+class AffectedSymbol(TypedDict):
+    name: str
+    file: str | None     # absolute path if indexed; None for unindexed names
+    tier: str            # WILL_BREAK | LIKELY_AFFECTED | MAY_NEED_TESTING
+    confidence: str      # EXTRACTED | INFERRED | AMBIGUOUS
+    distance: int        # hops from the nearest changed symbol
+
+class ChangeReport(TypedDict):
+    changed_symbols:   list[ChangedSymbol]
+    new_files:         list[str]        # absolute paths of added/untracked files
+    affected:          list[AffectedSymbol]
+    risk_level:        str              # low | medium | high | critical
+    ambiguous_warning: bool
+    scope:             str              # working | staged | branch
+    base_ref:          str
+```
+
+### Risk rollup rule (exact)
+
+1. Collect every `AffectedSymbol` from `impact(upstream)` across all changed symbols.
+2. Find the **highest tier** reached:
+   `WILL_BREAK > LIKELY_AFFECTED > MAY_NEED_TESTING > (none)`
+3. Map to `risk_level`:
+   | Highest tier        | risk_level |
+   |---------------------|------------|
+   | WILL_BREAK          | critical   |
+   | LIKELY_AFFECTED     | high       |
+   | MAY_NEED_TESTING    | medium     |
+   | (no dependents)     | low        |
+4. **AMBIGUOUS attenuation:**
+   - If **ALL** affected symbols have `AMBIGUOUS` confidence:
+     cap `risk_level` at `"medium"` (uncertain inputs limit the verdict confidence).
+     Set `ambiguous_warning = True`.
+   - If **SOME** (but not all) have `AMBIGUOUS` confidence:
+     keep the raw `risk_level`, set `ambiguous_warning = True`.
+   - If **NONE** have `AMBIGUOUS` confidence:
+     `ambiguous_warning = False` (no attenuation).
+
+### NotAGitRepoError
+
+`seam/analysis/changes.py` defines `NotAGitRepoError(ValueError)`.
+This is raised (not returned) when the repo_root is not a git repository
+or git is unavailable. The handler converts it to
+`{"error": "NOT_A_GIT_REPO", "message": "..."}`.
+The CLI converts it to a `console.print("[red]Not a git repository:[/red] ...")`.
+
 ## Drift rule
 
 Do not edit `Symbol`/`Edge`/result TypedDicts or `schema.sql` without

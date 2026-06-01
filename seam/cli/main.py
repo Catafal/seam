@@ -22,6 +22,13 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 import seam.config as config
+from seam.analysis.changes import (
+    DEFAULT_BASE_REF,
+    VALID_SCOPES,
+    AffectedSymbol,
+    NotAGitRepoError,
+    detect_changes,
+)
 from seam.analysis.flows import callees as flows_callees
 from seam.analysis.flows import callers as flows_callers
 from seam.analysis.flows import trace as flows_trace
@@ -515,3 +522,156 @@ def trace_cmd(
     console.print(f"\n[bold cyan]Neighborhood of [bold]{target}[/bold][/bold cyan]:")
     _print_hops(f"callers({target})", callers_tgt)
     _print_hops(f"callees({target})", callees_tgt)
+
+
+@app.command(name="changes")
+def changes_cmd(
+    base: str = typer.Option(
+        DEFAULT_BASE_REF,
+        "--base",
+        "-b",
+        help=f"Base git ref for branch scope (default: {DEFAULT_BASE_REF})",
+    ),
+    scope: str = typer.Option(
+        "working",
+        "--scope",
+        "-s",
+        help="working | staged | branch",
+    ),
+    path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
+    db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+) -> None:
+    """Pre-commit risk check — show what your changes break.
+
+    Maps git diff to the symbols it touched, runs impact analysis, and prints
+    an overall risk level (low / medium / high / critical).
+
+    Scope:
+      working — unstaged changes (git diff)
+      staged  — staged changes (git diff --cached)
+      branch  — all changes on this branch vs base ref (git diff <base>...HEAD)
+    """
+    project_root = Path(path).resolve()
+    db_root = Path(db_dir).resolve() if db_dir else project_root
+    db_path = config.get_db_path(db_root)
+
+    # Validate scope early for a helpful message.
+    if scope not in VALID_SCOPES:
+        console.print(
+            f"[red]Invalid scope:[/red] {scope!r}. "
+            f"Choose one of: {', '.join(sorted(VALID_SCOPES))}."
+        )
+        raise typer.Exit(code=1)
+
+    if not db_path.exists():
+        console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
+        raise typer.Exit(code=1)
+
+    try:
+        conn = connect(db_path)
+    except sqlite3.Error as exc:
+        console.print(f"[red]Failed to open database:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        report = detect_changes(conn, base_ref=base, scope=scope, repo_root=project_root)
+    except NotAGitRepoError as exc:
+        console.print(f"[red]Not a git repository:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    finally:
+        conn.close()
+
+    # ── Summary header ────────────────────────────────────────────────────────
+    risk_color = {
+        "low": "green",
+        "medium": "yellow",
+        "high": "bold yellow",
+        "critical": "bold red",
+    }.get(report["risk_level"], "white")
+
+    console.print(
+        f"\n[bold]seam changes[/bold]  scope=[cyan]{report['scope']}[/cyan]"
+        + (f"  base=[cyan]{report['base_ref']}[/cyan]" if scope == "branch" else "")
+    )
+    console.print(
+        f"Risk: [{risk_color}]{report['risk_level'].upper()}[/{risk_color}]"
+        + (" [yellow](AMBIGUOUS edges — estimate uncertain)[/yellow]"
+           if report["ambiguous_warning"] else "")
+    )
+
+    # ── Changed symbols ───────────────────────────────────────────────────────
+    if not report["changed_symbols"] and not report["new_files"]:
+        console.print("\n[dim]No changes detected.[/dim]")
+        return
+
+    if report["new_files"]:
+        console.print(f"\n[bold cyan]New / untracked files ({len(report['new_files'])}):[/bold cyan]")
+        for f in report["new_files"]:
+            # Relativize for display
+            try:
+                rel = str(Path(f).relative_to(project_root))
+            except ValueError:
+                rel = f
+            console.print(f"  [green]+[/green] {rel}")
+
+    if report["changed_symbols"]:
+        # Filter out synthetic module-level entries for cleaner display.
+        real_syms = [s for s in report["changed_symbols"] if not s["name"].startswith("<")]
+        module_syms = [s for s in report["changed_symbols"] if s["name"].startswith("<")]
+
+        if real_syms:
+            console.print(f"\n[bold cyan]Changed symbols ({len(real_syms)}):[/bold cyan]")
+            for sym in real_syms:
+                try:
+                    rel_file = str(Path(sym["file"]).relative_to(project_root))
+                except ValueError:
+                    rel_file = sym["file"]
+                lines_str = (
+                    f"  lines {sym['changed_lines'][:5]}"
+                    + ("…" if len(sym["changed_lines"]) > 5 else "")
+                    if sym["changed_lines"] else ""
+                )
+                console.print(
+                    f"  [bold]{sym['name']}[/bold] [dim]{rel_file}{lines_str}[/dim]"
+                )
+
+        if module_syms:
+            console.print(f"\n[dim]Module-level changes ({len(module_syms)} file(s)).[/dim]")
+
+    # ── Affected (downstream) symbols ─────────────────────────────────────────
+    if not report["affected"]:
+        console.print("\n[dim]No downstream dependents found.[/dim]")
+        return
+
+    tier_order = [TIER_WILL_BREAK, TIER_LIKELY_AFFECTED, TIER_MAY_NEED_TESTING]
+    tier_labels = {
+        TIER_WILL_BREAK: "[bold red]WILL BREAK[/bold red]         (d=1)",
+        TIER_LIKELY_AFFECTED: "[bold yellow]LIKELY AFFECTED[/bold yellow]   (d=2)",
+        TIER_MAY_NEED_TESTING: "[dim]MAY NEED TESTING[/dim]  (d=3+)",
+    }
+
+    console.print(f"\n[bold cyan]Affected symbols ({len(report['affected'])}):[/bold cyan]")
+
+    # Group by tier for display.
+    by_tier: dict[str, list[AffectedSymbol]] = {t: [] for t in tier_order}
+    for a in report["affected"]:
+        tier = a["tier"]
+        if tier in by_tier:
+            by_tier[tier].append(a)
+
+    for tier in tier_order:
+        entries = by_tier[tier]
+        if not entries:
+            continue
+        console.print(f"\n  {tier_labels[tier]}")
+        for entry in entries:
+            confidence_color = {
+                "EXTRACTED": "green",
+                "INFERRED": "yellow",
+                "AMBIGUOUS": "red",
+            }.get(entry["confidence"], "white")
+            console.print(
+                f"    [bold]{entry['name']}[/bold]  "
+                f"[{confidence_color}]{entry['confidence']}[/{confidence_color}]  "
+                f"[dim]d={entry['distance']}[/dim]"
+            )
