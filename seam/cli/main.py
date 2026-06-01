@@ -7,8 +7,8 @@ status — Show index stats and watcher state.
 start  — Start the MCP server (stdio) + file watcher in the background.
 """
 
-import hashlib
 import logging
+import os
 import signal
 import sqlite3
 import subprocess
@@ -22,9 +22,9 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 import seam.config as config
-from seam.indexer.db import init_db, upsert_file
-from seam.indexer.graph import extract_edges, extract_symbols
-from seam.indexer.parser import parse_javascript, parse_python, parse_typescript
+from seam.indexer.db import connect, init_db
+from seam.indexer.pipeline import index_one_file, walk_project
+from seam.server.mcp import create_server
 
 app = typer.Typer(
     name="seam",
@@ -34,106 +34,24 @@ app = typer.Typer(
 
 console = Console()
 
-# Directories to skip when walking the project tree.
-# Dot-dirs are skipped by default; this list catches common non-dot dirs.
-_SKIP_DIRS: frozenset[str] = frozenset(
-    {
-        ".git",
-        "node_modules",
-        ".venv",
-        "__pycache__",
-        ".seam",
-        "dist",
-        "build",
-        ".mypy_cache",
-        ".ruff_cache",
-        ".pytest_cache",
-    }
-)
 
+def _watcher_is_alive(pid_file: Path) -> int | None:
+    """Return the PID if a live watcher process is recorded, else None.
 
-def _sha1(content: bytes) -> str:
-    """Return the SHA-1 hex digest of file content bytes."""
-    return hashlib.sha1(content).hexdigest()  # noqa: S324 — SHA-1 used for change detection only
-
-
-def _dispatch_parser(path: Path, language: str):  # type: ignore[return]
-    """Call the correct parser function for a given language string.
-
-    Returns tree-sitter root Node or None (parsers never raise).
+    Reads the PID file and probes the process with os.kill(pid, 0). A stale
+    PID file (process gone) returns None so callers can safely overwrite it.
     """
-    if language == "python":
-        return parse_python(path)
-    elif language == "typescript":
-        return parse_typescript(path)
-    elif language == "javascript":
-        return parse_javascript(path)
-    return None
-
-
-def index_one_file(conn: sqlite3.Connection, path: Path) -> tuple[int, int]:
-    """Parse, extract, and upsert a single source file into the DB.
-
-    Dispatch: extension -> SEAM_LANGUAGE_MAP -> parser -> extract_symbols/edges -> upsert.
-
-    Returns (symbol_count, edge_count) on success, (0, 0) when the file is
-    skipped (unknown extension, over size limit, parse returns None, or any error).
-    Never raises — all errors are silently suppressed to keep the indexer resilient.
-    """
+    if not pid_file.exists():
+        return None
     try:
-        ext = path.suffix.lower()
-        language = config.SEAM_LANGUAGE_MAP.get(ext)
-        if language is None:
-            return 0, 0  # unsupported extension
-
-        # Size guard — mirrors the parser's own guard; check early to skip cheap
-        try:
-            if path.stat().st_size > config.SEAM_MAX_FILE_BYTES:
-                return 0, 0
-        except OSError:
-            return 0, 0
-
-        # Parse
-        root = _dispatch_parser(path, language)
-        if root is None:
-            return 0, 0  # binary, unreadable, or over-size detected by parser
-
-        # Read bytes for SHA-1 (already checked readable above)
-        try:
-            content = path.read_bytes()
-        except OSError:
-            return 0, 0
-
-        file_hash = _sha1(content)
-        symbols = extract_symbols(root, language, path)
-        edges = extract_edges(root, language, path)
-
-        upsert_file(conn, path, language, file_hash, symbols, edges)
-        return len(symbols), len(edges)
-
-    except Exception:  # noqa: BLE001 — never let one bad file abort the whole index run
-        return 0, 0
-
-
-def _walk_project(root: Path) -> list[Path]:
-    """Walk root recursively, skipping ignored dirs, returning indexable files.
-
-    Rules:
-      - Skip any directory whose name starts with '.' (hidden dirs).
-      - Skip any directory in _SKIP_DIRS.
-      - Collect files whose suffix is in config.SEAM_LANGUAGE_MAP.
-    """
-    files: list[Path] = []
-    for item in root.rglob("*"):
-        # Skip if any path component is a skip-dir or hidden dir
-        if any(
-            part.startswith(".") or part in _SKIP_DIRS
-            for part in item.parts[len(root.parts) :]  # relative parts only
-        ):
-            continue
-        if item.is_file() and item.suffix.lower() in config.SEAM_LANGUAGE_MAP:
-            files.append(item)
-    return files
+        pid = int(pid_file.read_text().strip())
+    except (OSError, ValueError):
+        return None
+    try:
+        os.kill(pid, 0)  # signal 0 = liveness probe, doesn't actually signal
+    except OSError:
+        return None  # no such process (or not ours) — treat as dead
+    return pid
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
@@ -167,11 +85,12 @@ def init(
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Collect files to index
-    files = _walk_project(project_root)
+    files = walk_project(project_root)
 
     total_symbols = 0
     total_edges = 0
     indexed_files = 0
+    skipped_files = 0
 
     with Progress(
         SpinnerColumn(),
@@ -186,11 +105,15 @@ def init(
             progress.update(task, description=f"Indexing {len(files)} files...")
             for file_path in files:
                 progress.update(task, description=f"Indexing {file_path.name}...")
-                sym_count, edge_count = index_one_file(conn, file_path)
-                if sym_count > 0 or edge_count > 0:
-                    indexed_files += 1
-                total_symbols += sym_count
-                total_edges += edge_count
+                # None = skipped (unsupported/binary/error); (s, e) = indexed,
+                # even if (0, 0) for a valid-but-empty file.
+                result = index_one_file(conn, file_path)
+                if result is None:
+                    skipped_files += 1
+                    continue
+                indexed_files += 1
+                total_symbols += result[0]
+                total_edges += result[1]
         finally:
             conn.close()
 
@@ -204,29 +127,38 @@ def init(
     table.add_row("db", str(db_path))
     table.add_row("files found", str(len(files)))
     table.add_row("files indexed", str(indexed_files))
+    table.add_row("files skipped", str(skipped_files))
     table.add_row("symbols", str(total_symbols))
     table.add_row("edges", str(total_edges))
     table.add_row("elapsed", f"{elapsed:.2f}s")
     console.print(table)
+    if skipped_files:
+        console.print(
+            f"[dim]{skipped_files} file(s) skipped (binary/oversize/parse error). "
+            f"Set SEAM_LOG_LEVEL=DEBUG to see which.[/dim]"
+        )
 
 
 @app.command()
 def status(
+    path: str = typer.Argument(".", help="Project root whose index to inspect (default: current directory)"),
     db_dir: str = typer.Option(
         "",
         "--db-dir",
-        help="Override DB directory (used in tests; default: current directory)",
+        help="Override DB directory (default: same as project root)",
     ),
 ) -> None:
     """Show index statistics and watcher status.
 
-    Reads the DB at .seam/seam.db and prints:
+    Reads the DB at <project>/.seam/seam.db and prints:
     - file / symbol / edge counts
     - last indexed_at timestamp
-    - watcher PID (if .seam/watcher.pid exists)
+    - watcher PID (if a live watcher is recorded)
     - freshness: newest DB mtime vs newest on-disk file mtime
     """
-    db_root = Path(db_dir).resolve() if db_dir else Path.cwd()
+    # Mirror `init`: DB lives under the project root unless --db-dir overrides.
+    project_root = Path(path).resolve()
+    db_root = Path(db_dir).resolve() if db_dir else project_root
     db_path = config.get_db_path(db_root)
 
     if not db_path.exists():
@@ -236,8 +168,7 @@ def status(
         raise typer.Exit(code=1)
 
     try:
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
+        conn = connect(db_path)
     except sqlite3.Error as exc:
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
@@ -270,19 +201,18 @@ def status(
             except OSError:
                 pass  # file deleted — stale entry
 
+        # Heuristic: only detects modified/added tracked files. Deletions and
+        # brand-new untracked files are not reflected here (the live watcher
+        # handles those in real time). See lessons.md.
         freshness = "fresh" if disk_newest_mtime <= db_newest_mtime else "stale"
 
     finally:
         conn.close()
 
-    # Watcher PID
-    pid_file = db_root / ".seam" / "watcher.pid"
-    watcher_status = "not running"
-    if pid_file.exists():
-        try:
-            watcher_status = f"PID {pid_file.read_text().strip()}"
-        except OSError:
-            watcher_status = "unknown"
+    # Watcher PID — only report it if the process is actually alive.
+    pid_file = db_path.parent / "watcher.pid"
+    alive_pid = _watcher_is_alive(pid_file)
+    watcher_status = f"PID {alive_pid}" if alive_pid is not None else "not running"
 
     # Print summary table
     table = Table(title="seam status", show_header=False, box=None)
@@ -312,7 +242,7 @@ def start(
     using stdio transport so the calling process (e.g. Claude Desktop) can
     communicate with it directly.
 
-    A PID file for the watcher is written to .seam/watcher.pid.
+    The watcher subprocess writes its own .seam/watcher.pid (single writer).
     The MCP server does not have a separate PID file — it occupies the foreground.
     """
     project_root = Path(path).resolve()
@@ -330,66 +260,52 @@ def start(
         )
         raise typer.Exit(code=1)
 
-    # ── Launch watcher in a background subprocess ─────────────────────────────
-    # We spawn a fresh interpreter so the watcher runs independently of the MCP
-    # server's asyncio event loop.  The subprocess inherits stdout/stderr so its
-    # logging is visible when running interactively.
-    watcher_cmd = [
-        sys.executable,
-        "-c",
-        (
-            "from seam.watcher.daemon import SeamWatcher; from pathlib import Path; "
-            f"w = SeamWatcher(db_path=Path('{db_path}'), root_path=Path('{project_root}')); "
-            "import signal, sys; "
-            "w.start(); "
-            "[signal.pause() if hasattr(signal, 'pause') else None]; "
-        ),
-    ]
-    watcher_proc = subprocess.Popen(  # noqa: S603 — controlled internal command
-        watcher_cmd,
+    # Refuse to spawn a second watcher if a live one is already recorded —
+    # two writers on one DB is exactly the corruption we just designed out.
+    pid_file = db_path.parent / "watcher.pid"
+    existing = _watcher_is_alive(pid_file)
+    if existing is not None:
+        Console(stderr=True).print(
+            f"[yellow]A watcher is already running (PID {existing}).[/yellow] Not starting another."
+        )
+        raise typer.Exit(code=1)
+
+    logging.basicConfig(level=getattr(logging, config.SEAM_LOG_LEVEL, logging.INFO))
+
+    # ── Launch watcher as a clean module entry point ──────────────────────────
+    # `python -m seam.watcher <db> <root>` passes paths via argv (NOT interpolated
+    # into a -c source string), so paths with spaces/quotes/backslashes are safe.
+    # The subprocess writes its own PID file via SeamWatcher.start().
+    watcher_proc = subprocess.Popen(  # noqa: S603 — controlled internal command, no shell
+        [sys.executable, "-m", "seam.watcher", str(db_path), str(project_root)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
 
-    # Write watcher PID file to .seam/watcher.pid for `seam status`
-    pid_file = db_path.parent / "watcher.pid"
-    try:
-        pid_file.write_text(str(watcher_proc.pid))
-    except OSError as exc:
-        Console(stderr=True).print(
-            f"[yellow]Warning:[/yellow] could not write watcher PID file: {exc}"
-        )
+    # ── Open DB connection (read path) for the MCP server ─────────────────────
+    conn = connect(db_path)
 
-    logging.basicConfig(level=getattr(logging, config.SEAM_LOG_LEVEL, logging.INFO))
+    # Single idempotent teardown used by both the signal path and normal exit.
+    _torn_down = False
 
-    # ── Open DB connection for the MCP server ─────────────────────────────────
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-
-    # ── Create and run MCP server in the foreground (stdio) ───────────────────
-    # Runs until the parent process closes stdin (e.g. client disconnects).
-    # On SIGTERM/SIGINT, clean up the watcher subprocess.
-    def _cleanup(signum: int, frame: object) -> None:  # noqa: ARG001
+    def _teardown() -> None:
+        nonlocal _torn_down
+        if _torn_down:
+            return
+        _torn_down = True
         watcher_proc.terminate()
-        try:
-            pid_file.unlink(missing_ok=True)
-        except OSError:
-            pass
         conn.close()
+
+    def _on_signal(signum: int, frame: object) -> None:  # noqa: ARG001
+        _teardown()
         sys.exit(0)
 
-    signal.signal(signal.SIGTERM, _cleanup)
-    signal.signal(signal.SIGINT, _cleanup)
+    signal.signal(signal.SIGTERM, _on_signal)
+    signal.signal(signal.SIGINT, _on_signal)
 
+    # ── Run MCP server in the foreground (stdio) until the client disconnects ──
     try:
-        from seam.server.mcp import create_server
-
         server = create_server(conn, project_root)
         server.run(transport="stdio")
     finally:
-        watcher_proc.terminate()
-        try:
-            pid_file.unlink(missing_ok=True)
-        except OSError:
-            pass
-        conn.close()
+        _teardown()

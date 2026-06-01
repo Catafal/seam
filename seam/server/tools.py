@@ -10,11 +10,14 @@ Error conventions (matching mcp-tools.yaml):
   {"error": "INVALID_QUERY", "message": "..."} — bad FTS5 syntax (seam_search only)
 """
 
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 from seam.query import engine
+
+logger = logging.getLogger(__name__)
 
 # ── Limit bounds (from mcp-tools.yaml) ────────────────────────────────────────
 
@@ -44,10 +47,14 @@ def _clamp(value: int, lo: int, hi: int) -> int:
 
 
 def _invalid_input(message: str) -> dict[str, Any]:
+    # Log so an operator can see what an agent actually sent (the error dict
+    # otherwise vanishes into the agent's response with no server-side trace).
+    logger.warning("rejected (INVALID_INPUT): %s", message)
     return {"error": "INVALID_INPUT", "message": message}
 
 
 def _invalid_query(message: str) -> dict[str, Any]:
+    logger.warning("rejected (INVALID_QUERY): %s", message)
     return {"error": "INVALID_QUERY", "message": message}
 
 
@@ -74,7 +81,12 @@ def handle_seam_query(
     # Clamp limit to spec bounds
     safe_limit = _clamp(limit, _QUERY_LIMIT_MIN, _QUERY_LIMIT_MAX)
 
-    results = engine.query(conn, concept.strip(), safe_limit)
+    # Mirror seam_search: a malformed FTS5 concept maps to INVALID_QUERY rather
+    # than silently returning [] (which an agent would read as "no such code").
+    try:
+        results = engine.query(conn, concept.strip(), safe_limit)
+    except sqlite3.OperationalError as exc:
+        return _invalid_query(f"FTS5 query syntax error: {exc}")
 
     # Relativize file paths so consumers get portable paths
     return [

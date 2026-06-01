@@ -23,20 +23,44 @@ if TYPE_CHECKING:
 # Schema SQL relative to this file: ../../docs/database/schema.sql
 _SCHEMA_PATH = Path(__file__).parents[2] / "docs" / "database" / "schema.sql"
 
+# Busy timeout (ms) so a concurrent reader (MCP server) doesn't make a
+# concurrent writer (watcher) fail immediately with "database is locked".
+_BUSY_TIMEOUT_MS = 5000
+
+
+def connect(db_path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection:
+    """Open a SQLite connection with Seam's required per-connection PRAGMAs.
+
+    CRITICAL: `PRAGMA foreign_keys` is per-connection, not stored in the DB file.
+    Every connection that writes (init, watcher) MUST enable it or ON DELETE
+    CASCADE is silently off — `delete_file` and re-index would orphan rows.
+    All callers (init_db, watcher, server, status) go through here so no
+    connection can accidentally run without FK enforcement.
+
+    Args:
+        db_path: Path to the SQLite file.
+        check_same_thread: Pass False for connections shared across threads
+            (the watcher's observer/timer threads share one connection).
+    """
+    conn = sqlite3.connect(str(db_path), check_same_thread=check_same_thread)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
+    return conn
+
 
 def init_db(db_path: Path) -> sqlite3.Connection:
     """Open (or create) the SQLite database and apply the schema.
 
     Steps:
-      1. Open connection, set row_factory = sqlite3.Row.
+      1. Open connection via connect() (sets foreign_keys + busy_timeout).
       2. Verify FTS5 is available; raise RuntimeError with a clear message if not.
       3. Execute the schema SQL (idempotent — uses CREATE TABLE IF NOT EXISTS).
 
     Returns the open connection. Caller is responsible for closing it.
     Raises RuntimeError if FTS5 is unavailable.
     """
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(db_path)
 
     # Verify FTS5 — attempt to create a temp virtual table then drop it.
     try:
@@ -68,10 +92,13 @@ def upsert_file(
     """Atomically replace all data for a file. Idempotent: safe to call twice.
 
     Steps (single transaction):
-      1. INSERT OR REPLACE into files (captures mtime + indexed_at).
+      1. UPSERT the file row via ON CONFLICT DO UPDATE — keeps a STABLE id
+         across re-index (INSERT OR REPLACE would churn the autoincrement id
+         and strand child rows). Captures new mtime + indexed_at.
       2. Retrieve the file_id for this path.
-      3. DELETE existing symbols for that file_id (FTS trigger fires per row;
-         CASCADE on edges.file_id also removes edges).
+      3. DELETE existing edges AND symbols for that file_id. Both are deleted
+         explicitly (deleting symbols does NOT cascade to edges — edges hang
+         off files, not symbols). FTS triggers fire per-symbol DELETE.
       4. INSERT new symbols.
       5. INSERT new edges mapping Edge['source'] -> source_name,
                                   Edge['target'] -> target_name.
@@ -80,21 +107,28 @@ def upsert_file(
     indexed_at = time.time()
 
     with conn:  # single transaction — commit on success, rollback on error
-        # 1. Upsert the file row
+        # 1. Upsert the file row, preserving its id across re-index.
         conn.execute(
             """
-            INSERT OR REPLACE INTO files (path, language, file_hash, mtime, indexed_at)
+            INSERT INTO files (path, language, file_hash, mtime, indexed_at)
             VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(path) DO UPDATE SET
+                language   = excluded.language,
+                file_hash  = excluded.file_hash,
+                mtime      = excluded.mtime,
+                indexed_at = excluded.indexed_at
             """,
             (str(filepath), language, file_hash, mtime, indexed_at),
         )
 
-        # 2. Retrieve file_id (after upsert the row exists with the correct id)
+        # 2. Retrieve file_id (stable across re-index thanks to the upsert above)
         row = conn.execute("SELECT id FROM files WHERE path = ?", (str(filepath),)).fetchone()
         file_id: int = row["id"]
 
-        # 3. Delete old symbols for this file (CASCADE removes edges too;
-        #    FTS triggers fire per-symbol DELETE to keep FTS in sync).
+        # 3. Delete old children explicitly. Edges must be deleted directly:
+        #    deleting symbols does NOT remove edges (edges reference files, not
+        #    symbols). FTS triggers fire on each symbol DELETE to stay in sync.
+        conn.execute("DELETE FROM edges WHERE file_id = ?", (file_id,))
         conn.execute("DELETE FROM symbols WHERE file_id = ?", (file_id,))
 
         # 4. Insert symbols

@@ -31,8 +31,8 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 import seam.config as config
-from seam.cli.main import index_one_file
-from seam.indexer.db import delete_file
+from seam.indexer.db import connect, delete_file
+from seam.indexer.pipeline import index_one_file
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,11 @@ class SeamWatcher(FileSystemEventHandler):
         super().__init__()
 
         self._db_path = db_path
-        self._root_path = root_path
+        # Resolve the root so watchdog event paths (watched-root + relative)
+        # match the resolved-absolute paths that `seam init` stores. Without
+        # this, macOS /var vs /private/var divergence produces duplicate
+        # `files` rows and orphaned symbols on the watcher path.
+        self._root_path = root_path.resolve()
 
         # DB connection — opened by start(), closed by stop()
         self._conn: sqlite3.Connection | None = None
@@ -83,11 +87,11 @@ class SeamWatcher(FileSystemEventHandler):
         """
         logger.info("SeamWatcher starting — root=%s db=%s", self._root_path, self._db_path)
 
-        # Open the DB connection with check_same_thread=False so that the
-        # watchdog observer thread and timer callbacks can share it safely.
-        # SQLite WAL mode serialises writes; watchdog serialises event delivery.
-        self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
+        # Open via connect() (sets foreign_keys=ON + busy_timeout) with
+        # check_same_thread=False so the observer thread and timer callbacks
+        # can share it. foreign_keys MUST be on here — this is the only
+        # long-lived WRITER, so without it re-index/delete don't cascade.
+        self._conn = connect(self._db_path, check_same_thread=False)
 
         # Write PID file so `seam status` can report watcher state
         self._pid_file.write_text(str(os.getpid()))
@@ -202,9 +206,17 @@ class SeamWatcher(FileSystemEventHandler):
             logger.debug("_do_index: watcher stopped, skipping %s", path)
             return
 
-        logger.debug("Indexing file: %s", path)
-        sym_count, edge_count = index_one_file(conn, path)
-        logger.info("Indexed %s — %d symbols, %d edges", path.name, sym_count, edge_count)
+        # Runs on a Timer thread with no caller — any unhandled exception would
+        # die silently and leave the index stale without warning. Log it.
+        try:
+            logger.debug("Indexing file: %s", path)
+            result = index_one_file(conn, path)
+            if result is None:
+                logger.debug("Skipped %s (unsupported/binary/error)", path)
+            else:
+                logger.info("Indexed %s — %d symbols, %d edges", path.name, result[0], result[1])
+        except Exception:  # noqa: BLE001 — never let a re-index failure crash the daemon silently
+            logger.exception("re-index failed for %s — index may be stale", path)
 
     def _do_delete(self, path: Path) -> None:
         """Remove a file's index entries from the DB.
@@ -216,5 +228,10 @@ class SeamWatcher(FileSystemEventHandler):
             logger.debug("_do_delete: watcher stopped, skipping %s", path)
             return
 
-        delete_file(conn, path)
-        logger.info("Removed %s from index", path.name)
+        # Runs on the watchdog event thread — guard so a delete failure is
+        # logged rather than killing the event dispatch thread silently.
+        try:
+            delete_file(conn, path)
+            logger.info("Removed %s from index", path.name)
+        except Exception:  # noqa: BLE001
+            logger.exception("delete failed for %s", path)

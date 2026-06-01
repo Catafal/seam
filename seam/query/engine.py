@@ -49,7 +49,9 @@ class SearchResult(TypedDict):
 def search(conn: sqlite3.Connection, text: str, limit: int = 20) -> list[SearchResult]:
     """Full-text search across symbol names and docstrings (FTS5 BM25).
 
-    Uses BM25 ranking — lower score = better match (FTS5 convention).
+    Results are ordered best-first. The returned `score` is the NEGATED bm25
+    value so it matches the API contract (mcp-tools.yaml): higher = more
+    relevant. (Raw bm25 is lower = better; we flip the sign at emission.)
     Raises sqlite3.OperationalError on malformed FTS5 query syntax.
     """
     sql = """
@@ -63,7 +65,7 @@ def search(conn: sqlite3.Connection, text: str, limit: int = 20) -> list[SearchR
         JOIN symbols s ON s.id = symbols_fts.rowid
         JOIN files   f ON f.id = s.file_id
         WHERE symbols_fts MATCH ?
-        ORDER BY score         -- lower bm25 score = more relevant
+        ORDER BY score         -- raw bm25 ascending = most relevant first
         LIMIT ?
     """
     rows = conn.execute(sql, (text, limit)).fetchall()
@@ -73,7 +75,7 @@ def search(conn: sqlite3.Connection, text: str, limit: int = 20) -> list[SearchR
             file=row["file"],
             line=row["line"],
             snippet=row["snippet"] or "",
-            score=float(row["score"]),
+            score=-float(row["score"]),  # flip sign: contract wants higher = better
         )
         for row in rows
     ]
@@ -89,9 +91,14 @@ def query(conn: sqlite3.Connection, concept: str, limit: int = 10) -> list[Query
       1. FTS5 MATCH to get seed symbols (with BM25 score).
       2. For each seed symbol, collect 1-hop neighbors via edges
          (both direct callees and callers — anything connected).
-      3. Deduplicate; seed symbols keep their BM25 score, neighbors get score=0.
+      3. Deduplicate; seed symbols keep their (negated) BM25 score, neighbors get 0.
       4. For each symbol in the result set, compute callers_count + callees_count.
-      5. Sort by score (lower = better for BM25), apply limit.
+      5. Sort seeds-first, then by score descending (higher = more relevant per
+         the contract), apply limit.
+
+    Raises sqlite3.OperationalError on malformed FTS5 syntax (the caller maps
+    this to INVALID_QUERY, mirroring search() — do NOT swallow it here, or a
+    malformed concept looks identical to "no matches").
     """
     # Step 1: FTS5 seed query
     seed_sql = """
@@ -107,18 +114,16 @@ def query(conn: sqlite3.Connection, concept: str, limit: int = 10) -> list[Query
         ORDER BY score
         LIMIT ?
     """
-    try:
-        seed_rows = conn.execute(seed_sql, (concept, limit)).fetchall()
-    except sqlite3.OperationalError:
-        return []
+    # Let OperationalError (malformed FTS5) propagate — caller maps to INVALID_QUERY.
+    seed_rows = conn.execute(seed_sql, (concept, limit)).fetchall()
 
     if not seed_rows:
         return []
 
-    # Build seed map: name -> (file, line, score)
+    # Build seed map: name -> (file, line, score). Negate bm25 so higher = better.
     seed_map: dict[str, tuple[str, int, float]] = {}
     for row in seed_rows:
-        seed_map[row["name"]] = (row["file"], row["line"], float(row["score"]))
+        seed_map[row["name"]] = (row["file"], row["line"], -float(row["score"]))
 
     # Step 2: 1-hop expansion — collect neighbors of seed symbols
     # Neighbors = targets of edges where source_name is a seed,
@@ -170,8 +175,9 @@ def query(conn: sqlite3.Connection, concept: str, limit: int = 10) -> list[Query
             )
         )
 
-    # Step 5: Sort by score (lower is better for BM25; neighbors get 0.0 which sorts last)
-    result.sort(key=lambda r: r["score"])
+    # Step 5: seeds rank above neighbors; within each group, higher score first.
+    seed_name_set = set(seed_map)
+    result.sort(key=lambda r: (r["symbol"] in seed_name_set, r["score"]), reverse=True)
     return result[:limit]
 
 

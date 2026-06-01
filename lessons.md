@@ -29,3 +29,29 @@
   are `source_name`/`target_name`.
 - **Fix:** `db.upsert_file` owns the translation. Do not rename either side.
   See `docs/CONTRACT.md`.
+
+## 2026-06-01 — PRAGMA foreign_keys is PER-CONNECTION (review finding, fixed)
+
+- **What:** The schema sets `PRAGMA foreign_keys = ON`, but that only applies to
+  the connection that ran it. The watcher (the only long-lived writer) opened a
+  raw connection without it, so `INSERT OR REPLACE`/`delete_file` did NOT cascade
+  → orphaned symbols/edges on every auto-save.
+- **Fix:** All connections now go through `db.connect()`, which sets
+  `foreign_keys = ON` + `busy_timeout = 5000` every time. `upsert_file` also uses
+  `ON CONFLICT(path) DO UPDATE` (stable id) and explicitly deletes edges AND
+  symbols by `file_id` (deleting symbols does NOT cascade to edges).
+
+## 2026-06-01 — Accepted Phase-0 limitations (documented, NOT bugs to fix now)
+
+These surfaced in review and are intentional Phase-0 scope per DISCOVERY.md /
+the string-name-edge ADR. Revisit in Phase 1:
+- **extract_edges is intentionally rough** (per user direction): calls inside
+  arrow functions, `import * as ns`, `from x import *`, and aliased-import local
+  bindings are not fully resolved. Import/simple-call edges are captured.
+- **String-name edges cause name-collision counting**: two symbols sharing a name
+  share `callers_count`/`callees_count`, and `context()` on a duplicated name
+  returns one arbitrary definition. Inherent to the ADR (edges store names, not
+  IDs, for independent re-indexing). Acceptable for Phase 0.
+- **`seam status` freshness is a heuristic**: detects modified/added tracked
+  files only; deletions and brand-new untracked files are not reflected (the live
+  watcher handles those in real time).

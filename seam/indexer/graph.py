@@ -75,7 +75,10 @@ def _make_symbol(
 def _py_docstring(func_or_class_node: Node) -> str | None:
     """Extract Python docstring: first expression_statement(string) in body.
 
-    Returns the stripped string value (without surrounding quotes), or None.
+    Returns the docstring's CONTENT (without the surrounding quote delimiters),
+    or None. Uses the tree-sitter `string_content` child node rather than
+    char-class stripping — `.strip("\"'")` would also eat legitimate leading/
+    trailing quote characters that are part of the docstring text.
     """
     body = func_or_class_node.child_by_field_name("body")
     if body is None or not body.children:
@@ -87,7 +90,12 @@ def _py_docstring(func_or_class_node: Node) -> str | None:
     expr = first.children[0]
     if expr.type != "string":
         return None
-    return _text(expr).strip("\"'").strip()
+    # tree-sitter Python string nodes are [string_start, string_content, string_end].
+    # Extract the content node directly so quotes in the text survive.
+    for child in expr.children:
+        if child.type == "string_content":
+            return _text(child).strip()
+    return None  # empty string literal ("" / '') has no string_content
 
 
 def _ts_jsdoc(symbol_node: Node) -> str | None:
@@ -160,14 +168,18 @@ def _extract_symbols_python(root: Node, filepath: Path) -> list[Symbol]:
                 qualified = f"{class_name}.{name}" if class_name else name
                 doc = _py_docstring(node)
                 symbols.append(_make_symbol(qualified, kind, file_str, node, doc))
-                # Recurse into function body (handles nested defs, if any)
+                # Recurse into the body, but a nested def is a LOCAL function,
+                # NOT a method of the enclosing class — drop the class context.
                 body = node.child_by_field_name("body")
                 if body:
                     for child in body.children:
-                        _walk(child, class_name)
+                        _walk(child, None)
 
         elif node.type == "decorated_definition":
-            # @staticmethod / @classmethod wrap a function_definition
+            # A decorator wraps either a function (@staticmethod, @property, ...)
+            # OR a class (@dataclass, @attr.s, ...). Handle BOTH; the inner
+            # definition node is processed with the decorated node's line range
+            # (so the decorator rows are included), then its body is walked.
             definition = node.child_by_field_name("definition")
             if definition and definition.type == "function_definition":
                 name = _node_name(definition)
@@ -175,8 +187,20 @@ def _extract_symbols_python(root: Node, filepath: Path) -> list[Symbol]:
                     kind = "method" if class_name else "function"
                     qualified = f"{class_name}.{name}" if class_name else name
                     doc = _py_docstring(definition)
-                    # Use decorated_definition start line (includes decorator row)
                     symbols.append(_make_symbol(qualified, kind, file_str, node, doc))
+                    body = definition.child_by_field_name("body")
+                    if body:
+                        for child in body.children:
+                            _walk(child, None)
+            elif definition and definition.type == "class_definition":
+                name = _node_name(definition)
+                if name:
+                    doc = _py_docstring(definition)
+                    symbols.append(_make_symbol(name, "class", file_str, node, doc))
+                    body = definition.child_by_field_name("body")
+                    if body:
+                        for child in body.children:
+                            _walk(child, name)
 
         elif node.type == "class_definition":
             name = _node_name(node)
@@ -309,7 +333,7 @@ def _extract_symbols_typescript(root: Node, filepath: Path) -> list[Symbol]:
                 body = node.child_by_field_name("body")
                 if body:
                     for child in body.children:
-                        _walk(child, class_name)
+                        _walk(child, None)  # nested fn is local, not a method
 
         elif node.type == "method_definition":
             name_node = node.child_by_field_name("name")
