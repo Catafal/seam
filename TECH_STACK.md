@@ -23,6 +23,8 @@
 | `tree-sitter-python` | Python grammar | 0.25.0 (>=0.22.0) | Co-versioned with tree-sitter |
 | `tree-sitter-javascript` | JS grammar | 0.25.0 (>=0.22.0) | Covers .js, .mjs, .cjs |
 | `tree-sitter-typescript` | TS grammar | 0.23.2 (>=0.22.0) | Covers .ts, .tsx; depends on tree-sitter-javascript |
+| `tree-sitter-go` | Go grammar | 0.25.0 (>=0.22.0) | Added Phase 1b; covers .go |
+| `tree-sitter-rust` | Rust grammar | 0.24.2 (>=0.22.0) | Added Phase 1b; covers .rs |
 | `watchdog` | Cross-platform file watcher | 6.0.0 (>=4.0.0) | Wraps FSEvents (macOS) / inotify (Linux); `watchfiles` alternative considered, see ADR-004 |
 | `typer` | CLI framework | 0.26.4 (>=0.12.0) | Consistent with Bach; autodocs from type hints |
 

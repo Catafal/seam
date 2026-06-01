@@ -5,7 +5,7 @@ Local code intelligence MCP server — indexes codebases with tree-sitter, store
 
 ## Tech Stack
 - Python 3.14+ | uv 0.9.14
-- tree-sitter 0.25.2 + tree-sitter-python 0.25.0 + tree-sitter-typescript 0.23.2
+- tree-sitter 0.25.2 + tree-sitter-python 0.25.0 + tree-sitter-typescript 0.23.2 + tree-sitter-go 0.25.0 + tree-sitter-rust 0.24.2
 - mcp 1.27.2 (stdio transport) | watchdog 6.0.0 | typer 0.26.4
 - SQLite + FTS5 (built-in, no ORM) | pytest 9.0.3 | ruff 0.15.15 | mypy 2.1.0
 
@@ -33,15 +33,20 @@ Local code intelligence MCP server — indexes codebases with tree-sitter, store
 
 ## Package Layout
 ```
-seam/config.py          ← all settings (env vars with defaults)
-seam/cli/main.py        ← Typer CLI (init, start, status)
-seam/indexer/parser.py  ← tree-sitter parsing per language
-seam/indexer/graph.py   ← extract symbols + edges from AST (pure functions)
-seam/indexer/db.py      ← SQLite write (init_db, upsert_file, delete_file)
-seam/query/engine.py    ← query(), context(), search() — read path
-seam/server/tools.py    ← MCP tool handlers (thin adapters → engine)
-seam/watcher/daemon.py  ← watchdog daemon (debounced re-index)
-tests/fixtures/         ← sample.py + sample.ts for parser tests
+seam/config.py               ← all settings (env vars with defaults)
+                                SEAM_LANGUAGE_MAP: .py .ts .tsx .js .mjs .cjs .go .rs
+seam/cli/main.py             ← Typer CLI (init, start, status)
+seam/indexer/parser.py       ← tree-sitter parsing (Python, TypeScript, JavaScript, Go, Rust)
+seam/indexer/graph_common.py ← LEAF: shared TypedDicts (Symbol/Edge/Comment), helpers
+seam/indexer/graph_go_rust.py← Go + Rust extractors (imports graph_common only)
+seam/indexer/graph.py        ← Python/TS dispatchers; re-exports types from graph_common;
+                                imports Go/Rust extractors from graph_go_rust
+seam/indexer/pipeline.py     ← shared parse→extract→upsert path (CLI + watcher)
+seam/indexer/db.py           ← SQLite write (init_db, upsert_file, delete_file)
+seam/query/engine.py         ← query(), context(), search() — read path
+seam/server/tools.py         ← MCP tool handlers (thin adapters → engine)
+seam/watcher/daemon.py       ← watchdog daemon (debounced re-index)
+tests/fixtures/              ← sample.py, sample.ts, sample.go, sample.rs
 ```
 
 ## Coding Conventions

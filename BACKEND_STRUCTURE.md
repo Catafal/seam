@@ -11,6 +11,8 @@
 seam/                           ← Python package root
 ├── __init__.py                 ← Version + public API surface
 ├── config.py                   ← All settings (from env via os.getenv)
+│                                 SEAM_LANGUAGE_MAP: .py→python, .ts/.tsx→typescript,
+│                                 .js/.mjs/.cjs→javascript, .go→go, .rs→rust
 │
 ├── cli/                        ← CLI entry points (Typer)
 │   ├── __init__.py
@@ -19,7 +21,21 @@ seam/                           ← Python package root
 ├── indexer/                    ← Parse → extract → store pipeline
 │   ├── __init__.py
 │   ├── parser.py               ← tree-sitter parsing per language
-│   ├── graph.py                ← Symbol + edge extraction from AST
+│   │                             parse_python, parse_typescript, parse_javascript,
+│   │                             parse_go, parse_rust — all delegate to _parse()
+│   ├── graph_common.py         ← LEAF: shared TypedDicts, constants, helpers
+│   │                             Symbol, Edge, Comment, Confidence; _text, _node_name,
+│   │                             _make_symbol, _match_marker, _block_comment_lines,
+│   │                             _find_enclosing_function, _go_recv_type_name,
+│   │                             _rust_impl_type_name. Imports stdlib + tree_sitter only.
+│   ├── graph_go_rust.py        ← Go + Rust extractors (imports graph_common only)
+│   │                             _extract_symbols_go/rust, _extract_edges_go/rust,
+│   │                             _extract_comments_go/rust, doc-comment helpers
+│   ├── graph.py                ← Python + TypeScript dispatchers; re-exports public types
+│   │                             from graph_common; imports Go/Rust extractors from
+│   │                             graph_go_rust. Public API: extract_symbols, extract_edges,
+│   │                             extract_comments.
+│   ├── pipeline.py             ← Shared parse→extract→upsert path (CLI + watcher)
 │   └── db.py                   ← SQLite write operations (schema + upsert)
 │
 ├── watcher/                    ← OS file watcher
@@ -46,13 +62,29 @@ cli/ → server/ → analysis/ → query/ → indexer/db
                             watcher/ → indexer/
 ```
 
+Within `indexer/`, the import order is strictly:
+```
+graph_common  (leaf — stdlib + tree_sitter only)
+     ↑              ↑
+graph_go_rust    graph.py   (both import from graph_common; graph.py also imports graph_go_rust)
+     ↑
+graph.py (dispatchers + re-exports)
+     ↑
+pipeline.py
+```
+
 | Layer | Can import from | Cannot import from |
 |---|---|---|
 | `cli/` | server, analysis, indexer, watcher, config | — |
 | `server/` | analysis, query, config | cli, watcher |
 | `analysis/` | indexer.db, query, config | cli, server |
 | `query/` | indexer.db, config | cli, server, analysis, watcher |
-| `indexer/` | config | cli, server, query, analysis, watcher |
+| `indexer/pipeline` | indexer.db, indexer.graph, indexer.parser, config | cli, server, query, analysis, watcher |
+| `indexer/graph` | graph_common, graph_go_rust, config | cli, server, query, analysis, watcher |
+| `indexer/graph_go_rust` | graph_common only | graph.py or any other seam module |
+| `indexer/graph_common` | stdlib, tree_sitter only | any seam module (leaf) |
+| `indexer/parser` | config, tree_sitter grammars | any seam indexer sub-module |
+| `indexer/db` | config | cli, server, query, analysis, watcher |
 | `watcher/` | indexer, config | cli, server, query, analysis |
 | `config` | stdlib only | anything in seam/ |
 
@@ -66,16 +98,37 @@ cli/ → server/ → analysis/ → query/ → indexer/db
 - Never import from other seam modules (avoids circular imports)
 
 ### `seam/indexer/parser.py`
-- One function per language: `parse_python(path) → Node`, `parse_typescript(path) → Node`
-- Returns raw tree-sitter Node for graph.py to interpret
-- Handles encoding, binary files, and parse errors gracefully
+- One function per language: `parse_python`, `parse_typescript`, `parse_javascript`,
+  `parse_go`, `parse_rust` — all delegate to the internal `_parse(path, language)` helper.
+- Returns raw tree-sitter root Node for graph.py to interpret.
+- Handles encoding, binary files, and parse errors gracefully. Never raises.
+
+### `seam/indexer/graph_common.py` (leaf — Phase 1b addition)
+- Shared TypedDicts: `Symbol`, `Edge`, `Comment`; type alias: `Confidence`
+- Shared constants: `SEMANTIC_MARKERS`, `_MARKER_RE`
+- Shared helpers: `_text`, `_node_name`, `_make_symbol`, `_match_marker`,
+  `_block_comment_lines`, `_arrow_function_name`, `_find_enclosing_function`
+- Go/Rust receiver helpers: `_go_recv_type_name`, `_rust_impl_type_name`
+  (kept here so `_find_enclosing_function` can call them without importing from
+  graph_go_rust — this is what maintains the leaf property)
+- MUST remain a leaf: imports stdlib and tree_sitter only.
+
+### `seam/indexer/graph_go_rust.py` (Phase 1b addition)
+- Go extractors: `_extract_symbols_go`, `_extract_edges_go`, `_extract_comments_go`
+- Rust extractors: `_extract_symbols_rust`, `_extract_edges_rust`, `_extract_comments_rust`
+- Doc-comment helpers: `_go_doc_comment`, `_rust_doc_comment`
+- Imports from `graph_common` only — never from `graph.py`.
 
 ### `seam/indexer/graph.py`
-- `extract_symbols(node, language, filepath) → list[Symbol]`
-- `extract_edges(node, language, filepath) → list[Edge]`
-- Pure functions: take AST node, return structured data
-- Symbol: `{name, kind, file, line, col, docstring}`
-- Edge: `{source_name, target_name, kind, file, line}`
+- Public API: `extract_symbols(node, language, filepath) → list[Symbol]`
+- Public API: `extract_edges(node, language, filepath, symbols) → list[Edge]`
+- Public API: `extract_comments(node, language, filepath) → list[Comment]`
+- Python + TypeScript/JavaScript extractors live here.
+- Go + Rust extractors are delegated to graph_go_rust.py (imported at top level).
+- Re-exports `Symbol`, `Edge`, `Comment`, `Confidence` from graph_common so callers
+  using `from seam.indexer.graph import Symbol` continue to work unchanged.
+- Symbol: `{name, kind, file, start_line, end_line, docstring}`
+- Edge: `{source, target, kind, file, line, confidence}`
 
 ### `seam/indexer/db.py`
 - `init_db(db_path) → Connection` — create schema if not exists

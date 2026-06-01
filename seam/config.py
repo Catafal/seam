@@ -28,6 +28,8 @@ SEAM_LANGUAGE_MAP: dict[str, str] = {
     ".js": "javascript",
     ".mjs": "javascript",
     ".cjs": "javascript",
+    ".go": "go",
+    ".rs": "rust",
 }
 
 
