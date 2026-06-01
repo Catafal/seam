@@ -8,14 +8,25 @@ Contract (evolved from Phase-0 FROZEN — see docs/CONTRACT.md):
   Edge fields:   source, target, kind, file, line, confidence (Phase 1 addition)
 
 Confidence tagging (Phase 1 — issue #3):
-  Confidence is assigned during edge extraction/resolution and stored on the edge.
-  Resolution scope is the symbol list extracted from the SAME FILE at the same call.
-  Cross-file ambiguity is detected at the query layer (see engine.context()).
+  Confidence is assigned during edge extraction and stored in the edges.confidence column.
+  Resolution scope at extraction time is the symbol list from the SAME FILE at the same call.
+  This is a same-file lower-bound hint — useful for debugging — but NOT authoritative.
 
-  EXTRACTED  — target name resolves to exactly ONE symbol in the same-file symbol set.
-  AMBIGUOUS  — target name matches MORE THAN ONE symbol in the same-file symbol set.
-  INFERRED   — all other cases: heuristic best-guess (target not in symbol set, or
-               import edges where the target is outside the file).
+  READ-TIME WHOLE-INDEX RESOLUTION IS AUTHORITATIVE (Phase 1b — issue #9):
+  When the analysis layer (seam/analysis/confidence.py) reads edges, it re-resolves
+  confidence against the full index using a name→count map loaded once per query.
+  This whole-index resolution overrides the stored column value.
+  The stored column is kept as-is; no schema change is required.
+
+  Stored column semantics (same-file scope):
+    EXTRACTED  — target name resolves to exactly ONE symbol in the same-file symbol set.
+    AMBIGUOUS  — target name matches MORE THAN ONE symbol in the same-file symbol set.
+    INFERRED   — all other cases: heuristic best-guess (target not in same-file symbol set).
+
+  Authoritative read-time semantics (whole-index scope, see seam/analysis/confidence.py):
+    EXTRACTED  — target name is unique across the ENTIRE index.
+    AMBIGUOUS  — target name is shared by more than one indexed symbol.
+    INFERRED   — target name is not in the index at all (external, stdlib, dynamic).
 """
 
 import logging
@@ -52,11 +63,15 @@ class Edge(TypedDict):
 
 
 def _resolve_confidence_multi(target_name: str, symbol_name_counts: dict[str, int]) -> Confidence:
-    """Resolve confidence using a name->count mapping (detects same-file duplicates).
+    """Resolve confidence using a same-file name->count mapping.
+
+    SCOPE: same-file only — this is a lower-bound hint stored on the edge.
+    The authoritative whole-index resolution lives in seam/analysis/confidence.py
+    and is applied at read time by traversal.walk / flows.trace / callers / callees.
 
     Args:
         target_name:        The edge target name to resolve.
-        symbol_name_counts: Mapping of symbol_name -> occurrence count in the file.
+        symbol_name_counts: Mapping of symbol_name -> occurrence count in THIS file only.
     """
     count = symbol_name_counts.get(target_name, 0)
     if count == 1:

@@ -72,6 +72,20 @@ def _seed(conn: sqlite3.Connection, src: str, symbols: list[str], edges: list[Ed
     upsert_file(conn, Path(src), "python", "hash1", syms, edges)
 
 
+def _add_duplicate_symbol(conn: sqlite3.Connection, name: str) -> None:
+    """Add `name` as a symbol in a SECOND file so its whole-index count increases.
+
+    No edges are added — this only raises COUNT(name) in the symbols table, which
+    is exactly what flips whole-index confidence resolution to AMBIGUOUS (count > 1).
+    The temp file only needs to exist during the upsert (for stat()); the inserted
+    DB row persists after the temp dir is cleaned up.
+    """
+    with tempfile.TemporaryDirectory() as other_tmp:
+        other_file = Path(other_tmp) / "dup.py"
+        other_file.write_text("# dup\n")
+        upsert_file(conn, other_file, "python", "h_dup", [_sym(name, str(other_file))], [])
+
+
 # ── T1: upstream walk ─────────────────────────────────────────────────────────
 
 
@@ -179,32 +193,65 @@ def test_unknown_symbol_returns_empty(db_conn: tuple[sqlite3.Connection, str]) -
 
 
 def test_ambiguous_hop_downgrades_path(db_conn: tuple[sqlite3.Connection, str]) -> None:
-    """An AMBIGUOUS edge on the path must make the whole path AMBIGUOUS."""
+    """An AMBIGUOUS whole-index resolution on the path must make the whole path AMBIGUOUS.
+
+    Phase 1b: confidence is resolved from the whole index, not from the stored column.
+    To produce AMBIGUOUS, the target name 'B' must appear in more than one file.
+    We create a second file with a 'B' symbol so count(B)=2 → AMBIGUOUS.
+    """
     conn, src = db_conn
-    # Graph: A -[AMBIGUOUS]-> B
-    _seed(conn, src, ["A", "B"], [_edge("A", "B", src, confidence=CONFIDENCE_AMBIGUOUS)])
+    import tempfile
 
-    results = walk(conn, ["B"], "upstream", max_depth=1)
-    by_name = {r["name"]: r for r in results}
+    # Insert A (caller) and B (in src file) — B count = 1 so far.
+    _seed(conn, src, ["A", "B"], [_edge("A", "B", src)])
 
-    assert "A" in by_name
-    assert by_name["A"]["confidence"] == CONFIDENCE_AMBIGUOUS
+    # Insert a second 'B' in a different file so count(B)=2 → AMBIGUOUS.
+    with tempfile.TemporaryDirectory() as other_tmp:
+        from seam.indexer.graph import Symbol as Sym
+
+        other_file = Path(other_tmp) / "other.py"
+        other_file.write_text("# other\n")
+        other_sym = Sym(name="B", kind="function", file=str(other_file), start_line=1, end_line=2, docstring=None)
+        from seam.indexer.db import upsert_file as _upsert
+
+        _upsert(conn, other_file, "python", "h_other", [other_sym], [])
+
+        results = walk(conn, ["B"], "upstream", max_depth=1)
+        by_name = {r["name"]: r for r in results}
+
+        assert "A" in by_name
+        assert by_name["A"]["confidence"] == CONFIDENCE_AMBIGUOUS, (
+            f"B appears in 2 files → AMBIGUOUS, got {by_name['A']['confidence']!r}"
+        )
 
 
 # ── T9: INFERRED hop downgrades vs EXTRACTED ─────────────────────────────────
 
 
-def test_inferred_hop_downgrades_from_extracted(db_conn: tuple[sqlite3.Connection, str]) -> None:
-    """An INFERRED edge on the path must make the path INFERRED (not EXTRACTED)."""
-    conn, src = db_conn
-    # Graph: A -[INFERRED]-> B
-    _seed(conn, src, ["A", "B"], [_edge("A", "B", src, confidence=CONFIDENCE_INFERRED)])
+def test_inferred_hop_downgrades_multi_hop_path(db_conn: tuple[sqlite3.Connection, str]) -> None:
+    """A MULTI-HOP path with one INFERRED hop must downgrade the whole path (weakest-hop).
 
-    results = walk(conn, ["B"], "upstream", max_depth=1)
+    Phase 1b whole-index: S → M → T, where M is indexed (unique → EXTRACTED) but T is
+    NOT indexed (count=0 → INFERRED). The EXTRACTED first hop must NOT rescue the path;
+    the INFERRED second hop drags the aggregate to INFERRED. This exercises _min_rank
+    propagation ACROSS hops, not just a single edge — the coverage the prior single-hop
+    version had dropped.
+    """
+    conn, src = db_conn
+    # S and M are indexed (unique). T is intentionally NOT a symbol → count=0 → INFERRED.
+    _seed(conn, src, ["S", "M"], [_edge("S", "M", src), _edge("M", "T", src)])
+
+    results = walk(conn, ["S"], "downstream", max_depth=2)
     by_name = {r["name"]: r for r in results}
 
-    assert "A" in by_name
-    assert by_name["A"]["confidence"] == CONFIDENCE_INFERRED
+    # d=1: M is unique in the index → EXTRACTED.
+    assert "M" in by_name and by_name["M"]["distance"] == 1
+    assert by_name["M"]["confidence"] == CONFIDENCE_EXTRACTED
+    # d=2: T not indexed → INFERRED hop; path = min(EXTRACTED, INFERRED) = INFERRED.
+    assert "T" in by_name and by_name["T"]["distance"] == 2
+    assert by_name["T"]["confidence"] == CONFIDENCE_INFERRED, (
+        f"EXTRACTED→INFERRED path must downgrade to INFERRED, got {by_name['T']['confidence']!r}"
+    )
 
 
 # ── T10: all-EXTRACTED path stays EXTRACTED ───────────────────────────────────
@@ -235,37 +282,48 @@ def test_all_extracted_path_stays_extracted(db_conn: tuple[sqlite3.Connection, s
 
 
 def test_multiple_paths_strongest_confidence_wins(db_conn: tuple[sqlite3.Connection, str]) -> None:
-    """When two paths reach the same symbol at the same distance, the strongest confidence wins."""
+    """Two same-distance paths to one symbol → the STRONGEST path confidence wins.
+
+    Phase 1b whole-index: a hop's confidence depends only on the edge target's name
+    count, so to get two DIFFERENT path confidences to the SAME node we vary an
+    intermediate hop:
+
+        S → M1 → T   (M1 unique → EXTRACTED;    T unique → EXTRACTED)  ⇒ path EXTRACTED
+        S → M2 → T   (M2 duplicated → AMBIGUOUS; T unique → EXTRACTED) ⇒ path AMBIGUOUS
+
+    T is reached at distance 2 via BOTH paths. The merge rule must keep the strongest
+    (EXTRACTED) regardless of which edge is processed first. A broken merge (keeps the
+    weakest, or flips the `>` comparison) would report T as AMBIGUOUS — this test fails
+    in that case. The prior version made both paths EXTRACTED, so it exercised nothing.
+    """
     conn, src = db_conn
-    # Two seeds (D and E) both point at C at d=1.
-    # D -> C: EXTRACTED, E -> C: AMBIGUOUS
-    # C should be reported with EXTRACTED (strongest).
     _seed(
         conn,
         src,
-        ["C", "D", "E"],
+        ["S", "M1", "M2", "T"],
         [
-            _edge("D", "C", src, confidence=CONFIDENCE_EXTRACTED),
-            _edge("E", "C", src, confidence=CONFIDENCE_AMBIGUOUS),
+            _edge("S", "M1", src),
+            _edge("S", "M2", src),
+            _edge("M1", "T", src),
+            _edge("M2", "T", src),
         ],
     )
+    # Make M2 AMBIGUOUS (count=2) by adding a second M2 in another file.
+    _add_duplicate_symbol(conn, "M2")
 
-    # Walk upstream of C from seeds [C].
-    # D and E both call C, so upstream of C returns D (EXTRACTED) and E (AMBIGUOUS).
-    results_from_c = walk(conn, ["C"], "upstream", max_depth=1)
-    by_name = {r["name"]: r for r in results_from_c}
+    results = walk(conn, ["S"], "downstream", max_depth=2)
+    by_name = {r["name"]: r for r in results}
 
-    assert "D" in by_name and by_name["D"]["confidence"] == CONFIDENCE_EXTRACTED
-    assert "E" in by_name and by_name["E"]["confidence"] == CONFIDENCE_AMBIGUOUS
-
-    # Now test multi-seed: seeds [D, E], walk downstream to C.
-    # From D: C at d=1 with EXTRACTED; from E: C at d=1 with AMBIGUOUS.
-    # Both paths arrive at C at distance 1 — keep EXTRACTED (strongest).
-    results_downstream = walk(conn, ["D", "E"], "downstream", max_depth=1)
-    by_name2 = {r["name"]: r for r in results_downstream}
-
-    assert "C" in by_name2
-    assert by_name2["C"]["confidence"] == CONFIDENCE_EXTRACTED
+    # d=1 sanity: M1 EXTRACTED (unique), M2 AMBIGUOUS (duplicated across files).
+    assert by_name["M1"]["confidence"] == CONFIDENCE_EXTRACTED
+    assert by_name["M2"]["confidence"] == CONFIDENCE_AMBIGUOUS
+    # d=2: T reached via an EXTRACTED path (through M1) and an AMBIGUOUS path (through M2).
+    # Strongest-among-equal-distance rule → EXTRACTED.
+    assert "T" in by_name and by_name["T"]["distance"] == 2
+    assert by_name["T"]["confidence"] == CONFIDENCE_EXTRACTED, (
+        f"strongest of EXTRACTED/AMBIGUOUS same-distance paths must win → EXTRACTED, "
+        f"got {by_name['T']['confidence']!r}"
+    )
 
 
 # ── T12: self-edges are skipped ───────────────────────────────────────────────

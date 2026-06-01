@@ -187,6 +187,10 @@ tools:
           distance:    hops from the target (integer, 1-based)
           confidence:  EXTRACTED | INFERRED | AMBIGUOUS
                        (aggregated path confidence — weakest hop wins)
+                       Resolved at read time against the whole index:
+                         EXTRACTED = target name is unique in the full index
+                         AMBIGUOUS = target name shared by >1 indexed symbol
+                         INFERRED  = target not indexed (external, stdlib, dynamic)
           tier:        risk tier name (string)
           file:        relative path from project root for indexed symbols;
                        null for names not in the symbols table (external deps, etc.)
@@ -257,6 +261,9 @@ tools:
           to_name     (str) — target of this edge
           kind        (str) — 'call' | 'import'
           confidence  (str) — EXTRACTED | INFERRED | AMBIGUOUS
+                              Resolved at read time against the whole index
+                              (EXTRACTED = to_name unique in index; AMBIGUOUS = shared name;
+                               INFERRED = to_name not indexed)
 
         EdgeHop shape (for callers_* / callees_* lists):
           name        (str) — neighboring symbol name
@@ -323,6 +330,8 @@ tools:
             file:       relative path from project root (null if not indexed)
             tier:       WILL_BREAK | LIKELY_AFFECTED | MAY_NEED_TESTING
             confidence: EXTRACTED | INFERRED | AMBIGUOUS
+                        Resolved at read time against the whole index.
+                        EXTRACTED = target unique; AMBIGUOUS = shared name; INFERRED = not indexed.
             distance:   hops from the nearest changed symbol
         risk_level:
           type: string

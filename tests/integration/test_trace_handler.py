@@ -272,16 +272,52 @@ def test_per_hop_confidence_present(seeded_trace_db: tuple[sqlite3.Connection, P
         assert hop["confidence"] in {CONFIDENCE_EXTRACTED, CONFIDENCE_INFERRED, CONFIDENCE_AMBIGUOUS}
 
 
-def test_ambiguous_hop_in_callers(seeded_trace_db: tuple[sqlite3.Connection, Path]) -> None:
-    """D -[AMBIGUOUS]-> A must surface in callers_source with confidence=AMBIGUOUS."""
-    conn, root = seeded_trace_db
-    result = handle_seam_trace(conn, "A", "C", root)
+def test_ambiguous_hop_in_callers() -> None:
+    """D→A must surface in callers_source with confidence=AMBIGUOUS when A is in 2 files.
 
-    callers_source = result["callers_source"]
-    d_hop = next((h for h in callers_source if h["name"] == "D"), None)
+    Phase 1b: callers() resolves confidence from whole-index based on edge target_name (A).
+    To get AMBIGUOUS, A must appear in more than one file (count=2).
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        db_path = tmp_path / ".seam" / "seam.db"
+        db_path.parent.mkdir()
 
-    assert d_hop is not None, "Expected D in callers_source"
-    assert d_hop["confidence"] == CONFIDENCE_AMBIGUOUS
+        src = tmp_path / "src.py"
+        src2 = tmp_path / "src2.py"
+        src.write_text("# stub\n")
+        src2.write_text("# stub2\n")
+
+        conn = init_db(db_path)
+        try:
+            # src.py: A, B, C, D are indexed; edge D→A (target A will be count=2)
+            upsert_file(
+                conn, src, "python", "hash1",
+                [_sym("A", str(src)), _sym("B", str(src)), _sym("C", str(src)), _sym("D", str(src))],
+                [
+                    _edge("A", "B", str(src), CONFIDENCE_EXTRACTED),
+                    _edge("B", "C", str(src), CONFIDENCE_EXTRACTED),
+                    _edge("D", "A", str(src)),  # stored confidence doesn't matter
+                ],
+            )
+            # src2.py: second definition of A → count(A)=2 → D→A edge resolves to AMBIGUOUS.
+            upsert_file(
+                conn, src2, "python", "hash2",
+                [_sym("A", str(src2))],
+                [],
+            )
+
+            result = handle_seam_trace(conn, "A", "C", tmp_path)
+
+            callers_source = result["callers_source"]
+            d_hop = next((h for h in callers_source if h["name"] == "D"), None)
+
+            assert d_hop is not None, "Expected D in callers_source"
+            assert d_hop["confidence"] == CONFIDENCE_AMBIGUOUS, (
+                f"A defined in 2 files → D→A edge is AMBIGUOUS, got {d_hop['confidence']!r}"
+            )
+        finally:
+            conn.close()
 
 
 # ── T12: source == target -> found=True, paths=[[]] ──────────────────────────

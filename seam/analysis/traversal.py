@@ -49,14 +49,27 @@ import logging
 import sqlite3
 from typing import TypedDict
 
+from seam.analysis.confidence import (
+    CONFIDENCE_AMBIGUOUS,
+    CONFIDENCE_EXTRACTED,
+    CONFIDENCE_INFERRED,
+    load_name_counts,
+    resolve,
+)
+
 logger = logging.getLogger(__name__)
 
 # ── Confidence constants ───────────────────────────────────────────────────────
-
-# String values stored in the edges.confidence column.
-CONFIDENCE_EXTRACTED = "EXTRACTED"
-CONFIDENCE_INFERRED = "INFERRED"
-CONFIDENCE_AMBIGUOUS = "AMBIGUOUS"
+# Re-export the canonical strings from confidence.py so existing callers that
+# import them from this module continue to work without changes.
+# The definitions live in seam.analysis.confidence — that is the single source of truth.
+__all__ = [
+    "CONFIDENCE_EXTRACTED",
+    "CONFIDENCE_INFERRED",
+    "CONFIDENCE_AMBIGUOUS",
+    "Reached",
+    "walk",
+]
 
 # Integer rank: higher = stronger. Used for min/max comparisons.
 _CONFIDENCE_RANK: dict[str, int] = {
@@ -122,18 +135,27 @@ def _fetch_neighbors_with_parents(
     names: set[str],
     direction: str,
 ) -> list[tuple[str, str, str]]:
-    """Fetch one-hop neighbors for a set of symbol names, including parent info.
+    """Fetch one-hop neighbors for a set of symbol names, including parent and target info.
 
-    Returns a list of (neighbor_name, parent_name, confidence) tuples.
+    Returns a list of (neighbor_name, parent_name, edge_target_name) tuples.
     Self-edges (source == target) are excluded.
+
+    The 3rd column — edge_target_name — is always the edge's target_name column,
+    regardless of traversal direction.  This lets the caller resolve confidence
+    against the whole-index name map keyed on the callee/importee name, which is
+    direction-independent and unambiguous.
+
+    The stored edges.confidence column is intentionally NOT selected: hop
+    confidence is resolved whole-index from edge_target_name at read time
+    (see confidence.resolve), so the stored same-file value never feeds traversal.
 
     Splits the IN-clause into batches of _SQL_VAR_BATCH to avoid hitting
     SQLite's SQLITE_MAX_VARIABLE_NUMBER limit (999 on Linux/CI).
 
-    direction='upstream'   → find edges where target_name IN names;
-                             return (source_name, target_name, confidence)
-    direction='downstream' → find edges where source_name IN names;
-                             return (target_name, source_name, confidence)
+    direction='upstream'   → edges where target_name IN names;
+                             neighbor=source_name, parent=target_name, edge_target_name=target_name
+    direction='downstream' → edges where source_name IN names;
+                             neighbor=target_name, parent=source_name, edge_target_name=target_name
     """
     if not names:
         return []
@@ -148,23 +170,31 @@ def _fetch_neighbors_with_parents(
 
         if direction == "upstream":
             # Who depends on us? → edges pointing at us → source_name is the caller.
+            # edge_target_name = target_name (the callee, i.e. the seed symbol).
             sql = f"""
-                SELECT source_name AS neighbor, target_name AS parent, confidence
+                SELECT source_name AS neighbor,
+                       target_name AS parent,
+                       target_name AS edge_target_name
                 FROM edges
                 WHERE target_name IN ({placeholders})
                   AND source_name != target_name
             """
         else:
             # What do we depend on? → edges going out from us → target_name is dep.
+            # edge_target_name = target_name (the callee, i.e. the neighbor).
             sql = f"""
-                SELECT target_name AS neighbor, source_name AS parent, confidence
+                SELECT target_name AS neighbor,
+                       source_name AS parent,
+                       target_name AS edge_target_name
                 FROM edges
                 WHERE source_name IN ({placeholders})
                   AND source_name != target_name
             """
 
         rows = conn.execute(sql, batch).fetchall()
-        all_rows.extend((row["neighbor"], row["parent"], row["confidence"]) for row in rows)
+        all_rows.extend(
+            (row["neighbor"], row["parent"], row["edge_target_name"]) for row in rows
+        )
 
     return all_rows
 
@@ -206,6 +236,12 @@ def walk(
     if not seeds or max_depth < 1:
         return []
 
+    # Load whole-index name-count map ONCE per walk call.
+    # This single GROUP BY query is the foundation of whole-index confidence resolution:
+    # instead of using the stored edges.confidence (same-file lower bound), we resolve
+    # each hop's confidence from the edge's target_name against this global map.
+    name_counts = load_name_counts(conn)
+
     # BFS state:
     #   visited: symbols already processed (prevents revisiting and cycles)
     #   current_frontier: set of (name, path_rank) for the current BFS level
@@ -235,6 +271,7 @@ def walk(
 
         # Fetch one-hop neighbors for all symbols in the current frontier.
         # Single batched query (with _SQL_VAR_BATCH chunking) per BFS level.
+        # Returns (neighbor, parent, edge_target_name).
         frontier_names = {name for name, _ in current_frontier}
         rows = _fetch_neighbors_with_parents(conn, frontier_names, direction)
 
@@ -243,10 +280,15 @@ def walk(
 
         next_frontier: dict[str, int] = {}  # name -> best_path_rank for this depth
 
-        for neighbor, parent, hop_confidence in rows:
+        for neighbor, parent, edge_target_name in rows:
             # Skip seeds — they are never returned as reachable.
             if neighbor in seed_set:
                 continue
+
+            # Resolve hop confidence from the EDGE'S target_name against the whole index.
+            # This overrides the stored edges.confidence (same-file lower-bound hint).
+            # Resolution: count=1 → EXTRACTED, count>1 → AMBIGUOUS, count=0 → INFERRED.
+            hop_confidence = resolve(edge_target_name, name_counts)
 
             # Compute path rank: propagate weakest-hop rule from the parent's path rank.
             parent_path_rank = parent_rank.get(parent, _DEFAULT_RANK)
