@@ -31,7 +31,7 @@ from seam.analysis.changes import (
     NotAGitRepoError,
     detect_changes,
 )
-from seam.analysis.traversal import CONFIDENCE_AMBIGUOUS, CONFIDENCE_EXTRACTED
+from seam.analysis.traversal import CONFIDENCE_EXTRACTED
 from seam.indexer.db import init_db, upsert_file
 from seam.indexer.graph import Edge, Symbol
 from seam.server.tools import handle_seam_changes
@@ -325,34 +325,51 @@ def test_risk_rollup_will_break_is_critical(
 
 
 def test_ambiguous_attenuation_caps_risk_at_medium() -> None:
-    """When ALL affected symbols have AMBIGUOUS confidence, risk must be capped at medium."""
+    """When ALL affected symbols have AMBIGUOUS confidence, risk must be capped at medium.
+
+    Phase 1b: confidence resolved from whole index based on edge target_name (A).
+    To produce AMBIGUOUS for the B→A edge, 'A' must appear in more than one file (count>1).
+    We create a second file with an 'A' symbol so count(A)=2 → AMBIGUOUS whole-index.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp).resolve()  # resolved path to match DB storage contract (see fixture)
         src = tmp_path / "src.py"
         src.write_text("def A():\n    pass\n\ndef B():\n    A()\n")
+        # Second file that also defines 'A' — makes count(A)=2 → AMBIGUOUS.
+        src2 = tmp_path / "src2.py"
+        src2.write_text("def A():\n    return 42\n")
         (tmp_path / ".gitignore").write_text(".seam/\n")
 
         _git(["init", "--initial-branch=main"], tmp_path)
         _git(["config", "user.email", "test@seam.local"], tmp_path)
         _git(["config", "user.name", "Test"], tmp_path)
-        _git(["add", "src.py", ".gitignore"], tmp_path)
+        _git(["add", "src.py", "src2.py", ".gitignore"], tmp_path)
         _git(["commit", "-m", "initial"], tmp_path)
 
         db_path = tmp_path / ".seam" / "seam.db"
         db_path.parent.mkdir()
         conn = init_db(db_path)
 
-        # B -> A with AMBIGUOUS confidence (all edges AMBIGUOUS).
+        # Index src.py: B→A edge. A will be count=2 (both files) → AMBIGUOUS.
         upsert_file(
             conn,
             src,
             "python",
             "hashX",
             [_sym("A", str(src), start=1, end=2), _sym("B", str(src), start=4, end=5)],
-            [_edge("B", "A", str(src), CONFIDENCE_AMBIGUOUS)],
+            [_edge("B", "A", str(src))],  # stored confidence doesn't matter; whole-index resolves
+        )
+        # Index src2.py: defines 'A' again → count(A)=2 → AMBIGUOUS for B→A edge.
+        upsert_file(
+            conn,
+            src2,
+            "python",
+            "hashY",
+            [_sym("A", str(src2), start=1, end=2)],
+            [],
         )
 
-        # Edit A (line 2).
+        # Edit A in src.py (line 2).
         lines = src.read_text().splitlines()
         lines[1] = "    return 0"
         src.write_text("\n".join(lines) + "\n")
@@ -360,8 +377,8 @@ def test_ambiguous_attenuation_caps_risk_at_medium() -> None:
         report = detect_changes(conn, scope="working", repo_root=tmp_path)
         conn.close()
 
-        # With all-AMBIGUOUS edges, risk must be capped at medium even though
-        # the raw tier is WILL_BREAK (d=1).
+        # With all-AMBIGUOUS edges (A count=2 → AMBIGUOUS), risk must be capped at medium
+        # even though the raw tier is WILL_BREAK (d=1).
         assert report["ambiguous_warning"] is True, "ambiguous_warning must be True"
         assert report["risk_level"] == "medium", (
             f"Expected risk_level=medium (AMBIGUOUS attenuation), got: {report['risk_level']}"

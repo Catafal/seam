@@ -90,16 +90,50 @@ In-memory `Edge` uses `source` / `target`. The DB columns are `source_name` /
 
 The names differ on purpose — do not "fix" either side.
 
-## Ambiguity: two distinct scopes
+## Confidence resolution — two layers
+
+**Phase 1b change (issue #9):** Edge confidence is now resolved at **read time** against
+the whole index, not at index time against the same-file symbol set.
+
+### Layer 1 — Stored column (same-file lower-bound hint, index time)
+
+`graph.extract_edges` writes a confidence value to `edges.confidence` based on the
+symbol list extracted from the **same file** at the same call.  This is a cheap debugging
+hint — it tells you whether the target was found locally — but it is **not authoritative**
+for cross-file edges.
+
+### Layer 2 — Read-time whole-index resolution (authoritative)
+
+`seam/analysis/confidence.py` is the single source of truth for the three-value rule.
+At read time, `traversal.walk`, `flows.trace`, `flows.callers`, and `flows.callees` load
+a `name → count` map with one `SELECT name, COUNT(*) FROM symbols GROUP BY name` query
+(once per call, not per edge), then resolve each edge's confidence from the edge's
+`target_name` against that map:
+
+| count in whole index | Resolved confidence |
+|----------------------|---------------------|
+| exactly 1            | `EXTRACTED`          |
+| > 1                  | `AMBIGUOUS`          |
+| 0 (not indexed)      | `INFERRED`           |
+
+This overrides the stored `edges.confidence` value.  The stored column is kept unchanged
+(no schema migration) as a lower-bound hint.
+
+**Consequence:** a cross-file edge whose target name is unique in the whole index now
+correctly reports `EXTRACTED` instead of `INFERRED`.  The signal is now discriminating
+across files, not just within a single file.
+
+### Ambiguity signals — two orthogonal concepts
 
 There are **two orthogonal `ambiguous` signals** in Seam — callers must not conflate them:
 
 | Signal | Location | What "ambiguous" means |
 |--------|----------|------------------------|
-| `Edge.confidence == 'AMBIGUOUS'` | `graph.py` / `edges` table | The edge target name matched **more than one symbol in the same file** at extraction time (extraction-time, per-file scope). |
-| `ContextResult.ambiguous == True` | `engine.context()` | **More than one symbol shares this name across the whole index** (query-time, global scope). |
+| `Edge.confidence == 'AMBIGUOUS'` (read-time) | `seam/analysis/confidence.py` | The edge target name appears in **more than one indexed symbol** across the whole index (read-time, whole-index scope). |
+| `ContextResult.ambiguous == True` | `engine.context()` | **More than one symbol shares this name across the whole index** (query-time, global scope — unchanged). |
 
-These are independent. An edge can be `AMBIGUOUS` (same-file name collision at index time) while `context()` returns `ambiguous=False` (only one DB row with that name). Conversely, `context()` can return `ambiguous=True` (two files define the same function name) while all edges to that target are `EXTRACTED` (unique within each file's own symbol list).
+These are now consistent in scope (both whole-index).  The stored `edges.confidence`
+column retains its original same-file semantics as a debugging hint only.
 
 ## Note on stale docs
 
@@ -235,8 +269,8 @@ Each `Hop` carries the confidence of that **specific edge** (not an aggregated p
 The overall path confidence is `min(hop.confidence for hop in path)` (weakest-hop rule from traversal.py).
 The caller is responsible for aggregating if needed.
 
-An `AMBIGUOUS` hop means the edge target name matched more than one symbol at extraction time —
-the caller should flag this hop as "verify by reading the code".
+An `AMBIGUOUS` hop means the edge target name appears in more than one indexed symbol at read
+time (whole-index resolution) — the caller should flag this hop as "verify by reading the code".
 
 ### handle_seam_trace() response shape
 

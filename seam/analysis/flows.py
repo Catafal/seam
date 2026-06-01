@@ -47,19 +47,25 @@ it is the callers' job to aggregate that from the Hop list if needed.
 
 Module imports
 --------------
-Only sqlite3, typing, logging (stdlib) and seam.analysis.traversal for shared
-constants and the batched-IN helper. No server/cli/query imports.
+stdlib: sqlite3, typing, logging.
+seam.analysis.confidence: EXTRACTED/AMBIGUOUS/INFERRED constants, load_name_counts, resolve.
+seam.analysis.traversal: _SQL_VAR_BATCH (IN-clause batch limit) and _rank (BFS arithmetic helper).
+No server/cli/query imports.
 """
 
 import logging
 import sqlite3
 from typing import TypedDict
 
-from seam.analysis.traversal import (
-    _SQL_VAR_BATCH,
+from seam.analysis.confidence import (
     CONFIDENCE_AMBIGUOUS,
     CONFIDENCE_EXTRACTED,
     CONFIDENCE_INFERRED,
+    load_name_counts,
+    resolve,
+)
+from seam.analysis.traversal import (
+    _SQL_VAR_BATCH,
     _rank,
 )
 
@@ -125,11 +131,15 @@ __all__ = [
 def _fetch_outgoing_edges(
     conn: sqlite3.Connection,
     names: set[str],
-) -> list[tuple[str, str, str, str]]:
+) -> list[tuple[str, str, str]]:
     """Fetch all outgoing edges from any name in `names`.
 
-    Returns list of (source_name, target_name, kind, confidence).
+    Returns list of (source_name, target_name, kind).
     Self-edges (source == target) are excluded.
+
+    The stored edges.confidence column is intentionally NOT selected: per-hop
+    confidence is resolved whole-index from target_name at read time (see
+    confidence.resolve), so the stored same-file value is never surfaced here.
 
     Batches IN-clause in groups of _SQL_VAR_BATCH to avoid the
     SQLITE_MAX_VARIABLE_NUMBER (999) limit on Linux/CI.
@@ -138,7 +148,7 @@ def _fetch_outgoing_edges(
         return []
 
     names_list = list(names)
-    all_rows: list[tuple[str, str, str, str]] = []
+    all_rows: list[tuple[str, str, str]] = []
 
     for batch_start in range(0, len(names_list), _SQL_VAR_BATCH):
         batch = names_list[batch_start : batch_start + _SQL_VAR_BATCH]
@@ -146,15 +156,14 @@ def _fetch_outgoing_edges(
 
         # Downstream: follow edges from source to target.
         sql = f"""
-            SELECT source_name, target_name, kind, confidence
+            SELECT source_name, target_name, kind
             FROM edges
             WHERE source_name IN ({placeholders})
               AND source_name != target_name
         """
         rows = conn.execute(sql, batch).fetchall()
         all_rows.extend(
-            (row["source_name"], row["target_name"], row["kind"], row["confidence"])
-            for row in rows
+            (row["source_name"], row["target_name"], row["kind"]) for row in rows
         )
 
     return all_rows
@@ -163,11 +172,13 @@ def _fetch_outgoing_edges(
 def _fetch_incoming_edges(
     conn: sqlite3.Connection,
     names: set[str],
-) -> list[tuple[str, str, str, str]]:
+) -> list[tuple[str, str, str]]:
     """Fetch all incoming edges to any name in `names`.
 
-    Returns list of (source_name, target_name, kind, confidence).
+    Returns list of (source_name, target_name, kind).
     Self-edges (source == target) are excluded.
+
+    Stored confidence is not selected — see _fetch_outgoing_edges for why.
 
     Batches IN-clause in groups of _SQL_VAR_BATCH.
     """
@@ -175,7 +186,7 @@ def _fetch_incoming_edges(
         return []
 
     names_list = list(names)
-    all_rows: list[tuple[str, str, str, str]] = []
+    all_rows: list[tuple[str, str, str]] = []
 
     for batch_start in range(0, len(names_list), _SQL_VAR_BATCH):
         batch = names_list[batch_start : batch_start + _SQL_VAR_BATCH]
@@ -183,15 +194,14 @@ def _fetch_incoming_edges(
 
         # Upstream: edges pointing AT these names.
         sql = f"""
-            SELECT source_name, target_name, kind, confidence
+            SELECT source_name, target_name, kind
             FROM edges
             WHERE target_name IN ({placeholders})
               AND source_name != target_name
         """
         rows = conn.execute(sql, batch).fetchall()
         all_rows.extend(
-            (row["source_name"], row["target_name"], row["kind"], row["confidence"])
-            for row in rows
+            (row["source_name"], row["target_name"], row["kind"]) for row in rows
         )
 
     return all_rows
@@ -264,6 +274,11 @@ def trace(
     if source == target:
         return [[]]  # empty path — zero hops, trivially connected
 
+    # Load whole-index name-count map ONCE per trace() call.
+    # Used to resolve per-hop confidence from the edge's target_name against the full index,
+    # overriding the stored edges.confidence (same-file lower-bound hint).
+    name_counts = load_name_counts(conn)
+
     # BFS state:
     #   frontier: set of symbol names at the current BFS level
     #   visited:  symbols already discovered (prevents cycles and re-visiting)
@@ -292,13 +307,16 @@ def trace(
 
         next_frontier: set[str] = set()
 
-        for src_name, tgt_name, kind, confidence in outgoing:
-            # Build the Hop for this edge.
+        for src_name, tgt_name, kind in outgoing:
+            # Resolve hop confidence from the edge's target_name against the whole index.
+            hop_confidence = resolve(tgt_name, name_counts)
+
+            # Build the Hop for this edge with whole-index resolved confidence.
             hop = Hop(
                 from_name=src_name,
                 to_name=tgt_name,
                 kind=kind,
-                confidence=confidence,
+                confidence=hop_confidence,
             )
 
             # Found the target — record its parent and return immediately.
@@ -357,18 +375,25 @@ def callers(
         logger.debug("callers(): empty symbol — returning []")
         return []
 
+    # Load whole-index name-count map once per callers() call.
+    # Resolve confidence from the edge's target_name (always `symbol` for incoming edges).
+    name_counts = load_name_counts(conn)
+
     rows = _fetch_incoming_edges(conn, {symbol})
     # Deduplicate by (source_name, kind) — keep strongest confidence for dupes.
     best: dict[tuple[str, str], str] = {}
-    for src, _tgt, kind, confidence in rows:
+    for src, tgt, kind in rows:
+        # For incoming edges (callers), the edge target is always `symbol`.
+        # Resolve confidence from the whole-index map keyed on target_name.
+        resolved_confidence = resolve(tgt, name_counts)
         key = (src, kind)
         existing = best.get(key)
         if existing is None:
-            best[key] = confidence
+            best[key] = resolved_confidence
         else:
             # Keep stronger confidence (higher rank).
-            if _rank(confidence) > _rank(existing):
-                best[key] = confidence
+            if _rank(resolved_confidence) > _rank(existing):
+                best[key] = resolved_confidence
 
     result: list[EdgeHop] = [
         EdgeHop(name=name, kind=kind, confidence=conf)
@@ -401,17 +426,23 @@ def callees(
         logger.debug("callees(): empty symbol — returning []")
         return []
 
+    # Load whole-index name-count map once per callees() call.
+    # Resolve confidence from the edge's target_name (the callee).
+    name_counts = load_name_counts(conn)
+
     rows = _fetch_outgoing_edges(conn, {symbol})
     # Deduplicate by (target_name, kind) — keep strongest confidence for dupes.
     best: dict[tuple[str, str], str] = {}
-    for _src, tgt, kind, confidence in rows:
+    for _src, tgt, kind in rows:
+        # For outgoing edges (callees), resolve confidence keyed on target_name (the callee).
+        resolved_confidence = resolve(tgt, name_counts)
         key = (tgt, kind)
         existing = best.get(key)
         if existing is None:
-            best[key] = confidence
+            best[key] = resolved_confidence
         else:
-            if _rank(confidence) > _rank(existing):
-                best[key] = confidence
+            if _rank(resolved_confidence) > _rank(existing):
+                best[key] = resolved_confidence
 
     result: list[EdgeHop] = [
         EdgeHop(name=name, kind=kind, confidence=conf)

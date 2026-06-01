@@ -173,29 +173,61 @@ def test_tier_bucketing(db_conn: tuple[sqlite3.Connection, str]) -> None:
 
 
 def test_ambiguous_hop_in_tier_entry(db_conn: tuple[sqlite3.Connection, str]) -> None:
-    """An AMBIGUOUS edge must produce a tier entry with confidence=AMBIGUOUS."""
+    """An edge to a name in multiple files must produce a tier entry with confidence=AMBIGUOUS.
+
+    Phase 1b: confidence resolved from whole index based on edge target_name (B).
+    To get AMBIGUOUS, B must appear in more than one file (count=2).
+    """
+    import tempfile
+
     conn, src = db_conn
-    _seed(conn, src, ["A", "B"], [_edge("A", "B", src, confidence=CONFIDENCE_AMBIGUOUS)])
+    _seed(conn, src, ["A", "B"], [_edge("A", "B", src)])
 
-    result = impact(conn, "B", direction="upstream", max_depth=1)
-    entries = _all_entries(result["upstream"])
-    a_entry = next((e for e in entries if e["name"] == "A"), None)
+    # Insert a second 'B' in another file so count(B)=2 → AMBIGUOUS.
+    with tempfile.TemporaryDirectory() as other_tmp:
+        from pathlib import Path as _Path
 
-    assert a_entry is not None
-    assert a_entry["confidence"] == CONFIDENCE_AMBIGUOUS
+        from seam.indexer.db import upsert_file as _upsert
+        from seam.indexer.graph import Symbol as _Sym
+
+        other_file = _Path(other_tmp) / "other.py"
+        other_file.write_text("# other\n")
+        _upsert(conn, other_file, "python", "h_other",
+                [_Sym(name="B", kind="function", file=str(other_file), start_line=1, end_line=2, docstring=None)], [])
+
+        result = impact(conn, "B", direction="upstream", max_depth=1)
+        entries = _all_entries(result["upstream"])
+        a_entry = next((e for e in entries if e["name"] == "A"), None)
+
+        assert a_entry is not None
+        assert a_entry["confidence"] == CONFIDENCE_AMBIGUOUS, (
+            f"B in 2 files → AMBIGUOUS, got {a_entry['confidence']!r}"
+        )
 
 
 def test_inferred_hop_in_tier_entry(db_conn: tuple[sqlite3.Connection, str]) -> None:
-    """An INFERRED edge must produce a tier entry with confidence=INFERRED."""
+    """An edge to an unindexed target must produce a tier entry with confidence=INFERRED.
+
+    Phase 1b: confidence resolved from whole index. To get INFERRED, B must not
+    be in the symbols table at all (count=0). Insert A and edge A→B directly.
+    """
     conn, src = db_conn
-    _seed(conn, src, ["A", "B"], [_edge("A", "B", src, confidence=CONFIDENCE_INFERRED)])
+    _seed(conn, src, ["A"], [])  # only A in symbols; no B symbol
+    conn.execute(
+        "INSERT INTO edges (source_name, target_name, kind, file_id, line, confidence)"
+        " SELECT 'A', 'B', 'call', id, 1, 'INFERRED' FROM files WHERE path = ? LIMIT 1",
+        (src,),
+    )
+    conn.commit()
 
     result = impact(conn, "B", direction="upstream", max_depth=1)
     entries = _all_entries(result["upstream"])
     a_entry = next((e for e in entries if e["name"] == "A"), None)
 
     assert a_entry is not None
-    assert a_entry["confidence"] == CONFIDENCE_INFERRED
+    assert a_entry["confidence"] == CONFIDENCE_INFERRED, (
+        f"B not in symbols (count=0) → INFERRED, got {a_entry['confidence']!r}"
+    )
 
 
 # ── T6: max_depth cap ─────────────────────────────────────────────────────────
