@@ -1,0 +1,47 @@
+# Seam — Progress Tracker
+# Format: [x] = done, [>] = in progress, [ ] = not started
+# Update this EVERY session. It is the first thing the agent reads.
+
+# ── Phase 0: Foundation ────────────────────────────
+[x] 1.1 Repository structure created
+[x] 1.2 DISCOVERY.md written and approved
+[x] 1.3 CLAUDE.md skeleton created
+[x] 1.4 PRD, APP_FLOW, TECH_STACK, BACKEND_STRUCTURE docs written
+[x] 1.5 Architecture docs + ADRs created
+[x] 1.6 Python package scaffold created (empty modules)
+[x] 1.7 Makefile + pyproject.toml + gate passing
+[x] 1.8 .gitignore, .env.example committed
+[x] 1.9 GitNexus indexed + CLAUDE.md finalized
+
+# ── Phase 0: Implementation ────────────────────────
+[ ] 2.1 db.py — schema + upsert + delete
+[ ] 2.2 db.py tests
+[ ] 3.1 Python parser
+[ ] 3.2 TypeScript/JS parser
+[ ] 3.3 Parser tests with fixtures
+[ ] 4.1 Symbol extraction
+[ ] 4.2 Edge extraction
+[ ] 4.3 Graph tests
+[ ] 5.1 FTS5 search
+[ ] 5.2 Concept query
+[ ] 5.3 Context lookup
+[ ] 5.4 Query engine tests
+[ ] 6.1 seam init command
+[ ] 6.2 seam status command
+[ ] 6.3 CLI integration tests
+[ ] 7.1 File watcher daemon
+[ ] 7.2 Watcher integration test
+[ ] 8.1 MCP server setup
+[ ] 8.2 MCP tool handlers
+[ ] 8.3 seam start command
+[ ] 9.1 Benchmark baseline (Bach)
+[ ] 9.2 Benchmark with Seam (Bach)
+[ ] 9.3 Benchmark report
+[ ] 10.1 README.md + quickstart
+[ ] 10.2 uv.lock committed
+[ ] 10.3 Gate passes in clean env
+[ ] 10.4 Tag v0.1.0
+
+# ── Last Session ─────────────────────────────────
+# 2026-06-01: Day 0 — Full 101 initialization complete
+# Next: Start with 2.1 (db.py schema implementation)
