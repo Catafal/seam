@@ -27,6 +27,7 @@ from seam.server.tools import (
     handle_seam_impact,
     handle_seam_query,
     handle_seam_search,
+    handle_seam_trace,
 )
 
 # Limit defaults/bounds (mirrors tools.py constants — kept local to avoid circular import)
@@ -34,6 +35,7 @@ _QUERY_LIMIT_DEFAULT = 10
 _SEARCH_LIMIT_DEFAULT = 20
 _IMPACT_DEPTH_DEFAULT = 3
 _IMPACT_DIRECTION_DEFAULT = "upstream"
+_TRACE_DEPTH_DEFAULT = 10
 
 
 def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
@@ -93,5 +95,32 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         Use before editing any symbol to understand the blast radius.
         """
         return handle_seam_impact(conn, target, root, direction=direction, max_depth=max_depth)
+
+    @mcp.tool()
+    def seam_trace(
+        source: str,
+        target: str,
+        max_depth: int = _TRACE_DEPTH_DEFAULT,
+    ) -> Any:
+        """Trace the call/dependency path between two symbols.
+
+        Returns the shortest path from source to target as an ordered list of hops,
+        where each hop carries the edge kind (call | import) and per-edge confidence
+        (EXTRACTED | INFERRED | AMBIGUOUS).
+
+        Also returns one-hop callers and callees for both symbols so you can see
+        the immediate neighborhood alongside the path.
+
+        Use this when you need to understand how control flows from one symbol to
+        another, or to answer "how does X reach Y?" without manual grep.
+
+        Returns found=false (paths=[]) when no path exists — this is a real,
+        distinguishable "not connected" answer, not an error.
+
+        Per-hop confidence lets you flag any hop that rests on an AMBIGUOUS edge
+        (name collision at extraction time) so you know which conclusions are certain
+        and which need manual verification.
+        """
+        return handle_seam_trace(conn, source, target, root, max_depth=max_depth)
 
     return mcp

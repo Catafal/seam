@@ -200,6 +200,79 @@ tools:
       - code: INVALID_INPUT
         condition: direction is not one of upstream, downstream, both
 
+  seam_trace:
+    status: IMPLEMENTED
+    description: |
+      Trace the call/dependency path between two symbols.
+      Returns the shortest path from source to target as an ordered list of hops,
+      where each hop carries the edge kind (call | import) and per-edge confidence
+      (EXTRACTED | INFERRED | AMBIGUOUS).
+
+      Also returns one-hop callers and callees for both symbols so the agent can
+      see the immediate neighborhood alongside the path.
+
+      Use when you need to understand how control flows from one symbol to another,
+      or to answer "how does X reach Y?" without manual grep.
+
+      Returns found=false (paths=[]) when no path exists — a real, distinguishable
+      "not connected" answer. Per-hop confidence lets you flag any hop that rests on
+      an AMBIGUOUS edge (name collision at extraction time).
+    input:
+      source:
+        type: string
+        required: true
+        description: Starting symbol name (e.g. "init", "parse_file")
+        min_length: 1
+        max_length: 200
+      target:
+        type: string
+        required: true
+        description: Destination symbol name (e.g. "upsert_file", "init_db")
+        min_length: 1
+        max_length: 200
+      max_depth:
+        type: integer
+        required: false
+        default: 10
+        min: 1
+        max: 10
+        description: Maximum number of hops. Clamped to [1, 10].
+    output:
+      type: object
+      description: |
+        Top-level keys always present:
+          found       (bool)  — True if a path was found; False if source and target
+                                are not connected within max_depth hops.
+          source      (str)   — queried source name (echoed back).
+          target      (str)   — queried target name (echoed back).
+          paths       (list)  — list of paths; each path is list[Hop].
+                                Empty list ([]) when not connected.
+          callers_source (list) — one-hop callers of source (list[EdgeHop]).
+          callees_source (list) — one-hop callees of source (list[EdgeHop]).
+          callers_target (list) — one-hop callers of target (list[EdgeHop]).
+          callees_target (list) — one-hop callees of target (list[EdgeHop]).
+
+        Hop shape (per edge in a path):
+          from_name   (str) — source of this edge
+          to_name     (str) — target of this edge
+          kind        (str) — 'call' | 'import'
+          confidence  (str) — EXTRACTED | INFERRED | AMBIGUOUS
+
+        EdgeHop shape (for callers_* / callees_* lists):
+          name        (str) — neighboring symbol name
+          kind        (str) — 'call' | 'import'
+          confidence  (str) — EXTRACTED | INFERRED | AMBIGUOUS
+
+        Special case: source == target → found=true, paths=[[]] (empty inner path,
+        zero hops, trivially connected to itself).
+      empty_ok: true
+      empty_message: "No path found from '{source}' to '{target}'"
+    errors:
+      - code: INVALID_INPUT
+        condition: source is empty string or whitespace-only
+      - code: INVALID_INPUT
+        condition: target is empty string or whitespace-only
+
   seam_detect_changes:
     status: PHASE_1_PENDING
     description: Pre-commit scope check — map git diff to affected execution flows.
