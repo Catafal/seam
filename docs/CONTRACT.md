@@ -172,6 +172,83 @@ Confidence rank: `EXTRACTED` (2) > `INFERRED` (1) > `AMBIGUOUS` (0).
 A symbol is visited at its first (minimum-distance) encounter. Cycles terminate
 because visited symbols are never re-added to the frontier.
 
+## Flow tracing types (Phase 1 — Slice 6)
+
+Defined in `seam/analysis/flows.py`.
+These are **read-only** types produced by the analysis layer; they are never written to the DB.
+
+```python
+class Hop(TypedDict):
+    """One step on a call/dependency path."""
+    from_name:  str   # source symbol of this edge
+    to_name:    str   # target symbol of this edge
+    kind:       str   # 'call' | 'import'
+    confidence: str   # per-edge confidence: EXTRACTED | INFERRED | AMBIGUOUS
+
+# Path = list[Hop] (ordered, source-to-target)
+# Invariants:
+#   len == 0 → trivial self-path (source == target)
+#   len >= 1 → path[0].from_name == source, path[-1].to_name == target
+#   path[i].to_name == path[i+1].from_name (consecutive hops are linked)
+Path = list[Hop]
+
+class EdgeHop(TypedDict):
+    """One-hop result for callers() / callees()."""
+    name:       str   # neighboring symbol name
+    kind:       str   # 'call' | 'import'
+    confidence: str   # EXTRACTED | INFERRED | AMBIGUOUS
+```
+
+### trace() contract
+
+```python
+trace(conn, source, target, max_depth=10) -> list[Path]
+```
+
+- Returns **shortest path only** (BFS terminates at first match).
+- Returns `[[]]` when `source == target` (zero-hop trivial path).
+- Returns `[]` when no path exists within `max_depth` hops — distinguishable "not connected".
+- CYCLE-SAFE: BFS `visited` set prevents infinite loops.
+- Bounded by `max_depth` (clamped to [1, 10] by the handler layer).
+
+### callers() and callees() contract
+
+```python
+callers(conn, symbol) -> list[EdgeHop]   # one-hop upstream (who calls/imports symbol)
+callees(conn, symbol) -> list[EdgeHop]   # one-hop downstream (what symbol calls/imports)
+```
+
+- One-hop only — use `walk()` from `traversal.py` for multi-hop.
+- Results deduplicated by (name, kind); strongest confidence kept for duplicates.
+- Sorted by name alphabetically for determinism.
+- Returns `[]` for unknown symbols or empty string.
+
+### Per-hop confidence
+
+Each `Hop` carries the confidence of that **specific edge** (not an aggregated path confidence).
+The overall path confidence is `min(hop.confidence for hop in path)` (weakest-hop rule from traversal.py).
+The caller is responsible for aggregating if needed.
+
+An `AMBIGUOUS` hop means the edge target name matched more than one symbol at extraction time —
+the caller should flag this hop as "verify by reading the code".
+
+### handle_seam_trace() response shape
+
+```python
+{
+    "found":          bool,        # True if paths is non-empty
+    "source":         str,         # echoed source
+    "target":         str,         # echoed target
+    "paths":          list[list[Hop]],  # shortest path (0 or 1 entries)
+    "callers_source": list[EdgeHop],
+    "callees_source": list[EdgeHop],
+    "callers_target": list[EdgeHop],
+    "callees_target": list[EdgeHop],
+}
+```
+
+Error shape on blank source or target: `{"error": "INVALID_INPUT", "message": "..."}`.
+
 ## Drift rule
 
 Do not edit `Symbol`/`Edge`/result TypedDicts or `schema.sql` without

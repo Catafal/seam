@@ -16,7 +16,9 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from seam.analysis import flows as flows_module
 from seam.analysis import impact as impact_module
+from seam.analysis.flows import EdgeHop
 from seam.query import engine
 
 logger = logging.getLogger(__name__)
@@ -34,8 +36,21 @@ _SEARCH_LIMIT_DEFAULT = 20
 _IMPACT_DEPTH_DEFAULT = 3
 _IMPACT_DIRECTION_DEFAULT = "upstream"
 
+_TRACE_DEPTH_MIN = 1
+_TRACE_DEPTH_MAX = 10
+_TRACE_DEPTH_DEFAULT = 10
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _serialize_edge_hop(hop: EdgeHop) -> dict[str, Any]:
+    """Serialize an EdgeHop TypedDict to a plain dict for JSON-safe output."""
+    return {
+        "name": hop["name"],
+        "kind": hop["kind"],
+        "confidence": hop["confidence"],
+    }
 
 
 def _relativize(abs_path: str, root: Path) -> str:
@@ -266,3 +281,99 @@ def handle_seam_impact(
         }
 
     return response
+
+
+def handle_seam_trace(
+    conn: sqlite3.Connection,
+    source: str,
+    target: str,
+    root: Path,
+    max_depth: int = _TRACE_DEPTH_DEFAULT,
+) -> dict[str, Any]:
+    """Handler for the seam_trace MCP tool.
+
+    Finds the shortest call/dependency path from source to target, and also
+    returns one-hop callers and callees for both symbols so the agent can see
+    the immediate neighborhood alongside the path.
+
+    Args:
+        conn:       Open SQLite connection.
+        source:     Starting symbol name (must not be blank/whitespace).
+        target:     Destination symbol name (must not be blank/whitespace).
+        root:       Project root for path relativization (not currently used —
+                    paths in flows are symbol names, not file paths; kept for
+                    API consistency with other handlers).
+        max_depth:  Max hops for path finding. Clamped to [1, 10]. Default: 10.
+
+    Returns:
+        A JSON-able dict with:
+            found       (bool)      — True if a path was found.
+            source      (str)       — the queried source name (echoed back).
+            target      (str)       — the queried target name (echoed back).
+            paths       (list)      — list of paths; each path is a list of Hop dicts.
+                                      Empty list when source and target are not connected.
+            callers_source (list)   — one-hop callers of source (EdgeHop dicts).
+            callees_source (list)   — one-hop callees of source (EdgeHop dicts).
+            callers_target (list)   — one-hop callers of target (EdgeHop dicts).
+            callees_target (list)   — one-hop callees of target (EdgeHop dicts).
+
+        Each Hop dict:
+            from_name   (str) — source of this edge
+            to_name     (str) — target of this edge
+            kind        (str) — 'call' | 'import'
+            confidence  (str) — EXTRACTED | INFERRED | AMBIGUOUS
+
+        Each EdgeHop dict:
+            name        (str) — neighboring symbol
+            kind        (str) — 'call' | 'import'
+            confidence  (str) — EXTRACTED | INFERRED | AMBIGUOUS
+
+    Error shapes:
+        {"error": "INVALID_INPUT", "message": "..."} — blank source or target.
+    """
+    # Validate: source and target must not be empty or whitespace-only.
+    if not source or not source.strip():
+        return _invalid_input("source must not be empty or whitespace-only")
+    if not target or not target.strip():
+        return _invalid_input("target must not be empty or whitespace-only")
+
+    # Clamp depth to valid range.
+    safe_depth = _clamp(max_depth, _TRACE_DEPTH_MIN, _TRACE_DEPTH_MAX)
+
+    clean_source = source.strip()
+    clean_target = target.strip()
+
+    # Find the shortest path from source to target.
+    paths = flows_module.trace(conn, clean_source, clean_target, max_depth=safe_depth)
+
+    # Gather one-hop neighborhood for both symbols — useful context for the agent.
+    callers_source = flows_module.callers(conn, clean_source)
+    callees_source = flows_module.callees(conn, clean_source)
+    callers_target = flows_module.callers(conn, clean_target)
+    callees_target = flows_module.callees(conn, clean_target)
+
+    # Serialize paths: each Path is list[Hop]; Hop is already a plain TypedDict.
+    # Convert to plain dicts for JSON-safety.
+    serialized_paths = [
+        [
+            {
+                "from_name": hop["from_name"],
+                "to_name": hop["to_name"],
+                "kind": hop["kind"],
+                "confidence": hop["confidence"],
+            }
+            for hop in path
+        ]
+        for path in paths
+    ]
+
+    return {
+        "found": len(paths) > 0,
+        "source": clean_source,
+        "target": clean_target,
+        "paths": serialized_paths,
+        "callers_source": [_serialize_edge_hop(h) for h in callers_source],
+        "callees_source": [_serialize_edge_hop(h) for h in callees_source],
+        "callers_target": [_serialize_edge_hop(h) for h in callers_target],
+        "callees_target": [_serialize_edge_hop(h) for h in callees_target],
+    }

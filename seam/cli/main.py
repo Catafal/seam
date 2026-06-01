@@ -22,6 +22,9 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 import seam.config as config
+from seam.analysis.flows import callees as flows_callees
+from seam.analysis.flows import callers as flows_callers
+from seam.analysis.flows import trace as flows_trace
 from seam.analysis.impact import (
     TIER_LIKELY_AFFECTED,
     TIER_MAY_NEED_TESTING,
@@ -412,3 +415,103 @@ def impact_cmd(
                     f"[{confidence_color}]{entry['confidence']}[/{confidence_color}]  "
                     f"[dim]d={entry['distance']}[/dim]"
                 )
+
+
+@app.command(name="trace")
+def trace_cmd(
+    source: str = typer.Argument(..., help="Starting symbol name (e.g. 'init', 'parse_file')"),
+    target: str = typer.Argument(..., help="Destination symbol name (e.g. 'upsert_file', 'init_db')"),
+    depth: int = typer.Option(10, "--depth", help="Max hop depth (1-10)"),
+    path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
+    db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+) -> None:
+    """Trace the call/dependency path from one symbol to another.
+
+    Shows each hop with its edge kind (call | import) and confidence level
+    (EXTRACTED | INFERRED | AMBIGUOUS). Confidence colors:
+      green  = EXTRACTED (definitely this edge)
+      yellow = INFERRED  (heuristic best-guess)
+      red    = AMBIGUOUS (name collision — verify manually)
+
+    Also shows direct callers and callees of both source and target.
+
+    Exits with a clear message when no path exists between the symbols.
+    """
+    project_root = Path(path).resolve()
+    db_root = Path(db_dir).resolve() if db_dir else project_root
+    db_path = config.get_db_path(db_root)
+
+    if not db_path.exists():
+        console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
+        raise typer.Exit(code=1)
+
+    try:
+        conn = connect(db_path)
+    except sqlite3.Error as exc:
+        console.print(f"[red]Failed to open database:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    # Clamp depth to [1, 10]
+    safe_depth = max(1, min(10, depth))
+
+    try:
+        paths = flows_trace(conn, source, target, max_depth=safe_depth)
+        callers_src = flows_callers(conn, source)
+        callees_src = flows_callees(conn, source)
+        callers_tgt = flows_callers(conn, target)
+        callees_tgt = flows_callees(conn, target)
+    finally:
+        conn.close()
+
+    # Confidence -> rich color mapping, used throughout.
+    def _conf_color(c: str) -> str:
+        return {"EXTRACTED": "green", "INFERRED": "yellow", "AMBIGUOUS": "red"}.get(c, "white")
+
+    # ── Path result ───────────────────────────────────────────────────────────
+    if not paths:
+        console.print(
+            f"\n[yellow]No path found[/yellow] from [bold]{source}[/bold] to [bold]{target}[/bold] "
+            f"within {safe_depth} hop(s).\n"
+            "[dim]Try increasing --depth or check the symbol names with 'seam search'.[/dim]"
+        )
+    else:
+        # paths[0] is the shortest path (BFS returns a single-element list).
+        found_path = paths[0]
+        if not found_path:
+            # Trivial self-path (source == target).
+            console.print(f"\n[dim]{source} == {target} (same symbol, zero hops)[/dim]")
+        else:
+            console.print(
+                f"\n[bold cyan]Path[/bold cyan] from [bold]{source}[/bold] to [bold]{target}[/bold] "
+                f"({len(found_path)} hop(s)):"
+            )
+            # Print each hop as: from → to  (kind)  CONFIDENCE
+            arrow = "  →  "
+            for hop in found_path:
+                color = _conf_color(hop["confidence"])
+                console.print(
+                    f"  [bold]{hop['from_name']}[/bold]{arrow}[bold]{hop['to_name']}[/bold]"
+                    f"  [dim]{hop['kind']}[/dim]"
+                    f"  [{color}]{hop['confidence']}[/{color}]"
+                )
+
+    # ── One-hop neighborhood ──────────────────────────────────────────────────
+    def _print_hops(label: str, hops: list) -> None:  # type: ignore[type-arg]
+        if not hops:
+            console.print(f"\n  [dim]{label}: none[/dim]")
+            return
+        console.print(f"\n  [bold]{label}[/bold]:")
+        for h in hops:
+            color = _conf_color(h["confidence"])
+            console.print(
+                f"    [bold]{h['name']}[/bold]  [dim]{h['kind']}[/dim]"
+                f"  [{color}]{h['confidence']}[/{color}]"
+            )
+
+    console.print(f"\n[bold cyan]Neighborhood of [bold]{source}[/bold][/bold cyan]:")
+    _print_hops(f"callers({source})", callers_src)
+    _print_hops(f"callees({source})", callees_src)
+
+    console.print(f"\n[bold cyan]Neighborhood of [bold]{target}[/bold][/bold cyan]:")
+    _print_hops(f"callers({target})", callers_tgt)
+    _print_hops(f"callees({target})", callees_tgt)
