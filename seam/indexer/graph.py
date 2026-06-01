@@ -18,10 +18,13 @@ Confidence tagging (Phase 1 — issue #3):
                import edges where the target is outside the file).
 """
 
+import logging
 from pathlib import Path
 from typing import Literal, TypedDict
 
 from tree_sitter import Node
+
+logger = logging.getLogger(__name__)
 
 # Confidence level for an edge — persisted in the DB, exposed via MCP.
 Confidence = Literal["EXTRACTED", "INFERRED", "AMBIGUOUS"]
@@ -143,25 +146,81 @@ def _ts_jsdoc(symbol_node: Node) -> str | None:
     return comment_text
 
 
+def _arrow_function_name(arrow_node: Node) -> str | None:
+    """Resolve the name of an arrow function from its assignment context.
+
+    Arrow functions have no 'name' field in the AST. If the arrow function
+    is directly assigned to a variable in a variable_declarator
+    (e.g. `const handler = () => { ... }`), we use that variable's name.
+
+    Rule (documented):
+      - arrow in `const/let/var X = () => {...}` → source name is `X`
+      - arrow as a property value, callback argument, or truly anonymous → None
+        (caller continues walking up to find an enclosing named function)
+
+    We intentionally do NOT recurse into object literal properties
+    (`{ method: () => { ... } }`) because those identifiers are property keys,
+    not function declarations, and naming them would produce misleading edges.
+    """
+    parent = arrow_node.parent
+    if parent is None:
+        return None
+    # Direct assignment: variable_declarator is the immediate parent
+    if parent.type == "variable_declarator":
+        name_node = parent.child_by_field_name("name")
+        if name_node is not None and name_node.type == "identifier":
+            return _text(name_node)
+    return None
+
+
 def _find_enclosing_function(node: Node, language: str) -> str | None:
     """Walk up the parent chain to find the nearest enclosing function/method name.
 
     Returns 'ClassName.methodName' for methods, plain name for functions, or None
     when no enclosing function exists (e.g. top-level module code).
+
+    For TypeScript/JavaScript arrow functions (which have no 'name' AST field):
+      - Named function_declaration / method_definition ALWAYS wins: if one is found
+        while walking up, its (qualified) name is returned immediately, regardless
+        of any inner arrow const names.
+      - The FIRST (innermost) arrow_function assigned to a variable sets a fallback
+        name. This fallback is only returned if no named function/method is found
+        higher in the chain.
+      - If neither a named scope nor a named arrow is found, returns None (edge dropped).
+
+    Attribution priority (highest to lowest):
+      1. Nearest named function_declaration or method_definition (with class qualification)
+      2. Innermost const-assigned arrow_function (fallback_arrow_name)
+      3. None — edge is skipped
     """
     func_types_py = {"function_definition"}
     func_types_ts = {"function_declaration", "method_definition", "arrow_function"}
     func_types = func_types_py if language == "python" else func_types_ts
 
+    # Fallback: name of the innermost const-assigned arrow found while walking up.
+    # Only used when NO named function/method exists higher in the chain.
+    fallback_arrow_name: str | None = None
+
     current = node.parent
     while current is not None:
         if current.type in func_types:
+            if current.type == "arrow_function":
+                # Record the first (innermost) arrow name as a fallback only.
+                # Named scopes higher up still take priority.
+                if fallback_arrow_name is None:
+                    fallback_arrow_name = _arrow_function_name(current)
+                # Always continue walking up — a named function/method wins.
+                current = current.parent
+                continue
+
+            # Named scope (function_declaration, method_definition, function_definition).
+            # This ALWAYS overrides any arrow fallback collected below.
             name_node = current.child_by_field_name("name")
             if name_node is None:
                 current = current.parent
                 continue
             func_name = _text(name_node)
-            # Check if the function is inside a class to produce qualified name
+            # Check if the function is inside a class to produce qualified name.
             class_types = (
                 {"class_definition"}
                 if language == "python"
@@ -177,7 +236,15 @@ def _find_enclosing_function(node: Node, language: str) -> str | None:
                 parent = parent.parent
             return func_name
         current = current.parent
-    return None
+
+    # No named function/method found anywhere in the chain.
+    # Return the innermost arrow const name if one was recorded; otherwise None.
+    if fallback_arrow_name is None:
+        logger.debug(
+            "_find_enclosing_function: no named scope found — call edge source "
+            "cannot be resolved; edge will be dropped"
+        )
+    return fallback_arrow_name
 
 
 # ── Python extraction ──────────────────────────────────────────────────────────
@@ -418,8 +485,13 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
     """Extract import and call edges from a TypeScript/TSX AST.
 
     Import heuristic:
-      - named import { X, Y } → one edge per import_specifier
-      - default import X       → edge with target = 'X'
+      - default import X          → edge with target = 'X'
+      - named import { X, Y }     → one edge per import_specifier, target = real name
+      - aliased import { a as b } → target = 'a' (real name), NOT 'b' (alias)
+      - namespace import * as ns  → target = 'ns' (the local binding; a namespace has
+                                    no single exported name, so we use the binding)
+      - call_expression inside arrow_function body → source is the arrow's variable
+        name (if assigned), else the nearest named enclosing function, else skipped.
 
     Call heuristic (MVP):
       - call_expression where function is a bare identifier → target = identifier
@@ -443,7 +515,7 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
             if clause:
                 for clause_child in clause.children:
                     if clause_child.type == "identifier":
-                        # Default import: import X from 'mod'
+                        # Default import: import X from 'mod' → target = 'X'
                         edges.append(
                             Edge(
                                 source=file_stem,
@@ -454,11 +526,30 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
                                 confidence="INFERRED",
                             )
                         )
+                    elif clause_child.type == "namespace_import":
+                        # Namespace import: import * as ns from 'mod' → target = 'ns'
+                        # A namespace has no single exported name; we use the local
+                        # binding (ns) as the target so the edge points to a usable name.
+                        for ns_child in clause_child.children:
+                            if ns_child.type == "identifier":
+                                edges.append(
+                                    Edge(
+                                        source=file_stem,
+                                        target=_text(ns_child),
+                                        kind="import",
+                                        file=file_str,
+                                        line=line,
+                                        confidence="INFERRED",
+                                    )
+                                )
+                                break  # only the identifier (alias) needed
                     elif clause_child.type == "named_imports":
-                        # Named imports: { X, Y }
+                        # Named imports: { X, Y } or { a as b }
                         for spec in clause_child.children:
                             if spec.type == "import_specifier":
-                                # Prefer the 'name' field; fall back to first child
+                                # 'name' field = real exported name (e.g. 'a' in 'a as b')
+                                # 'alias' field = local binding (e.g. 'b' in 'a as b')
+                                # We use the real name so the edge points to the actual export.
                                 name_node = spec.child_by_field_name("name")
                                 if name_node is None and spec.children:
                                     name_node = spec.children[0]

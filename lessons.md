@@ -56,6 +56,21 @@ the string-name-edge ADR. Revisit in Phase 1:
   files only; deletions and brand-new untracked files are not reflected (the live
   watcher handles those in real time).
 
+## 2026-06-01 — Top-level const-arrow functions are NOT yet Symbols (Phase-1b follow-up)
+
+- **What:** After FIX 1 (arrow attribution regression), top-level `const handler = () => {}` now
+  correctly produces call edges with `source='handler'` (via the fallback path in
+  `_find_enclosing_function`). However, `handler` is NOT emitted as a Symbol by `extract_symbols`:
+  only `function_declaration`, `method_definition`, `class_declaration`, `interface_declaration`,
+  and `type_alias_declaration` nodes are indexed as symbols. Arrow functions assigned to consts are
+  plain `variable_declarator` nodes, not declaration nodes.
+- **Impact:** The edge is partially connected — you can see `source='handler'` in an edge, but
+  `context('handler')` / `impact(target='handler')` returns nothing because there is no matching
+  Symbol row. Graph traversal by name still works; `context()` does not.
+- **Phase-1b follow-up:** Index const-assigned arrow functions as `kind='function'` in
+  `_extract_symbols_typescript`. This slice (Slice 4 / issue #4) is edge extraction only — do NOT
+  implement symbol indexing for arrows here.
+
 ## 2026-06-01 — String-name collision limitation MITIGATED via confidence tagging (Phase 1 issue #3)
 
 The Phase-0 string-name collision limitation is now mitigated rather than silently wrong:
