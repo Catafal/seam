@@ -41,18 +41,19 @@ seam/                           ← Python package root
 ## Layer Rules (Import Hierarchy)
 
 ```
-cli/ → server/ → query/ → indexer/db
-                         ↑
-               watcher/ → indexer/
+cli/ → server/ → analysis/ → query/ → indexer/db
+                                      ↑
+                            watcher/ → indexer/
 ```
 
 | Layer | Can import from | Cannot import from |
 |---|---|---|
-| `cli/` | server, indexer, watcher, config | — |
-| `server/` | query, config | cli, watcher |
-| `query/` | indexer.db, config | cli, server, watcher |
-| `indexer/` | config | cli, server, query, watcher |
-| `watcher/` | indexer, config | cli, server, query |
+| `cli/` | server, analysis, indexer, watcher, config | — |
+| `server/` | analysis, query, config | cli, watcher |
+| `analysis/` | indexer.db, query, config | cli, server |
+| `query/` | indexer.db, config | cli, server, analysis, watcher |
+| `indexer/` | config | cli, server, query, analysis, watcher |
+| `watcher/` | indexer, config | cli, server, query, analysis |
 | `config` | stdlib only | anything in seam/ |
 
 ---

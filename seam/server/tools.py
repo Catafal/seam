@@ -1,9 +1,10 @@
 """MCP tool handlers — thin adapters between MCP protocol and query engine.
 
-Each handler: validates input → clamps limits → calls query.engine →
+Each handler: validates input → clamps limits → calls query.engine or analysis →
 relativizes file paths → returns MCP-compatible response dict.
 
-No business logic here. All logic lives in seam/query/engine.py.
+No business logic here. Query logic lives in seam/query/engine.py.
+Impact logic lives in seam/analysis/impact.py.
 
 Error conventions (matching mcp-tools.yaml):
   {"error": "INVALID_INPUT", "message": "..."} — blank/whitespace input
@@ -15,6 +16,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from seam.analysis import impact as impact_module
 from seam.query import engine
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,9 @@ _QUERY_LIMIT_DEFAULT = 10
 _SEARCH_LIMIT_MIN = 1
 _SEARCH_LIMIT_MAX = 100
 _SEARCH_LIMIT_DEFAULT = 20
+
+_IMPACT_DEPTH_DEFAULT = 3
+_IMPACT_DIRECTION_DEFAULT = "upstream"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -172,3 +177,92 @@ def handle_seam_search(
         }
         for r in results
     ]
+
+
+def handle_seam_impact(
+    conn: sqlite3.Connection,
+    target: str,
+    root: Path,
+    direction: str = _IMPACT_DIRECTION_DEFAULT,
+    max_depth: int = _IMPACT_DEPTH_DEFAULT,
+) -> dict[str, Any]:
+    """Handler for the seam_impact MCP tool.
+
+    Computes blast radius for a target symbol: which symbols are affected if the
+    target changes, grouped into risk tiers by distance.
+
+    Args:
+        conn:       Open SQLite connection.
+        target:     Symbol name to analyze (must not be blank/whitespace).
+        root:       Project root for path relativization. Each TieredEntry includes a
+                    `file` field (absolute path from the analysis layer) which is
+                    relativized to root before returning.
+        direction:  "upstream" | "downstream" | "both". Default: "upstream".
+        max_depth:  Max hops. Clamped to [1, 10]. Default: 3.
+
+    Returns:
+        A JSON-able dict with the impact result, or an error dict on bad input.
+        Top-level keys always include `found` (bool) and `target` (str).
+        Shape for direction="upstream":
+            {"found": bool, "target": str,
+             "upstream": {"WILL_BREAK": [...], "LIKELY_AFFECTED": [...], "MAY_NEED_TESTING": [...]}}
+        Shape for direction="both":
+            {"found": bool, "target": str,
+             "upstream": {...tiers...}, "downstream": {...tiers...}}
+
+        Each entry in a tier list includes a `file` field:
+            file (str | None) — relative path from project root for indexed symbols;
+                                None for names not in the symbols table.
+
+    Error shapes:
+        {"error": "INVALID_INPUT", "message": "..."} — blank target or invalid direction.
+    """
+    # Validate: target must not be empty or whitespace-only.
+    if not target or not target.strip():
+        return _invalid_input("target must not be empty or whitespace-only")
+
+    # Validate direction before passing to impact (impact raises ValueError on bad direction,
+    # but we want the standard INVALID_INPUT shape here in the handler).
+    valid_directions = {"upstream", "downstream", "both"}
+    if direction not in valid_directions:
+        return _invalid_input(
+            f"direction must be one of: {sorted(valid_directions)}; got {direction!r}"
+        )
+
+    # Clamp max_depth via impact module's own clamp helper (single source of truth).
+    safe_depth = impact_module.clamp_depth(max_depth)
+
+    raw = impact_module.impact(
+        conn,
+        target=target.strip(),
+        direction=direction,
+        max_depth=safe_depth,
+    )
+
+    # Build the response: pass found/target through, relativize file paths in entries.
+    response: dict[str, Any] = {
+        "found": raw["found"],
+        "target": raw["target"],
+    }
+
+    # Relativize each TieredEntry's `file` field using the provided root.
+    # `file` is an absolute path (or None) from the analysis layer.
+    for dir_key in ("upstream", "downstream"):
+        if dir_key not in raw:
+            continue
+        tier_group = raw[dir_key]
+        response[dir_key] = {
+            tier: [
+                {
+                    "name": entry["name"],
+                    "distance": entry["distance"],
+                    "confidence": entry["confidence"],
+                    "tier": entry["tier"],
+                    "file": _relativize(entry["file"], root) if entry["file"] is not None else None,
+                }
+                for entry in entries
+            ]
+            for tier, entries in tier_group.items()
+        }
+
+    return response

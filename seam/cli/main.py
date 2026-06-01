@@ -22,6 +22,12 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 import seam.config as config
+from seam.analysis.impact import (
+    TIER_LIKELY_AFFECTED,
+    TIER_MAY_NEED_TESTING,
+    TIER_WILL_BREAK,
+    impact,
+)
 from seam.indexer.db import connect, init_db
 from seam.indexer.pipeline import index_one_file, walk_project
 from seam.server.mcp import create_server
@@ -309,3 +315,100 @@ def start(
         server.run(transport="stdio")
     finally:
         _teardown()
+
+
+@app.command(name="impact")
+def impact_cmd(
+    symbol: str = typer.Argument(..., help="Symbol name to analyze (e.g. 'upsert_file', 'UserService.validate')"),
+    direction: str = typer.Option("upstream", "--direction", "-d", help="upstream | downstream | both"),
+    depth: int = typer.Option(3, "--depth", help="Max hop depth (1-10)"),
+    path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
+    db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+) -> None:
+    """Show the blast radius of a symbol — what breaks if you change it.
+
+    Results are grouped into risk tiers:
+      WILL_BREAK       (d=1) — direct dependents, definitely affected
+      LIKELY_AFFECTED  (d=2) — indirect dependents, probably affected
+      MAY_NEED_TESTING (d=3+) — transitive dependents, test to be sure
+
+    Each entry shows the path confidence (EXTRACTED | INFERRED | AMBIGUOUS).
+    """
+    project_root = Path(path).resolve()
+    db_root = Path(db_dir).resolve() if db_dir else project_root
+    db_path = config.get_db_path(db_root)
+
+    if not db_path.exists():
+        console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
+        raise typer.Exit(code=1)
+
+    valid_directions = {"upstream", "downstream", "both"}
+    if direction not in valid_directions:
+        console.print(f"[red]Invalid direction:[/red] {direction!r}. Choose: upstream, downstream, or both.")
+        raise typer.Exit(code=1)
+
+    try:
+        conn = connect(db_path)
+    except sqlite3.Error as exc:
+        console.print(f"[red]Failed to open database:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        result = impact(conn, target=symbol, direction=direction, max_depth=depth)
+    finally:
+        conn.close()
+
+    # Distinguish "symbol not in the index" from "indexed but no dependents".
+    if not result.get("found", True):
+        console.print(
+            f"[yellow]Symbol '{symbol}' not found in the index[/yellow]"
+            " — check the name or run 'seam init'."
+        )
+        return
+
+    # Check if any results exist across all directions and tiers.
+    total = sum(
+        len(entries)
+        for key, tier_group in result.items()
+        if isinstance(tier_group, dict) and key not in ("found", "target")
+        for entries in tier_group.values()
+    )
+
+    if total == 0:
+        console.print(f"[dim]No dependents found for [bold]{symbol}[/bold].[/dim]")
+        return
+
+    # Print a tiered summary per direction.
+    tier_order = [TIER_WILL_BREAK, TIER_LIKELY_AFFECTED, TIER_MAY_NEED_TESTING]
+    tier_labels = {
+        TIER_WILL_BREAK: "[bold red]WILL BREAK[/bold red]         (d=1)",
+        TIER_LIKELY_AFFECTED: "[bold yellow]LIKELY AFFECTED[/bold yellow]   (d=2)",
+        TIER_MAY_NEED_TESTING: "[dim]MAY NEED TESTING[/dim]  (d=3+)",
+    }
+
+    # Iterate only direction keys (skip metadata keys like "found" and "target").
+    for direction_key, tier_group in result.items():
+        if direction_key in ("found", "target") or not isinstance(tier_group, dict):
+            continue
+        console.print(f"\n[bold cyan]Impact ({direction_key})[/bold cyan] of [bold]{symbol}[/bold]:")
+        any_in_direction = any(len(entries) > 0 for entries in tier_group.values())
+        if not any_in_direction:
+            console.print("  [dim]No dependents.[/dim]")
+            continue
+
+        for tier in tier_order:
+            entries = tier_group.get(tier, [])
+            if not entries:
+                continue
+            console.print(f"\n  {tier_labels[tier]}")
+            for entry in entries:
+                confidence_color = {
+                    "EXTRACTED": "green",
+                    "INFERRED": "yellow",
+                    "AMBIGUOUS": "red",
+                }.get(entry["confidence"], "white")
+                console.print(
+                    f"    [bold]{entry['name']}[/bold]  "
+                    f"[{confidence_color}]{entry['confidence']}[/{confidence_color}]  "
+                    f"[dim]d={entry['distance']}[/dim]"
+                )

@@ -131,15 +131,77 @@ tools:
       - code: INVALID_QUERY
         condition: FTS5 syntax error in text (malformed boolean operators)
 
-# ── Future Tools (Phase 1) ──────────────────────────────────────────────────
-# Not implemented yet — documented for forward planning.
+# ── Phase 1 Tools ──────────────────────────────────────────────────────────────
 
   seam_impact:
-    status: PHASE_1
-    description: Blast radius analysis — what breaks if I change this symbol?
+    status: IMPLEMENTED
+    description: |
+      Blast-radius analysis — what breaks if I change this symbol?
+      Returns all symbols that depend on the target (upstream), that the target
+      depends on (downstream), or both — grouped into risk tiers by distance.
+      Use before editing any symbol to understand the blast radius.
+    input:
+      target:
+        type: string
+        required: true
+        description: Symbol name to analyze (e.g. "upsert_file", "UserService.validate")
+        min_length: 1
+        max_length: 200
+      direction:
+        type: string
+        required: false
+        default: "upstream"
+        enum: [upstream, downstream, both]
+        description: |
+          upstream   = who depends on the target (callers/importers)
+          downstream = what the target depends on (callees/importees)
+          both       = full neighborhood (upstream + downstream)
+      max_depth:
+        type: integer
+        required: false
+        default: 3
+        min: 1
+        max: 10
+        description: Maximum number of hops from the target. Clamped to [1, 10].
+    output:
+      type: object
+      description: |
+        Top-level keys always present:
+          found:   bool — True if the target is known in the index; False if not found
+                          (typo / not yet indexed). Use this to distinguish "not found"
+                          from "found but no dependents".
+          target:  str  — the queried symbol name (echoed back for agent convenience).
+
+        Direction-keyed TierGroups (keys depend on direction):
+          "upstream"   -> {"upstream": TierGroup}
+          "downstream" -> {"downstream": TierGroup}
+          "both"       -> {"upstream": TierGroup, "downstream": TierGroup}
+
+        TierGroup always contains all three tier keys even if empty:
+          WILL_BREAK       (distance 1)  — direct dependents, definitely affected
+          LIKELY_AFFECTED  (distance 2)  — indirect dependents, probably affected
+          MAY_NEED_TESTING (distance 3+) — transitive dependents, test to be sure
+
+        Each entry in a tier:
+          name:        symbol name (string)
+          distance:    hops from the target (integer, 1-based)
+          confidence:  EXTRACTED | INFERRED | AMBIGUOUS
+                       (aggregated path confidence — weakest hop wins)
+          tier:        risk tier name (string)
+          file:        relative path from project root for indexed symbols;
+                       null for names not in the symbols table (external deps, etc.)
+
+        Unknown symbol: found=false, empty tier groups (not an error).
+      empty_ok: true
+      empty_message: "No dependents found for '{target}'"
+    errors:
+      - code: INVALID_INPUT
+        condition: target is empty string or whitespace-only
+      - code: INVALID_INPUT
+        condition: direction is not one of upstream, downstream, both
 
   seam_detect_changes:
-    status: PHASE_1
+    status: PHASE_1_PENDING
     description: Pre-commit scope check — map git diff to affected execution flows.
 
   seam_why:

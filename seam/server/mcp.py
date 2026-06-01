@@ -22,11 +22,18 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from seam.server.tools import handle_seam_context, handle_seam_query, handle_seam_search
+from seam.server.tools import (
+    handle_seam_context,
+    handle_seam_impact,
+    handle_seam_query,
+    handle_seam_search,
+)
 
 # Limit defaults/bounds (mirrors tools.py constants — kept local to avoid circular import)
 _QUERY_LIMIT_DEFAULT = 10
 _SEARCH_LIMIT_DEFAULT = 20
+_IMPACT_DEPTH_DEFAULT = 3
+_IMPACT_DIRECTION_DEFAULT = "upstream"
 
 
 def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
@@ -65,5 +72,26 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         Supports FTS5 operators: AND, OR, NOT, phrase search in quotes.
         """
         return handle_seam_search(conn, text, root, limit=limit)
+
+    @mcp.tool()
+    def seam_impact(
+        target: str,
+        direction: str = _IMPACT_DIRECTION_DEFAULT,
+        max_depth: int = _IMPACT_DEPTH_DEFAULT,
+    ) -> Any:
+        """Blast-radius analysis — what breaks if I change this symbol?
+
+        Returns all symbols that depend on the target (upstream), that the target
+        depends on (downstream), or both — grouped into risk tiers by distance:
+          WILL_BREAK       (distance 1) — direct dependents, definitely affected.
+          LIKELY_AFFECTED  (distance 2) — indirect dependents, probably affected.
+          MAY_NEED_TESTING (distance 3+) — transitive dependents, test to be sure.
+
+        Each entry carries the aggregated path confidence (EXTRACTED | INFERRED | AMBIGUOUS)
+        so you know which conclusions to lean on and which to verify by reading.
+
+        Use before editing any symbol to understand the blast radius.
+        """
+        return handle_seam_impact(conn, target, root, direction=direction, max_depth=max_depth)
 
     return mcp

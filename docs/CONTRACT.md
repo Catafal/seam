@@ -100,6 +100,78 @@ These are independent. An edge can be `AMBIGUOUS` (same-file name collision at i
 `BACKEND_STRUCTURE.md` lists `Symbol.col`. That is stale prose — the
 TypedDict has **no `col` field**. The code is correct; the doc is not.
 
+## Analysis layer types (Phase 1 — Slice 5)
+
+Defined in `seam/analysis/traversal.py` and `seam/analysis/impact.py`.
+These are **read-only** types produced by the analysis layer; they are never written to the DB.
+
+```python
+class Reached(TypedDict):
+    name:        str   # reachable symbol name (string, from edges table)
+    distance:    int   # hops from any seed (1-based; seeds excluded from output)
+    confidence:  str   # aggregated path confidence: EXTRACTED | INFERRED | AMBIGUOUS
+
+# TieredEntry is a plain dict (not TypedDict) to accommodate the mixed-type `file` field.
+# Shape:
+#   name        (str)        — symbol name
+#   distance    (int)        — hops from the target
+#   confidence  (str)        — EXTRACTED | INFERRED | AMBIGUOUS
+#   tier        (str)        — WILL_BREAK | LIKELY_AFFECTED | MAY_NEED_TESTING
+#   file        (str | None) — ABSOLUTE path to source file for indexed symbols;
+#                              None for names not in the symbols table (e.g. external deps)
+#                              handle_seam_impact relativizes this to project root before return.
+
+# TierGroup: tier-name -> list[TieredEntry] (always all 3 keys present, even if empty)
+TierGroup = dict[str, list[dict[str, Any]]]
+
+# ImpactResult: a plain dict[str, Any] with the following keys:
+#   found   (bool) — True if the target is a known symbol or edge endpoint in the index;
+#                    False if the target name was not found (unknown symbol / typo guard).
+#   target  (str)  — the queried symbol name (echoed back for agent convenience).
+#   <direction-key(s)>: TierGroup
+#     direction="upstream"   -> {"found": bool, "target": str, "upstream": TierGroup}
+#     direction="downstream" -> {"found": bool, "target": str, "downstream": TierGroup}
+#     direction="both"       -> {"found": bool, "target": str,
+#                                "upstream": TierGroup, "downstream": TierGroup}
+ImpactResult = dict[str, Any]
+```
+
+### Risk tier names (exact strings)
+
+| Tier constant            | String value          | Distance |
+|--------------------------|-----------------------|----------|
+| `TIER_WILL_BREAK`        | `"WILL_BREAK"`        | d == 1   |
+| `TIER_LIKELY_AFFECTED`   | `"LIKELY_AFFECTED"`   | d == 2   |
+| `TIER_MAY_NEED_TESTING`  | `"MAY_NEED_TESTING"`  | d >= 3   |
+
+These match CLAUDE.md d=1/2/3 and the GitNexus impact risk levels.
+
+### Path-confidence rule (traversal.py)
+
+The confidence of a multi-hop path is its **weakest hop**:
+
+- Any `AMBIGUOUS` hop on the path → path is `AMBIGUOUS` (weakest).
+- Any `INFERRED` hop (no AMBIGUOUS) → path is `INFERRED`.
+- All `EXTRACTED` hops → path is `EXTRACTED` (strongest).
+
+When the same symbol is reachable via **multiple paths at the same distance**,
+the **strongest** path confidence is reported (best available path wins).
+
+Confidence rank: `EXTRACTED` (2) > `INFERRED` (1) > `AMBIGUOUS` (0).
+
+### Traversal direction semantics
+
+| Direction    | Edge traversal                              | Meaning                 |
+|--------------|---------------------------------------------|-------------------------|
+| `upstream`   | Follow edges where `target_name == seed`    | Callers / importers     |
+| `downstream` | Follow edges where `source_name == seed`    | Callees / importees     |
+
+### Cycle safety
+
+`traversal.walk()` uses a Python-side BFS with an explicit `visited` set.
+A symbol is visited at its first (minimum-distance) encounter. Cycles terminate
+because visited symbols are never re-added to the frontier.
+
 ## Drift rule
 
 Do not edit `Symbol`/`Edge`/result TypedDicts or `schema.sql` without
