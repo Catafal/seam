@@ -152,7 +152,7 @@ class Reached(TypedDict):
     confidence:  str   # aggregated path confidence: EXTRACTED | INFERRED | AMBIGUOUS
 
 # TieredEntry is a plain dict (not TypedDict) to accommodate the mixed-type `file` field.
-# Shape:
+# Shape (Phase 1b QA hardening additions: is_test):
 #   name        (str)        — symbol name
 #   distance    (int)        — hops from the target
 #   confidence  (str)        — EXTRACTED | INFERRED | AMBIGUOUS
@@ -160,19 +160,59 @@ class Reached(TypedDict):
 #   file        (str | None) — ABSOLUTE path to source file for indexed symbols;
 #                              None for names not in the symbols table (e.g. external deps)
 #                              handle_seam_impact relativizes this to project root before return.
+#   is_test     (bool)       — True when `file` belongs to a test file (see is_test_file()
+#                              heuristic below). False for production files AND for entries
+#                              with file=None (unresolved names are never labelled as test,
+#                              to avoid false positives — their provenance is unknown).
+
+# is_test_file() heuristic (seam/analysis/testpaths.py — single authoritative source):
+#   Returns True when ANY of the following hold:
+#     1. A directory SEGMENT (Path.parts, not substring) is exactly 'tests' or 'test'.
+#        'testdata/', 'contest/', 'attest/' do NOT match.
+#     2. The basename (case-insensitive) matches:
+#          test_*.py      — Python test_* prefix
+#          *_test.py      — Python *_test suffix
+#          conftest.py    — pytest config / fixtures
+#          *.spec.{js,jsx,ts,tsx}
+#          *.test.{js,jsx,ts,tsx}
+#   Returns False for None or empty string (safe default for unresolved names).
+#
+#   Documented limitation (by design, conservative):
+#     Test trees NOT named 'tests' or 'test' (e.g. e2e/, qa/, integration/) are
+#     classified as production (is_test=False). This is a false-negative — such files
+#     are under-flagged rather than over-flagged. The rule intentionally avoids
+#     false positives like a production `integration/` module that happens to share a
+#     directory name with a test runner convention. Callers should not rely on
+#     is_test=False as a guarantee that a file is production code — it means "the
+#     heuristic did not recognise it as a test file".
 
 # TierGroup: tier-name -> list[TieredEntry] (always all 3 keys present, even if empty)
 TierGroup = dict[str, list[dict[str, Any]]]
 
 # ImpactResult: a plain dict[str, Any] with the following keys:
-#   found   (bool) — True if the target is a known symbol or edge endpoint in the index;
-#                    False if the target name was not found (unknown symbol / typo guard).
-#   target  (str)  — the queried symbol name (echoed back for agent convenience).
+#   found        (bool) — True if the target is a known symbol or edge endpoint in the index;
+#                         False if the target name was not found (unknown symbol / typo guard).
+#   target       (str)  — the queried symbol name (echoed back for agent convenience).
 #   <direction-key(s)>: TierGroup
 #     direction="upstream"   -> {"found": bool, "target": str, "upstream": TierGroup}
 #     direction="downstream" -> {"found": bool, "target": str, "downstream": TierGroup}
 #     direction="both"       -> {"found": bool, "target": str,
 #                                "upstream": TierGroup, "downstream": TierGroup}
+#
+#   Present only when impact() is called with include_tests=False:
+#     hidden_tests (int) — count of test-file dependents filtered out across all tiers.
+#                          Purpose: anti-false-safe. Lets callers distinguish "no dependents
+#                          at all" (hidden_tests==0) from "all dependents were test files,
+#                          all filtered" (hidden_tests>0). The latter is NOT safe to treat
+#                          as dead code — tests would break. Without this field, a caller
+#                          seeing empty tiers after filtering could wrongly conclude the
+#                          symbol is unused. Absent when include_tests=True (the default)
+#                          so its presence alone signals that filtering was applied.
+#
+# impact() parameters (Phase 1b addition):
+#   include_tests (bool, default True) — when True, returns all dependents (default behavior,
+#                                        backward-compatible). When False, test-file entries
+#                                        are removed from all tiers and hidden_tests is added.
 ImpactResult = dict[str, Any]
 ```
 
@@ -317,6 +357,13 @@ class ChangeReport(TypedDict):
     ambiguous_warning: bool
     scope:             str              # working | staged | branch
     base_ref:          str
+    partial:           bool             # True when changed real-symbol count exceeded
+                                        # SEAM_MAX_IMPACT_SYMBOLS (env, default 50);
+                                        # only the first N real symbols were analyzed.
+                                        # "Real" means names that do NOT start with '<'
+                                        # (excludes synthetic <module:...>/<new:...> entries
+                                        # which _collect_impact already skips).
+                                        # When partial=True treat risk_level as a lower bound.
 ```
 
 ### Risk rollup rule (exact)

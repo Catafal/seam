@@ -163,6 +163,21 @@ tools:
         min: 1
         max: 10
         description: Maximum number of hops from the target. Clamped to [1, 10].
+      include_tests:
+        type: boolean
+        required: false
+        default: true
+        description: |
+          When true (default), all dependents are returned — test-file entries included,
+          each tagged with is_test=true. The default is unchanged from pre-#10 behavior.
+          When false, dependents whose file lives in a test tree are filtered out from
+          ALL tiers (WILL_BREAK / LIKELY_AFFECTED / MAY_NEED_TESTING). Entries with
+          file=null (unresolved names) are always included regardless of this flag,
+          because their provenance is unknown (is_test=false by rule).
+          Set to false to see only the production blast radius — useful when test callers
+          dominate the results. When false, the response also carries hidden_tests (int)
+          so callers can distinguish "no dependents at all" from "all dependents were
+          test files and got filtered" — the latter is NOT safe to treat as dead code.
     output:
       type: object
       description: |
@@ -194,6 +209,15 @@ tools:
           tier:        risk tier name (string)
           file:        relative path from project root for indexed symbols;
                        null for names not in the symbols table (external deps, etc.)
+          is_test:     bool — True if the entry's file is a test file (per path heuristic);
+                       False for production files AND for entries with file=null
+                       (unresolved names are never labelled as test, to avoid false positives).
+
+        Present only when include_tests=false:
+          hidden_tests: int — count of test-file dependents that were filtered out across
+                              all tiers. Distinguishes "no dependents" (hidden_tests==0)
+                              from "all dependents were test files, all hidden" (hidden_tests>0).
+                              The latter is NOT safe to treat as dead code — tests would break.
 
         Unknown symbol: found=false, empty tier groups (not an error).
       empty_ok: true
@@ -349,6 +373,15 @@ tools:
           description: |
             True when ANY affected symbol has AMBIGUOUS edge confidence.
             Signals the risk estimate is uncertain; recommend manual review.
+        partial:
+          type: boolean
+          description: |
+            True when the number of real changed symbols (excluding synthetic <module:...>
+            and <new:...> entries) exceeded the SEAM_MAX_IMPACT_SYMBOLS cap (default 50),
+            so the risk verdict was computed on only the first N changed symbols.
+            False on normal-sized diffs where all changed symbols were analyzed.
+            When true, treat the risk_level as a lower bound — the full blast radius may
+            be larger. The cap can be raised via the SEAM_MAX_IMPACT_SYMBOLS env var.
         scope:    the scope used (echoed back for agent convenience)
         base_ref: the base ref used (echoed back; only meaningful for scope=branch)
       empty_ok: true

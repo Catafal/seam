@@ -97,6 +97,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         target: str,
         direction: str = _IMPACT_DIRECTION_DEFAULT,
         max_depth: int = _IMPACT_DEPTH_DEFAULT,
+        include_tests: bool = True,
     ) -> Any:
         """Blast-radius analysis — what breaks if I change this symbol?
 
@@ -108,10 +109,20 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
 
         Each entry carries the aggregated path confidence (EXTRACTED | INFERRED | AMBIGUOUS)
         so you know which conclusions to lean on and which to verify by reading.
+        Each entry also carries is_test (bool) so you can distinguish production dependents
+        from test-only callers.
+
+        Set include_tests=false to filter out test-file dependents and see only the
+        production blast radius — useful when test callers dominate the results.
 
         Use before editing any symbol to understand the blast radius.
         """
-        return handle_seam_impact(conn, target, root, direction=direction, max_depth=max_depth)
+        return handle_seam_impact(
+            conn, target, root,
+            direction=direction,
+            max_depth=max_depth,
+            include_tests=include_tests,
+        )
 
     @mcp.tool()
     def seam_trace(
