@@ -16,12 +16,12 @@
 # ── Phase 0: Implementation ────────────────────────
 [x] 2.1 db.py — schema + upsert + delete
 [x] 2.2 db.py tests
-[ ] 3.1 Python parser
-[ ] 3.2 TypeScript/JS parser
-[ ] 3.3 Parser tests with fixtures
-[ ] 4.1 Symbol extraction
-[ ] 4.2 Edge extraction
-[ ] 4.3 Graph tests
+[x] 3.1 Python parser
+[x] 3.2 TypeScript/JS parser
+[x] 3.3 Parser tests with fixtures
+[x] 4.1 Symbol extraction
+[x] 4.2 Edge extraction
+[x] 4.3 Graph tests
 [x] 5.1 FTS5 search
 [x] 5.2 Concept query
 [x] 5.3 Context lookup
@@ -47,3 +47,9 @@
 # Next: Start with 2.1 (db.py schema implementation)
 # 2026-06-01: Track A complete — db.py + engine.py implemented; 48 tests passing; gate green
 # Next: Track B (parser.py + graph.py) and convergence (CLI seam init)
+# 2026-06-01: Track B — Parser + Graph Extraction complete
+#   - parser.py: _parse helper + parse_python/typescript/javascript
+#   - graph.py: extract_symbols + extract_edges for Python + TypeScript
+#   - 38 tests passing, make gate green
+# 2026-06-01: Convergence — Tracks A+B merged into main; all steps 2.1-5.4 complete
+# Next: Step 6.1 (seam init command)
