@@ -45,7 +45,9 @@ class TestParsePython:
         node = parse_python(binary_file)
         assert node is None
 
-    def test_oversized_file_returns_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_oversized_file_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """File larger than SEAM_MAX_FILE_BYTES must return None."""
         import seam.config as config
 
@@ -81,7 +83,9 @@ class TestParseTypeScript:
         node = parse_typescript(binary_file)
         assert node is None
 
-    def test_oversized_file_returns_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_oversized_file_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Oversized .ts file must return None."""
         import seam.config as config
 

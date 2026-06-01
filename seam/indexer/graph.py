@@ -16,22 +16,23 @@ from tree_sitter import Node
 
 class Symbol(TypedDict):
     name: str
-    kind: str          # 'function' | 'class' | 'method' | 'interface' | 'type'
-    file: str          # str(path) — resolved at call time
+    kind: str  # 'function' | 'class' | 'method' | 'interface' | 'type'
+    file: str  # str(path) — resolved at call time
     start_line: int
     end_line: int
     docstring: str | None
 
 
 class Edge(TypedDict):
-    source: str        # Symbol name of caller / importer
-    target: str        # Symbol name of callee / importee
-    kind: str          # 'import' | 'call'
+    source: str  # Symbol name of caller / importer
+    target: str  # Symbol name of callee / importee
+    kind: str  # 'import' | 'call'
     file: str
     line: int
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
+
 
 def _text(node: Node) -> str:
     """Safely decode a tree-sitter node's text bytes to str.
@@ -125,7 +126,8 @@ def _find_enclosing_function(node: Node, language: str) -> str | None:
             func_name = _text(name_node)
             # Check if the function is inside a class to produce qualified name
             class_types = (
-                {"class_definition"} if language == "python"
+                {"class_definition"}
+                if language == "python"
                 else {"class_declaration", "class_body"}
             )
             parent = current.parent
@@ -142,6 +144,7 @@ def _find_enclosing_function(node: Node, language: str) -> str | None:
 
 
 # ── Python extraction ──────────────────────────────────────────────────────────
+
 
 def _extract_symbols_python(root: Node, filepath: Path) -> list[Symbol]:
     """Walk a Python AST and extract function, class, and method symbols."""
@@ -218,13 +221,15 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
                 if child.type in ("dotted_name", "aliased_import"):
                     # For aliased imports use the 'name' field (original name)
                     target_node = child.child_by_field_name("name") or child
-                    edges.append(Edge(
-                        source=file_stem,
-                        target=_text(target_node),
-                        kind="import",
-                        file=file_str,
-                        line=node.start_point[0] + 1,
-                    ))
+                    edges.append(
+                        Edge(
+                            source=file_stem,
+                            target=_text(target_node),
+                            kind="import",
+                            file=file_str,
+                            line=node.start_point[0] + 1,
+                        )
+                    )
 
         elif node.type == "import_from_statement":
             # from X import Y [, Z]
@@ -236,23 +241,27 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
                     continue
                 if found_import_kw:
                     if child.type in ("dotted_name", "identifier"):
-                        edges.append(Edge(
-                            source=file_stem,
-                            target=_text(child),
-                            kind="import",
-                            file=file_str,
-                            line=node.start_point[0] + 1,
-                        ))
-                    elif child.type == "aliased_import":
-                        name_node = child.child_by_field_name("name")
-                        if name_node:
-                            edges.append(Edge(
+                        edges.append(
+                            Edge(
                                 source=file_stem,
-                                target=_text(name_node),
+                                target=_text(child),
                                 kind="import",
                                 file=file_str,
                                 line=node.start_point[0] + 1,
-                            ))
+                            )
+                        )
+                    elif child.type == "aliased_import":
+                        name_node = child.child_by_field_name("name")
+                        if name_node:
+                            edges.append(
+                                Edge(
+                                    source=file_stem,
+                                    target=_text(name_node),
+                                    kind="import",
+                                    file=file_str,
+                                    line=node.start_point[0] + 1,
+                                )
+                            )
 
         elif node.type == "call":
             # Only track bare-identifier callees (not attribute calls like obj.method())
@@ -260,13 +269,15 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
             if func_child and func_child.type == "identifier":
                 source = _find_enclosing_function(node, "python")
                 if source is not None:
-                    edges.append(Edge(
-                        source=source,
-                        target=_text(func_child),
-                        kind="call",
-                        file=file_str,
-                        line=node.start_point[0] + 1,
-                    ))
+                    edges.append(
+                        Edge(
+                            source=source,
+                            target=_text(func_child),
+                            kind="call",
+                            file=file_str,
+                            line=node.start_point[0] + 1,
+                        )
+                    )
 
         for child in node.children:
             _walk(child)
@@ -278,6 +289,7 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
 
 
 # ── TypeScript / JavaScript extraction ────────────────────────────────────────
+
 
 def _extract_symbols_typescript(root: Node, filepath: Path) -> list[Symbol]:
     """Walk a TypeScript/TSX AST and extract all symbol types."""
@@ -369,13 +381,15 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
                 for clause_child in clause.children:
                     if clause_child.type == "identifier":
                         # Default import: import X from 'mod'
-                        edges.append(Edge(
-                            source=file_stem,
-                            target=_text(clause_child),
-                            kind="import",
-                            file=file_str,
-                            line=line,
-                        ))
+                        edges.append(
+                            Edge(
+                                source=file_stem,
+                                target=_text(clause_child),
+                                kind="import",
+                                file=file_str,
+                                line=line,
+                            )
+                        )
                     elif clause_child.type == "named_imports":
                         # Named imports: { X, Y }
                         for spec in clause_child.children:
@@ -385,26 +399,30 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
                                 if name_node is None and spec.children:
                                     name_node = spec.children[0]
                                 if name_node:
-                                    edges.append(Edge(
-                                        source=file_stem,
-                                        target=_text(name_node),
-                                        kind="import",
-                                        file=file_str,
-                                        line=line,
-                                    ))
+                                    edges.append(
+                                        Edge(
+                                            source=file_stem,
+                                            target=_text(name_node),
+                                            kind="import",
+                                            file=file_str,
+                                            line=line,
+                                        )
+                                    )
 
         elif node.type == "call_expression":
             func_child = node.child_by_field_name("function")
             if func_child and func_child.type == "identifier":
                 source = _find_enclosing_function(node, "typescript")
                 if source is not None:
-                    edges.append(Edge(
-                        source=source,
-                        target=_text(func_child),
-                        kind="call",
-                        file=file_str,
-                        line=node.start_point[0] + 1,
-                    ))
+                    edges.append(
+                        Edge(
+                            source=source,
+                            target=_text(func_child),
+                            kind="call",
+                            file=file_str,
+                            line=node.start_point[0] + 1,
+                        )
+                    )
 
         for child in node.children:
             _walk(child)
@@ -416,6 +434,7 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────
+
 
 def extract_symbols(node: object, language: str, filepath: Path) -> list[Symbol]:
     """Extract all symbol definitions from an AST root node.

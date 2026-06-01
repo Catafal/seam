@@ -87,9 +87,7 @@ class TestInitDb:
         """init_db creates the FTS5 virtual table symbols_fts."""
         conn = init_db(Path(":memory:"))
         # FTS5 virtual tables appear in sqlite_master with type='table'
-        rows = conn.execute(
-            "SELECT name FROM sqlite_master WHERE name='symbols_fts'"
-        ).fetchall()
+        rows = conn.execute("SELECT name FROM sqlite_master WHERE name='symbols_fts'").fetchall()
         assert len(rows) == 1
         conn.close()
 
@@ -182,9 +180,7 @@ class TestUpsertFile:
         edges = [make_edge(source="func_a", target="func_b", file=str(filepath))]
         try:
             upsert_file(conn, filepath, "python", "abc123", [], edges)
-            row = conn.execute(
-                "SELECT source_name, target_name FROM edges LIMIT 1"
-            ).fetchone()
+            row = conn.execute("SELECT source_name, target_name FROM edges LIMIT 1").fetchone()
             assert row is not None
             # Contract: Edge['source'] → source_name, Edge['target'] → target_name
             assert row["source_name"] == "func_a"

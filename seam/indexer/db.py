@@ -90,9 +90,7 @@ def upsert_file(
         )
 
         # 2. Retrieve file_id (after upsert the row exists with the correct id)
-        row = conn.execute(
-            "SELECT id FROM files WHERE path = ?", (str(filepath),)
-        ).fetchone()
+        row = conn.execute("SELECT id FROM files WHERE path = ?", (str(filepath),)).fetchone()
         file_id: int = row["id"]
 
         # 3. Delete old symbols for this file (CASCADE removes edges too;
@@ -127,8 +125,8 @@ def upsert_file(
             """,
             [
                 (
-                    edge["source"],   # Edge field 'source' -> column source_name
-                    edge["target"],   # Edge field 'target' -> column target_name
+                    edge["source"],  # Edge field 'source' -> column source_name
+                    edge["target"],  # Edge field 'target' -> column target_name
                     edge["kind"],
                     file_id,
                     edge["line"],

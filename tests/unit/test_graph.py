@@ -31,6 +31,7 @@ SAMPLE_TS = FIXTURES_DIR / "sample.ts"
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+
 def _get_py_root():  # type: ignore[return]
     """Parse sample.py and return root node."""
     node = parse_python(SAMPLE_PY)
@@ -62,6 +63,7 @@ def _edge_by_target(edges: list[Edge], target: str) -> Edge | None:
 
 
 # ── B2: extract_symbols — Python ──────────────────────────────────────────────
+
 
 class TestExtractSymbolsPython:
     def test_standalone_function_extracted(self) -> None:
@@ -133,6 +135,7 @@ class TestExtractSymbolsPython:
 
 
 # ── B2: extract_symbols — TypeScript ──────────────────────────────────────────
+
 
 class TestExtractSymbolsTypeScript:
     def test_function_extracted(self) -> None:
@@ -212,6 +215,7 @@ class TestExtractSymbolsTypeScript:
 
 
 # ── B3: extract_edges — imports ────────────────────────────────────────────────
+
 
 class TestExtractEdgesPython:
     def test_import_edge_os(self) -> None:

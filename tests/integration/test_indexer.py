@@ -64,9 +64,7 @@ def test_init_includes_known_symbol(tmp_db_dir: Path) -> None:
     db_path = tmp_db_dir / ".seam" / "seam.db"
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    row = conn.execute(
-        "SELECT name FROM symbols WHERE name = ?", (KNOWN_PYTHON_SYMBOL,)
-    ).fetchone()
+    row = conn.execute("SELECT name FROM symbols WHERE name = ?", (KNOWN_PYTHON_SYMBOL,)).fetchone()
     conn.close()
     assert row is not None, f"Expected symbol '{KNOWN_PYTHON_SYMBOL}' not found in DB"
 
@@ -80,9 +78,7 @@ def test_init_includes_typescript_symbol(tmp_db_dir: Path) -> None:
     db_path = tmp_db_dir / ".seam" / "seam.db"
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    row = conn.execute(
-        "SELECT name FROM symbols WHERE name = ?", (KNOWN_TS_SYMBOL,)
-    ).fetchone()
+    row = conn.execute("SELECT name FROM symbols WHERE name = ?", (KNOWN_TS_SYMBOL,)).fetchone()
     conn.close()
     assert row is not None, f"Expected symbol '{KNOWN_TS_SYMBOL}' not found in DB"
 
@@ -109,9 +105,7 @@ def test_status_after_init_reports_symbols(tmp_db_dir: Path) -> None:
     """After init, status must print symbol count > 0 without error."""
     runner = CliRunner()
     # First init
-    init_result = runner.invoke(
-        app, ["init", str(FIXTURES_DIR), "--db-dir", str(tmp_db_dir)]
-    )
+    init_result = runner.invoke(app, ["init", str(FIXTURES_DIR), "--db-dir", str(tmp_db_dir)])
     assert init_result.exit_code == 0, f"init failed:\n{init_result.output}"
 
     # Then status
@@ -131,6 +125,4 @@ def test_status_no_db_prints_helpful_message(tmp_db_dir: Path) -> None:
     # Must exit with error
     assert result.exit_code != 0
     # Must print a hint to run init
-    assert "init" in result.output.lower(), (
-        f"Expected 'init' hint in output:\n{result.output}"
-    )
+    assert "init" in result.output.lower(), f"Expected 'init' hint in output:\n{result.output}"

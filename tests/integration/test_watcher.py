@@ -62,9 +62,7 @@ def _poll_symbols(db_path: Path, name: str, timeout: float = 2.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         conn = sqlite3.connect(str(db_path))
-        row = conn.execute(
-            "SELECT name FROM symbols WHERE name = ?", (name,)
-        ).fetchone()
+        row = conn.execute("SELECT name FROM symbols WHERE name = ?", (name,)).fetchone()
         conn.close()
         if row is not None:
             return True
@@ -77,9 +75,7 @@ def _poll_file_gone(db_path: Path, filepath: Path, timeout: float = 2.0) -> bool
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         conn = sqlite3.connect(str(db_path))
-        row = conn.execute(
-            "SELECT path FROM files WHERE path = ?", (str(filepath),)
-        ).fetchone()
+        row = conn.execute("SELECT path FROM files WHERE path = ?", (str(filepath),)).fetchone()
         conn.close()
         if row is None:
             return True
