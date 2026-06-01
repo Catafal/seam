@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Testing / coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Environment
+.env
+
+# Seam index (local per-project, not committed by default)
+.seam/
+
+# GitNexus index
+.gitnexus/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Distribution
+*.tar.gz
+*.zip
+
+# uv lockfile (commit uv.lock in production, optional here)
+# uv.lock
+
+.bach/
+.claude/
+.koda/
