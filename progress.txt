@@ -26,9 +26,9 @@
 [x] 5.2 Concept query
 [x] 5.3 Context lookup
 [x] 5.4 Query engine tests
-[ ] 6.1 seam init command
-[ ] 6.2 seam status command
-[ ] 6.3 CLI integration tests
+[x] 6.1 seam init command
+[x] 6.2 seam status command
+[x] 6.3 CLI integration tests
 [ ] 7.1 File watcher daemon
 [ ] 7.2 Watcher integration test
 [ ] 8.1 MCP server setup
@@ -53,3 +53,9 @@
 #   - 38 tests passing, make gate green
 # 2026-06-01: Convergence — Tracks A+B merged into main; all steps 2.1-5.4 complete
 # Next: Step 6.1 (seam init command)
+# 2026-06-01: CONVERGE — CLI integration complete; steps 6.1-6.3 done
+#   - seam/cli/main.py: index_one_file(), init, status commands implemented
+#   - tests/integration/test_indexer.py: 6 integration tests; all passing
+#   - 92 total tests; make gate green (lint + typecheck + pytest)
+#   - --db-dir option on init/status for test isolation
+# Next: Step 7.1 (file watcher daemon)
