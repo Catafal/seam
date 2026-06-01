@@ -388,8 +388,8 @@ def handle_seam_trace(
 
 # Default scope for seam_changes.
 _CHANGES_SCOPE_DEFAULT = "working"
-# FIX 8: Use DEFAULT_BASE_REF from analysis.changes as the single source of truth
-# to avoid drift between the handler and the analysis layer.
+# Import the canonical default from analysis.changes to keep handler and analysis
+# layer in sync — avoids silent drift when the default changes.
 _CHANGES_BASE_REF_DEFAULT = DEFAULT_BASE_REF
 
 

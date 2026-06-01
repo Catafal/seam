@@ -1,6 +1,8 @@
--- Seam SQLite Schema (Phase 0)
--- Run via db.py:init_db() — idempotent (CREATE TABLE IF NOT EXISTS)
+-- Seam SQLite Schema (v2 — Phase 1 Core)
+-- Run via db.py:init_db() — idempotent (CREATE TABLE IF NOT EXISTS).
 -- FTS5 is required; init_db() verifies availability before proceeding.
+-- Schema v2 adds: edges.confidence (DEFAULT 'INFERRED').
+-- Migration from v1: db.py:_run_migration_v1_to_v2() (guarded ALTER TABLE).
 
 PRAGMA journal_mode = WAL;      -- Write-ahead logging for concurrent reads
 PRAGMA foreign_keys = ON;

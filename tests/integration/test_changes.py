@@ -73,10 +73,10 @@ def git_repo_with_index() -> tuple[sqlite3.Connection, Path, Path]:
     Yields (conn, project_root, src_path).
     """
     with tempfile.TemporaryDirectory() as tmp:
-        # FIX 3: Resolve tmp so that path comparisons match the indexer's contract.
-        # The indexer (cli init) calls Path.resolve() before upsert_file, so DB paths
-        # are resolved. Tests must use the same resolved root to exercise the real contract.
-        # On macOS /tmp -> /private/tmp; without resolve() DB lookups silently miss.
+        # Resolve the temp path so DB lookups match the indexer's storage contract.
+        # cli/main.py init calls Path.resolve() before upsert_file, so DB paths are
+        # fully resolved. On macOS /tmp is a symlink to /private/tmp; without resolve()
+        # every DB lookup would silently miss. Tests must use the same resolved root.
         tmp_path = Path(tmp).resolve()
         src = tmp_path / "src.py"
 
@@ -327,7 +327,7 @@ def test_risk_rollup_will_break_is_critical(
 def test_ambiguous_attenuation_caps_risk_at_medium() -> None:
     """When ALL affected symbols have AMBIGUOUS confidence, risk must be capped at medium."""
     with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp).resolve()  # FIX 3: use resolved path to match DB storage contract
+        tmp_path = Path(tmp).resolve()  # resolved path to match DB storage contract (see fixture)
         src = tmp_path / "src.py"
         src.write_text("def A():\n    pass\n\ndef B():\n    A()\n")
         (tmp_path / ".gitignore").write_text(".seam/\n")
@@ -374,7 +374,7 @@ def test_ambiguous_attenuation_caps_risk_at_medium() -> None:
 def test_non_git_directory_raises_not_a_git_repo_error() -> None:
     """detect_changes on a non-git directory must raise NotAGitRepoError (not a traceback)."""
     with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp).resolve()  # FIX 3: consistent resolved path
+        tmp_path = Path(tmp).resolve()  # resolved path to match DB storage contract (see fixture)
         db_path = tmp_path / ".seam" / "seam.db"
         db_path.parent.mkdir()
         conn = init_db(db_path)
@@ -420,7 +420,7 @@ def test_handler_blank_base_ref_returns_invalid_input(
 def test_handler_non_git_returns_not_a_git_repo_dict() -> None:
     """handle_seam_changes in non-git dir must return NOT_A_GIT_REPO error dict (no exception)."""
     with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp).resolve()  # FIX 3: consistent resolved path
+        tmp_path = Path(tmp).resolve()  # resolved path to match DB storage contract (see fixture)
         db_path = tmp_path / ".seam" / "seam.db"
         db_path.parent.mkdir()
         conn = init_db(db_path)
@@ -496,7 +496,7 @@ def test_empty_diff_returns_empty_report(
 def test_module_level_changes_attributed_to_file() -> None:
     """Lines outside any symbol must produce a synthetic <module:file> entry."""
     with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp).resolve()  # FIX 3: consistent resolved path to match DB storage
+        tmp_path = Path(tmp).resolve()  # resolved path to match DB storage contract (see fixture)
         src = tmp_path / "mod.py"
         # Line 1 is module-level (not inside any function).
         src.write_text("X = 1\ndef foo():\n    pass\n")

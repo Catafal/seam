@@ -1,10 +1,19 @@
-"""Seam CLI entry point — `seam init`, `seam start`, `seam status`.
+"""Seam CLI entry point.
 
-Commands
---------
-init   — Index a project directory into .seam/seam.db.
-status — Show index stats and watcher state.
-start  — Start the MCP server (stdio) + file watcher in the background.
+Commands (Phase 0)
+------------------
+init   — Walk the project and index all symbols + edges into .seam/seam.db.
+status — Show index stats (file/symbol/edge counts, freshness, watcher PID).
+start  — Start the MCP server (stdio foreground) + file watcher (background).
+
+Commands (Phase 1 — code reasoning)
+-------------------------------------
+impact  — Blast-radius analysis: what breaks if a symbol changes? Grouped by
+           risk tier (WILL_BREAK / LIKELY_AFFECTED / MAY_NEED_TESTING).
+trace   — Shortest call/dependency path from one symbol to another, with per-hop
+           confidence (EXTRACTED | INFERRED | AMBIGUOUS).
+changes — Pre-commit risk check: map git diff to changed symbols, run impact
+           analysis, report an overall risk level (low/medium/high/critical).
 """
 
 import logging

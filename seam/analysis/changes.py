@@ -266,9 +266,9 @@ def _parse_unified_diff(diff_text: str) -> list[_FileDiff]:
     current_lines: list[int] = []
     current_is_new: bool = False
     current_line_no: int = 0
-    # FIX 1: git emits 'new file mode' BEFORE the '+++ b/path' line, and the
-    # '+++ b/' handler used to reset current_is_new=False. Use a pending flag
-    # so the new-file marker is correctly transferred after the path is parsed.
+    # git emits 'new file mode' BEFORE the '+++ b/path' header, so we cannot
+    # set current_is_new directly in the '+++ b/' handler (it arrives later).
+    # Use a pending flag that the '+++ b/' handler reads and clears on parse.
     pending_new_file: bool = False
 
     for line in diff_text.splitlines():
@@ -490,8 +490,9 @@ def _collect_impact(
     if not real_names:
         return []
 
-    # FIX 5: Cap the number of symbols passed to impact() to avoid unbounded
-    # processing on large diffs. Process in list order (deterministic).
+    # Cap changed symbols to avoid unbounded impact() calls on very large diffs.
+    # Processes the first _MAX_IMPACT_SYMBOLS in list order (deterministic).
+    # A warning is logged when the cap is hit — callers can see it via SEAM_LOG_LEVEL=DEBUG.
     if len(real_names) > _MAX_IMPACT_SYMBOLS:
         logger.warning(
             "detect_changes: %d changed symbols exceeds cap %d; impact computed on first %d",
@@ -620,11 +621,11 @@ def detect_changes(
     if scope not in VALID_SCOPES:
         raise ValueError(f"scope must be one of {sorted(VALID_SCOPES)}; got {scope!r}")
 
-    # FIX 2: Always resolve repo_root so that (repo_root / fd.path) produces the
-    # same resolved absolute path that the indexer stored in the DB.
+    # Always resolve repo_root so that `str(repo_root / fd.path)` produces the
+    # same resolved absolute path the indexer stored in the DB.
     # The indexer (cli/main.py init) calls Path(path).resolve() before indexing, so
-    # all DB paths are resolved. Using an unresolved root (e.g. /tmp on macOS, which
-    # is a symlink to /private/tmp) would silently miss every DB lookup.
+    # DB paths are fully resolved. On macOS, /tmp is a symlink to /private/tmp —
+    # an unresolved root would silently miss every DB lookup for files under /tmp.
     repo_root = (repo_root or Path(os.getcwd())).resolve()
 
     # Get the unified diff for the requested scope.

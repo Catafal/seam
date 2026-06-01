@@ -1,17 +1,24 @@
-"""MCP server setup — FastMCP stdio transport, three tools registered.
+"""MCP server setup — FastMCP stdio transport, six tools registered.
 
 Creates and configures the MCP server instance.
-Tool handlers in tools.py are thin wrappers over query.engine; the MCP
-decorators here connect them to the FastMCP framework.
+Tool handlers in tools.py are thin adapters; this module wires them to FastMCP.
 
 Usage (from cli/main.py):
     server = create_server(conn, root)
     server.run(transport="stdio")
 
+Tools registered (Phase 0 + Phase 1):
+    seam_query    — FTS5 + 1-hop graph expansion search
+    seam_context  — 360-degree symbol view (callers, callees, location)
+    seam_search   — full-text search (FTS5 BM25)
+    seam_impact   — blast-radius analysis by risk tier (Phase 1)
+    seam_trace    — shortest call/dependency path between two symbols (Phase 1)
+    seam_changes  — git diff → changed symbols → risk level (Phase 1)
+
 Design:
 - One FastMCP instance per process; connection is injected at creation time.
-- Tools are defined as closures capturing conn + root so FastMCP's decorator
-  pattern (which doesn't pass state through the call signature) stays clean.
+- Tools are closures capturing conn + root so FastMCP's decorator pattern
+  (which does not pass state through the call signature) stays clean.
 - Return types are Any to avoid FastMCP structured-output mode, which wraps
   results in a Pydantic model we don't need.
 """
@@ -45,11 +52,15 @@ _CHANGES_BASE_REF_DEFAULT = DEFAULT_BASE_REF
 
 
 def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
-    """Configure and return a FastMCP server with seam_query, seam_context, seam_search.
+    """Configure and return a FastMCP server with all six Seam tools registered.
+
+    Phase 0: seam_query, seam_context, seam_search
+    Phase 1: seam_impact, seam_trace, seam_changes
 
     Args:
         conn: Open SQLite connection to the Seam index DB.
-        root: Project root Path — used to relativize file paths in results.
+        root: Project root Path — used to relativize file paths in results
+              and as the git repo root for seam_changes.
 
     Returns:
         A FastMCP instance ready for server.run(transport="stdio").

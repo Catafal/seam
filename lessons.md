@@ -71,6 +71,26 @@ the string-name-edge ADR. Revisit in Phase 1:
   `_extract_symbols_typescript`. This slice (Slice 4 / issue #4) is edge extraction only — do NOT
   implement symbol indexing for arrows here.
 
+## 2026-06-01 — Known Phase 1b limitations (not bugs — tracked for future work)
+
+Three known limitations are accepted Phase 1 scope, documented here to avoid
+re-discovery. See README.md "Known Limitations" for the user-facing summary.
+
+1. **Cross-file confidence resolution (Phase-1b):** `extract_edges` resolves confidence
+   only against same-file symbols. Edges to symbols in other files are `INFERRED` even
+   when those symbols exist in the DB. Full-index resolution would require a post-index
+   pass that checks edge targets against the full `symbols` table.
+
+2. **Impact includes test callers:** `seam_impact` and `seam_changes` return test
+   functions in `WILL_BREAK`/`LIKELY_AFFECTED` tiers. On any real codebase this is
+   noisy. A future filter on `files.path` (e.g. `WHERE path NOT LIKE '%test%'`) would
+   clean this up.
+
+3. **detect_changes 50-symbol cap:** `_collect_impact` in `changes.py` caps at 50
+   changed symbol names to avoid unbounded processing on massive diffs. The cap is
+   deterministic (first 50 in list order) and logged as a WARNING. The constant is
+   `_MAX_IMPACT_SYMBOLS = 50` in `seam/analysis/changes.py`.
+
 ## 2026-06-01 — String-name collision limitation MITIGATED via confidence tagging (Phase 1 issue #3)
 
 The Phase-0 string-name collision limitation is now mitigated rather than silently wrong:

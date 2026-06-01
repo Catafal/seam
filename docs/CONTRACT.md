@@ -68,8 +68,14 @@ class ContextResult(TypedDict):
 
 **Phase 1 change:** `edges` table has a new column:
 ```sql
-confidence  TEXT NOT NULL DEFAULT 'EXTRACTED'
+confidence  TEXT NOT NULL DEFAULT 'INFERRED'
 ```
+
+> Note: the DEFAULT is `'INFERRED'` (conservative), not `'EXTRACTED'`. New rows
+> created by `upsert_file` always carry an explicit confidence value; the DEFAULT
+> only fires for v1 DBs upgraded via `_run_migration_v1_to_v2` (ALTER TABLE).
+> `'INFERRED'` is the safe fallback — old edges whose confidence was never computed
+> are treated as heuristic rather than trusted.
 
 `init_db` runs a guarded migration: if an existing DB has no `confidence` column,
 it issues `ALTER TABLE edges ADD COLUMN confidence ...` and logs a re-index warning.
