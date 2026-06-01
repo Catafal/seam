@@ -1,6 +1,8 @@
--- Seam SQLite Schema (Phase 0)
--- Run via db.py:init_db() — idempotent (CREATE TABLE IF NOT EXISTS)
+-- Seam SQLite Schema (v2 — Phase 1 Core)
+-- Run via db.py:init_db() — idempotent (CREATE TABLE IF NOT EXISTS).
 -- FTS5 is required; init_db() verifies availability before proceeding.
+-- Schema v2 adds: edges.confidence (DEFAULT 'INFERRED').
+-- Migration from v1: db.py:_run_migration_v1_to_v2() (guarded ALTER TABLE).
 
 PRAGMA journal_mode = WAL;      -- Write-ahead logging for concurrent reads
 PRAGMA foreign_keys = ON;
@@ -38,13 +40,15 @@ CREATE INDEX IF NOT EXISTS idx_symbols_file_id ON symbols(file_id);
 -- Directed relationships between symbols.
 -- source_name / target_name store the string name (not ID) so edges survive
 -- re-indexing of either endpoint independently.
+-- confidence: EXTRACTED (resolved to 1 symbol) | INFERRED (heuristic) | AMBIGUOUS (name collision)
 CREATE TABLE IF NOT EXISTS edges (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     source_name TEXT NOT NULL,          -- Symbol name of the caller/importer
     target_name TEXT NOT NULL,          -- Symbol name of the callee/importee
     kind        TEXT NOT NULL,          -- 'import' | 'call'
     file_id     INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-    line        INTEGER NOT NULL        -- Line where the relationship is expressed
+    line        INTEGER NOT NULL,       -- Line where the relationship is expressed
+    confidence  TEXT NOT NULL DEFAULT 'INFERRED'   -- EXTRACTED | INFERRED | AMBIGUOUS (DEFAULT is INFERRED: conservative)
 );
 
 CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_name);
@@ -86,5 +90,5 @@ CREATE TABLE IF NOT EXISTS metadata (
 );
 
 INSERT OR IGNORE INTO metadata(key, value) VALUES
-    ('schema_version', '1'),
+    ('schema_version', '2'),
     ('seam_version',   '0.1.0');

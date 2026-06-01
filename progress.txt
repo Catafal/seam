@@ -14,26 +14,26 @@
 [x] 1.9 GitNexus indexed + CLAUDE.md finalized
 
 # ── Phase 0: Implementation ────────────────────────
-[ ] 2.1 db.py — schema + upsert + delete
-[ ] 2.2 db.py tests
-[ ] 3.1 Python parser
-[ ] 3.2 TypeScript/JS parser
-[ ] 3.3 Parser tests with fixtures
-[ ] 4.1 Symbol extraction
-[ ] 4.2 Edge extraction
-[ ] 4.3 Graph tests
-[ ] 5.1 FTS5 search
-[ ] 5.2 Concept query
-[ ] 5.3 Context lookup
-[ ] 5.4 Query engine tests
-[ ] 6.1 seam init command
-[ ] 6.2 seam status command
-[ ] 6.3 CLI integration tests
-[ ] 7.1 File watcher daemon
-[ ] 7.2 Watcher integration test
-[ ] 8.1 MCP server setup
-[ ] 8.2 MCP tool handlers
-[ ] 8.3 seam start command
+[x] 2.1 db.py — schema + upsert + delete
+[x] 2.2 db.py tests
+[x] 3.1 Python parser
+[x] 3.2 TypeScript/JS parser
+[x] 3.3 Parser tests with fixtures
+[x] 4.1 Symbol extraction
+[x] 4.2 Edge extraction
+[x] 4.3 Graph tests
+[x] 5.1 FTS5 search
+[x] 5.2 Concept query
+[x] 5.3 Context lookup
+[x] 5.4 Query engine tests
+[x] 6.1 seam init command
+[x] 6.2 seam status command
+[x] 6.3 CLI integration tests
+[x] 7.1 File watcher daemon
+[x] 7.2 Watcher integration test
+[x] 8.1 MCP server setup
+[x] 8.2 MCP tool handlers
+[x] 8.3 seam start command
 [ ] 9.1 Benchmark baseline (Bach)
 [ ] 9.2 Benchmark with Seam (Bach)
 [ ] 9.3 Benchmark report
@@ -45,3 +45,42 @@
 # ── Last Session ─────────────────────────────────
 # 2026-06-01: Day 0 — Full 101 initialization complete
 # Next: Start with 2.1 (db.py schema implementation)
+# 2026-06-01: Track A complete — db.py + engine.py implemented; 48 tests passing; gate green
+# Next: Track B (parser.py + graph.py) and convergence (CLI seam init)
+# 2026-06-01: Track B — Parser + Graph Extraction complete
+#   - parser.py: _parse helper + parse_python/typescript/javascript
+#   - graph.py: extract_symbols + extract_edges for Python + TypeScript
+#   - 38 tests passing, make gate green
+# 2026-06-01: Convergence — Tracks A+B merged into main; all steps 2.1-5.4 complete
+# Next: Step 6.1 (seam init command)
+# 2026-06-01: CONVERGE — CLI integration complete; steps 6.1-6.3 done
+#   - seam/cli/main.py: index_one_file(), init, status commands implemented
+#   - tests/integration/test_indexer.py: 6 integration tests; all passing
+#   - 92 total tests; make gate green (lint + typecheck + pytest)
+#   - --db-dir option on init/status for test isolation
+# 2026-06-01: Step 7.1-7.2 — File watcher daemon complete
+#   - seam/watcher/daemon.py: SeamWatcher (FileSystemEventHandler) with per-file debounce
+#   - on_created/on_modified: debounced by SEAM_DEBOUNCE_MS -> index_one_file
+#   - on_deleted: db.delete_file (immediate, no debounce)
+#   - start()/stop(): Observer lifecycle + .seam/watcher.pid management
+#   - tests/integration/test_watcher.py: 4 integration tests; all passing
+#   - 96 total tests; make gate green (lint + typecheck + pytest)
+# 2026-06-01: Steps 8.1-8.4 — MCP server complete
+#   - seam/server/tools.py: handle_seam_query/context/search — validation, clamping, relativization
+#   - seam/server/mcp.py: create_server(conn, root) — FastMCP stdio, three tools registered
+#   - seam/cli/main.py: `seam start` — watcher subprocess + MCP foreground + SIGTERM cleanup
+#   - tests/integration/test_mcp_tools.py: 15 integration tests; all passing
+#   - 111 total tests; make gate green (ruff + mypy + pytest)
+# 2026-06-01: REVIEW + HARDENING + QA pass (commit e27f349)
+#   - /backend-taste + /review (high) found index-corruption + extraction bugs.
+#   - Fixed (Opus): per-connection foreign_keys + busy_timeout (db.connect());
+#     stable-id upsert (ON CONFLICT) + explicit edge delete; new indexer/pipeline.py
+#     (kills watcher->cli layer violation); watcher resolves root (macOS /private);
+#     guarded background-thread callbacks; `python -m seam.watcher` entry + PID
+#     liveness; status takes a path arg; engine score sign; query maps malformed-FTS
+#     to INVALID_QUERY; graph nested-fn mis-tag + decorated-class drop + docstring fix.
+#     +8 regression tests (test_hardening.py).
+#   - QA (no HITL): 119 tests green; init/status/query/context/search verified;
+#     TS indexing works; live watcher re-index 0.55s (<1s PRD target).
+#   - 9.x benchmark (Bach): DROPPED per user.
+# Next: Step 10.x release — README quickstart, commit uv.lock, tag v0.1.0 (HOLD tag for user go).
