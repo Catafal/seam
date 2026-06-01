@@ -16,12 +16,12 @@
 # ── Phase 0: Implementation ────────────────────────
 [ ] 2.1 db.py — schema + upsert + delete
 [ ] 2.2 db.py tests
-[ ] 3.1 Python parser
-[ ] 3.2 TypeScript/JS parser
-[ ] 3.3 Parser tests with fixtures
-[ ] 4.1 Symbol extraction
-[ ] 4.2 Edge extraction
-[ ] 4.3 Graph tests
+[x] 3.1 Python parser
+[x] 3.2 TypeScript/JS parser
+[x] 3.3 Parser tests with fixtures
+[x] 4.1 Symbol extraction
+[x] 4.2 Edge extraction
+[x] 4.3 Graph tests
 [ ] 5.1 FTS5 search
 [ ] 5.2 Concept query
 [ ] 5.3 Context lookup
@@ -45,3 +45,8 @@
 # ── Last Session ─────────────────────────────────
 # 2026-06-01: Day 0 — Full 101 initialization complete
 # Next: Start with 2.1 (db.py schema implementation)
+# 2026-06-01: Track B — Parser + Graph Extraction complete
+#   - parser.py: _parse helper + parse_python/typescript/javascript
+#   - graph.py: extract_symbols + extract_edges for Python + TypeScript
+#   - 38 tests passing, make gate green
+# Next: Track A (db.py + engine.py) or convergence step
