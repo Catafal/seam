@@ -16,7 +16,13 @@ from pathlib import Path
 import seam.config as config
 from seam.indexer.db import upsert_file
 from seam.indexer.graph import extract_comments, extract_edges, extract_symbols
-from seam.indexer.parser import parse_javascript, parse_python, parse_typescript
+from seam.indexer.parser import (
+    parse_go,
+    parse_javascript,
+    parse_python,
+    parse_rust,
+    parse_typescript,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +57,10 @@ def _dispatch_parser(path: Path, language: str):  # type: ignore[return]
         return parse_typescript(path)
     if language == "javascript":
         return parse_javascript(path)
+    if language == "go":
+        return parse_go(path)
+    if language == "rust":
+        return parse_rust(path)
     return None
 
 

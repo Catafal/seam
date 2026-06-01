@@ -26,3 +26,21 @@ JavaScript is included with TypeScript at no extra cost (same tree-sitter gramma
 - Phase 1 adds `tree-sitter-go` and `tree-sitter-rust` grammar packages.
 - Language detection: by file extension (`.py` → Python; `.ts`/`.tsx` → TypeScript; `.js`/`.mjs`/`.cjs` → JavaScript).
 - No detection by shebang or content in Phase 0.
+
+## Update (Phase 1b) — 2026-06-01
+
+Go and Rust are now implemented. The Phase 1 consequence above has been fulfilled.
+
+**What was added:**
+- `tree-sitter-go==0.25.0` and `tree-sitter-rust==0.24.2` added as pinned deps.
+- `seam/indexer/parser.py`: `parse_go()` and `parse_rust()` functions (delegating to the existing `_parse` helper).
+- `seam/config.py`: `.go` → `go` and `.rs` → `rust` added to `SEAM_LANGUAGE_MAP`.
+- `seam/indexer/pipeline.py`: `_dispatch_parser` routes `go` and `rust` language strings.
+- `seam/indexer/graph_go_rust.py` (new): Go and Rust symbol, edge, and comment extractors, split from `graph.py` to keep that file under 1000 lines.
+- `seam/indexer/graph.py`: public dispatchers (`extract_symbols`, `extract_edges`, `extract_comments`) extended to route `go` and `rust` to the new module; `_find_enclosing_function` extended with Go/Rust branches.
+
+**Kind mapping implemented:**
+- Go: `function_declaration` → function; `method_declaration` → method (`Recv.Name`, `*T` normalized); struct → class; interface → interface; type def/alias → type.
+- Rust: `function_item` → function; impl method → method (`Type.fn`); struct → class; enum → type; trait → interface; mod traversed but not emitted.
+
+**All tests pass** (`make gate` green). See `tests/unit/test_go_rust.py` for the behavioral test suite.

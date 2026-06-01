@@ -16,7 +16,9 @@ This file remains the authoritative contract reference across all phases.
 
 ## In-memory types (produced by graph.py, consumed by db.py)
 
-Defined in `seam/indexer/graph.py`:
+Defined in `seam/indexer/graph_common.py` (the leaf module); re-exported from
+`seam/indexer/graph.py` so existing callers (`from seam.indexer.graph import Symbol`)
+continue to work without changes.
 
 ```python
 class Symbol(TypedDict):
@@ -39,7 +41,7 @@ class Edge(TypedDict):
                        # AMBIGUOUS = target name matches >1 same-file symbol
 ```
 
-The `Confidence` type alias is defined in `graph.py` as
+The `Confidence` type alias is defined in `graph_common.py` as
 `Literal["EXTRACTED", "INFERRED", "AMBIGUOUS"]`.
 
 ## Query-result types (produced by engine.py)
@@ -135,10 +137,11 @@ There are **two orthogonal `ambiguous` signals** in Seam — callers must not co
 These are now consistent in scope (both whole-index).  The stored `edges.confidence`
 column retains its original same-file semantics as a debugging hint only.
 
-## Note on stale docs
+## Note on resolved stale docs
 
-`BACKEND_STRUCTURE.md` lists `Symbol.col`. That is stale prose — the
-TypedDict has **no `col` field**. The code is correct; the doc is not.
+`BACKEND_STRUCTURE.md` previously listed `Symbol.col` — that was stale prose; the
+TypedDict has no `col` field. BACKEND_STRUCTURE.md has been updated (Phase 1b) to
+reflect the correct fields and the new graph_common/graph_go_rust modules.
 
 ## Analysis layer types (Phase 1 — Slice 5)
 
@@ -456,6 +459,17 @@ comments are silently ignored.
   A marker on line 2+ of a JSDoc-style block is detected, and its stored `line` points
   at the marker's real line (not at the `/*` opener). Each matched line in a block
   becomes a separate `Comment` entry.
+- Go: `//` line comments and `/* */` block comments. Block comments are scanned
+  line-by-line (same rule as TypeScript). Both `//' and `//` node variants use the
+  single `comment` tree-sitter node type — the prefix is stripped before matching.
+- Rust: `line_comment` nodes (`//`, `///`, `//!`) and `block_comment` nodes (`/* */`).
+  All `line_comment` variants are scanned; the `//`, `///`, or `//!` prefix is stripped
+  before matching. `///` lines are also used as docstrings (outer doc-comment), but
+  both roles are independent — a `/// WHY: reason` line is stored as BOTH a docstring
+  line AND a semantic comment. Block comments use the same line-by-line scan.
+
+No per-language confidence code: Go and Rust semantic comment extraction and
+edge confidence resolution use the same shared helpers as Python/TypeScript.
 
 **Never raises:** returns `[]` on any parse trouble (consistent with `extract_symbols`
 and `extract_edges`).
@@ -505,6 +519,38 @@ populate the table.
 
 **Symbol mode with `line`:** When `symbol` is given, `line` is ignored — symbol mode uses
 the symbol's own line range `[start_line - LEAD, end_line]`.
+
+## Language kind mapping (Phase 1b — Go + Rust)
+
+Supported languages as of Phase 1b: Python, TypeScript, JavaScript, Go, Rust.
+
+Go kind mapping (tree-sitter node → Symbol.kind):
+
+| tree-sitter node              | Symbol.kind | Name format           |
+|-------------------------------|-------------|-----------------------|
+| `function_declaration`        | `function`  | plain name            |
+| `method_declaration`          | `method`    | `Recv.Name` (`*T` → `T`, `Repo[T]` → `Repo`) |
+| `type_spec` with `struct_type`    | `class`     | plain name            |
+| `type_spec` with `interface_type` | `interface` | plain name            |
+| `type_spec` (other)            | `type`      | plain name            |
+| `type_alias`                   | `type`      | plain name            |
+
+Rust kind mapping:
+
+| tree-sitter node                    | Symbol.kind | Name format       |
+|-------------------------------------|-------------|-------------------|
+| `function_item` (top-level / in mod) | `function`  | plain name        |
+| `function_item` inside `impl_item`   | `method`    | `Type.fn`         |
+| `function_item` inside `trait_item`  | `method`    | `Trait.fn`        |
+| `function_signature_item` in trait   | `method`    | `Trait.fn` (signature-only, no body) |
+| `struct_item`                        | `class`     | plain name        |
+| `enum_item`                          | `type`      | plain name        |
+| `trait_item`                         | `interface` | plain name        |
+| `mod_item`                           | (not emitted — traversed for nested symbols) |
+
+Docstrings:
+- Go: contiguous `//` lines immediately above the declaration (no blank-line gap). `_go_doc_comment` in `seam/indexer/graph_go_rust.py`.
+- Rust: contiguous `///` (outer doc) lines immediately above the item. `_rust_doc_comment` in `seam/indexer/graph_go_rust.py`. `//'  and `//!` lines are excluded from docstrings.
 
 ## Drift rule
 

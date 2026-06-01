@@ -12,7 +12,9 @@ Guards applied before parsing:
 
 from pathlib import Path
 
+import tree_sitter_go as tsgo
 import tree_sitter_python as tspython
+import tree_sitter_rust as tsrust
 import tree_sitter_typescript as tstypescript
 from tree_sitter import Language, Node, Parser
 
@@ -23,6 +25,8 @@ _PY_LANG = Language(tspython.language())
 _TS_LANG = Language(tstypescript.language_typescript())
 # TSX grammar is a superset of JS+JSX — used for .js/.mjs/.cjs (no separate JS dep)
 _TSX_LANG = Language(tstypescript.language_tsx())
+_GO_LANG = Language(tsgo.language())
+_RUST_LANG = Language(tsrust.language())
 
 
 def _parse(path: Path, language: Language) -> Node | None:
@@ -91,3 +95,21 @@ def parse_javascript(path: Path) -> Node | None:
     See lessons.md: '2026-06-01 — JavaScript parsed via the TSX grammar'.
     """
     return _parse(path, _TSX_LANG)
+
+
+def parse_go(path: Path) -> Node | None:
+    """Parse a Go source file (.go).
+
+    Returns tree-sitter root Node, or None for binary/oversized/unreadable files.
+    Malformed Go still returns a (possibly partial) tree with ERROR nodes.
+    """
+    return _parse(path, _GO_LANG)
+
+
+def parse_rust(path: Path) -> Node | None:
+    """Parse a Rust source file (.rs).
+
+    Returns tree-sitter root Node, or None for binary/oversized/unreadable files.
+    Malformed Rust still returns a (possibly partial) tree with ERROR nodes.
+    """
+    return _parse(path, _RUST_LANG)
