@@ -29,8 +29,8 @@
 [x] 6.1 seam init command
 [x] 6.2 seam status command
 [x] 6.3 CLI integration tests
-[ ] 7.1 File watcher daemon
-[ ] 7.2 Watcher integration test
+[x] 7.1 File watcher daemon
+[x] 7.2 Watcher integration test
 [ ] 8.1 MCP server setup
 [ ] 8.2 MCP tool handlers
 [ ] 8.3 seam start command
@@ -58,4 +58,11 @@
 #   - tests/integration/test_indexer.py: 6 integration tests; all passing
 #   - 92 total tests; make gate green (lint + typecheck + pytest)
 #   - --db-dir option on init/status for test isolation
-# Next: Step 7.1 (file watcher daemon)
+# 2026-06-01: Step 7.1-7.2 — File watcher daemon complete
+#   - seam/watcher/daemon.py: SeamWatcher (FileSystemEventHandler) with per-file debounce
+#   - on_created/on_modified: debounced by SEAM_DEBOUNCE_MS -> index_one_file
+#   - on_deleted: db.delete_file (immediate, no debounce)
+#   - start()/stop(): Observer lifecycle + .seam/watcher.pid management
+#   - tests/integration/test_watcher.py: 4 integration tests; all passing
+#   - 96 total tests; make gate green (lint + typecheck + pytest)
+# Next: Step 8.1 (MCP server setup)
