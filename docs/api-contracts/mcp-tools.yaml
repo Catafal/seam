@@ -1,0 +1,147 @@
+# Seam MCP Tool Specifications (Phase 0)
+# These are the "API contracts" for the MCP server.
+# Implement exactly these signatures in seam/server/tools.py.
+
+tools:
+
+  seam_query:
+    description: |
+      Find all code related to a concept using hybrid search (FTS5 + 1-hop graph expansion).
+      Use this when you need to find where a concept lives across the codebase.
+    input:
+      concept:
+        type: string
+        required: true
+        description: Natural-language concept or keyword (e.g. "authentication", "rate limiting")
+        min_length: 1
+        max_length: 200
+      limit:
+        type: integer
+        required: false
+        default: 10
+        min: 1
+        max: 50
+    output:
+      type: array
+      items:
+        symbol:
+          type: string
+          description: Symbol name (may be Class.method format)
+        file:
+          type: string
+          description: Relative path from project root
+        line:
+          type: integer
+          description: Start line of the symbol definition
+        score:
+          type: number
+          description: BM25 relevance score (higher = more relevant)
+        callers_count:
+          type: integer
+          description: Number of known callers in the index
+        callees_count:
+          type: integer
+          description: Number of known callees in the index
+      empty_ok: true
+      empty_message: "No results for '{concept}'"
+    errors:
+      - code: INVALID_INPUT
+        condition: concept is empty string or whitespace-only
+
+  seam_context:
+    description: |
+      Get a 360° view of a symbol: its callers, callees, file location, and docstring.
+      Use before touching any existing function or class.
+    input:
+      symbol:
+        type: string
+        required: true
+        description: Exact symbol name (e.g. "UserService", "authenticate_user", "UserService.validate")
+        min_length: 1
+        max_length: 200
+    output:
+      type: object
+      nullable: true
+      null_message: "Symbol '{symbol}' not found in index"
+      fields:
+        symbol:
+          type: string
+        file:
+          type: string
+          description: Relative path from project root
+        line:
+          type: integer
+        end_line:
+          type: integer
+        kind:
+          type: string
+          enum: [function, class, method, interface, type]
+        docstring:
+          type: string
+          nullable: true
+        callers:
+          type: array
+          items: string
+          description: Symbol names that call/import this symbol
+        callees:
+          type: array
+          items: string
+          description: Symbol names this symbol calls/imports
+    errors:
+      - code: INVALID_INPUT
+        condition: symbol is empty string or whitespace-only
+
+  seam_search:
+    description: |
+      Full-text search across all indexed symbol names and docstrings (FTS5 BM25).
+      Use when you know a keyword but not the exact symbol name.
+    input:
+      text:
+        type: string
+        required: true
+        description: Search query (supports FTS5 operators: AND, OR, NOT, phrase "in quotes")
+        min_length: 1
+        max_length: 500
+      limit:
+        type: integer
+        required: false
+        default: 20
+        min: 1
+        max: 100
+    output:
+      type: array
+      items:
+        symbol:
+          type: string
+        file:
+          type: string
+        line:
+          type: integer
+        snippet:
+          type: string
+          description: Highlighted excerpt from the matching content (FTS5 highlight())
+        score:
+          type: number
+          description: BM25 rank score
+      empty_ok: true
+      empty_message: "No results for '{text}'"
+    errors:
+      - code: INVALID_INPUT
+        condition: text is empty string or whitespace-only
+      - code: INVALID_QUERY
+        condition: FTS5 syntax error in text (malformed boolean operators)
+
+# ── Future Tools (Phase 1) ──────────────────────────────────────────────────
+# Not implemented yet — documented for forward planning.
+
+  seam_impact:
+    status: PHASE_1
+    description: Blast radius analysis — what breaks if I change this symbol?
+
+  seam_detect_changes:
+    status: PHASE_1
+    description: Pre-commit scope check — map git diff to affected execution flows.
+
+  seam_why:
+    status: PHASE_2
+    description: Return semantic comments (# WHY:, # HACK:, # NOTE:) near a file location.
