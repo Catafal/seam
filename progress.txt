@@ -71,4 +71,16 @@
 #   - seam/cli/main.py: `seam start` — watcher subprocess + MCP foreground + SIGTERM cleanup
 #   - tests/integration/test_mcp_tools.py: 15 integration tests; all passing
 #   - 111 total tests; make gate green (ruff + mypy + pytest)
-# Next: Step 9.1 (benchmark baseline)
+# 2026-06-01: REVIEW + HARDENING + QA pass (commit e27f349)
+#   - /backend-taste + /review (high) found index-corruption + extraction bugs.
+#   - Fixed (Opus): per-connection foreign_keys + busy_timeout (db.connect());
+#     stable-id upsert (ON CONFLICT) + explicit edge delete; new indexer/pipeline.py
+#     (kills watcher->cli layer violation); watcher resolves root (macOS /private);
+#     guarded background-thread callbacks; `python -m seam.watcher` entry + PID
+#     liveness; status takes a path arg; engine score sign; query maps malformed-FTS
+#     to INVALID_QUERY; graph nested-fn mis-tag + decorated-class drop + docstring fix.
+#     +8 regression tests (test_hardening.py).
+#   - QA (no HITL): 119 tests green; init/status/query/context/search verified;
+#     TS indexing works; live watcher re-index 0.55s (<1s PRD target).
+#   - 9.x benchmark (Bach): DROPPED per user.
+# Next: Step 10.x release — README quickstart, commit uv.lock, tag v0.1.0 (HOLD tag for user go).
