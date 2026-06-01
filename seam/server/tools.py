@@ -17,6 +17,13 @@ from pathlib import Path
 from typing import Any
 
 from seam.analysis import impact as impact_module
+from seam.analysis.changes import (
+    DEFAULT_BASE_REF,
+    VALID_SCOPES,
+    ChangeReport,
+    NotAGitRepoError,
+    detect_changes,
+)
 from seam.query import engine
 
 logger = logging.getLogger(__name__)
@@ -266,3 +273,98 @@ def handle_seam_impact(
         }
 
     return response
+
+
+# Default scope for seam_changes.
+_CHANGES_SCOPE_DEFAULT = "working"
+# FIX 8: Use DEFAULT_BASE_REF from analysis.changes as the single source of truth
+# to avoid drift between the handler and the analysis layer.
+_CHANGES_BASE_REF_DEFAULT = DEFAULT_BASE_REF
+
+
+def handle_seam_changes(
+    conn: sqlite3.Connection,
+    root: Path,
+    base_ref: str = _CHANGES_BASE_REF_DEFAULT,
+    scope: str = _CHANGES_SCOPE_DEFAULT,
+) -> dict[str, Any]:
+    """Handler for the seam_changes MCP tool.
+
+    Diffs the working tree / staged set / branch against a git ref, maps each
+    changed line range back to the symbols it touched, runs those through impact
+    analysis, and returns an overall risk level plus the affected symbols.
+
+    Args:
+        conn:     Open SQLite connection (read-only).
+        root:     Project root for path relativization AND the git repo root.
+        base_ref: Git ref for scope="branch" comparisons (e.g. "main").
+        scope:    One of "working", "staged", "branch". Default: "working".
+
+    Returns:
+        A JSON-able dict with the ChangeReport fields, paths relativized to root.
+        On bad input: {"error": "INVALID_INPUT", "message": "..."}
+        On non-git dir: {"error": "NOT_A_GIT_REPO", "message": "..."}
+
+    Error shapes:
+        INVALID_INPUT  — scope is not one of working/staged/branch.
+        NOT_A_GIT_REPO — root is not a git repository or git is unavailable.
+    """
+    # Validate scope.
+    if scope not in VALID_SCOPES:
+        return _invalid_input(
+            f"scope must be one of {sorted(VALID_SCOPES)}; got {scope!r}"
+        )
+
+    # Validate base_ref is not blank (only used for branch scope, but validate always).
+    if not base_ref or not base_ref.strip():
+        return _invalid_input("base_ref must not be empty or whitespace-only")
+
+    try:
+        report: ChangeReport = detect_changes(
+            conn,
+            base_ref=base_ref.strip(),
+            scope=scope,
+            repo_root=root,
+        )
+    except NotAGitRepoError as exc:
+        logger.warning("seam_changes: not a git repo: %s", exc)
+        return {"error": "NOT_A_GIT_REPO", "message": str(exc)}
+
+    # Relativize all file paths in the report to root.
+    def _rel(p: str | None) -> str | None:
+        if p is None:
+            return None
+        return _relativize(p, root)
+
+    changed_symbols_out = [
+        {
+            "name": s["name"],
+            "file": _rel(s["file"]),
+            "kind": s["kind"],
+            "start_line": s["start_line"],
+            "end_line": s["end_line"],
+            "changed_lines": s["changed_lines"],
+        }
+        for s in report["changed_symbols"]
+    ]
+
+    affected_out = [
+        {
+            "name": a["name"],
+            "file": _rel(a["file"]),
+            "tier": a["tier"],
+            "confidence": a["confidence"],
+            "distance": a["distance"],
+        }
+        for a in report["affected"]
+    ]
+
+    return {
+        "changed_symbols": changed_symbols_out,
+        "new_files": [_rel(f) for f in report["new_files"]],
+        "affected": affected_out,
+        "risk_level": report["risk_level"],
+        "ambiguous_warning": report["ambiguous_warning"],
+        "scope": report["scope"],
+        "base_ref": report["base_ref"],
+    }
