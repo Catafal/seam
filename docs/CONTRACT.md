@@ -66,7 +66,7 @@ class ContextResult(TypedDict):
 
 ## Storage schema
 
-`docs/database/schema.sql` is authoritative. Schema version is `3` (Phase 1b — adds `comments` table).
+`docs/database/schema.sql` is authoritative. Schema version is `4` (Phase 2 — adds `clusters` table and `symbols.cluster_id`).
 
 **Phase 1 change:** `edges` table has a new column:
 ```sql
@@ -551,6 +551,37 @@ Rust kind mapping:
 Docstrings:
 - Go: contiguous `//` lines immediately above the declaration (no blank-line gap). `_go_doc_comment` in `seam/indexer/graph_go_rust.py`.
 - Rust: contiguous `///` (outer doc) lines immediately above the item. `_rust_doc_comment` in `seam/indexer/graph_go_rust.py`. `//'  and `//!` lines are excluded from docstrings.
+
+## Clustering contract (Phase 2)
+
+`ContextResult` (defined in `seam/query/engine.py`) is enriched with three new fields:
+
+```python
+cluster_id:     int | None      # cluster this symbol belongs to; None = unclustered
+cluster_label:  str | None      # human-readable label; None when cluster_id is None
+cluster_peers:  list[str]       # names of other symbols in same cluster; [] when unclustered
+```
+
+Clustering key points:
+
+- **Clusters are keyed on symbol name** (not composite `(file, name)`), matching the `edges` table which also uses string names. Two files defining a symbol named `helper` share a graph node — both rows get the same `cluster_id` after write-back. See ADR-007.
+- **`cluster_id = NULL` = unclustered**: a symbol is unclustered when its community has fewer than `SEAM_CLUSTER_MIN_SIZE` members, it has no edges, or the index predates Phase 2.
+- **Cluster IDs are deterministic and stable**: communities are ordered by their lexicographically smallest member name and assigned IDs 1..N with explicit INSERTs (not AUTOINCREMENT). The same graph always produces the same IDs.
+- **Whole-graph at `seam init` only**: clustering runs after the full indexing loop, never per-file or in the watcher. Edits made after `seam init` leave `cluster_id` as last computed (or NULL for new symbols) until the next full `seam init`. This staleness is documented and mirrors git's index model.
+- **`clusters.size` is actual DB row count**: after write-back, `size` is set from `COUNT(*) WHERE cluster_id=?` (not from the community node count), so cross-file homonym expansion is reflected correctly.
+
+Schema v4 additions:
+```sql
+-- clusters table (one row per detected community)
+clusters(id INTEGER PK, label TEXT, size INTEGER, naming_source TEXT)
+-- naming_source ∈ {'deterministic', 'llm'}
+
+-- symbols.cluster_id (added via guarded ALTER TABLE migration from v3)
+cluster_id INTEGER   -- FK to clusters.id; NULL until clustering post-pass
+```
+
+Migration `_run_migration_v3_to_v4` bumps `schema_version` to `'4'` exactly once and
+logs a re-index advisory. Fresh DBs are seeded at `schema_version='4'` directly.
 
 ## Drift rule
 

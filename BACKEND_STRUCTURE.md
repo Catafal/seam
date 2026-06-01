@@ -18,6 +18,16 @@ seam/                           ← Python package root
 │   ├── __init__.py
 │   └── main.py                 ← app = typer.Typer(); init, start, status
 │
+├── analysis/                   ← Read-only graph reasoning + community detection
+│   ├── __init__.py
+│   ├── clustering.py           ← LEAF: pure-Python Louvain community detection
+│   │                             detect_communities(nodes, edges) → {name: cluster_id}
+│   │                             No SQLite, no I/O, no config. Deterministic.
+│   └── cluster_naming.py       ← LEAF: cluster label generation
+│                                 deterministic_label(members) → str (always available)
+│                                 label_cluster(members, naming_mode, ...) → (label, source)
+│                                 Opt-in LLM path via stdlib urllib only. Never raises.
+│
 ├── indexer/                    ← Parse → extract → store pipeline
 │   ├── __init__.py
 │   ├── parser.py               ← tree-sitter parsing per language
@@ -36,6 +46,11 @@ seam/                           ← Python package root
 │   │                             graph_go_rust. Public API: extract_symbols, extract_edges,
 │   │                             extract_comments.
 │   ├── pipeline.py             ← Shared parse→extract→upsert path (CLI + watcher)
+│   ├── cluster_index.py        ← Clustering orchestration (indexer layer bridge)
+│   │                             index_clusters(conn, ...) → int (cluster count or -1)
+│   │                             Reads DB → detect_communities → label_cluster → writes
+│   │                             clusters table + symbols.cluster_id in one transaction.
+│   │                             Called by seam init only; watcher never calls this.
 │   └── db.py                   ← SQLite write operations (schema + upsert)
 │
 ├── watcher/                    ← OS file watcher
@@ -49,7 +64,13 @@ seam/                           ← Python package root
 │
 └── query/                      ← Query engine (read path)
     ├── __init__.py
-    └── engine.py               ← FTS5 + graph traversal queries
+    ├── engine.py               ← FTS5 + graph traversal queries; context() enriched
+    │                             with cluster_id, cluster_label, cluster_peers (Phase 2)
+    └── clusters.py             ← Read-only cluster queries (Phase 2)
+                                  list_clusters(conn) → [{id, label, size}]
+                                  cluster_members(conn, id) → [{name, file, line, kind}]
+                                  cluster_peers(conn, symbol) → (id, label, peers) | None
+                                  Guards pre-v4 indexes (returns empty + one-time warning).
 ```
 
 ---
@@ -58,6 +79,8 @@ seam/                           ← Python package root
 
 ```
 cli/ → server/ → analysis/ → query/ → indexer/db
+  ↓                                         ↑
+  └─→ indexer/cluster_index → analysis/clustering + analysis/cluster_naming
                                       ↑
                             watcher/ → indexer/
 ```
@@ -71,13 +94,21 @@ graph_go_rust    graph.py   (both import from graph_common; graph.py also import
 graph.py (dispatchers + re-exports)
      ↑
 pipeline.py
+
+analysis/clustering      (leaf — stdlib only, no seam imports)
+analysis/cluster_naming  (leaf — stdlib only, no seam imports)
+     ↑
+indexer/cluster_index    (bridge: imports analysis + db)
 ```
 
 | Layer | Can import from | Cannot import from |
 |---|---|---|
 | `cli/` | server, analysis, indexer, watcher, config | — |
 | `server/` | analysis, query, config | cli, watcher |
-| `analysis/` | indexer.db, query, config | cli, server |
+| `analysis/` (non-clustering) | indexer.db, query, config | cli, server |
+| `analysis/clustering` | stdlib only | any seam module (leaf) |
+| `analysis/cluster_naming` | stdlib only | any seam module (leaf) |
+| `indexer/cluster_index` | analysis.clustering, analysis.cluster_naming, indexer.db, config | cli, server, query, watcher |
 | `query/` | indexer.db, config | cli, server, analysis, watcher |
 | `indexer/pipeline` | indexer.db, indexer.graph, indexer.parser, config | cli, server, query, analysis, watcher |
 | `indexer/graph` | graph_common, graph_go_rust, config | cli, server, query, analysis, watcher |
@@ -94,8 +125,29 @@ pipeline.py
 
 ### `seam/config.py`
 - Reads all config from `os.getenv()` with defaults
-- Exports: `SEAM_DB_PATH`, `SEAM_LOG_LEVEL`, `SEAM_DEBOUNCE_MS`, `SEAM_MAX_FILE_BYTES`
+- Exports: `SEAM_DB_PATH`, `SEAM_LOG_LEVEL`, `SEAM_DEBOUNCE_MS`, `SEAM_MAX_FILE_BYTES`,
+  `SEAM_CLUSTER_NAMING`, `SEAM_LLM_API_KEY`, `SEAM_LLM_MODEL`, `SEAM_CLUSTER_MIN_SIZE`
 - Never import from other seam modules (avoids circular imports)
+
+### `seam/analysis/clustering.py` (leaf — Phase 2)
+- `detect_communities(nodes, edges) → dict[str, int]` — pure Louvain community detection
+- No SQLite, no file I/O, no config. Input: node names + edge pairs. Output: {name: cluster_id}.
+- Deterministic: nodes processed in sorted order, tie-breaking by community label.
+- Never raises: falls back to singleton clusters on any internal error.
+
+### `seam/analysis/cluster_naming.py` (leaf — Phase 2)
+- `deterministic_label(members) → str` — derive label from dominant dir + highest-degree symbol
+- `label_cluster(members, naming_mode, api_key, model) → (label, naming_source)` — dispatch
+- Opt-in LLM path (`_call_llm_for_label`) uses stdlib urllib only, is isolated, and is
+  never called unless `naming_mode="llm"` AND `api_key` is set.
+- Any LLM error falls back to deterministic silently — never raises.
+
+### `seam/indexer/cluster_index.py` (Phase 2)
+- `index_clusters(conn, naming_mode, llm_api_key, llm_model, min_size) → int`
+  — orchestrates: read symbols+edges → detect_communities → label_cluster → write DB
+- Returns cluster count (≥0) or -1 on error (never raises).
+- Called by `seam init` ONLY, never by the watcher.
+- Clears old cluster state first (even before early returns) to avoid ghost clusters.
 
 ### `seam/indexer/parser.py`
 - One function per language: `parse_python`, `parse_typescript`, `parse_javascript`,
@@ -138,8 +190,16 @@ pipeline.py
 
 ### `seam/query/engine.py`
 - `query(conn, concept, limit) → list[QueryResult]` — FTS5 + graph hybrid
-- `context(conn, symbol_name) → ContextResult` — callers + callees + metadata
+- `context(conn, symbol_name) → ContextResult` — callers + callees + metadata +
+  cluster_id, cluster_label, cluster_peers (Phase 2 enrichment via query/clusters.py)
 - `search(conn, text, limit) → list[SearchResult]` — FTS5 full-text
+
+### `seam/query/clusters.py` (Phase 2)
+- `list_clusters(conn) → list[ClusterRow]` — all clusters sorted by id
+- `cluster_members(conn, cluster_id) → list[MemberRow]` — symbols in one cluster
+- `cluster_peers(conn, symbol) → (cluster_id, label, peers) | None` — cluster context
+- Guards pre-v4 indexes (no table/column): returns empty results + one-time warning.
+  Mirrors the `_comments_table_exists` guard in `query/comments.py`.
 
 ### `seam/server/tools.py`
 - Thin adapter: MCP tool handlers that call query.engine functions

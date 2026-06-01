@@ -1,6 +1,6 @@
 # Architecture — Seam
 
-> Phase 0 + Phase 1. See ADRs in `docs/adr/` for decision rationale.
+> Phase 0 + Phase 1 + Phase 2 (clustering). See ADRs in `docs/adr/` for decision rationale.
 
 ---
 
@@ -33,8 +33,12 @@ Source files (Python, TypeScript)
                          │
                          ├── seam_impact(target)   → analysis.impact()
                          ├── seam_trace(src,tgt)   → analysis.flows.trace()
-                         └── seam_changes(scope)   → analysis.changes.detect_changes()
-                                   [Phase 1]
+                         ├── seam_changes(scope)   → analysis.changes.detect_changes()
+                         │         [Phase 1]
+                         │
+                         └── seam_clusters(id?)    → query.clusters.list_clusters()
+                                                      / cluster_members()
+                                   [Phase 2]
                                   │
                                   ▼
                          AI Agent (Claude Code, Cursor, Codex)
@@ -56,10 +60,12 @@ The write path. Triggered by `seam init` (full) or the file watcher (incremental
 ### SQLite Database
 **File:** `.seam/seam.db` (per project)
 
-Three main tables + FTS5 virtual table:
+Main tables + FTS5 virtual table (schema v4):
 - `files` — indexed files with hash + mtime
-- `symbols` — functions, classes, methods
+- `symbols` — functions, classes, methods; includes `cluster_id` FK (schema v4)
 - `edges` — directed relationships (import, call) with `confidence` column (schema v2)
+- `comments` — semantic comments: WHY/HACK/NOTE/TODO/FIXME markers (schema v3)
+- `clusters` — community detection results: id, label, size, naming_source (schema v4)
 - `symbols_fts` — FTS5 virtual table mirroring `symbols.name + docstring`
 
 See `docs/database/schema.sql` for full DDL.
@@ -72,7 +78,7 @@ Runs as a background thread/process alongside the MCP server. Uses watchdog's `O
 ### MCP Server
 **Files:** `seam/server/mcp.py`, `seam/server/tools.py`
 
-Stdio transport (no HTTP, no ports). The Python MCP SDK handles protocol framing. Six tools exposed (Phase 0 + Phase 1). Tool handlers in `tools.py` validate inputs and delegate to `query/engine.py` or `analysis/`.
+Stdio transport (no HTTP, no ports). The Python MCP SDK handles protocol framing. Eight tools exposed (Phase 0 + Phase 1 + Phase 1b + Phase 2). Tool handlers in `tools.py` validate inputs and delegate to `query/engine.py`, `query/clusters.py`, or `analysis/`.
 
 ### Query Engine
 **File:** `seam/query/engine.py`
@@ -81,6 +87,18 @@ The read path. Three query types:
 - **FTS5 search** — BM25-ranked full-text search across symbol names + docstrings
 - **Concept query** — FTS5 match + 1-hop graph expansion (connected symbols)
 - **Context** — Direct lookup by symbol name + join to get callers/callees
+
+### Clustering (Phase 2)
+**Files:** `seam/analysis/clustering.py`, `seam/analysis/cluster_naming.py`, `seam/indexer/cluster_index.py`, `seam/query/clusters.py`
+
+A post-pass that runs after the full `seam init` indexing loop. Never runs per-file or in the watcher.
+
+- **clustering.py** — pure-Python Louvain greedy modularity maximization. Graph in (nodes + edges) → `{symbol_name: cluster_id}` out. No SQLite, no I/O. Deterministic: nodes sorted, tie-breaking by community label.
+- **cluster_naming.py** — produces a human-readable label per cluster. Default ("deterministic"): `dominant_dir/file — highest_degree_symbol`. Opt-in ("llm"): calls an OpenAI-compatible endpoint via stdlib `urllib` only when `SEAM_CLUSTER_NAMING=llm` AND `SEAM_LLM_API_KEY` is set. LLM call is isolated and fail-safe (any error falls back to deterministic).
+- **cluster_index.py** — orchestration bridge (indexer layer). Reads symbols + edges from the DB, calls detection + naming, writes `clusters` rows and `symbols.cluster_id` in one transaction. Returns -1 on error (not 0) so the CLI can distinguish "clustering failed" from "zero connected edges."
+- **query/clusters.py** — read-only query layer. Exposes `list_clusters`, `cluster_members`, `cluster_peers`. Guards pre-v4 indexes (missing table/column) by returning empty results + one-time warning.
+
+Clusters are keyed on symbol name (not row id), which means cross-file symbols with the same name collapse into one graph node (see ADR-007 — known, accepted limitation).
 
 ### Analysis Layer (Phase 1)
 **Files:** `seam/analysis/traversal.py`, `seam/analysis/impact.py`, `seam/analysis/flows.py`, `seam/analysis/changes.py`
@@ -109,14 +127,20 @@ cli / server → analysis → query → indexer / db
 ## Data Flow: Write Path (seam init)
 
 ```
-1. CLI: walk directory tree, collect .py + .ts + .js files
+1. CLI: walk directory tree, collect files by SEAM_LANGUAGE_MAP extension
 2. For each file:
-   a. parser.parse_python(path) → tree-sitter Node
-   b. graph.extract_symbols(node, "python", path) → [Symbol]
-   c. graph.extract_edges(node, "python", path, symbols) → [Edge] with confidence tags
-   d. db.upsert_file(conn, path, symbols, edges)
+   a. parser.parse_*(path) → tree-sitter Node
+   b. graph.extract_symbols(node, language, path) → [Symbol]
+   c. graph.extract_edges(node, language, path, symbols) → [Edge] with confidence tags
+   d. graph.extract_comments(node, language, path) → [Comment]
+   e. db.upsert_file(conn, path, symbols, edges, comments)
 3. FTS5 index updated automatically via SQLite triggers
-4. seam.db committed, watcher starts
+4. Clustering post-pass (whole-graph, after all files indexed):
+   a. cluster_index.index_clusters(conn, ...) — reads all symbols + edges
+   b. clustering.detect_communities(nodes, edges) → {name: cluster_id}
+   c. cluster_naming.label_cluster(members, ...) → (label, naming_source) per community
+   d. writes clusters table + symbols.cluster_id in one transaction
+5. seam.db committed, watcher starts
 ```
 
 ## Data Flow: Read Path (MCP tool call)
@@ -149,18 +173,10 @@ cli / server → analysis → query → indexer / db
 
 ---
 
-## Phase 2 Extensions (planned)
-
-- **Semantic comment nodes** — `# WHY:`, `# HACK:`, `# NOTE:` as queryable entities
-- **Go + Rust parsers** — additional tree-sitter grammars
-- **Cross-file confidence resolution** — upgrade INFERRED edges to EXTRACTED when
-  the target resolves to a unique symbol across the full index (not just same-file)
-
----
-
 ## Constraints
 
-- **No external services** — zero network calls at runtime
+- **No external services at runtime** — zero network calls in the MCP server read path. The opt-in LLM cluster naming (`SEAM_CLUSTER_NAMING=llm`) runs only during `seam init` (a build step, not the server), and falls back to deterministic labels on any error — the server is always 100% local.
+- **No new runtime dependencies** — Phase 2 clustering is pure-Python Louvain with stdlib only; zero new packages added.
 - **No process per project** — MCP server launched with `cwd` = project root; single binary
 - **SQLite file size** — target <50MB for a 100k LOC codebase
 - **Startup time** — `seam start` must be ready in <500ms after first `seam init`

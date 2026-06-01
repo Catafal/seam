@@ -87,6 +87,27 @@ tools:
           type: array
           items: string
           description: Symbol names this symbol calls/imports
+        ambiguous:
+          type: boolean
+          description: True when more than one symbol shares this name in the index (cross-file collision)
+        cluster_id:
+          type: integer
+          nullable: true
+          description: |
+            Phase 2. Cluster this symbol belongs to; null when unclustered
+            (below SEAM_CLUSTER_MIN_SIZE, no edges, or index predates Phase 2).
+        cluster_label:
+          type: string
+          nullable: true
+          description: |
+            Phase 2. Human-readable label of the cluster (deterministic or LLM-generated);
+            null when cluster_id is null.
+        cluster_peers:
+          type: array
+          items: string
+          description: |
+            Phase 2. Names of other symbols in the same cluster (excluding this symbol).
+            Empty list when unclustered or when the cluster has only one member.
     errors:
       - code: INVALID_INPUT
         condition: symbol is empty string or whitespace-only
@@ -393,6 +414,52 @@ tools:
         condition: base_ref is empty string or whitespace-only
       - code: NOT_A_GIT_REPO
         condition: root is not a git repository or git is not available
+
+  seam_clusters:
+    status: IMPLEMENTED
+    phase: 2
+    description: |
+      List all code clusters (functional areas) or the members of one cluster.
+
+      Clusters are computed during `seam init` using Louvain community detection over
+      the call/import graph. Each cluster represents a cohesive group of symbols that
+      frequently call or import each other.
+
+      With no argument: returns [{id, label, size}] — an overview of all detected
+      functional areas sorted by id.
+
+      With cluster_id: returns [{name, file, line, kind}] — all symbols in that
+      cluster, with file paths relativized to the project root.
+
+      Returns an empty list (not an error) when the index has no cluster data —
+      either no symbols are indexed, `seam init` has not been run since Phase 2
+      migration, or all communities fell below SEAM_CLUSTER_MIN_SIZE.
+    input:
+      cluster_id:
+        type: integer
+        required: false
+        nullable: true
+        default: null
+        description: |
+          When omitted (or null): list all clusters as [{id, label, size}].
+          When provided: list member symbols of that cluster as [{name, file, line, kind}].
+    output:
+      type: array
+      description: |
+        No cluster_id → list of cluster summaries:
+          id:     (int)    — stable cluster identifier (1-based, deterministic across re-index)
+          label:  (str)    — human-readable label (deterministic or LLM-generated)
+          size:   (int)    — number of member symbol ROWS (may exceed unique names due to
+                             cross-file homonym collapse — see ADR-007)
+
+        With cluster_id → list of member symbols:
+          name:   (str)    — symbol name
+          file:   (str)    — path relative to project root
+          line:   (int)    — start line of the symbol definition
+          kind:   (str)    — function | class | method | interface | type
+      empty_ok: true
+      empty_message: "No clusters found — run 'seam init' to compute clusters"
+    errors: []
 
   seam_why:
     status: IMPLEMENTED

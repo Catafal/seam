@@ -33,6 +33,28 @@ SEAM_LANGUAGE_MAP: dict[str, str] = {
 }
 
 
+# ── Phase 2: Clustering configuration ────────────────────────────────────────
+
+# Cluster naming mode: "deterministic" (default) or "llm" (opt-in).
+# When set to "llm", SEAM_LLM_API_KEY must also be set or naming falls back
+# to "deterministic". LLM naming runs only during `seam init`, never in MCP.
+SEAM_CLUSTER_NAMING: str = os.getenv("SEAM_CLUSTER_NAMING", "deterministic")
+
+# Optional LLM API key for cluster naming (only used when SEAM_CLUSTER_NAMING=llm).
+# When absent/empty, LLM naming is silently skipped and deterministic is used.
+SEAM_LLM_API_KEY: str | None = os.getenv("SEAM_LLM_API_KEY") or None
+
+# LLM model for cluster naming. Uses a small/fast model by default.
+SEAM_LLM_MODEL: str = os.getenv("SEAM_LLM_MODEL", "gpt-4o-mini")
+
+# Minimum cluster size. Communities with fewer distinct graph nodes than this
+# are NOT persisted as clusters — their symbols get cluster_id=NULL (unclustered).
+# Default 2: kills pure singletons (symbols with no edges) so `seam clusters`
+# shows functional areas, not 200 one-symbol rows.
+# Set to 1 to retain all singletons as their own clusters.
+SEAM_CLUSTER_MIN_SIZE: int = int(os.getenv("SEAM_CLUSTER_MIN_SIZE", "2"))
+
+
 def get_db_path(project_root: Path) -> Path:
     """Resolve the database path relative to the project root."""
     return project_root / SEAM_DB_PATH

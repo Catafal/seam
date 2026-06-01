@@ -72,11 +72,20 @@ conn.execute("CREATE VIRTUAL TABLE t USING fts5(content)")  # must not raise
 | Technology | Reason rejected |
 |---|---|
 | Neo4j / NetworkX | SQLite's adjacency list is sufficient for Phase 0 graph traversal |
+| networkx / igraph / leidenalg | Phase 2 clustering uses a pure-Python Louvain implementation (zero new runtime deps); see ADR-007 |
 | SQLAlchemy / Alembic | Adds complexity; raw sqlite3 + hand-written SQL is simpler and faster |
 | FastAPI / HTTP server | MCP uses stdio transport; no HTTP needed in Phase 0 |
 | LangChain / LlamaIndex | No LLM layer in Phase 0 |
+| OpenAI / Anthropic SDK | Phase 2 opt-in LLM cluster naming uses stdlib `urllib` only — no SDK needed |
 | Redis | No caching needed; SQLite query latency is acceptable |
 | npm / Node.js | Python-first; npm `seam` name is taken by seamapi |
+
+## Phase 2 dependency note
+
+Phase 2 graph clustering (`seam/analysis/clustering.py`) added **zero new runtime dependencies**.
+Community detection is pure-Python Louvain (stdlib only). The opt-in LLM cluster naming
+(`SEAM_CLUSTER_NAMING=llm`) uses stdlib `urllib` — no API SDK is imported or installed.
+The lock file (`uv.lock`) is unchanged from Phase 1b.
 
 ---
 

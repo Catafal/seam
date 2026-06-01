@@ -84,3 +84,25 @@
 #     TS indexing works; live watcher re-index 0.55s (<1s PRD target).
 #   - 9.x benchmark (Bach): DROPPED per user.
 # Next: Step 10.x release — README quickstart, commit uv.lock, tag v0.1.0 (HOLD tag for user go).
+# 2026-06-01: Phase 2 — Graph community detection (clustering) complete (branch feat/phase2-clustering)
+#   New modules:
+#     seam/analysis/clustering.py       — pure-Python Louvain (no deps)
+#     seam/analysis/cluster_naming.py   — deterministic + opt-in LLM labeling (stdlib urllib)
+#     seam/indexer/cluster_index.py     — orchestration bridge; writes clusters + symbols.cluster_id
+#     seam/query/clusters.py            — read-only: list_clusters, cluster_members, cluster_peers
+#   Updated:
+#     seam/query/engine.py              — context() enriched with cluster_id/label/peers
+#     seam/server/tools.py              — handle_seam_clusters + handle_seam_context cluster fields
+#     seam/server/mcp.py                — seam_clusters tool registered (8 tools total)
+#     seam/cli/main.py                  — `seam clusters` command + clustering post-pass in init
+#                                         + cluster count in `seam status`
+#     seam/config.py                    — SEAM_CLUSTER_NAMING, SEAM_LLM_API_KEY,
+#                                         SEAM_LLM_MODEL, SEAM_CLUSTER_MIN_SIZE
+#     docs/database/schema.sql          — v4: clusters table + symbols.cluster_id column
+#     docs/adr/003-heuristic-execution-flows.md — Phase 2 update note added
+#     docs/adr/ADR-007-louvain-clustering.md    — new ADR
+#   Test count: 517 (gate green — ruff + mypy + pytest)
+#   Schema: v4 (guarded migration from v3; fresh DBs seeded at v4 directly)
+#   Config defaults: SEAM_CLUSTER_NAMING=deterministic, SEAM_CLUSTER_MIN_SIZE=2
+#   Known limitation: clusters keyed on symbol name → cross-file homonyms collapse (ADR-007)
+# Next: docs sync (this session), then benchmark / v0.1.0 release prep

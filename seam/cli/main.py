@@ -18,6 +18,10 @@ changes — Pre-commit risk check: map git diff to changed symbols, run impact
 Commands (Phase 1b — semantic comment nodes)
 ---------------------------------------------
 why     — Show WHY/HACK/NOTE/TODO/FIXME comments near a file location or symbol.
+
+Commands (Phase 2 — graph clustering)
+---------------------------------------
+clusters — List all clusters (or members of one cluster with --id N).
 """
 
 import logging
@@ -51,8 +55,11 @@ from seam.analysis.impact import (
     TIER_WILL_BREAK,
     impact,
 )
+from seam.indexer.cluster_index import get_llm_naming_summary, index_clusters
 from seam.indexer.db import connect, init_db
 from seam.indexer.pipeline import index_one_file, walk_project
+from seam.query.clusters import cluster_members as query_cluster_members
+from seam.query.clusters import list_clusters as query_list_clusters
 from seam.query.comments import why as comments_why
 from seam.server.mcp import create_server
 
@@ -121,6 +128,8 @@ def init(
     total_edges = 0
     indexed_files = 0
     skipped_files = 0
+    total_clusters = 0
+    llm_naming_summary: str | None = None
 
     with Progress(
         SpinnerColumn(),
@@ -144,8 +153,30 @@ def init(
                 indexed_files += 1
                 total_symbols += result[0]
                 total_edges += result[1]
+
+            # Phase 2: Clustering post-pass (whole-graph, runs after all files indexed).
+            # WHY: Clustering must see the complete graph (all files), not per-file fragments.
+            # This is intentionally AFTER the indexing loop — not inside index_one_file.
+            progress.update(task, description="Computing graph clusters...")
+            total_clusters = index_clusters(
+                conn,
+                naming_mode=config.SEAM_CLUSTER_NAMING,
+                llm_api_key=config.SEAM_LLM_API_KEY,
+                llm_model=config.SEAM_LLM_MODEL,
+                min_size=config.SEAM_CLUSTER_MIN_SIZE,
+            )
+
+            # Issue #8: LLM naming summary — read after clustering completes.
+            # Only relevant when LLM naming was requested.
+            if config.SEAM_CLUSTER_NAMING == "llm" and total_clusters > 0:
+                llm_naming_summary = get_llm_naming_summary(conn)
         finally:
             conn.close()
+
+    # Issue #7: index_clusters returns -1 on error (not 0) to distinguish failure
+    # from "genuinely zero clusters." Display a visible yellow warning in that case.
+    clustering_failed = total_clusters < 0
+    display_clusters = str(total_clusters) if total_clusters >= 0 else "failed"
 
     elapsed = time.monotonic() - start_ts
 
@@ -160,8 +191,22 @@ def init(
     table.add_row("files skipped", str(skipped_files))
     table.add_row("symbols", str(total_symbols))
     table.add_row("edges", str(total_edges))
+    table.add_row("clusters", display_clusters)
     table.add_row("elapsed", f"{elapsed:.2f}s")
     console.print(table)
+
+    # Issue #7: Visible yellow warning when clustering failed.
+    # Only shown when we indexed symbols — "0 clusters" on an empty repo is fine.
+    if clustering_failed and total_symbols > 0:
+        console.print(
+            "[yellow]clusters: failed[/yellow] "
+            "[dim](run with SEAM_LOG_LEVEL=DEBUG to see the error)[/dim]"
+        )
+
+    # Issue #8: LLM naming summary line.
+    if llm_naming_summary:
+        console.print(f"[dim]{llm_naming_summary}[/dim]")
+
     if skipped_files:
         console.print(
             f"[dim]{skipped_files} file(s) skipped (binary/oversize/parse error). "
@@ -208,6 +253,12 @@ def status(
         symbol_count = conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
         edge_count = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
 
+        # Cluster count (Phase 2). Guard for pre-v4 indexes (no clusters table).
+        try:
+            cluster_count = conn.execute("SELECT COUNT(*) FROM clusters").fetchone()[0]
+        except Exception:
+            cluster_count = 0
+
         # Most recent indexed_at across all files
         last_indexed_row = conn.execute("SELECT MAX(indexed_at) FROM files").fetchone()[0]
         last_indexed_str = (
@@ -251,6 +302,7 @@ def status(
     table.add_row("files", str(file_count))
     table.add_row("symbols", str(symbol_count))
     table.add_row("edges", str(edge_count))
+    table.add_row("clusters", str(cluster_count))
     table.add_row("last indexed", last_indexed_str)
     table.add_row("watcher", watcher_status)
     table.add_row("freshness", freshness)
@@ -856,3 +908,86 @@ def why_cmd(
             f"  [dim]{rel_file}[/dim]"
             f"  {hit['text']}"
         )
+
+
+# ── seam clusters ─────────────────────────────────────────────────────────────
+
+
+@app.command(name="clusters")
+def clusters_cmd(
+    cluster_id: int = typer.Option(
+        -1,
+        "--id",
+        help="Cluster ID to list members of. Omit to list all clusters.",
+    ),
+    path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
+    db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+) -> None:
+    """List all clusters or members of one cluster.
+
+    Examples:
+      seam clusters              -- list all clusters with id, label, size
+      seam clusters --id 3       -- list all member symbols of cluster 3
+    """
+    project_root = Path(path).resolve()
+    db_root = Path(db_dir).resolve() if db_dir else project_root
+    db_path = config.get_db_path(db_root)
+
+    if not db_path.exists():
+        console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
+        raise typer.Exit(code=1)
+
+    try:
+        conn = connect(db_path)
+    except sqlite3.Error as exc:
+        console.print(f"[red]Failed to open database:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        if cluster_id >= 0:
+            # Members of a specific cluster
+            members = query_cluster_members(conn, cluster_id)
+        else:
+            members = None
+            clusters = query_list_clusters(conn)
+    finally:
+        conn.close()
+
+    if cluster_id >= 0:
+        # Display members
+        if not members:
+            console.print(
+                f"[yellow]No members found for cluster {cluster_id}[/yellow] "
+                "— check the ID or run 'seam init' first."
+            )
+            return
+
+        table = Table(title=f"Cluster {cluster_id} members", show_header=True)
+        table.add_column("name", style="bold")
+        table.add_column("kind", style="dim")
+        table.add_column("file", style="dim")
+        table.add_column("line", style="dim")
+        for m in members:
+            # Relativize file path for display
+            try:
+                rel_file = str(Path(m["file"]).relative_to(project_root))
+            except ValueError:
+                rel_file = m["file"]
+            table.add_row(m["name"], m["kind"], rel_file, str(m["line"]))
+        console.print(table)
+    else:
+        # Display all clusters
+        if not clusters:
+            console.print(
+                "[yellow]No clusters found.[/yellow] "
+                "Run [bold]seam init[/bold] to compute clusters."
+            )
+            return
+
+        table = Table(title="Clusters", show_header=True)
+        table.add_column("id", style="bold cyan", width=6)
+        table.add_column("label")
+        table.add_column("size", style="dim", width=6)
+        for c in clusters:
+            table.add_row(str(c["id"]), c["label"], str(c["size"]))
+        console.print(table)

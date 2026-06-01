@@ -9,10 +9,14 @@ Implementation notes:
   Callers/callees counts are computed per symbol after collecting the result set.
 - context(): single-symbol lookup; callers = edges where target_name = name,
   callees = edges where source_name = name.
+  Phase 2: enriched with cluster_id, cluster_label, cluster_peers when clustering
+  data is present. Fields are None/[] when the index has no cluster assignments.
 """
 
 import sqlite3
 from typing import TypedDict
+
+from seam.query.clusters import cluster_peers as _cluster_peers
 
 
 class QueryResult(TypedDict):
@@ -33,7 +37,10 @@ class ContextResult(TypedDict):
     docstring: str | None
     callers: list[str]
     callees: list[str]
-    ambiguous: bool  # True when multiple symbols share this name in the index (Phase 1)
+    ambiguous: bool        # True when multiple symbols share this name in the index (Phase 1)
+    cluster_id: int | None      # Phase 2: cluster this symbol belongs to (None if not clustered)
+    cluster_label: str | None   # Phase 2: human-readable cluster label
+    cluster_peers: list[str]    # Phase 2: other symbols in the same cluster (may be empty)
 
 
 class SearchResult(TypedDict):
@@ -225,6 +232,14 @@ def context(conn: sqlite3.Connection, symbol_name: str) -> ContextResult | None:
         "SELECT target_name FROM edges WHERE source_name = ?", (symbol_name,)
     ).fetchall()
 
+    # Phase 2: Enrich with cluster information.
+    # cluster_peers() handles pre-v4 indexes gracefully (returns None when unavailable).
+    cluster_info = _cluster_peers(conn, symbol_name)
+    if cluster_info is not None:
+        c_id, c_label, c_peers = cluster_info
+    else:
+        c_id, c_label, c_peers = None, None, []
+
     return ContextResult(
         symbol=row["name"],
         file=row["file"],
@@ -235,4 +250,7 @@ def context(conn: sqlite3.Connection, symbol_name: str) -> ContextResult | None:
         callers=[r["source_name"] for r in caller_rows],
         callees=[r["target_name"] for r in callee_rows],
         ambiguous=row["dup_count"] > 1,  # True when name collision detected
+        cluster_id=c_id,
+        cluster_label=c_label,
+        cluster_peers=c_peers,
     )

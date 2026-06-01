@@ -4,7 +4,7 @@ Local code intelligence MCP server for AI agents. Index your codebase once; let 
 
 ## Status
 
-Phase 1 — under development (Phase 0 complete, Phase 1 core merged).
+Phase 2 complete — graph community detection (clustering) shipped. 517 tests. Gate green.
 
 ## Quickstart
 
@@ -45,6 +45,12 @@ Add to your Claude Code MCP config:
 - `seam_impact(target, direction="upstream", max_depth=3)` — blast-radius analysis: what breaks if this symbol changes?
 - `seam_trace(source, target, max_depth=10)` — shortest call/dependency path between two symbols
 - `seam_changes(scope="working", base_ref="main")` — pre-commit risk check: map git diff to affected symbols and risk level
+
+### Phase 2 — Graph Clustering
+
+- `seam_clusters()` — list all functional areas (clusters) as `[{id, label, size}]`
+- `seam_clusters(cluster_id=N)` — list member symbols of a specific cluster
+- `seam_context(symbol)` — now also returns `cluster_id`, `cluster_label`, and `cluster_peers` so you can see a symbol's functional neighborhood without a second call
 
 #### When to use each Phase 1 tool
 
@@ -94,6 +100,16 @@ seam status [path] [--db-dir DIR]
 
 # Start the MCP server (stdio) and file watcher
 seam start [path] [--db-dir DIR]
+```
+
+### Phase 2 — Clustering
+
+```bash
+# List all clusters (functional areas)
+seam clusters
+
+# List members of cluster 3
+seam clusters --id 3
 ```
 
 ### Phase 1 — Code Reasoning
