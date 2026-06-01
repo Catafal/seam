@@ -343,6 +343,11 @@ def impact_cmd(
     depth: int = typer.Option(3, "--depth", help="Max hop depth (1-10)"),
     path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+    production_only: bool = typer.Option(
+        False,
+        "--production-only",
+        help="Filter out test-file dependents; show only production blast radius.",
+    ),
 ) -> None:
     """Show the blast radius of a symbol — what breaks if you change it.
 
@@ -352,6 +357,8 @@ def impact_cmd(
       MAY_NEED_TESTING (d=3+) — transitive dependents, test to be sure
 
     Each entry shows the path confidence (EXTRACTED | INFERRED | AMBIGUOUS).
+    Test-file dependents are marked [test] in the output. Use --production-only
+    to filter them out and see only the production blast radius.
     """
     project_root = Path(path).resolve()
     db_root = Path(db_dir).resolve() if db_dir else project_root
@@ -372,8 +379,11 @@ def impact_cmd(
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
+    # include_tests=False when --production-only is set; True (default) otherwise.
+    include_tests = not production_only
+
     try:
-        result = impact(conn, target=symbol, direction=direction, max_depth=depth)
+        result = impact(conn, target=symbol, direction=direction, max_depth=depth, include_tests=include_tests)
     finally:
         conn.close()
 
@@ -393,8 +403,21 @@ def impact_cmd(
         for entries in tier_group.values()
     )
 
+    # hidden_tests is only present when --production-only filtered test dependents out.
+    hidden_tests = result.get("hidden_tests", 0)
+
     if total == 0:
-        console.print(f"[dim]No dependents found for [bold]{symbol}[/bold].[/dim]")
+        if hidden_tests:
+            # Critical distinction: this symbol is NOT dead code — it has test
+            # dependents that --production-only hid. Saying "no dependents" here
+            # would be a dangerous false-safe (an agent might delete/rewrite it).
+            console.print(
+                f"[yellow]No production dependents for [bold]{symbol}[/bold][/yellow] — "
+                f"but {hidden_tests} test dependent(s) hidden by --production-only. "
+                "Re-run without the flag to see them."
+            )
+        else:
+            console.print(f"[dim]No dependents found for [bold]{symbol}[/bold].[/dim]")
         return
 
     # Print a tiered summary per direction.
@@ -426,11 +449,20 @@ def impact_cmd(
                     "INFERRED": "yellow",
                     "AMBIGUOUS": "red",
                 }.get(entry["confidence"], "white")
+                # Show [test] marker when tests are included and this entry is from a test file.
+                test_marker = " [dim][test][/dim]" if entry.get("is_test") else ""
                 console.print(
                     f"    [bold]{entry['name']}[/bold]  "
                     f"[{confidence_color}]{entry['confidence']}[/{confidence_color}]  "
-                    f"[dim]d={entry['distance']}[/dim]"
+                    f"[dim]d={entry['distance']}[/dim]{test_marker}"
                 )
+
+    # Footer: when production dependents were shown but tests were also hidden,
+    # note the hidden count so the blast radius is not silently under-reported.
+    if hidden_tests:
+        console.print(
+            f"\n[dim]({hidden_tests} test dependent(s) hidden by --production-only)[/dim]"
+        )
 
 
 @app.command(name="trace")
@@ -607,6 +639,23 @@ def changes_cmd(
         + (" [yellow](AMBIGUOUS edges — estimate uncertain)[/yellow]"
            if report["ambiguous_warning"] else "")
     )
+
+    # Partial verdict marker: printed after the risk line when the impact cap was hit.
+    # Format: "⚠ PARTIAL — impact cap (N) hit; M of K symbols analyzed"
+    # This makes it immediately obvious the risk verdict only covers a subset.
+    # Count only REAL changed symbols (exclude synthetic <module:...>/<new:...> entries):
+    # the cap in _collect_impact applies to real names only, so the denominator must
+    # match — otherwise the displayed fraction does not reconcile with what was capped.
+    if report.get("partial"):
+        cap = config.SEAM_MAX_IMPACT_SYMBOLS
+        real_total = sum(
+            1 for s in report["changed_symbols"] if not s["name"].startswith("<")
+        )
+        analyzed = min(cap, real_total)
+        console.print(
+            f"[yellow]⚠ PARTIAL[/yellow] — impact cap ({cap}) hit; "
+            f"{analyzed} of {real_total} changed symbols analyzed"
+        )
 
     # ── Changed symbols ───────────────────────────────────────────────────────
     if not report["changed_symbols"] and not report["new_files"]:

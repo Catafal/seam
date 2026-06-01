@@ -61,6 +61,7 @@ import subprocess
 from pathlib import Path
 from typing import TypedDict
 
+import seam.config as config
 from seam.analysis.impact import impact
 from seam.analysis.traversal import (
     CONFIDENCE_AMBIGUOUS,
@@ -79,10 +80,6 @@ DEFAULT_BASE_REF = "main"
 
 # Max depth for impact analysis from changed symbols.
 _IMPACT_MAX_DEPTH = 3
-
-# Maximum number of changed symbol names passed to impact() in one detect_changes call.
-# If exceeded, the first N are processed (deterministic: list order) and a warning is logged.
-_MAX_IMPACT_SYMBOLS = 50
 
 # Timeout (seconds) for all git subprocess calls. Prevents the MCP server from
 # hanging indefinitely if git blocks (e.g. lock contention, slow NFS mount).
@@ -148,6 +145,7 @@ class ChangeReport(TypedDict):
     ambiguous_warning: bool       # True when AMBIGUOUS edges dominate (see rollup rule)
     scope: str
     base_ref: str
+    partial: bool                 # True when changed symbols exceeded the cap (SEAM_MAX_IMPACT_SYMBOLS)
 
 
 # ── Git helpers ────────────────────────────────────────────────────────────────
@@ -474,8 +472,16 @@ def _lookup_symbols_for_new_file(
 def _collect_impact(
     conn: sqlite3.Connection,
     changed_symbol_names: list[str],
-) -> list[AffectedSymbol]:
+    cap: int | None = None,
+) -> tuple[list[AffectedSymbol], bool]:
     """Run impact(upstream) for each changed symbol name, collect unique affected symbols.
+
+    Returns a tuple (affected_symbols, was_truncated) where was_truncated is True
+    when the number of real changed symbols exceeded the cap — the caller uses this
+    to set ChangeReport.partial so agents know the risk verdict covers only a subset.
+
+    The cap defaults to config.SEAM_MAX_IMPACT_SYMBOLS (env-configurable). Passing
+    an explicit cap is supported for testing without needing to monkeypatch config.
 
     Uses a deduplication dict keyed by symbol name. When the same symbol
     appears via multiple changed sources, we keep the highest-tier (most severe)
@@ -485,22 +491,26 @@ def _collect_impact(
     that are not real indexed symbols — the impact engine gracefully handles unknown
     symbols, but it's wasteful to call for every <module:file.py> entry).
     """
+    # Resolve cap: prefer explicit arg (test injection), fall back to config.
+    max_symbols = cap if cap is not None else config.SEAM_MAX_IMPACT_SYMBOLS
+
     # Filter out synthetic module-level names.
     real_names = [n for n in changed_symbol_names if not n.startswith("<")]
     if not real_names:
-        return []
+        return [], False
 
     # Cap changed symbols to avoid unbounded impact() calls on very large diffs.
-    # Processes the first _MAX_IMPACT_SYMBOLS in list order (deterministic).
-    # A warning is logged when the cap is hit — callers can see it via SEAM_LOG_LEVEL=DEBUG.
-    if len(real_names) > _MAX_IMPACT_SYMBOLS:
+    # Processes the first max_symbols in list order (deterministic).
+    # A warning is logged when the cap is hit — visible via SEAM_LOG_LEVEL=WARNING.
+    was_truncated = len(real_names) > max_symbols
+    if was_truncated:
         logger.warning(
             "detect_changes: %d changed symbols exceeds cap %d; impact computed on first %d",
             len(real_names),
-            _MAX_IMPACT_SYMBOLS,
-            _MAX_IMPACT_SYMBOLS,
+            max_symbols,
+            max_symbols,
         )
-        real_names = real_names[:_MAX_IMPACT_SYMBOLS]
+        real_names = real_names[:max_symbols]
 
     # Deduplicate by (name, lowest distance) across all seeds.
     # key=name -> AffectedSymbol (keep the one with lowest distance / worst tier).
@@ -525,7 +535,7 @@ def _collect_impact(
                 if existing is None or candidate["distance"] < existing["distance"]:
                     best[aname] = candidate
 
-    return list(best.values())
+    return list(best.values()), was_truncated
 
 
 def _compute_risk_level(
@@ -662,21 +672,23 @@ def detect_changes(
                 changed_symbols.extend(syms)
 
     # Run impact on all changed symbol names (deduplication inside _collect_impact).
+    # The function returns (affected_list, was_truncated) — partial=True when cap was hit.
     changed_names = [s["name"] for s in changed_symbols]
-    affected = _collect_impact(conn, changed_names)
+    affected, partial = _collect_impact(conn, changed_names)
 
     # Compute overall risk level.
     risk_level, ambiguous_warning = _compute_risk_level(affected)
 
     logger.debug(
         "detect_changes(scope=%r, base_ref=%r, repo_root=%s) -> "
-        "%d changed_symbols, %d affected, risk=%s, ambiguous_warning=%s",
+        "%d changed_symbols, %d affected, risk=%s, partial=%s, ambiguous_warning=%s",
         scope,
         base_ref,
         repo_root,
         len(changed_symbols),
         len(affected),
         risk_level,
+        partial,
         ambiguous_warning,
     )
 
@@ -688,4 +700,5 @@ def detect_changes(
         ambiguous_warning=ambiguous_warning,
         scope=scope,
         base_ref=base_ref,
+        partial=partial,
     )

@@ -46,6 +46,7 @@ import logging
 import sqlite3
 from typing import Any
 
+from seam.analysis.testpaths import is_test_file
 from seam.analysis.traversal import _SQL_VAR_BATCH, Reached, walk
 
 logger = logging.getLogger(__name__)
@@ -173,8 +174,11 @@ def _build_tier_group(
     """Convert a list of Reached symbols into a TierGroup dict.
 
     Initializes all three tier keys so callers can always index without KeyError,
-    even if some tiers are empty. Each entry includes a `file` field (absolute
-    path for indexed symbols; None for names not in the symbols table).
+    even if some tiers are empty. Each entry includes:
+      - file      (str | None) — absolute path for indexed symbols; None otherwise
+      - is_test   (bool)       — True when the file is a test file (per is_test_file());
+                                 False for production files AND for file=None (unresolved
+                                 symbols are never labelled as production or test).
     """
     group: TierGroup = {
         TIER_WILL_BREAK: [],
@@ -183,13 +187,16 @@ def _build_tier_group(
     }
     for r in reached:
         tier = _distance_to_tier(r["distance"])
+        file_path = file_map.get(r["name"])  # None if name is not an indexed symbol
         group[tier].append(
             {
                 "name": r["name"],
                 "distance": r["distance"],
                 "confidence": r["confidence"],
                 "tier": tier,
-                "file": file_map.get(r["name"]),  # None if name is not an indexed symbol
+                "file": file_path,
+                # is_test_file(None) returns False — safe default for unresolved names.
+                "is_test": is_test_file(file_path),
             }
         )
     return group
@@ -203,20 +210,48 @@ def clamp_depth(depth: int) -> int:
     return max(_MIN_DEPTH, min(_MAX_DEPTH, depth))
 
 
+def _filter_tests_from_tier_group(tier_group: TierGroup) -> TierGroup:
+    """Return a new TierGroup with all is_test=True entries removed.
+
+    All three tier keys are preserved (even if their lists become empty after
+    filtering) so callers can always index without KeyError.
+    """
+    return {
+        tier: [entry for entry in entries if not entry.get("is_test", False)]
+        for tier, entries in tier_group.items()
+    }
+
+
+def _count_test_entries(tier_group: TierGroup) -> int:
+    """Count is_test=True entries across all tiers (how many --production-only hides)."""
+    return sum(
+        1
+        for entries in tier_group.values()
+        for entry in entries
+        if entry.get("is_test", False)
+    )
+
+
 def impact(
     conn: sqlite3.Connection,
     target: str,
     direction: str = "upstream",
     max_depth: int = _DEFAULT_DEPTH,
+    include_tests: bool = True,
 ) -> ImpactResult:
     """Compute the blast radius of a symbol.
 
     Args:
-        conn:       Open SQLite connection (read-only; no writes).
-        target:     Symbol name to analyze. Unknown symbols return found=False.
-        direction:  "upstream" (who depends on target), "downstream" (what target
-                    depends on), or "both" (full neighborhood). Default: "upstream".
-        max_depth:  Maximum hops from target. Clamped to [1, 10]. Default: 3.
+        conn:          Open SQLite connection (read-only; no writes).
+        target:        Symbol name to analyze. Unknown symbols return found=False.
+        direction:     "upstream" (who depends on target), "downstream" (what target
+                       depends on), or "both" (full neighborhood). Default: "upstream".
+        max_depth:     Maximum hops from target. Clamped to [1, 10]. Default: 3.
+        include_tests: When True (default), all dependents are returned — test files
+                       included, tagged with is_test=True. When False, entries whose
+                       file lives in a test tree are filtered out from all tiers.
+                       Entries with file=None (unresolved names) are always included
+                       because their provenance is unknown (is_test=False by rule).
 
     Returns:
         ImpactResult dict with the following keys:
@@ -236,6 +271,14 @@ def impact(
                 confidence  (str)        — EXTRACTED | INFERRED | AMBIGUOUS
                 tier        (str)        — risk tier name
                 file        (str | None) — absolute path; None if not an indexed symbol
+                is_test     (bool)       — True if file is a test file; False otherwise
+
+            When include_tests=False, the result also carries:
+                hidden_tests (int) — number of test-file dependents that were
+                                     filtered out. Lets callers tell "no dependents"
+                                     (hidden_tests==0) from "only test dependents,
+                                     all hidden" (hidden_tests>0) — the latter is
+                                     NOT safe to treat as dead code.
 
         found=False: target not in the index. Empty TierGroups are included.
         found=True, empty tiers: target is indexed but has no dependents in the given direction.
@@ -268,20 +311,45 @@ def impact(
     all_names = [r["name"] for r in upstream_reached] + [r["name"] for r in downstream_reached]
     file_map = _lookup_files_for_names(conn, all_names)
 
-    # Build result structure.
+    # Build result structure: tag each entry with is_test, then optionally filter.
+    # When include_tests=False we also count what we removed and expose it as
+    # `hidden_tests`, so callers can distinguish "no dependents at all" from
+    # "all dependents were tests and got filtered" — the latter is NOT safe to
+    # treat as dead code (tests would break). Without this signal --production-only
+    # could give a dangerous false-safe.
     result: ImpactResult = {"found": found, "target": target}
+    hidden_tests = 0
 
     if direction in ("upstream", "both"):
-        result["upstream"] = _build_tier_group(upstream_reached, file_map)
+        tier_group = _build_tier_group(upstream_reached, file_map)
+        if not include_tests:
+            hidden_tests += _count_test_entries(tier_group)
+            tier_group = _filter_tests_from_tier_group(tier_group)
+        result["upstream"] = tier_group
 
     if direction in ("downstream", "both"):
-        result["downstream"] = _build_tier_group(downstream_reached, file_map)
+        tier_group = _build_tier_group(downstream_reached, file_map)
+        if not include_tests:
+            hidden_tests += _count_test_entries(tier_group)
+            tier_group = _filter_tests_from_tier_group(tier_group)
+        result["downstream"] = tier_group
+
+    # Only include hidden_tests in the result when test filtering was actually applied.
+    # Its absence signals "tests included in the output" to callers — no ambiguity.
+    # Its presence tells callers how many dependents were hidden, which is the
+    # anti-false-safe signal: hidden_tests>0 means "there ARE test dependents, they
+    # were just filtered", so an agent cannot conclude the symbol is unused or safe
+    # to delete because it sees empty tiers. hidden_tests==0 means filtering produced
+    # the same result as not filtering (no test dependents existed to remove).
+    if not include_tests:
+        result["hidden_tests"] = hidden_tests
 
     logger.debug(
-        "impact(target=%r, direction=%r, max_depth=%d, found=%s) -> %s",
+        "impact(target=%r, direction=%r, max_depth=%d, include_tests=%s, found=%s) -> %s",
         target,
         direction,
         safe_depth,
+        include_tests,
         found,
         {k: sum(len(v) for v in tg.values()) for k, tg in result.items() if isinstance(tg, dict)},
     )

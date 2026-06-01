@@ -207,6 +207,7 @@ def handle_seam_impact(
     root: Path,
     direction: str = _IMPACT_DIRECTION_DEFAULT,
     max_depth: int = _IMPACT_DEPTH_DEFAULT,
+    include_tests: bool = True,
 ) -> dict[str, Any]:
     """Handler for the seam_impact MCP tool.
 
@@ -214,13 +215,16 @@ def handle_seam_impact(
     target changes, grouped into risk tiers by distance.
 
     Args:
-        conn:       Open SQLite connection.
-        target:     Symbol name to analyze (must not be blank/whitespace).
-        root:       Project root for path relativization. Each TieredEntry includes a
-                    `file` field (absolute path from the analysis layer) which is
-                    relativized to root before returning.
-        direction:  "upstream" | "downstream" | "both". Default: "upstream".
-        max_depth:  Max hops. Clamped to [1, 10]. Default: 3.
+        conn:          Open SQLite connection.
+        target:        Symbol name to analyze (must not be blank/whitespace).
+        root:          Project root for path relativization. Each TieredEntry includes a
+                       `file` field (absolute path from the analysis layer) which is
+                       relativized to root before returning.
+        direction:     "upstream" | "downstream" | "both". Default: "upstream".
+        max_depth:     Max hops. Clamped to [1, 10]. Default: 3.
+        include_tests: When True (default), test-file dependents are included and tagged
+                       with is_test=True. When False, test-file entries are filtered out
+                       from all tiers (production-only blast radius).
 
     Returns:
         A JSON-able dict with the impact result, or an error dict on bad input.
@@ -232,9 +236,9 @@ def handle_seam_impact(
             {"found": bool, "target": str,
              "upstream": {...tiers...}, "downstream": {...tiers...}}
 
-        Each entry in a tier list includes a `file` field:
-            file (str | None) — relative path from project root for indexed symbols;
-                                None for names not in the symbols table.
+        Each entry in a tier list includes:
+            file    (str | None) — relative path from project root; None for unindexed.
+            is_test (bool)       — True if the entry's file is a test file.
 
     Error shapes:
         {"error": "INVALID_INPUT", "message": "..."} — blank target or invalid direction.
@@ -259,6 +263,7 @@ def handle_seam_impact(
         target=target.strip(),
         direction=direction,
         max_depth=safe_depth,
+        include_tests=include_tests,
     )
 
     # Build the response: pass found/target through, relativize file paths in entries.
@@ -269,6 +274,7 @@ def handle_seam_impact(
 
     # Relativize each TieredEntry's `file` field using the provided root.
     # `file` is an absolute path (or None) from the analysis layer.
+    # Pass is_test through so MCP callers can see the tag.
     for dir_key in ("upstream", "downstream"):
         if dir_key not in raw:
             continue
@@ -281,11 +287,18 @@ def handle_seam_impact(
                     "confidence": entry["confidence"],
                     "tier": entry["tier"],
                     "file": _relativize(entry["file"], root) if entry["file"] is not None else None,
+                    "is_test": entry["is_test"],
                 }
                 for entry in entries
             ]
             for tier, entries in tier_group.items()
         }
+
+    # Surface hidden_tests when present (include_tests=False filtered test dependents).
+    # Lets MCP callers distinguish "no dependents" from "all dependents were tests and
+    # were hidden" — without it, --production-only could read as a false-safe.
+    if "hidden_tests" in raw:
+        response["hidden_tests"] = raw["hidden_tests"]
 
     return response
 
@@ -478,4 +491,6 @@ def handle_seam_changes(
         "ambiguous_warning": report["ambiguous_warning"],
         "scope": report["scope"],
         "base_ref": report["base_ref"],
+        # partial=True when changed symbols exceeded the cap (see ChangeReport docstring).
+        "partial": report["partial"],
     }
