@@ -51,6 +51,7 @@ def seed_db(symbols: list[Symbol], edges: list[Edge]) -> object:
                 kind=e["kind"],
                 file=str(filepath),
                 line=e["line"],
+                confidence=e.get("confidence", "EXTRACTED"),
             )
             for e in edges
         ]
@@ -77,8 +78,8 @@ def _sym(
     )
 
 
-def _edge(source: str, target: str, kind: str = "call", line: int = 10) -> Edge:
-    return Edge(source=source, target=target, kind=kind, file="/tmp/placeholder.py", line=line)
+def _edge(source: str, target: str, kind: str = "call", line: int = 10, confidence: str = "EXTRACTED") -> Edge:
+    return Edge(source=source, target=target, kind=kind, file="/tmp/placeholder.py", line=line, confidence=confidence)
 
 
 # ── A3 — search() ────────────────────────────────────────────────────────────

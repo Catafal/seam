@@ -43,9 +43,10 @@ def make_edge(
     kind: str = "call",
     file: str = "/tmp/sample.py",
     line: int = 10,
+    confidence: str = "EXTRACTED",
 ) -> Edge:
     """Build a minimal Edge dict for seeding tests."""
-    return Edge(source=source, target=target, kind=kind, file=file, line=line)
+    return Edge(source=source, target=target, kind=kind, file=file, line=line, confidence=confidence)
 
 
 # ── A1 — init_db ─────────────────────────────────────────────────────────────

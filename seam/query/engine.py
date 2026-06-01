@@ -33,6 +33,7 @@ class ContextResult(TypedDict):
     docstring: str | None
     callers: list[str]
     callees: list[str]
+    ambiguous: bool  # True when multiple symbols share this name in the index (Phase 1)
 
 
 class SearchResult(TypedDict):
@@ -188,14 +189,24 @@ def context(conn: sqlite3.Connection, symbol_name: str) -> ContextResult | None:
     """Get 360-degree view of a symbol: location, kind, docstring, callers, callees.
 
     Returns None if the symbol is not in the index.
-    When multiple symbols share the same name, returns the first match.
+    When multiple symbols share the same name, returns the first match and sets
+    ambiguous=True so the caller knows to disambiguate rather than trust the result.
+
+    The ambiguous flag is a query-layer signal: it detects cross-file name collisions
+    that edge extraction cannot see (extraction is per-file). See CONTRACT.md for
+    the full contract evolution note.
     """
+    # Single atomic query: fetch the first matching symbol and the total count of
+    # same-name symbols via a window function. Avoids the count/fetch race of two
+    # separate queries and removes the now-dead double-None check.
     row = conn.execute(
         """
-        SELECT s.name, f.path AS file, s.start_line, s.end_line, s.kind, s.docstring
+        SELECT s.name, f.path AS file, s.start_line, s.end_line, s.kind, s.docstring,
+               COUNT(*) OVER () AS dup_count
         FROM symbols s
-        JOIN files f ON f.id = s.file_id
+        JOIN files f ON s.file_id = f.id
         WHERE s.name = ?
+        ORDER BY s.id
         LIMIT 1
         """,
         (symbol_name,),
@@ -223,4 +234,5 @@ def context(conn: sqlite3.Connection, symbol_name: str) -> ContextResult | None:
         docstring=row["docstring"],
         callers=[r["source_name"] for r in caller_rows],
         callees=[r["target_name"] for r in callee_rows],
+        ambiguous=row["dup_count"] > 1,  # True when name collision detected
     )

@@ -3,15 +3,28 @@
 Pure functions: take AST node + metadata, return structured data.
 No I/O, no DB, no side effects.
 
-Contract (FROZEN — see docs/CONTRACT.md):
+Contract (evolved from Phase-0 FROZEN — see docs/CONTRACT.md):
   Symbol fields: name, kind, file, start_line, end_line, docstring
-  Edge fields:   source, target, kind, file, line
+  Edge fields:   source, target, kind, file, line, confidence (Phase 1 addition)
+
+Confidence tagging (Phase 1 — issue #3):
+  Confidence is assigned during edge extraction/resolution and stored on the edge.
+  Resolution scope is the symbol list extracted from the SAME FILE at the same call.
+  Cross-file ambiguity is detected at the query layer (see engine.context()).
+
+  EXTRACTED  — target name resolves to exactly ONE symbol in the same-file symbol set.
+  AMBIGUOUS  — target name matches MORE THAN ONE symbol in the same-file symbol set.
+  INFERRED   — all other cases: heuristic best-guess (target not in symbol set, or
+               import edges where the target is outside the file).
 """
 
 from pathlib import Path
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 from tree_sitter import Node
+
+# Confidence level for an edge — persisted in the DB, exposed via MCP.
+Confidence = Literal["EXTRACTED", "INFERRED", "AMBIGUOUS"]
 
 
 class Symbol(TypedDict):
@@ -29,9 +42,25 @@ class Edge(TypedDict):
     kind: str  # 'import' | 'call'
     file: str
     line: int
+    confidence: Confidence  # Confidence value: EXTRACTED | INFERRED | AMBIGUOUS
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
+
+
+def _resolve_confidence_multi(target_name: str, symbol_name_counts: dict[str, int]) -> Confidence:
+    """Resolve confidence using a name->count mapping (detects same-file duplicates).
+
+    Args:
+        target_name:        The edge target name to resolve.
+        symbol_name_counts: Mapping of symbol_name -> occurrence count in the file.
+    """
+    count = symbol_name_counts.get(target_name, 0)
+    if count == 1:
+        return "EXTRACTED"
+    if count > 1:
+        return "AMBIGUOUS"
+    return "INFERRED"
 
 
 def _text(node: Node) -> str:
@@ -233,6 +262,9 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
     Call heuristic (MVP — precision not a goal):
       - call node where function is a bare identifier → target = identifier
       - source = nearest enclosing function/method (skip if none)
+
+    All edges are emitted with confidence='INFERRED' by default.
+    The caller (extract_edges) upgrades confidence using the symbol set.
     """
     edges: list[Edge] = []
     file_str = str(filepath)
@@ -252,6 +284,7 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
                             kind="import",
                             file=file_str,
                             line=node.start_point[0] + 1,
+                            confidence="INFERRED",  # upgraded by extract_edges if resolvable
                         )
                     )
 
@@ -272,6 +305,7 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
                                 kind="import",
                                 file=file_str,
                                 line=node.start_point[0] + 1,
+                                confidence="INFERRED",
                             )
                         )
                     elif child.type == "aliased_import":
@@ -284,6 +318,7 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
                                     kind="import",
                                     file=file_str,
                                     line=node.start_point[0] + 1,
+                                    confidence="INFERRED",
                                 )
                             )
 
@@ -300,6 +335,7 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
                             kind="call",
                             file=file_str,
                             line=node.start_point[0] + 1,
+                            confidence="INFERRED",
                         )
                     )
 
@@ -388,6 +424,9 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
     Call heuristic (MVP):
       - call_expression where function is a bare identifier → target = identifier
       - source = nearest enclosing function/method (skip if none)
+
+    All edges are emitted with confidence='INFERRED' by default.
+    The caller (extract_edges) upgrades confidence using the symbol set.
     """
     edges: list[Edge] = []
     file_str = str(filepath)
@@ -412,6 +451,7 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
                                 kind="import",
                                 file=file_str,
                                 line=line,
+                                confidence="INFERRED",
                             )
                         )
                     elif clause_child.type == "named_imports":
@@ -430,6 +470,7 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
                                             kind="import",
                                             file=file_str,
                                             line=line,
+                                            confidence="INFERRED",
                                         )
                                     )
 
@@ -445,6 +486,7 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
                             kind="call",
                             file=file_str,
                             line=node.start_point[0] + 1,
+                            confidence="INFERRED",
                         )
                     )
 
@@ -482,23 +524,54 @@ def extract_symbols(node: object, language: str, filepath: Path) -> list[Symbol]
     return []
 
 
-def extract_edges(node: object, language: str, filepath: Path) -> list[Edge]:
+def extract_edges(
+    node: object,
+    language: str,
+    filepath: Path,
+    symbols: list[Symbol] | None = None,
+) -> list[Edge]:
     """Extract import and call edges from an AST root node.
 
     Args:
         node:     tree-sitter root node returned by parser.parse_*(path)
         language: 'python' | 'typescript' | 'javascript'
         filepath: resolved absolute Path to the source file
+        symbols:  Optional list of symbols extracted from the same file.
+                  When provided, each edge's confidence is resolved:
+                    EXTRACTED  — target name matches exactly one symbol in the list
+                    AMBIGUOUS  — target name matches more than one symbol
+                    INFERRED   — target not in the symbol list (default/heuristic)
+                  When omitted, all edges carry confidence='INFERRED'.
 
     Returns list of Edge TypedDicts (may be empty, never raises).
+
+    Resolution scope note: confidence is resolved ONLY against the same-file symbol
+    list passed here, not the full DB. Cross-file ambiguity is handled at the query
+    layer (engine.context() sets ambiguous=True when multiple DB rows share a name).
     """
     if not isinstance(node, Node):
         return []
     try:
         if language == "python":
-            return _extract_edges_python(node, filepath)
+            raw_edges = _extract_edges_python(node, filepath)
         elif language in ("typescript", "javascript"):
-            return _extract_edges_typescript(node, filepath)
+            raw_edges = _extract_edges_typescript(node, filepath)
+        else:
+            return []
+
+        if symbols is None:
+            return raw_edges
+
+        # Build a name-count map from the symbol list to detect same-file duplicates.
+        name_counts: dict[str, int] = {}
+        for sym in symbols:
+            name_counts[sym["name"]] = name_counts.get(sym["name"], 0) + 1
+
+        # Annotate each edge's confidence based on resolution against the symbol set.
+        # Mutate in place: TypedDicts are mutable dicts; no need to rebuild a new Edge.
+        for edge in raw_edges:
+            edge["confidence"] = _resolve_confidence_multi(edge["target"], name_counts)
+        return raw_edges
+
     except Exception:  # noqa: BLE001
         return []
-    return []

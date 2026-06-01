@@ -130,6 +130,7 @@ def handle_seam_context(
         "docstring": result["docstring"],
         "callers": result["callers"],
         "callees": result["callees"],
+        "ambiguous": result["ambiguous"],  # Phase 1: True when name collision detected
     }
 
 

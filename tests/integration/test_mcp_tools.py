@@ -83,6 +83,7 @@ def seeded_db() -> tuple[sqlite3.Connection, Path]:
                 kind="call",
                 file=str(src_path),
                 line=50,
+                confidence="EXTRACTED",
             ),
         ]
         upsert_file(conn, src_path, "python", "abc123", symbols, edges)

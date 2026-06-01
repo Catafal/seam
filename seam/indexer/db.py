@@ -5,13 +5,16 @@ All operations use explicit connections (no connection pool) — caller controls
 
 Key design decisions:
 - init_db verifies FTS5 availability before running the schema script.
+- init_db runs a guarded migration for v1 -> v2 (adds edges.confidence column).
 - upsert_file is a single transaction: INSERT OR REPLACE the file row,
   DELETE old symbols/edges, then re-insert. Triggers handle FTS sync.
 - delete_file DELETE FROM files cascades to symbols/edges via FK; FTS
   triggers fire on each symbol DELETE.
 - Edge["source"] -> source_name, Edge["target"] -> target_name (see CONTRACT.md).
+- Edge["confidence"] -> edges.confidence (schema v2 addition).
 """
 
+import logging
 import sqlite3
 import time
 from pathlib import Path
@@ -19,6 +22,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from seam.indexer.graph import Edge, Symbol
+
+logger = logging.getLogger(__name__)
 
 # Schema SQL relative to this file: ../../docs/database/schema.sql
 _SCHEMA_PATH = Path(__file__).parents[2] / "docs" / "database" / "schema.sql"
@@ -49,6 +54,36 @@ def connect(db_path: Path, *, check_same_thread: bool = True) -> sqlite3.Connect
     return conn
 
 
+def _run_migration_v1_to_v2(conn: sqlite3.Connection) -> None:
+    """Guarded migration: add edges.confidence column if this is a v1 database.
+
+    Idempotent: if the column already exists (v2+ db or fresh db), PRAGMA table_info
+    detects it and the migration is skipped silently.
+
+    When the column is absent (v1 db), the ALTER TABLE runs exactly once, the
+    schema_version is bumped to '2', and ONE info log is emitted recommending a
+    re-index (old edges carry DEFAULT 'INFERRED' — conservative, not high-trust).
+
+    Raises RuntimeError on failure so the caller knows the DB is in a bad state
+    rather than silently continuing with a broken schema.
+    """
+    try:
+        col_names = {row["name"] for row in conn.execute("PRAGMA table_info(edges)").fetchall()}
+        if "confidence" not in col_names:
+            # v1 db: add column. Legacy edges are conservatively INFERRED (not high-trust);
+            # extract under the new resolver via a re-index for accurate tags.
+            conn.execute("ALTER TABLE edges ADD COLUMN confidence TEXT NOT NULL DEFAULT 'INFERRED'")
+            conn.execute("UPDATE metadata SET value = '2' WHERE key = 'schema_version'")
+            logger.info(
+                "Migrated Seam index v1->v2 (added edges.confidence). Existing edges marked "
+                "INFERRED; run 'seam init' to re-index for accurate confidence tags."
+            )
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "Seam DB migration v1->v2 failed; run 'seam init' to rebuild the index"
+        ) from exc
+
+
 def init_db(db_path: Path) -> sqlite3.Connection:
     """Open (or create) the SQLite database and apply the schema.
 
@@ -56,6 +91,7 @@ def init_db(db_path: Path) -> sqlite3.Connection:
       1. Open connection via connect() (sets foreign_keys + busy_timeout).
       2. Verify FTS5 is available; raise RuntimeError with a clear message if not.
       3. Execute the schema SQL (idempotent — uses CREATE TABLE IF NOT EXISTS).
+      4. Run guarded v1->v2 migration (adds edges.confidence if absent).
 
     Returns the open connection. Caller is responsible for closing it.
     Raises RuntimeError if FTS5 is unavailable.
@@ -77,6 +113,9 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     # Apply schema (CREATE TABLE IF NOT EXISTS — safe to run multiple times).
     schema_sql = _SCHEMA_PATH.read_text()
     conn.executescript(schema_sql)
+
+    # Run v1->v2 migration guard (adds edges.confidence if absent on an existing db).
+    _run_migration_v1_to_v2(conn)
 
     return conn
 
@@ -152,18 +191,20 @@ def upsert_file(
 
         # 5. Insert edges — contract: Edge['source'] -> source_name,
         #                             Edge['target'] -> target_name
+        #                             Edge['confidence'] -> confidence (schema v2)
         conn.executemany(
             """
-            INSERT INTO edges (source_name, target_name, kind, file_id, line)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO edges (source_name, target_name, kind, file_id, line, confidence)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             [
                 (
-                    edge["source"],  # Edge field 'source' -> column source_name
-                    edge["target"],  # Edge field 'target' -> column target_name
+                    edge["source"],      # Edge field 'source' -> column source_name
+                    edge["target"],      # Edge field 'target' -> column target_name
                     edge["kind"],
                     file_id,
                     edge["line"],
+                    edge["confidence"],  # required field — fail loud if missing
                 )
                 for edge in edges
             ],

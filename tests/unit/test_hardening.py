@@ -47,7 +47,7 @@ def test_reindex_replaces_cleanly_no_orphans(tmp_path: Path) -> None:
     try:
         upsert_file(conn, src, "python", "h1",
                     [_sym("a", "function", str(src))],
-                    [Edge(source="m", target="os", kind="import", file=str(src), line=1)])
+                    [Edge(source="m", target="os", kind="import", file=str(src), line=1, confidence="INFERRED")])
         # Re-index the SAME path with entirely different symbols and no edges.
         upsert_file(conn, src, "python", "h2", [_sym("b", "function", str(src))], [])
 
@@ -67,7 +67,7 @@ def test_delete_file_cascades(tmp_path: Path) -> None:
     try:
         upsert_file(conn, src, "python", "h1",
                     [_sym("a", "function", str(src))],
-                    [Edge(source="m", target="os", kind="import", file=str(src), line=1)])
+                    [Edge(source="m", target="os", kind="import", file=str(src), line=1, confidence="INFERRED")])
         delete_file(conn, src)
         assert conn.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0] == 0

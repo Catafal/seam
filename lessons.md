@@ -55,3 +55,19 @@ the string-name-edge ADR. Revisit in Phase 1:
 - **`seam status` freshness is a heuristic**: detects modified/added tracked
   files only; deletions and brand-new untracked files are not reflected (the live
   watcher handles those in real time).
+
+## 2026-06-01 — String-name collision limitation MITIGATED via confidence tagging (Phase 1 issue #3)
+
+The Phase-0 string-name collision limitation is now mitigated rather than silently wrong:
+- **Edge confidence** (`EXTRACTED | INFERRED | AMBIGUOUS`) is assigned at extraction time
+  and persisted in the DB. An AMBIGUOUS edge signals a known name collision; EXTRACTED
+  signals high certainty; INFERRED signals a heuristic edge (outside same-file symbol set).
+- **context() ambiguous flag**: `ContextResult.ambiguous` is set to `True` when multiple
+  symbols share the requested name in the DB (cross-file collision). The first match is
+  still returned, but the caller is informed to disambiguate.
+- **Scope of resolution**: confidence at extraction time is resolved against the same-file
+  symbol list only (pure function, no DB access). Cross-file ambiguity is detected at
+  query time by `engine.context()`. This is a known and documented limitation — not a bug.
+- **Schema migration**: v1 databases get `edges.confidence` added via `ALTER TABLE` in
+  `init_db`; existing rows receive the DEFAULT value ('EXTRACTED'). A re-index is logged
+  as recommended (old edges may not have accurate confidence). Never crashes.

@@ -97,7 +97,9 @@ def index_one_file(conn: sqlite3.Connection, path: Path) -> tuple[int, int] | No
 
         file_hash = sha1(content)
         symbols = extract_symbols(root, language, path)
-        edges = extract_edges(root, language, path)
+        # Pass symbols so extract_edges can resolve confidence (EXTRACTED/AMBIGUOUS/INFERRED)
+        # against the same-file symbol set. Cross-file ambiguity is handled at query time.
+        edges = extract_edges(root, language, path, symbols=symbols)
 
         upsert_file(conn, path, language, file_hash, symbols, edges)
         return len(symbols), len(edges)
