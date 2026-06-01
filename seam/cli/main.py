@@ -4,11 +4,15 @@ Commands
 --------
 init   — Index a project directory into .seam/seam.db.
 status — Show index stats and watcher state.
-start  — Start the MCP server + file watcher (Phase 1 — not yet implemented).
+start  — Start the MCP server (stdio) + file watcher in the background.
 """
 
 import hashlib
+import logging
+import signal
 import sqlite3
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -124,7 +128,7 @@ def _walk_project(root: Path) -> list[Path]:
         # Skip if any path component is a skip-dir or hidden dir
         if any(
             part.startswith(".") or part in _SKIP_DIRS
-            for part in item.parts[len(root.parts):]  # relative parts only
+            for part in item.parts[len(root.parts) :]  # relative parts only
         ):
             continue
         if item.is_file() and item.suffix.lower() in config.SEAM_LANGUAGE_MAP:
@@ -244,9 +248,7 @@ def status(
         edge_count = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
 
         # Most recent indexed_at across all files
-        last_indexed_row = conn.execute(
-            "SELECT MAX(indexed_at) FROM files"
-        ).fetchone()[0]
+        last_indexed_row = conn.execute("SELECT MAX(indexed_at) FROM files").fetchone()[0]
         last_indexed_str = (
             time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_indexed_row))
             if last_indexed_row is not None
@@ -254,9 +256,7 @@ def status(
         )
 
         # Freshness: compare newest DB mtime vs newest on-disk mtime for indexed paths
-        db_newest_mtime: float = conn.execute(
-            "SELECT MAX(mtime) FROM files"
-        ).fetchone()[0] or 0.0
+        db_newest_mtime: float = conn.execute("SELECT MAX(mtime) FROM files").fetchone()[0] or 0.0
 
         # Check on-disk mtimes for files we know about
         disk_newest_mtime = 0.0
@@ -299,9 +299,97 @@ def status(
 
 @app.command()
 def start(
-    stdio: bool = typer.Option(False, "--stdio", help="Use stdio transport (for MCP)"),
+    path: str = typer.Argument(".", help="Project root to watch (default: current directory)"),
+    db_dir: str = typer.Option(
+        "",
+        "--db-dir",
+        help="Override DB directory (default: same as project root)",
+    ),
 ) -> None:
-    """Start the MCP server and file watcher."""
-    # Implementation: see IMPLEMENTATION_PLAN.md step 8.3
-    typer.echo("[seam] Starting MCP server ... (not yet implemented)")
-    raise typer.Exit(code=1)
+    """Start the MCP server (stdio) and file watcher daemon.
+
+    Watcher runs in a background subprocess; MCP server runs in the foreground
+    using stdio transport so the calling process (e.g. Claude Desktop) can
+    communicate with it directly.
+
+    A PID file for the watcher is written to .seam/watcher.pid.
+    The MCP server does not have a separate PID file — it occupies the foreground.
+    """
+    project_root = Path(path).resolve()
+
+    if not project_root.is_dir():
+        console.print(f"[red]Error:[/red] '{project_root}' is not a directory.")
+        raise typer.Exit(code=1)
+
+    db_root = Path(db_dir).resolve() if db_dir else project_root
+    db_path = config.get_db_path(db_root)
+
+    if not db_path.exists():
+        Console(stderr=True).print(
+            "[red]No index found.[/red] Run [bold]seam init[/bold] first."
+        )
+        raise typer.Exit(code=1)
+
+    # ── Launch watcher in a background subprocess ─────────────────────────────
+    # We spawn a fresh interpreter so the watcher runs independently of the MCP
+    # server's asyncio event loop.  The subprocess inherits stdout/stderr so its
+    # logging is visible when running interactively.
+    watcher_cmd = [
+        sys.executable,
+        "-c",
+        (
+            "from seam.watcher.daemon import SeamWatcher; from pathlib import Path; "
+            f"w = SeamWatcher(db_path=Path('{db_path}'), root_path=Path('{project_root}')); "
+            "import signal, sys; "
+            "w.start(); "
+            "[signal.pause() if hasattr(signal, 'pause') else None]; "
+        ),
+    ]
+    watcher_proc = subprocess.Popen(  # noqa: S603 — controlled internal command
+        watcher_cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    # Write watcher PID file to .seam/watcher.pid for `seam status`
+    pid_file = db_path.parent / "watcher.pid"
+    try:
+        pid_file.write_text(str(watcher_proc.pid))
+    except OSError as exc:
+        Console(stderr=True).print(
+            f"[yellow]Warning:[/yellow] could not write watcher PID file: {exc}"
+        )
+
+    logging.basicConfig(level=getattr(logging, config.SEAM_LOG_LEVEL, logging.INFO))
+
+    # ── Open DB connection for the MCP server ─────────────────────────────────
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+
+    # ── Create and run MCP server in the foreground (stdio) ───────────────────
+    # Runs until the parent process closes stdin (e.g. client disconnects).
+    # On SIGTERM/SIGINT, clean up the watcher subprocess.
+    def _cleanup(signum: int, frame: object) -> None:  # noqa: ARG001
+        watcher_proc.terminate()
+        try:
+            pid_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+        conn.close()
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, _cleanup)
+    signal.signal(signal.SIGINT, _cleanup)
+
+    try:
+        from seam.server.mcp import create_server
+
+        server = create_server(conn, project_root)
+        server.run(transport="stdio")
+    finally:
+        watcher_proc.terminate()
+        try:
+            pid_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+        conn.close()
