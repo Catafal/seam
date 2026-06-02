@@ -63,6 +63,10 @@ from seam.indexer.graph_go_rust import (
     _extract_symbols_rust,
 )
 
+# Phase 4: node-field extractor (leaf module — no seam deps other than tree_sitter).
+# Imported AFTER graph_go_rust to maintain the established import ordering convention.
+from seam.indexer.signatures import extract_node_fields
+
 # Keep these names visible for `from seam.indexer.graph import ...` callers.
 __all__ = [
     "Comment",
@@ -160,7 +164,16 @@ def _extract_symbols_python(root: Node, filepath: Path) -> list[Symbol]:
                 kind = "method" if class_name else "function"
                 qualified = f"{class_name}.{name}" if class_name else name
                 doc = _py_docstring(node)
-                symbols.append(_make_symbol(qualified, kind, file_str, node, doc))
+                # Phase 4: extract enrichment fields; pass qualified name from our scope-walker.
+                fields = extract_node_fields(node, "python", qualified_name=qualified)
+                symbols.append(_make_symbol(
+                    qualified, kind, file_str, node, doc,
+                    signature=fields["signature"],
+                    decorators=fields["decorators"],
+                    is_exported=fields["is_exported"],
+                    visibility=fields["visibility"],
+                    qualified_name=qualified,
+                ))
                 body = node.child_by_field_name("body")
                 if body:
                     for child in body.children:
@@ -174,7 +187,16 @@ def _extract_symbols_python(root: Node, filepath: Path) -> list[Symbol]:
                     kind = "method" if class_name else "function"
                     qualified = f"{class_name}.{name}" if class_name else name
                     doc = _py_docstring(definition)
-                    symbols.append(_make_symbol(qualified, kind, file_str, node, doc))
+                    # Phase 4: pass the decorated_definition node for decorator capture.
+                    fields = extract_node_fields(node, "python", qualified_name=qualified)
+                    symbols.append(_make_symbol(
+                        qualified, kind, file_str, node, doc,
+                        signature=fields["signature"],
+                        decorators=fields["decorators"],
+                        is_exported=fields["is_exported"],
+                        visibility=fields["visibility"],
+                        qualified_name=qualified,
+                    ))
                     body = definition.child_by_field_name("body")
                     if body:
                         for child in body.children:
@@ -183,7 +205,16 @@ def _extract_symbols_python(root: Node, filepath: Path) -> list[Symbol]:
                 name = _node_name(definition)
                 if name:
                     doc = _py_docstring(definition)
-                    symbols.append(_make_symbol(name, "class", file_str, node, doc))
+                    # Phase 4: pass decorated_definition node for decorator capture.
+                    fields = extract_node_fields(node, "python", qualified_name=name)
+                    symbols.append(_make_symbol(
+                        name, "class", file_str, node, doc,
+                        signature=fields["signature"],
+                        decorators=fields["decorators"],
+                        is_exported=fields["is_exported"],
+                        visibility=fields["visibility"],
+                        qualified_name=name,
+                    ))
                     body = definition.child_by_field_name("body")
                     if body:
                         for child in body.children:
@@ -193,7 +224,16 @@ def _extract_symbols_python(root: Node, filepath: Path) -> list[Symbol]:
             name = _node_name(node)
             if name:
                 doc = _py_docstring(node)
-                symbols.append(_make_symbol(name, "class", file_str, node, doc))
+                # Phase 4: extract enrichment fields for class node.
+                fields = extract_node_fields(node, "python", qualified_name=name)
+                symbols.append(_make_symbol(
+                    name, "class", file_str, node, doc,
+                    signature=fields["signature"],
+                    decorators=fields["decorators"],
+                    is_exported=fields["is_exported"],
+                    visibility=fields["visibility"],
+                    qualified_name=name,
+                ))
                 body = node.child_by_field_name("body")
                 if body:
                     for child in body.children:
@@ -312,7 +352,16 @@ def _extract_symbols_typescript(root: Node, filepath: Path) -> list[Symbol]:
                 kind = "method" if class_name else "function"
                 qualified = f"{class_name}.{name}" if class_name else name
                 doc = _ts_jsdoc(node)
-                symbols.append(_make_symbol(qualified, kind, file_str, node, doc))
+                # Phase 4: extract enrichment fields.
+                fields = extract_node_fields(node, "typescript", qualified_name=qualified)
+                symbols.append(_make_symbol(
+                    qualified, kind, file_str, node, doc,
+                    signature=fields["signature"],
+                    decorators=fields["decorators"],
+                    is_exported=fields["is_exported"],
+                    visibility=fields["visibility"],
+                    qualified_name=qualified,
+                ))
                 body = node.child_by_field_name("body")
                 if body:
                     for child in body.children:
@@ -324,14 +373,32 @@ def _extract_symbols_typescript(root: Node, filepath: Path) -> list[Symbol]:
                 name = _text(name_node)
                 qualified = f"{class_name}.{name}" if class_name else name
                 doc = _ts_jsdoc(node)
-                symbols.append(_make_symbol(qualified, "method", file_str, node, doc))
+                # Phase 4: extract enrichment fields.
+                fields = extract_node_fields(node, "typescript", qualified_name=qualified)
+                symbols.append(_make_symbol(
+                    qualified, "method", file_str, node, doc,
+                    signature=fields["signature"],
+                    decorators=fields["decorators"],
+                    is_exported=fields["is_exported"],
+                    visibility=fields["visibility"],
+                    qualified_name=qualified,
+                ))
 
         elif node.type == "class_declaration":
             name_node = node.child_by_field_name("name")
             if name_node:
                 cls_name = _text(name_node)
                 doc = _ts_jsdoc(node)
-                symbols.append(_make_symbol(cls_name, "class", file_str, node, doc))
+                # Phase 4: extract enrichment fields.
+                fields = extract_node_fields(node, "typescript", qualified_name=cls_name)
+                symbols.append(_make_symbol(
+                    cls_name, "class", file_str, node, doc,
+                    signature=fields["signature"],
+                    decorators=fields["decorators"],
+                    is_exported=fields["is_exported"],
+                    visibility=fields["visibility"],
+                    qualified_name=cls_name,
+                ))
                 body = node.child_by_field_name("body")
                 if body:
                     for child in body.children:
@@ -342,14 +409,32 @@ def _extract_symbols_typescript(root: Node, filepath: Path) -> list[Symbol]:
             if name_node:
                 name = _text(name_node)
                 doc = _ts_jsdoc(node)
-                symbols.append(_make_symbol(name, "interface", file_str, node, doc))
+                # Phase 4: extract enrichment fields.
+                fields = extract_node_fields(node, "typescript", qualified_name=name)
+                symbols.append(_make_symbol(
+                    name, "interface", file_str, node, doc,
+                    signature=fields["signature"],
+                    decorators=fields["decorators"],
+                    is_exported=fields["is_exported"],
+                    visibility=fields["visibility"],
+                    qualified_name=name,
+                ))
 
         elif node.type == "type_alias_declaration":
             name_node = node.child_by_field_name("name")
             if name_node:
                 name = _text(name_node)
                 doc = _ts_jsdoc(node)
-                symbols.append(_make_symbol(name, "type", file_str, node, doc))
+                # Phase 4: extract enrichment fields.
+                fields = extract_node_fields(node, "typescript", qualified_name=name)
+                symbols.append(_make_symbol(
+                    name, "type", file_str, node, doc,
+                    signature=fields["signature"],
+                    decorators=fields["decorators"],
+                    is_exported=fields["is_exported"],
+                    visibility=fields["visibility"],
+                    qualified_name=name,
+                ))
 
         else:
             for child in node.children:

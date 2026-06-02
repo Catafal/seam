@@ -87,6 +87,15 @@ SEAM_FUZZY_MAX_DIST: int = int(os.getenv("SEAM_FUZZY_MAX_DIST", "1"))
 SEAM_FUZZY_MAX_CANDIDATES: int = int(os.getenv("SEAM_FUZZY_MAX_CANDIDATES", "500"))
 
 
+
+# ── Phase 4: Node-field enrichment configuration ─────────────────────────────
+
+# Maximum length (in characters) for the signature field captured at index time.
+# Signatures longer than this are truncated with '...' to keep query results readable
+# and prevent pathologically long function signatures from bloating a single row.
+SEAM_MAX_SIGNATURE_LEN: int = int(os.getenv("SEAM_MAX_SIGNATURE_LEN", "300"))
+
+
 def get_db_path(project_root: Path) -> Path:
     """Resolve the database path relative to the project root."""
     return project_root / SEAM_DB_PATH
