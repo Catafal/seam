@@ -55,6 +55,14 @@ SEAM_LLM_MODEL: str = os.getenv("SEAM_LLM_MODEL", "gpt-4o-mini")
 SEAM_CLUSTER_MIN_SIZE: int = int(os.getenv("SEAM_CLUSTER_MIN_SIZE", "2"))
 
 
+# ── Phase 3: Affected-tests configuration ────────────────────────────────────
+
+# Maximum hop depth for the affected-tests traversal.
+# Controls how far upstream (through the call/import graph) the `seam affected`
+# command walks from each changed symbol to find dependent test files.
+# Higher values find more distant test files but increase runtime on large graphs.
+SEAM_AFFECTED_DEPTH: int = int(os.getenv("SEAM_AFFECTED_DEPTH", "5"))
+
 # ── Phase 3: Search / fuzzy fallback configuration ───────────────────────────
 
 # Maximum Damerau-Levenshtein edit distance for the fuzzy fallback.

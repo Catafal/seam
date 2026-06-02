@@ -65,6 +65,7 @@ from seam.query.clusters import list_clusters as query_list_clusters
 from seam.query.comments import why as comments_why
 from seam.server.mcp import create_server
 from seam.server.tools import (
+    handle_seam_affected,
     handle_seam_changes,
     handle_seam_clusters,
     handle_seam_impact,
@@ -225,7 +226,9 @@ def init(
 
 @app.command()
 def status(
-    path: str = typer.Argument(".", help="Project root whose index to inspect (default: current directory)"),
+    path: str = typer.Argument(
+        ".", help="Project root whose index to inspect (default: current directory)"
+    ),
     db_dir: str = typer.Option(
         "",
         "--db-dir",
@@ -254,7 +257,9 @@ def status(
 
     if not db_path.exists():
         if json_:
-            emit_json_error("NO_INDEX", "No index found. Run 'seam init' first to create the index.")
+            emit_json_error(
+                "NO_INDEX", "No index found. Run 'seam init' first to create the index."
+            )
         console.print(
             "[red]No index found.[/red] Run [bold]seam init[/bold] first to create the index."
         )
@@ -378,9 +383,7 @@ def start(
     db_path = config.get_db_path(db_root)
 
     if not db_path.exists():
-        Console(stderr=True).print(
-            "[red]No index found.[/red] Run [bold]seam init[/bold] first."
-        )
+        Console(stderr=True).print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
         raise typer.Exit(code=1)
 
     # Refuse to spawn a second watcher if a live one is already recorded —
@@ -436,8 +439,12 @@ def start(
 
 @app.command(name="impact")
 def impact_cmd(
-    symbol: str = typer.Argument(..., help="Symbol name to analyze (e.g. 'upsert_file', 'UserService.validate')"),
-    direction: str = typer.Option("upstream", "--direction", "-d", help="upstream | downstream | both"),
+    symbol: str = typer.Argument(
+        ..., help="Symbol name to analyze (e.g. 'upsert_file', 'UserService.validate')"
+    ),
+    direction: str = typer.Option(
+        "upstream", "--direction", "-d", help="upstream | downstream | both"
+    ),
     depth: int = typer.Option(3, "--depth", help="Max hop depth (1-10)"),
     path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
@@ -479,8 +486,13 @@ def impact_cmd(
     valid_directions = {"upstream", "downstream", "both"}
     if direction not in valid_directions:
         if json_:
-            emit_json_error("INVALID_INPUT", f"direction must be one of: upstream, downstream, both; got {direction!r}")
-        console.print(f"[red]Invalid direction:[/red] {direction!r}. Choose: upstream, downstream, or both.")
+            emit_json_error(
+                "INVALID_INPUT",
+                f"direction must be one of: upstream, downstream, both; got {direction!r}",
+            )
+        console.print(
+            f"[red]Invalid direction:[/red] {direction!r}. Choose: upstream, downstream, or both."
+        )
         raise typer.Exit(code=1)
 
     try:
@@ -500,11 +512,21 @@ def impact_cmd(
         # For the Rich path we still call impact() directly to preserve behavior.
         if json_ or quiet:
             result = handle_seam_impact(
-                conn, target=symbol, root=project_root,
-                direction=direction, max_depth=depth, include_tests=include_tests,
+                conn,
+                target=symbol,
+                root=project_root,
+                direction=direction,
+                max_depth=depth,
+                include_tests=include_tests,
             )
         else:
-            result = impact(conn, target=symbol, direction=direction, max_depth=depth, include_tests=include_tests)
+            result = impact(
+                conn,
+                target=symbol,
+                direction=direction,
+                max_depth=depth,
+                include_tests=include_tests,
+            )
     finally:
         conn.close()
 
@@ -570,7 +592,9 @@ def impact_cmd(
     for direction_key, tier_group in result.items():
         if direction_key in ("found", "target") or not isinstance(tier_group, dict):
             continue
-        console.print(f"\n[bold cyan]Impact ({direction_key})[/bold cyan] of [bold]{symbol}[/bold]:")
+        console.print(
+            f"\n[bold cyan]Impact ({direction_key})[/bold cyan] of [bold]{symbol}[/bold]:"
+        )
         any_in_direction = any(len(entries) > 0 for entries in tier_group.values())
         if not any_in_direction:
             console.print("  [dim]No dependents.[/dim]")
@@ -606,7 +630,9 @@ def impact_cmd(
 @app.command(name="trace")
 def trace_cmd(
     source: str = typer.Argument(..., help="Starting symbol name (e.g. 'init', 'parse_file')"),
-    target: str = typer.Argument(..., help="Destination symbol name (e.g. 'upsert_file', 'init_db')"),
+    target: str = typer.Argument(
+        ..., help="Destination symbol name (e.g. 'upsert_file', 'init_db')"
+    ),
     depth: int = typer.Option(10, "--depth", help="Max hop depth (1-10)"),
     path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
@@ -654,7 +680,9 @@ def trace_cmd(
     try:
         # WHY: reuse handle_seam_trace for --json/--quiet to ensure MCP/CLI parity.
         if json_ or quiet:
-            result = handle_seam_trace(conn, source=source, target=target, root=project_root, max_depth=safe_depth)
+            result = handle_seam_trace(
+                conn, source=source, target=target, root=project_root, max_depth=safe_depth
+            )
         else:
             paths = flows_trace(conn, source, target, max_depth=safe_depth)
             callers_src = flows_callers(conn, source)
@@ -753,6 +781,16 @@ def changes_cmd(
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
     json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
     quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
+    stdin: bool = typer.Option(
+        False,
+        "--stdin",
+        help=(
+            "Read a newline-delimited list of file paths from stdin and restrict "
+            "the analysis to those files. Filters changed_symbols and affected to "
+            "only the subset touching the provided files. "
+            "Does NOT bypass git — the git diff still runs; stdin restricts the output."
+        ),
+    ),
 ) -> None:
     """Pre-commit risk check — show what your changes break.
 
@@ -763,6 +801,9 @@ def changes_cmd(
       working — unstaged changes (git diff)
       staged  — staged changes (git diff --cached)
       branch  — all changes on this branch vs base ref (git diff <base>...HEAD)
+
+    Use --stdin to restrict the analysis to a precomputed file list, e.g.:
+      git diff --name-only | seam changes --stdin --json
     """
     try:
         check_mutual_exclusion(json_=json_, quiet=quiet)
@@ -776,7 +817,9 @@ def changes_cmd(
     # Validate scope early for a helpful message.
     if scope not in VALID_SCOPES:
         if json_:
-            emit_json_error("INVALID_INPUT", f"scope must be one of {sorted(VALID_SCOPES)}; got {scope!r}")
+            emit_json_error(
+                "INVALID_INPUT", f"scope must be one of {sorted(VALID_SCOPES)}; got {scope!r}"
+            )
         console.print(
             f"[red]Invalid scope:[/red] {scope!r}. "
             f"Choose one of: {', '.join(sorted(VALID_SCOPES))}."
@@ -797,6 +840,24 @@ def changes_cmd(
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
+    # ── stdin: read file list before opening DB (reads happen before any output) ─
+    # WHY we read stdin here (before DB open): stdin is consumed once; reading it
+    # after the DB work would not change the analysis, just the filtering that follows.
+    # We resolve the input paths here so the filter below can match DB stored paths.
+    stdin_files: set[str] | None = None
+    if stdin:
+        raw_lines = sys.stdin.read().splitlines()
+        resolved = []
+        for line in raw_lines:
+            line = line.strip()
+            if line:
+                resolved.append(
+                    str((project_root / line).resolve())
+                    if not Path(line).is_absolute()
+                    else str(Path(line).resolve())
+                )
+        stdin_files = set(resolved)
+
     # WHY `Any`: handle_seam_changes returns dict[str,Any]; detect_changes returns
     # ChangeReport (a TypedDict). Both are accessed with the same string keys at
     # runtime, but mypy cannot unify them — `Any` is the honest annotation here.
@@ -813,6 +874,40 @@ def changes_cmd(
                 raise typer.Exit(code=1) from exc
     finally:
         conn.close()
+
+    # ── Apply stdin file filter (when --stdin was given) ─────────────────────
+    # WHY filter after report: detect_changes always runs the full git diff; we then
+    # restrict the displayed/returned result to the user-provided file subset.
+    # This matches the user story: "restrict the analysis to those files" — meaning
+    # the output is scoped to the intersection, not that git runs differently.
+    # The risk_level is NOT recomputed — it reflects the full diff (conservative).
+    # NOTE: When the report has an "error" key (e.g. NOT_A_GIT_REPO), skip filter.
+    if (
+        stdin_files is not None
+        and not isinstance(report, dict)
+        or (isinstance(report, dict) and not report.get("error") and stdin_files is not None)
+    ):
+        # Determine the key used for file lookup in changed_symbols entries.
+        # handle_seam_changes returns relativized paths; detect_changes returns absolute.
+        # We filter by checking if the symbol's file appears in stdin_files.
+        # For handle_seam_changes (json/quiet paths), file is relative; we need to
+        # resolve it to compare with the resolved stdin_files set.
+        def _abs_sym_file(sym_file: str | None) -> str | None:
+            if sym_file is None:
+                return None
+            p = Path(sym_file)
+            if p.is_absolute():
+                return str(p)
+            return str((project_root / p).resolve())
+
+        if isinstance(report, dict) and "changed_symbols" in report:
+            report = dict(report)  # shallow copy so we don't mutate the TypedDict
+            report["changed_symbols"] = [
+                s for s in report["changed_symbols"] if _abs_sym_file(s.get("file")) in stdin_files
+            ]
+            report["new_files"] = [
+                f for f in report.get("new_files", []) if _abs_sym_file(f) in stdin_files
+            ]
 
     # ── JSON mode ─────────────────────────────────────────────────────────────
     if json_:
@@ -843,8 +938,11 @@ def changes_cmd(
     )
     console.print(
         f"Risk: [{risk_color}]{report['risk_level'].upper()}[/{risk_color}]"
-        + (" [yellow](AMBIGUOUS edges — estimate uncertain)[/yellow]"
-           if report["ambiguous_warning"] else "")
+        + (
+            " [yellow](AMBIGUOUS edges — estimate uncertain)[/yellow]"
+            if report["ambiguous_warning"]
+            else ""
+        )
     )
 
     # Partial verdict marker: printed after the risk line when the impact cap was hit.
@@ -855,9 +953,7 @@ def changes_cmd(
     # match — otherwise the displayed fraction does not reconcile with what was capped.
     if report.get("partial"):
         cap = config.SEAM_MAX_IMPACT_SYMBOLS
-        real_total = sum(
-            1 for s in report["changed_symbols"] if not s["name"].startswith("<")
-        )
+        real_total = sum(1 for s in report["changed_symbols"] if not s["name"].startswith("<"))
         analyzed = min(cap, real_total)
         console.print(
             f"[yellow]⚠ PARTIAL[/yellow] — impact cap ({cap}) hit; "
@@ -870,7 +966,9 @@ def changes_cmd(
         return
 
     if report["new_files"]:
-        console.print(f"\n[bold cyan]New / untracked files ({len(report['new_files'])}):[/bold cyan]")
+        console.print(
+            f"\n[bold cyan]New / untracked files ({len(report['new_files'])}):[/bold cyan]"
+        )
         for f in report["new_files"]:
             # Relativize for display
             try:
@@ -894,11 +992,10 @@ def changes_cmd(
                 lines_str = (
                     f"  lines {sym['changed_lines'][:5]}"
                     + ("…" if len(sym["changed_lines"]) > 5 else "")
-                    if sym["changed_lines"] else ""
+                    if sym["changed_lines"]
+                    else ""
                 )
-                console.print(
-                    f"  [bold]{sym['name']}[/bold] [dim]{rel_file}{lines_str}[/dim]"
-                )
+                console.print(f"  [bold]{sym['name']}[/bold] [dim]{rel_file}{lines_str}[/dim]")
 
         if module_syms:
             console.print(f"\n[dim]Module-level changes ({len(module_syms)} file(s)).[/dim]")
@@ -958,7 +1055,7 @@ def _parse_why_target(target: str) -> tuple[str, int | None]:
     # Split on the last ':' to handle paths that may contain ':' (e.g. Windows drives)
     last_colon = target.rfind(":")
     if last_colon != -1:
-        maybe_line = target[last_colon + 1:]
+        maybe_line = target[last_colon + 1 :]
         try:
             line = int(maybe_line)
             return target[:last_colon], line
@@ -1215,3 +1312,131 @@ def clusters_cmd(
         for c in clusters:
             table.add_row(str(c["id"]), c["label"], str(c["size"]))
         console.print(table)
+
+
+# ── seam affected ─────────────────────────────────────────────────────────────
+
+
+@app.command(name="affected")
+def affected_cmd(
+    files: list[str] = typer.Argument(
+        default=None,
+        help="Changed file paths to analyze. Mutually exclusive with --stdin.",
+    ),
+    stdin: bool = typer.Option(
+        False,
+        "--stdin",
+        help=(
+            "Read changed file paths from stdin (newline-delimited). "
+            "Mutually exclusive with positional file arguments."
+        ),
+    ),
+    depth: int = typer.Option(
+        config.SEAM_AFFECTED_DEPTH,
+        "--depth",
+        help="Max upstream traversal depth (default: SEAM_AFFECTED_DEPTH env var).",
+    ),
+    path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
+    db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        help="Print bare test-file paths one per line (for piping into pytest).",
+    ),
+) -> None:
+    """Find which test files are impacted by changed source files.
+
+    Given changed files (as positional args or via --stdin), traverses the reverse-
+    dependency graph to find all test files that depend on symbols in those files.
+
+    Examples:
+      seam affected src/foo.py src/bar.py --json
+      git diff --name-only | seam affected --stdin --quiet | xargs pytest
+      seam affected src/foo.py --quiet   # bare test paths, one per line
+
+    A changed file that is itself a test file is always included in the output.
+    Files not in the index are silently skipped.
+    """
+    # Mutual exclusion check (--json + --quiet is not allowed)
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
+    project_root = Path(path).resolve()
+    db_root = Path(db_dir).resolve() if db_dir else project_root
+    db_path = config.get_db_path(db_root)
+
+    if not db_path.exists():
+        if json_:
+            emit_json_error("NO_INDEX", "No index found. Run 'seam init' first.")
+        console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
+        raise typer.Exit(code=1)
+
+    # ── Determine input file list ─────────────────────────────────────────────
+    # --stdin and positional args are mutually exclusive. If --stdin is given,
+    # read from stdin; otherwise use positional args. Both empty -> INVALID_INPUT.
+    if stdin:
+        raw_lines = sys.stdin.read().splitlines()
+        input_files = [ln.strip() for ln in raw_lines if ln.strip()]
+    else:
+        input_files = list(files) if files else []
+
+    if not input_files:
+        if json_:
+            emit_json_error(
+                "INVALID_INPUT",
+                "Provide file paths as arguments or use --stdin to read from stdin.",
+            )
+        console.print(
+            "[red]Error:[/red] Provide file paths as arguments or use [bold]--stdin[/bold]."
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        conn = connect(db_path)
+    except sqlite3.Error as exc:
+        if json_:
+            emit_json_error("INVALID_INPUT", f"Failed to open database: {exc}")
+        console.print(f"[red]Failed to open database:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        # WHY: reuse handle_seam_affected for --json/--quiet (MCP/CLI parity).
+        # handle_seam_affected relativizes paths, validates input, and calls affected().
+        result = handle_seam_affected(conn, input_files, project_root, depth=depth)
+    finally:
+        conn.close()
+
+    # ── JSON mode ─────────────────────────────────────────────────────────────
+    if json_:
+        if isinstance(result, dict) and result.get("error"):
+            emit_json_error(result["error"], result.get("message", ""))
+        emit_json(result)
+        return
+
+    # ── Quiet mode — bare test-file paths for piping into pytest ─────────────
+    if quiet:
+        for test_path in result.get("affected_tests", []):
+            sys.stdout.write(test_path + "\n")
+        return
+
+    # ── Rich (default) mode ───────────────────────────────────────────────────
+    affected_tests = result.get("affected_tests", [])
+    total = result.get("total_dependents_traversed", 0)
+
+    if not affected_tests:
+        console.print(
+            f"[dim]No affected test files found.[/dim] [dim]({total} dependent(s) traversed)[/dim]"
+        )
+        return
+
+    console.print(
+        f"\n[bold cyan]Affected tests[/bold cyan] "
+        f"for [bold]{len(input_files)}[/bold] changed file(s) "
+        f"[dim]({total} dependent(s) traversed):[/dim]"
+    )
+    for test_path in affected_tests:
+        console.print(f"  [green]•[/green] {test_path}")
+    console.print(f"\n[dim]Run with:[/dim] [bold]pytest {' '.join(affected_tests)}[/bold]")
