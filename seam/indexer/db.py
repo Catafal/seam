@@ -5,7 +5,8 @@ All operations use explicit connections (no connection pool) — caller controls
 
 Key design decisions:
 - init_db verifies FTS5 availability before running the schema script.
-- init_db runs guarded migrations: v1->v2 (edges.confidence), v2->v3 (comments table).
+- init_db runs guarded migrations: v1->v2 (edges.confidence), v2->v3 (comments table),
+  v3->v4 (clusters + cluster_id), v4->v5 (Phase 4 node enrichment fields).
 - upsert_file is a single transaction: INSERT OR REPLACE the file row,
   DELETE old symbols/edges/comments, then re-insert. Triggers handle FTS sync.
 - delete_file DELETE FROM files cascades to symbols/edges/comments via FK; FTS
@@ -13,8 +14,11 @@ Key design decisions:
 - Edge["source"] -> source_name, Edge["target"] -> target_name (see CONTRACT.md).
 - Edge["confidence"] -> edges.confidence (schema v2 addition).
 - Comment["marker"/"text"/"line"] -> comments table (schema v3 addition).
+- Phase 4 fields: symbols gain signature, decorators (JSON text), is_exported,
+  visibility, qualified_name. FTS5 rebuilt to index (name, docstring, signature).
 """
 
+import json
 import logging
 import sqlite3
 import time
@@ -130,6 +134,113 @@ def _run_migration_v3_to_v4(conn: sqlite3.Connection) -> None:
         ) from exc
 
 
+def _run_migration_v4_to_v5(conn: sqlite3.Connection) -> None:
+    """Guarded migration: add Phase 4 node-enrichment columns + rebuild FTS (v4 → v5).
+
+    Steps (all guarded — idempotent):
+      1. ALTER TABLE symbols ADD COLUMN for the 5 new fields (signature, decorators,
+         is_exported, visibility, qualified_name). All nullable; existing rows default NULL.
+      2. DROP symbols_fts virtual table and its 3 sync triggers. FTS5 columns cannot
+         be altered, so the only way to add "signature" is to drop and recreate.
+      3. CREATE the new symbols_fts virtual table with columns (name, docstring, signature).
+      4. Recreate the 3 sync triggers (symbols_ai, symbols_ad, symbols_au) for the new
+         FTS column set.
+      5. Repopulate FTS from the symbols content table (INSERT INTO symbols_fts).
+      6. Bump schema_version to '5'.
+
+    Guarded: runs only when the stored version is < 5.
+    Idempotent: each ALTER TABLE is guarded by a PRAGMA table_info check; DROP IF EXISTS
+                prevents double-drop; re-running is safe (no-op when already at v5).
+
+    Raises RuntimeError on any failure so the caller knows the DB is in a bad state.
+    """
+    try:
+        row = conn.execute("SELECT value FROM metadata WHERE key = 'schema_version'").fetchone()
+        version = int(row["value"]) if row else 0
+
+        if version >= 5:
+            return  # Already at v5 or newer — skip migration entirely.
+
+        # Step 1: Add the 5 new columns if they don't already exist.
+        # Each ALTER is individually guarded so repeated calls (e.g. interrupted migration)
+        # don't fail on "duplicate column name".
+        col_names = {r["name"] for r in conn.execute("PRAGMA table_info(symbols)").fetchall()}
+
+        new_cols = [
+            ("signature",      "TEXT"),
+            ("decorators",     "TEXT"),  # JSON-encoded list of strings
+            ("is_exported",    "INTEGER"),  # 0/1/NULL — SQLite stores bool as integer
+            ("visibility",     "TEXT"),
+            ("qualified_name", "TEXT"),
+        ]
+        for col, col_type in new_cols:
+            if col not in col_names:
+                conn.execute(f"ALTER TABLE symbols ADD COLUMN {col} {col_type}")
+
+        # Step 2: Drop the old FTS table and its triggers.
+        # WHY drop-and-recreate: FTS5 virtual tables do not support ALTER TABLE.
+        # Dropping is safe — we repopulate from the symbols content table in step 5.
+        conn.executescript("""
+            DROP TRIGGER IF EXISTS symbols_ai;
+            DROP TRIGGER IF EXISTS symbols_ad;
+            DROP TRIGGER IF EXISTS symbols_au;
+            DROP TABLE IF EXISTS symbols_fts;
+        """)
+
+        # Step 3: Recreate symbols_fts with (name, docstring, signature).
+        conn.execute("""
+            CREATE VIRTUAL TABLE symbols_fts USING fts5(
+                name,
+                docstring,
+                signature,
+                content='symbols',
+                content_rowid='id'
+            )
+        """)
+
+        # Step 4: Recreate the 3 sync triggers for the new FTS column set.
+        conn.executescript("""
+            CREATE TRIGGER symbols_ai AFTER INSERT ON symbols BEGIN
+                INSERT INTO symbols_fts(rowid, name, docstring, signature)
+                VALUES (new.id, new.name, new.docstring, new.signature);
+            END;
+
+            CREATE TRIGGER symbols_ad AFTER DELETE ON symbols BEGIN
+                INSERT INTO symbols_fts(symbols_fts, rowid, name, docstring, signature)
+                VALUES ('delete', old.id, old.name, old.docstring, old.signature);
+            END;
+
+            CREATE TRIGGER symbols_au AFTER UPDATE ON symbols BEGIN
+                INSERT INTO symbols_fts(symbols_fts, rowid, name, docstring, signature)
+                VALUES ('delete', old.id, old.name, old.docstring, old.signature);
+                INSERT INTO symbols_fts(rowid, name, docstring, signature)
+                VALUES (new.id, new.name, new.docstring, new.signature);
+            END;
+        """)
+
+        # Step 5: Repopulate FTS from the content table (includes pre-migration rows).
+        # signature will be NULL for pre-migration rows — FTS handles NULL gracefully.
+        conn.execute("""
+            INSERT INTO symbols_fts(rowid, name, docstring, signature)
+            SELECT id, name, docstring, signature FROM symbols
+        """)
+
+        # Step 6: Bump schema_version to '5'.
+        conn.execute("UPDATE metadata SET value = '5' WHERE key = 'schema_version'")
+        conn.commit()
+
+        logger.info(
+            "Migrated Seam index v%d->v5 (added Phase 4 node enrichment fields: "
+            "signature, decorators, is_exported, visibility, qualified_name; "
+            "FTS5 rebuilt to index signature). Run 'seam init' to populate new fields.",
+            version,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "Seam DB migration v4->v5 failed; run 'seam init' to rebuild the index"
+        ) from exc
+
+
 def _run_migration_v2_to_v3(conn: sqlite3.Connection) -> None:
     """Guarded migration: bump schema_version from 2 to 3 (adds comments table).
 
@@ -200,6 +311,9 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     # Run v3->v4 migration guard (adds clusters table + symbols.cluster_id column).
     _run_migration_v3_to_v4(conn)
 
+    # Run v4->v5 migration guard (adds Phase 4 node enrichment fields + FTS rebuild).
+    _run_migration_v4_to_v5(conn)
+
     return conn
 
 
@@ -260,11 +374,16 @@ def upsert_file(
         conn.execute("DELETE FROM symbols WHERE file_id = ?", (file_id,))
         conn.execute("DELETE FROM comments WHERE file_id = ?", (file_id,))
 
-        # 4. Insert symbols
+        # 4. Insert symbols — includes Phase 4 fields (schema v5).
+        # decorators is JSON-encoded on write: list[str] → TEXT. NULL when not set.
+        # is_exported is stored as INTEGER (1/True, 0/False, NULL).
         conn.executemany(
             """
-            INSERT INTO symbols (file_id, name, kind, start_line, end_line, docstring)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO symbols (
+                file_id, name, kind, start_line, end_line, docstring,
+                signature, decorators, is_exported, visibility, qualified_name
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -274,6 +393,15 @@ def upsert_file(
                     sym["start_line"],
                     sym["end_line"],
                     sym.get("docstring"),
+                    # Phase 4 fields — use .get() so old Symbol dicts without these keys work.
+                    sym.get("signature"),
+                    # Encode decorators as JSON; empty list → '[]', None → NULL.
+                    json.dumps(sym.get("decorators")) if sym.get("decorators") is not None else "[]",
+                    # Convert bool to int for SQLite (True→1, False→0, None→NULL).
+                    # Cast via (1 if x else 0) avoids the mypy bool|None → int issue.
+                    (1 if sym["is_exported"] else 0) if sym.get("is_exported") is not None else None,
+                    sym.get("visibility"),
+                    sym.get("qualified_name"),
                 )
                 for sym in symbols
             ],

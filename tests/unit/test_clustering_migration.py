@@ -75,10 +75,15 @@ def _make_v3_db(db_path: Path) -> None:
 
 
 class TestFreshDBSchemaV4:
-    """M1: A fresh DB from init_db has schema_version='4' and v4 tables."""
+    """M1: A fresh DB from init_db has v4 tables (clusters + cluster_id).
 
-    def test_fresh_db_schema_version_is_4(self) -> None:
-        """Fresh DB → schema_version='4'."""
+    NOTE: Since Phase 4 (v5 migration), fresh DBs are seeded at schema_version='5'.
+    Tests that verify v4 structural features (clusters table, cluster_id column) remain
+    valid — only the version number assertion is updated to reflect that '5' is current.
+    """
+
+    def test_fresh_db_schema_version_at_least_4(self) -> None:
+        """Fresh DB → schema_version >= '4' (currently '5' after Phase 4)."""
         from seam.indexer.db import init_db
 
         conn = init_db(Path(":memory:"))
@@ -87,7 +92,7 @@ class TestFreshDBSchemaV4:
         ).fetchone()
         conn.close()
         assert row is not None
-        assert row[0] == "4"
+        assert int(row[0]) >= 4, f"Expected schema_version >= 4, got {row[0]!r}"
 
     def test_fresh_db_has_clusters_table(self) -> None:
         """Fresh DB → clusters table exists."""
@@ -137,8 +142,8 @@ class TestFreshDBSchemaV4:
 class TestMigrationV3ToV4:
     """M2: Opening a v3 DB via init_db bumps schema_version to '4'."""
 
-    def test_v3_db_schema_version_bumped_to_4(self) -> None:
-        """init_db on a v3 DB bumps schema_version to '4'."""
+    def test_v3_db_schema_version_bumped_to_at_least_4(self) -> None:
+        """init_db on a v3 DB bumps schema_version to at least '4' (currently '5')."""
         from seam.indexer.db import init_db
 
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -152,7 +157,7 @@ class TestMigrationV3ToV4:
             ).fetchone()
             conn.close()
             assert row is not None
-            assert row[0] == "4", f"Expected '4', got {row[0]!r}"
+            assert int(row[0]) >= 4, f"Expected schema_version >= 4 after migration, got {row[0]!r}"
         finally:
             db_path.unlink(missing_ok=True)
 
@@ -231,32 +236,35 @@ class TestMigrationV3ToV4:
 
 
 class TestMigrationIdempotent:
-    """M3: Running init_db on a v4 DB is safe and does not error."""
+    """M3: Running init_db on a current-version DB is safe and does not error."""
 
     def test_v4_db_migration_idempotent(self) -> None:
-        """Running init_db twice on a v4 DB doesn't error or downgrade version."""
+        """Running init_db twice on a current DB doesn't error or downgrade version."""
         from seam.indexer.db import init_db
 
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = Path(f.name)
 
         try:
-            # First call creates v4 DB
+            # First call creates current-version DB
             conn1 = init_db(db_path)
+            v1 = conn1.execute(
+                "SELECT value FROM metadata WHERE key='schema_version'"
+            ).fetchone()[0]
             conn1.close()
 
-            # Second call must not raise and must leave version at '4'
+            # Second call must not raise and must leave version unchanged
             conn2 = init_db(db_path)
-            row = conn2.execute(
+            v2 = conn2.execute(
                 "SELECT value FROM metadata WHERE key='schema_version'"
-            ).fetchone()
+            ).fetchone()[0]
             conn2.close()
-            assert row[0] == "4"
+            assert v1 == v2, f"Version changed on second init_db call: {v1} → {v2}"
         finally:
             db_path.unlink(missing_ok=True)
 
     def test_in_memory_db_idempotent(self) -> None:
-        """init_db(':memory:') called once produces v4 DB without error."""
+        """init_db(':memory:') called once produces a current-version DB without error."""
         from seam.indexer.db import init_db
 
         conn = init_db(Path(":memory:"))
@@ -264,7 +272,8 @@ class TestMigrationIdempotent:
             "SELECT value FROM metadata WHERE key='schema_version'"
         ).fetchone()[0]
         conn.close()
-        assert version == "4"
+        # Version should be the current schema version (5 as of Phase 4)
+        assert int(version) >= 5, f"Expected schema_version >= 5, got {version!r}"
 
 
 # ── M4: symbols.cluster_id is nullable ───────────────────────────────────────
