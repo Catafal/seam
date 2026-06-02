@@ -60,6 +60,7 @@ _CHANGES_SCOPE_DEFAULT = "working"
 _CHANGES_BASE_REF_DEFAULT = DEFAULT_BASE_REF
 
 _AFFECTED_DEPTH_DEFAULT = config.SEAM_AFFECTED_DEPTH
+_IMPACT_LIMIT_DEFAULT = config.SEAM_IMPACT_MAX_RESULTS
 
 
 def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
@@ -124,6 +125,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         max_depth: int = _IMPACT_DEPTH_DEFAULT,
         include_tests: bool = True,
         verbose: bool = True,
+        limit: int = _IMPACT_LIMIT_DEFAULT,
     ) -> Any:
         """Blast-radius analysis — what breaks if I change this symbol?
 
@@ -145,6 +147,12 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         from every tier entry and get a compact response.
         verbose=true (default) is byte-identical to the pre-Phase-8 output.
 
+        limit controls the per-tier entry cap (default: SEAM_IMPACT_MAX_RESULTS=25).
+        Set limit=0 to disable the cap and receive all transitive entries.
+        The response always includes risk_summary: {direction: {tier: count}} computed
+        from the full pre-cap result, so the blast radius size is always visible.
+        When entries were truncated, truncated: {direction: {tier: omitted}} is included.
+
         Use before editing any symbol to understand the blast radius.
         """
         return handle_seam_impact(
@@ -155,6 +163,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
             max_depth=max_depth,
             include_tests=include_tests,
             verbose=verbose,
+            limit=limit,
         )
 
     @mcp.tool()

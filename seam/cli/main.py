@@ -464,6 +464,15 @@ def impact_cmd(
             "signature and core fields are always kept. Identical to verbose=false in MCP."
         ),
     ),
+    limit: int = typer.Option(
+        config.SEAM_IMPACT_MAX_RESULTS,
+        "--limit",
+        help=(
+            "Per-tier entry cap. Default: SEAM_IMPACT_MAX_RESULTS (25). "
+            "Set to 0 for unlimited — returns the full transitive blast radius. "
+            "Identical to the limit parameter in the MCP tool."
+        ),
+    ),
     json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
     quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
 ) -> None:
@@ -534,6 +543,7 @@ def impact_cmd(
                 max_depth=depth,
                 include_tests=include_tests,
                 verbose=verbose,
+                limit=limit,
             )
         else:
             # WHY: pass repo_root so Rich mode uses the same Phase 5 import-promotion

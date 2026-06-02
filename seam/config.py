@@ -116,6 +116,17 @@ SEAM_MAX_IMPORT_CANDIDATES: int = int(os.getenv("SEAM_MAX_IMPORT_CANDIDATES", "2
 SEAM_PROXIMITY_MAX_CANDIDATES: int = int(os.getenv("SEAM_PROXIMITY_MAX_CANDIDATES", "25"))
 
 
+# ── Phase 8: Lean output + impact cap ────────────────────────────────────────
+
+# Per-tier entry cap for seam_impact. When a tier contains more entries than this
+# cap, the list is sliced to this many entries (the closest/highest-risk first,
+# since tiers are distance-ordered by construction). A summary count per tier
+# (risk_summary) is always computed BEFORE capping so the histogram is honest.
+# Set to 0 to disable the cap and return all entries.
+# Default 25 prevents the "hub symbol dumps 200+ entries" problem (issue #33).
+SEAM_IMPACT_MAX_RESULTS: int = int(os.getenv("SEAM_IMPACT_MAX_RESULTS", "25"))
+
+
 # ── Phase 6: Context-Pack configuration ─────────────────────────────────────
 
 # Maximum enriched callers AND maximum enriched callees in one context_pack bundle.

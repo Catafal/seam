@@ -290,6 +290,33 @@ def handle_seam_search(
     ]
 
 
+def _serialize_tier_entry(entry: dict[str, Any], root: Path, verbose: bool) -> dict[str, Any]:
+    """Serialize a single TieredEntry dict from the analysis layer.
+
+    Relativizes file paths, includes Phase 5 provenance fields, and applies
+    verbosity stripping. Extracted to keep the main handler readable.
+    """
+    return _apply_verbosity({
+        "name": entry["name"],
+        "distance": entry["distance"],
+        "confidence": entry["confidence"],
+        # Phase 5: resolved_by carries import-promotion provenance.
+        # null when name-count fast-path was used (repo_root absent or "off").
+        "resolved_by": entry.get("resolved_by"),
+        "tier": entry["tier"],
+        "file": _relativize(entry["file"], root) if entry["file"] is not None else None,
+        "is_test": entry["is_test"],
+        # Phase 5: best_candidate surfaces the most-proximate declaring
+        # file for AMBIGUOUS entries (PRD story 6). Null for non-AMBIGUOUS or
+        # when proximity data was unavailable. Relativized like other file paths.
+        "best_candidate": (
+            _relativize(entry["best_candidate"], root)
+            if entry.get("best_candidate") is not None
+            else None
+        ),
+    }, verbose)
+
+
 def handle_seam_impact(
     conn: sqlite3.Connection,
     target: str,
@@ -298,6 +325,7 @@ def handle_seam_impact(
     max_depth: int = _IMPACT_DEPTH_DEFAULT,
     include_tests: bool = True,
     verbose: bool = True,
+    limit: int = config.SEAM_IMPACT_MAX_RESULTS,
 ) -> dict[str, Any]:
     """Handler for the seam_impact MCP tool.
 
@@ -315,15 +343,26 @@ def handle_seam_impact(
         include_tests: When True (default), test-file dependents are included and tagged
                        with is_test=True. When False, test-file entries are filtered out
                        from all tiers (production-only blast radius).
+        verbose:       When True (default), output includes all Phase 4/5 enrichment fields.
+                       When False, heavy fields (resolved_by, best_candidate, etc.) are
+                       stripped from each entry — lean mode.
+        limit:         Per-tier entry cap. Default: SEAM_IMPACT_MAX_RESULTS (25).
+                       Entries arrive distance-ordered from the analysis layer (tiers group
+                       by distance), so the kept slice is always the closest/highest-risk.
+                       limit <= 0 means unlimited (all entries returned).
 
     Returns:
         A JSON-able dict with the impact result, or an error dict on bad input.
-        Top-level keys always include `found` (bool) and `target` (str).
+        Top-level keys always include `found`, `target`, and `risk_summary`.
+        risk_summary is {direction: {tier: count}} computed from the FULL pre-cap
+        result — it is always trustworthy even when entry lists are capped.
+        When any tier was capped, `truncated` is included: {direction: {tier: omitted}}.
+
         Shape for direction="upstream":
-            {"found": bool, "target": str,
+            {"found": bool, "target": str, "risk_summary": {...},
              "upstream": {"WILL_BREAK": [...], "LIKELY_AFFECTED": [...], "MAY_NEED_TESTING": [...]}}
         Shape for direction="both":
-            {"found": bool, "target": str,
+            {"found": bool, "target": str, "risk_summary": {...},
              "upstream": {...tiers...}, "downstream": {...tiers...}}
 
         Each entry in a tier list includes:
@@ -364,39 +403,58 @@ def handle_seam_impact(
         "target": raw["target"],
     }
 
-    # Relativize each TieredEntry's `file` field using the provided root.
-    # `file` is an absolute path (or None) from the analysis layer.
-    # Pass is_test through so MCP callers can see the tag.
-    # Apply _apply_verbosity to each entry so lean mode reaches nested tier lists.
+    # Determine whether capping is active (limit <= 0 means unlimited).
+    effective_limit = limit if limit > 0 else None
+
+    # Build risk_summary and capped tiers for each direction key present in raw.
+    # WHY compute summary first: risk_summary must reflect the FULL pre-cap result
+    # (story 15) — we count before slicing so truncation cannot hide the true total.
+    risk_summary: dict[str, dict[str, int]] = {}
+    truncated: dict[str, dict[str, int]] = {}
+
     for dir_key in ("upstream", "downstream"):
         if dir_key not in raw:
             continue
         tier_group = raw[dir_key]
-        response[dir_key] = {
-            tier: [
-                _apply_verbosity({
-                    "name": entry["name"],
-                    "distance": entry["distance"],
-                    "confidence": entry["confidence"],
-                    # Phase 5: resolved_by carries import-promotion provenance.
-                    # null when name-count fast-path was used (repo_root absent or "off").
-                    "resolved_by": entry.get("resolved_by"),
-                    "tier": entry["tier"],
-                    "file": _relativize(entry["file"], root) if entry["file"] is not None else None,
-                    "is_test": entry["is_test"],
-                    # Phase 5: best_candidate surfaces the most-proximate declaring
-                    # file for AMBIGUOUS entries (PRD story 6). Null for non-AMBIGUOUS or
-                    # when proximity data was unavailable. Relativized like other file paths.
-                    "best_candidate": (
-                        _relativize(entry["best_candidate"], root)
-                        if entry.get("best_candidate") is not None
-                        else None
-                    ),
-                }, verbose)
-                for entry in entries
+
+        # ── 1. Count BEFORE capping (risk_summary denominator) ────────────────
+        dir_summary = {tier: len(entries) for tier, entries in tier_group.items()}
+        risk_summary[dir_key] = dir_summary
+
+        # ── 2. Apply per-tier cap + serialize ─────────────────────────────────
+        capped_tiers: dict[str, list[dict[str, Any]]] = {}
+        dir_truncated: dict[str, int] = {}
+
+        for tier, entries in tier_group.items():
+            # Entries arrive distance-ordered from the analysis layer.
+            # All entries in a tier have the same distance (tiers ARE distance buckets),
+            # so any slice preserves the "closest/highest-risk" guarantee — no sort needed.
+            if effective_limit is not None and len(entries) > effective_limit:
+                kept = entries[:effective_limit]
+                dir_truncated[tier] = len(entries) - effective_limit
+            else:
+                kept = entries
+                dir_truncated[tier] = 0
+
+            # Serialize each kept entry: relativize paths + apply verbose stripping.
+            capped_tiers[tier] = [
+                _serialize_tier_entry(entry, root, verbose)
+                for entry in kept
             ]
-            for tier, entries in tier_group.items()
-        }
+
+        response[dir_key] = capped_tiers
+
+        # Only include truncated for directions where something was actually dropped.
+        if any(count > 0 for count in dir_truncated.values()):
+            truncated[dir_key] = dir_truncated
+
+    # risk_summary is always present — it is the honest summary of the full blast radius.
+    response["risk_summary"] = risk_summary
+
+    # truncated is only present when at least one tier was capped in any direction.
+    # Absence signals "nothing was dropped" (omitted vs all-zero to reduce token cost).
+    if truncated:
+        response["truncated"] = truncated
 
     # Surface hidden_tests when present (include_tests=False filtered test dependents).
     # Lets MCP callers distinguish "no dependents" from "all dependents were tests and
