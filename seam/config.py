@@ -22,7 +22,11 @@ SEAM_MAX_IMPACT_SYMBOLS: int = int(os.getenv("SEAM_MAX_IMPACT_SYMBOLS", "50"))
 
 # File extensions to index, mapped to language identifier.
 # Phase 9: added Java, C#, Ruby, C/H, C++, and PHP extensions.
-# NOTE: .h maps to C (not C++) — deliberate MVP decision; see ADR-009.
+# WHY .h → C (not C++): mixed C/C++ projects use .h for both C and C++ headers.
+# Routing .h to the C++ grammar would break C-only projects; routing to C is the
+# safer default and handles the common case (struct/typedef/function prototypes).
+# C++-only header patterns (.hpp/.hh/.hxx) are explicitly mapped to C++.
+# See ADR-008, limitation (a).
 SEAM_LANGUAGE_MAP: dict[str, str] = {
     ".py": "python",
     ".ts": "typescript",

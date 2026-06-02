@@ -4,7 +4,7 @@ Local code intelligence MCP server for AI agents. Index your codebase once; let 
 
 ## Status
 
-Phase 8 complete — lean output (`verbose`/`--lean`) + `seam_impact` summary tier shipped; benchmark reduction recovered to 91.8%/88.7%. 1107 tests. Gate green.
+Phase 9 complete — language expansion (5 → 11): Java, C#, Ruby, C, C++, PHP added. 1395 tests. Gate green.
 
 ## Quickstart
 
@@ -31,6 +31,26 @@ Add to your Claude Code MCP config:
   }
 }
 ```
+
+## Supported Languages
+
+Seam indexes 11 languages via tree-sitter:
+
+| Language | Extensions |
+|----------|-----------|
+| Python | `.py` |
+| TypeScript | `.ts`, `.tsx` |
+| JavaScript | `.js`, `.mjs`, `.cjs` |
+| Go | `.go` |
+| Rust | `.rs` |
+| Java | `.java` |
+| C# | `.cs` |
+| Ruby | `.rb` |
+| C | `.c`, `.h` |
+| C++ | `.cpp`, `.cc`, `.cxx`, `.c++`, `.hpp`, `.hh`, `.hxx` |
+| PHP | `.php` |
+
+All languages surface the same 10 MCP tools, the same symbol kinds (`function`, `class`, `method`, `interface`, `type`), and the same enrichment fields. See [Known Limitations](#known-limitations-phase-1b-candidates) for per-language caveats.
 
 ## MCP Tools
 
@@ -65,9 +85,9 @@ Five new nullable fields are now extracted at parse time and returned by `seam_c
 | Field | Type | Description |
 |-------|------|-------------|
 | `signature` | `string \| null` | Declaration header normalized to one line (e.g. `def parse(path: Path) -> Node \| None`). Truncated to `SEAM_MAX_SIGNATURE_LEN` chars (default 300). |
-| `decorators` | `string[]` | Verbatim decorator strings for Python (`@dataclass`) and TypeScript (`@Injectable`). Always `[]` for Go and Rust. |
-| `is_exported` | `boolean \| null` | `true` when the symbol is part of the public API (TS `export` keyword, Go uppercase, Rust `pub`, Python no-underscore prefix). `null` when language is unsupported. |
-| `visibility` | `string \| null` | `"public"`, `"private"`, `"protected"` (TS/Python), or `"crate"` (Rust). `null` when not applicable or unknown. |
+| `decorators` | `string[]` | Verbatim decorator/annotation strings: Python (`@dataclass`), TypeScript (`@Injectable`), Java (`@Service`, `@Override`), C# (`[Serializable]`, `[HttpGet]`), PHP (`#[Route(...)]`). Always `[]` for Go, Rust, Ruby, and C/C++. |
+| `is_exported` | `boolean \| null` | `true` when the symbol is part of the public API (TS `export` keyword, Go uppercase, Rust `pub`, Python no-underscore prefix, Java/C#/PHP `public` modifier, C non-`static` function). `null` for C++ and Ruby (dynamic/MVP). |
+| `visibility` | `string \| null` | `"public"`, `"private"`, `"protected"` (TS/Python/Java/C#/PHP), `"crate"` (Rust), or `"private"` for C `static` functions (file-local). `null` for C++ (MVP) and Ruby (dynamic DSL). |
 | `qualified_name` | `string \| null` | `"ClassName.method"` or plain symbol name when scope-resolved; `null` for top-level names without a resolvable outer scope. |
 
 **`signature` is FTS-searchable:** the FTS5 index now covers `(name, docstring, signature)`, so type-shaped queries like `"conn sqlite3 Connection"` match on parameter and return-type annotations — not just symbol names. The rescore pass applies a +15 signature-match signal (per matched term) that is intentionally smaller than the exact-name (+80) and prefix-name (+40) signals to avoid displacing name-match results.

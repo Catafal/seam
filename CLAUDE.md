@@ -5,7 +5,7 @@ Local code intelligence MCP server — indexes codebases with tree-sitter, store
 
 ## Tech Stack
 - Python 3.14+ | uv 0.9.14
-- tree-sitter 0.25.2 + tree-sitter-python 0.25.0 + tree-sitter-typescript 0.23.2 + tree-sitter-go 0.25.0 + tree-sitter-rust 0.24.2
+- tree-sitter 0.25.2 + tree-sitter-python 0.25.0 + tree-sitter-typescript 0.23.2 + tree-sitter-go 0.25.0 + tree-sitter-rust 0.24.2 + tree-sitter-java 0.23.5 + tree-sitter-c-sharp 0.23.5 + tree-sitter-ruby 0.23.1 + tree-sitter-c 0.24.2 + tree-sitter-cpp 0.23.4 + tree-sitter-php 0.24.1
 - mcp 1.27.2 (stdio transport) | watchdog 6.0.0 | typer 0.26.4
 - SQLite + FTS5 (built-in, no ORM) | pytest 9.0.3 | ruff 0.15.15 | mypy 2.1.0
 
@@ -36,6 +36,7 @@ Local code intelligence MCP server — indexes codebases with tree-sitter, store
 ```
 seam/config.py               ← all settings (env vars with defaults)
                                 SEAM_LANGUAGE_MAP: .py .ts .tsx .js .mjs .cjs .go .rs
+                                                   .java .cs .rb .c .h .cpp .cc .cxx .c++ .hpp .hh .hxx .php
                                 SEAM_CLUSTER_NAMING: "deterministic" | "llm" (default: deterministic)
                                 SEAM_LLM_API_KEY: optional, required for llm naming
                                 SEAM_LLM_MODEL: default "gpt-4o-mini"
@@ -75,20 +76,34 @@ seam/query/fts.py            ← LEAF: FTS5 query construction + multi-signal re
 seam/analysis/affected.py    ← affected(conn, changed_files, *, depth, repo_root) → AffectedResult
                                 changed files → owning symbols → upstream impact → impacted test files
                                 reuses analysis.impact + analysis.testpaths.is_test_file
-seam/indexer/parser.py       ← tree-sitter parsing (Python, TypeScript, JavaScript, Go, Rust)
+seam/indexer/parser.py       ← tree-sitter parsing (Python, TypeScript, JavaScript, Go, Rust,
+                                Java, C#, Ruby, C, C++, PHP)
 seam/indexer/graph_common.py ← LEAF: shared TypedDicts (Symbol/Edge/Comment), helpers
                                 Symbol now carries: signature, decorators, is_exported, visibility, qualified_name
 seam/indexer/graph_go_rust.py← Go + Rust extractors (imports graph_common only)
+seam/indexer/graph_java_csharp.py ← Java + C# symbol/edge/comment extractors (Phase 9)
+                                imports graph_common only; split from graph.py to stay under 1000 lines
+seam/indexer/graph_c_cpp.py  ← C + C++ symbol/edge/comment extractors (Phase 9)
+                                imports graph_common only; _dedup_cpp_symbols handles in-class/out-of-line duplicates
+seam/indexer/graph_ruby.py   ← Ruby symbol/edge/comment extractors (Phase 9)
+                                imports graph_common only; handles def self.x singleton methods
+seam/indexer/graph_php.py    ← PHP symbol/edge/comment extractors (Phase 9)
+                                imports graph_common only; handles grouped-use and enum methods
 seam/indexer/graph.py        ← Python/TS dispatchers; re-exports types from graph_common;
-                                imports Go/Rust extractors from graph_go_rust
+                                imports Go/Rust/Java/C#/C/C++/Ruby/PHP extractors at top level
 seam/indexer/signatures.py   ← LEAF: Phase 4 enrichment — extract_node_fields(node, language, ...) → NodeFields
                                 per-language: signature, decorators, is_exported, visibility, qualified_name
                                 for Python / TypeScript / JavaScript / Go / Rust; never raises
+seam/indexer/signatures_ext.py ← LEAF: Phase 9 enrichment for Java/C#/Ruby/C/C++/PHP (Phase 9)
+                                NodeFields re-declared (not imported) to avoid circular import; drift-tested
 seam/analysis/imports.py     ← LEAF: extract_import_mappings + resolve_import_source + compute_path_proximity
                                 per-language import extraction for Python/TS/JS/Go/Rust; never raises
                                 maps import source strings to candidate declaring-file paths (5-lang extension order)
+seam/analysis/imports_ext.py ← LEAF: Phase 9 import-mapping extraction for Java/C#/Ruby/C/C++/PHP (Phase 9)
+                                _ImportMapping re-declared (not imported) to avoid circular import; drift-tested
+                                resolution returns [] for Java/C#/PHP package paths (classpath out of scope)
 seam/analysis/builtins.py    ← LEAF: is_builtin(name, language) → bool over static per-language frozensets
-                                covers Python/TS/JS/Go/Rust; conservative vocabulary (common builtins only)
+                                covers Python/TS/JS/Go/Rust/Java/C#/Ruby/C/C++/PHP; conservative vocabulary
 seam/analysis/confidence.py  ← whole-index confidence resolver (Phase 5 extended)
                                 resolve_edge() → Resolution{confidence, resolved_by, best_candidate}
                                 load_import_mappings(conn, file_path) → list[ImportMapping]
@@ -130,6 +145,23 @@ tests/fixtures/              ← sample.py, sample.ts, sample.go, sample.rs
 - **Edges use string names** (not symbol IDs) — required for independent re-indexing
 
 ## Current Phase
+Phase 9 complete — language expansion (5 → 11 languages): Java, C#, Ruby, C, C++, PHP added.
+- **New grammars:** tree-sitter-java 0.23.5, tree-sitter-c-sharp 0.23.5, tree-sitter-ruby 0.23.1,
+  tree-sitter-c 0.24.2, tree-sitter-cpp 0.23.4, tree-sitter-php 0.24.1 (all parse against tree-sitter 0.25.2).
+- **New extractor modules:** graph_java_csharp.py, graph_c_cpp.py, graph_ruby.py, graph_php.py — one file
+  per language pair, mirroring the graph_go_rust.py split, to stay under the 1000-line limit.
+- **New leaf modules:** signatures_ext.py (Phase 4 enrichment for the 6 new langs) and imports_ext.py
+  (Phase 5 import-mapping extraction). Both re-declare their TypedDicts to avoid circular imports;
+  drift tests assert field-key parity against the originals.
+- **Kind mapping:** closed vocabulary function|class|method|interface|type covers all 6 new languages.
+  Enrichment: Java annotations + C# attributes + PHP attributes as decorators; C static→private visibility;
+  C++/Ruby visibility=null (dynamic/MVP).
+- **Edges:** import + bare-identifier calls only (member/qualified calls require type inference — skipped).
+- No schema change, no migration, MCP tool count stays 10.
+- 1395 tests passing; gate green.
+See `progress.txt` for session history. Next: roadmap item 8 (`seam install`) / v0.1.0 release prep.
+
+### Prior phase
 Phase 8 complete — lean output (`verbose`) + `seam_impact` summary tier shipped.
 - **Lean output (#1):** `verbose: bool = True` on the enrichment-carrying handlers
   (seam_context, seam_trace, seam_impact, seam_context_pack). `verbose=False` strips the 6 heavy
@@ -145,9 +177,9 @@ Phase 8 complete — lean output (`verbose`) + `seam_impact` summary tier shippe
   apply uniformly; Rich shows a truncation footer, quiet signals truncation on stderr.
 - No schema change, no migration, MCP tool count stays 10. Benchmark: 83.4%/77.6% → 91.8%/88.7%.
 - 1107 tests passing; gate green.
-See `progress.txt` for session history. Next: roadmap item 8 (`seam install`) / v0.1.0 release prep.
+See `progress.txt` for session history.
 
-### Prior phase
+### Prior phase (Phase 7)
 Phase 7 complete — one-shot `seam sync` with gated cluster recompute shipped.
 - New leaf module `seam/indexer/sync.py`: `sync(conn, root, *, …) → SyncResult`.
 - Filesystem reconcile (NOT git): mtime pre-filter → SHA-1 confirm; re-index only changed/added
@@ -248,6 +280,34 @@ All ten tools return the five Phase 4 enrichment fields where available: `signat
   not resolved to indexed files. Go cross-package calls that use module-qualified import paths
   remain AMBIGUOUS if the target name has multiple declarations. Same-repo-relative Go paths
   resolve normally.
+- **`.h` files always map to C, not C++** (Phase 9): SEAM_LANGUAGE_MAP routes `.h` → `"c"`.
+  A C++-only project that puts declarations in `.h` headers parses those files with the C grammar,
+  which handles most patterns (structs, typedefs, function prototypes) but misses C++-only constructs
+  (templates, namespaces, in-class members). Use `.hpp`, `.hh`, or `.hxx` for C++ headers.
+- **Nested classes have flat qualified names** (Phase 9): an inner class `Inner` inside `Outer`
+  is indexed as `Inner` (not `Outer.Inner`), matching the existing Go/Rust precedent and the
+  homonym-collapse gotcha. The edge graph is keyed on symbol name, so `Outer.Inner` would not match
+  any edge target.
+- **C++ pure-virtual method declarations are not extracted** (Phase 9): `virtual void f() = 0;`
+  parses as `field_declaration` in the tree-sitter C++ grammar, not as `function_definition`. Only
+  `function_definition` nodes are extracted. Concrete overriding implementations are indexed normally.
+- **C function-pointer typedefs are not extracted** (Phase 9): `typedef int (*Cb)(int);` is silently
+  skipped because the declarator is `abstract_function_declarator`, not `type_identifier`. Named-struct
+  and enum typedefs (`typedef struct Foo Foo;`) are extracted correctly.
+- **Java/C#/PHP import resolution returns `[]`** (Phase 9): import edges are extracted (e.g. `List`
+  from `import java.util.List`) and stored in `import_mappings`, but `resolve_import_source()` returns
+  `[]` for qualified package/namespace paths — classpath/NuGet/Composer layout is unavailable at index
+  time. Cross-package Java/C#/PHP calls fall back to the name-count rule. Same-repo symbols whose name
+  is unique in the index still resolve to EXTRACTED normally.
+- **C/C++ system `#include <...>` resolution returns `[]`** (Phase 9): system headers like `<stdio.h>`
+  produce an import edge with target `stdio`, but `resolve_import_source()` returns `[]` (no file found
+  in the repo). These edges degrade to INFERRED/name-count at read time.
+- **C++ visibility is null** (Phase 9): in-class access specifiers (`public:`, `private:`) are
+  not yet threaded through to individual method symbols. All C++ symbols report `visibility=null`.
+  Java, C#, and PHP visibility is extracted from access modifiers and is correct.
+- **Ruby visibility is null** (Phase 9): Ruby's `private`/`protected` are method-call DSL constructs
+  at runtime, not static AST nodes attached to `def`. Visibility cannot be determined statically without
+  tracking which names appear after a `private` call — out of scope for this MVP.
 - **On a multi-hop path, `resolved_by` reflects the FINAL hop**: path-level confidence uses
   the weakest-hop rule (AMBIGUOUS < INFERRED < EXTRACTED). `resolved_by` on the path entry
   reflects the provenance of the edge that produced the weakest-hop confidence, not of every

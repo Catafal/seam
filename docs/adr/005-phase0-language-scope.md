@@ -44,3 +44,7 @@ Go and Rust are now implemented. The Phase 1 consequence above has been fulfille
 - Rust: `function_item` → function; impl method → method (`Type.fn`); struct → class; enum → type; trait → interface; mod traversed but not emitted.
 
 **All tests pass** (`make gate` green). See `tests/unit/test_go_rust.py` for the behavioral test suite.
+
+## Update (Phase 9) — 2026-06-02
+
+Six more languages added (Java, C#, Ruby, C, C++, PHP), bringing the total to 11. See **ADR-008** for the full decision rationale, per-family module split strategy, kind mapping, enrichment rules, and MVP limitations.
