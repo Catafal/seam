@@ -24,6 +24,7 @@ Phase 3 changes (Slice 1):
   the propagation path must remain so callers can still map it to INVALID_QUERY.
 """
 
+import json
 import logging
 import sqlite3
 from typing import TypedDict
@@ -58,6 +59,12 @@ class ContextResult(TypedDict):
     cluster_id: int | None  # Phase 2: cluster this symbol belongs to (None if not clustered)
     cluster_label: str | None  # Phase 2: human-readable cluster label
     cluster_peers: list[str]  # Phase 2: other symbols in the same cluster (may be empty)
+    # Phase 4: node-enrichment fields (all None for pre-v5 rows or unsupported languages)
+    signature: str | None       # declaration header, single line, truncated
+    decorators: list[str]       # verbatim decorator strings; [] when none or pre-v5
+    is_exported: bool | None    # True = public API; None = unknown/unsupported
+    visibility: str | None      # "public" | "private" | "protected" | "crate" | None
+    qualified_name: str | None  # "ClassName.method" or plain name; None if unknown
 
 
 class SearchResult(TypedDict):
@@ -564,10 +571,12 @@ def context(conn: sqlite3.Connection, symbol_name: str) -> ContextResult | None:
     # Single atomic query: fetch the first matching symbol and the total count of
     # same-name symbols via a window function. Avoids the count/fetch race of two
     # separate queries and removes the now-dead double-None check.
+    # Phase 4: also SELECT the 5 new enrichment columns (nullable — pre-v5 rows return NULL).
     row = conn.execute(
         """
         SELECT s.name, f.path AS file, s.start_line, s.end_line, s.kind, s.docstring,
-               COUNT(*) OVER () AS dup_count
+               COUNT(*) OVER () AS dup_count,
+               s.signature, s.decorators, s.is_exported, s.visibility, s.qualified_name
         FROM symbols s
         JOIN files f ON s.file_id = f.id
         WHERE s.name = ?
@@ -598,6 +607,24 @@ def context(conn: sqlite3.Connection, symbol_name: str) -> ContextResult | None:
     else:
         c_id, c_label, c_peers = None, None, []
 
+    # Phase 4: decode decorators from JSON text back to list.
+    # Pre-v5 rows have decorators=NULL → return []. Post-v5 rows have '[]' or JSON array.
+    raw_decorators = row["decorators"]
+    if raw_decorators is None:
+        decoded_decorators: list[str] = []
+    else:
+        try:
+            decoded_decorators = json.loads(raw_decorators)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            decoded_decorators = []
+
+    # Phase 4: is_exported is stored as 0/1/NULL in SQLite; convert to bool|None.
+    raw_is_exported = row["is_exported"]
+    if raw_is_exported is None:
+        is_exported: bool | None = None
+    else:
+        is_exported = bool(raw_is_exported)
+
     return ContextResult(
         symbol=row["name"],
         file=row["file"],
@@ -611,4 +638,10 @@ def context(conn: sqlite3.Connection, symbol_name: str) -> ContextResult | None:
         cluster_id=c_id,
         cluster_label=c_label,
         cluster_peers=c_peers,
+        # Phase 4 enrichment fields
+        signature=row["signature"],
+        decorators=decoded_decorators,
+        is_exported=is_exported,
+        visibility=row["visibility"],
+        qualified_name=row["qualified_name"],
     )

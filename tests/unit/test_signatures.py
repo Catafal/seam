@@ -24,8 +24,7 @@ from seam.indexer.parser import (
     parse_rust,
     parse_typescript,
 )
-from seam.indexer.signatures import NodeFields, extract_node_fields
-
+from seam.indexer.signatures import extract_node_fields
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

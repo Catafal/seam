@@ -167,6 +167,12 @@ def handle_seam_context(
         "cluster_id": result["cluster_id"],  # Phase 2: None when not clustered
         "cluster_label": result["cluster_label"],  # Phase 2: None when not clustered
         "cluster_peers": result["cluster_peers"],  # Phase 2: [] when not clustered / solo
+        # Phase 4: node enrichment fields (null when pre-v5 or extraction not available)
+        "signature": result["signature"],
+        "decorators": result["decorators"],
+        "is_exported": result["is_exported"],
+        "visibility": result["visibility"],
+        "qualified_name": result["qualified_name"],
     }
 
 
