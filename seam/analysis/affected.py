@@ -202,7 +202,10 @@ def affected(
                 abs_path,
             )
 
-        # (c) Apply per-file symbol cap to prevent unbounded O(n) impact traversal.
+        # (c) Apply per-file symbol cap to keep traversal cost bounded.
+        # Each symbol triggers an impact(upstream) BFS up to `depth` hops; a file with
+        # thousands of symbols (e.g. an auto-generated API client) would otherwise fan
+        # out into an O(symbols × depth × graph) traversal per call.
         if len(symbol_names) > sym_cap:
             logger.info(
                 "affected: %r has %d symbols, exceeds cap %d — truncating to first %d; "

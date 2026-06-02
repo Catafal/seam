@@ -840,10 +840,10 @@ def changes_cmd(
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
-    # ── stdin: read file list before opening DB (reads happen before any output) ─
-    # WHY we read stdin here (before DB open): stdin is consumed once; reading it
-    # after the DB work would not change the analysis, just the filtering that follows.
-    # We resolve the input paths here so the filter below can match DB stored paths.
+    # Read stdin before dispatching to detect_changes/handle_seam_changes because stdin
+    # is a one-shot stream — it must be drained before the output-mode branch so the
+    # resolved file set is available to both the json/quiet and Rich paths.
+    # Paths are resolved here so they match the absolute paths stored in the DB.
     stdin_files: set[str] | None = None
     if stdin:
         raw_lines = sys.stdin.read().splitlines()
@@ -1384,9 +1384,9 @@ def affected_cmd(
         raise typer.Exit(code=1)
 
     # ── Determine input file list ─────────────────────────────────────────────
-    # --stdin and positional args are mutually exclusive.
-    # L1: Enforce this explicitly — if both are given, error cleanly rather than
-    # silently ignoring the positional args (which would confuse the caller).
+    # Enforce mutual exclusion explicitly — if both are given, error cleanly rather
+    # than silently discarding the positional args (which would confuse the caller
+    # into thinking their file list was analyzed when it was not).
     if stdin and files:
         if json_:
             emit_json_error(
@@ -1424,8 +1424,10 @@ def affected_cmd(
         raise typer.Exit(code=1) from exc
 
     try:
-        # WHY: reuse handle_seam_affected for --json/--quiet (MCP/CLI parity).
-        # handle_seam_affected relativizes paths, validates input, and calls affected().
+        # Always route through handle_seam_affected so CLI output is byte-identical to
+        # the MCP tool response (MCP/CLI parity). The handler also relativizes paths,
+        # applies the file-list size cap, and returns a structured error dict on INVALID_INPUT
+        # rather than raising — which the error guard below relies on.
         result = handle_seam_affected(conn, input_files, project_root, depth=depth)
     finally:
         conn.close()

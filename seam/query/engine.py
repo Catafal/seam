@@ -255,14 +255,12 @@ def _fuzzy_fallback(
     ]
 
 
-# ── Search helpers ────────────────────────────────────────────────────────────
-# _extract_terms is imported from seam.query.fts (single source of truth).
-# engine.py previously had its own copy with the same logic + an inline `import re`.
-# That duplicate is now removed. Both the query builder (build_match_query) and the
-# rescore signal computation use the same tokeniser from fts.py.
+# _extract_terms is imported from seam.query.fts rather than duplicated here because
+# both the MATCH expression builder (build_match_query) and the rescore signal
+# computation must tokenise identically. A local copy would silently drift.
 
 
-# ── A3 — search ──────────────────────────────────────────────────────────────
+# ── search ───────────────────────────────────────────────────────────────────
 
 
 def search(conn: sqlite3.Connection, text: str, limit: int = 20) -> list[SearchResult]:
@@ -415,7 +413,7 @@ def search(conn: sqlite3.Connection, text: str, limit: int = 20) -> list[SearchR
     return []
 
 
-# ── A4 — query ───────────────────────────────────────────────────────────────
+# ── query ────────────────────────────────────────────────────────────────────
 
 
 def query(conn: sqlite3.Connection, concept: str, limit: int = 10) -> list[QueryResult]:
@@ -457,7 +455,8 @@ def query(conn: sqlite3.Connection, concept: str, limit: int = 10) -> list[Query
             ORDER BY score
             LIMIT ?
         """
-        # Let OperationalError (malformed FTS5) propagate — caller maps to INVALID_QUERY.
+        # Let OperationalError (malformed FTS5) propagate — same contract as search():
+        # caller maps it to INVALID_QUERY so it is distinct from "no matches found".
         seed_rows_raw = conn.execute(seed_sql, (match_expr, limit)).fetchall()
 
         if seed_rows_raw:
@@ -468,7 +467,7 @@ def query(conn: sqlite3.Connection, concept: str, limit: int = 10) -> list[Query
                     "file": row["file"],
                     "line": row["line"],
                     "snippet": "",
-                    "score": -float(row["score"]),  # flip bm25 sign
+                    "score": -float(row["score"]),  # negate: contract wants higher=better; raw bm25 is negative (lower=better)
                     "cluster_id": row["cluster_id"],
                 }
                 for row in seed_rows_raw
@@ -548,7 +547,7 @@ def query(conn: sqlite3.Connection, concept: str, limit: int = 10) -> list[Query
     return result[:limit]
 
 
-# ── A5 — context ─────────────────────────────────────────────────────────────
+# ── context ──────────────────────────────────────────────────────────────────
 
 
 def context(conn: sqlite3.Connection, symbol_name: str) -> ContextResult | None:

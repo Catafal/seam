@@ -51,8 +51,9 @@ _FTS5_OPERATORS: frozenset[str] = frozenset({"AND", "OR", "NOT", "NEAR"})
 # NOTE: fuzzy fallback still requires >= 3 chars (too noisy for short terms).
 _MIN_TERM_LEN: int = 1
 
-# Sentinel returned when the input strips to nothing — yields zero FTS5 rows safely.
-# An empty string is passed through as-is; FTS5 handles it without error.
+# Sentinel returned when the input strips to nothing.
+# An empty string is a valid SQLite expression that yields zero FTS5 rows without
+# raising OperationalError, so callers need no special-case branch for stripped queries.
 _EMPTY_SENTINEL: str = ""
 
 
@@ -138,16 +139,20 @@ def build_match_query(text: str) -> str:
         surviving.append(token)
 
     if not surviving:
-        # Log at INFO so operators can see when a query was fully discarded.
-        # This distinguishes "query discarded" from "genuine miss" in the logs.
+        # Log at INFO (not DEBUG) so operators can distinguish "query discarded because
+        # all tokens were operators/too-short" from "FTS ran but genuinely found nothing".
+        # Both surface as an empty result set to the caller, but the cause is different.
         logger.info(
             "fts: all tokens stripped from query %r — returning sentinel (zero FTS5 rows)", text
         )
         return _EMPTY_SENTINEL
 
-    # Step 5+6: build quoted-prefix OR expression
-    # Each term wrapped as "term"* so FTS5 matches any token starting with 'term'.
-    # This gives prefix matching without requiring exact full-word matches.
+    # Step 5+6: build quoted-prefix OR expression.
+    # Each term is wrapped as "term"* so FTS5 does prefix-matching (matches any
+    # indexed token starting with 'term'). Terms are OR-joined so that one
+    # non-matching word cannot zero the entire result set — the fix for the
+    # implicit-AND bug where "parse issues board" returned nothing if 'board' was
+    # not indexed, even though 'parse' matched many symbols.
     terms = [f'"{t}"*' for t in surviving]
     match_expr = " OR ".join(terms)
 
@@ -190,7 +195,9 @@ def rescore(rows: list[dict[str, Any]], terms: list[str]) -> list[dict[str, Any]
     is_test_query = bool(_TEST_QUERY_SIGNALS & frozenset(lower_terms))
 
     # Signal 5 (cluster boost): identify the dominant cluster from the highest-scoring row.
-    # The first row has the highest raw FTS score (FTS returns best-first).
+    # FTS5 returns rows ordered by BM25 (best first), so rows[0] is the strongest seed.
+    # Peers of that seed are likely related — boosting them improves recall without
+    # widening to unrelated clusters.
     dominant_cluster_id: int | None = None
     if rows:
         first_cluster = rows[0].get("cluster_id")
