@@ -286,3 +286,37 @@
 #   Test count: 1454 (1395 Phase-9 baseline + 58 Swift + 1 review-fix regression). Gate green.
 #   No schema change, no migration, MCP tool count stays 10.
 # Next: roadmap item 8 (`seam install`) / v0.1.0 release prep. (Kotlin: revisit on robust grammar.)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Agentic-readiness hardening (post-Phase-10) — 3 critical audit fixes; NO installer
+# ─────────────────────────────────────────────────────────────────────────────
+#   Trigger: end-to-end agentic-readiness audit. Method: built a fresh multi-language
+#     repo, ran `seam init`, connected a REAL MCP stdio client (mcp lib, as Claude does),
+#     drove all 10 tools + sad paths. Verdict: tools excellent; the edges around them weren't.
+#   Findings fixed (critical-only; installer deferred):
+#   #1 PyPI name collision — `seam` on PyPI is Seam Labs' smart-lock SDK (v1.145.0); README's
+#      `pip install seam` installs the WRONG package. → renamed distribution to `seam-mcp` in
+#      pyproject (import pkg + console command stay `seam`); README install now from-source
+#      (not published yet); also fixed the bogus `["start","--stdio"]` MCP config (no such flag).
+#   #2 MCP error contract — app-level rejections returned {"error","message"} with isError=FALSE
+#      (a protocol-compliant agent reads a rejection as success); not-found returned empty content.
+#      → new module-level `_finalize(result)` in seam/server/mcp.py, applied to all 10 closures:
+#        error-dict sentinel → raise ToolError → FastMCP sets isError=True ("CODE: message");
+#        None → {"found": false}; success dict/list pass through unchanged. Handlers/CLI/output.py
+#        UNTOUCHED (CLI keeps {ok:false,error:{code,message}}; same code+message, native signal each).
+#        FastMCP fact (probed): isError flips ONLY on raise, and content gets an
+#        "Error executing tool <name>: " prefix — so clean JSON can't survive a raise; the right
+#        cross-transport contract is same-code+message, each transport's native error signal.
+#   #3 seam_changes polluted by its own index — init created `.seam/` but no gitignore, so
+#      `.seam/seam.db`/-shm/-wal showed as changed "modules". → `seam init` writes `.seam/.gitignore`
+#      containing `*` (probed: git stops reporting `.seam/`; written INSIDE `.seam/` so the
+#      "nothing outside `.seam/`" property holds). Idempotent (exists() guard).
+#   New tests: tests/integration/test_mcp_error_contract.py (8: _finalize unit + in-memory MCP
+#     client wiring), tests/integration/test_init_gitignore.py (3: written/hides-from-git/idempotent).
+#   Docs: CLAUDE.md (Current Phase + 2 new gotchas), README (from-source install + fixed MCP config),
+#     docs/api-contracts/mcp-tools.yaml (error-contract header note).
+#   Live re-verify (fresh repo, real MCP client): app-error isError=True ✓, not-found {found:false} ✓,
+#     seam_changes excludes .seam ✓, success path intact ✓.
+#   Test count: 1465 (1454 + 11). Gate green (ruff + mypy 46 files + pytest). No schema change,
+#     no migration, MCP tool count stays 10. Plan: .claude/tasks/agentic-readiness-hardening.md.
+# Next: roadmap item 8 (`seam install` / AgentTarget) + actually publish to PyPI as `seam-mcp`.

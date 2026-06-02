@@ -149,6 +149,17 @@ tests/fixtures/              ← sample.py, sample.ts, sample.go, sample.rs
 - **Edges use string names** (not symbol IDs) — required for independent re-indexing
 
 ## Current Phase
+Agentic-readiness hardening complete (post-Phase-10) — 3 critical audit fixes; **no installer yet**.
+- **Distribution renamed `seam` → `seam-mcp`** in pyproject (PyPI `seam` is taken by Seam Labs' SDK).
+  Import package + console command stay `seam`. Not yet published; README install is from-source.
+- **MCP error/not-found contract unified** via `_finalize` (seam/server/mcp.py): app errors now
+  `isError=True` (`"CODE: message"`), not-found → `{"found": false}`. See the Known Gotchas entry.
+- **`seam init` writes `.seam/.gitignore` (`*`)** so `seam_changes` stops reporting its own DB files.
+- No schema change, no migration, MCP tool count stays 10. 1465 tests passing; gate green.
+- Source of these fixes: an end-to-end agentic-readiness audit (real MCP stdio client on a fresh repo).
+See `progress.txt`. Next: roadmap item 8 (`seam install`) / v0.1.0 release prep (publish as `seam-mcp`).
+
+### Prior phase
 Phase 10 complete — Swift support (11 → 12 languages). **Kotlin evaluated and deferred.**
 - **New grammar:** tree-sitter-swift 0.7.3 (parses cleanly against tree-sitter 0.25.2, has_error=False).
   Entry point is `tree_sitter_swift.language()`.
@@ -268,6 +279,16 @@ All ten tools return the five Phase 4 enrichment fields where available: `signat
 - **`--json` errors go to stdout, not stderr**: unlike CodeGraph (which emits ANSI errors on
   stderr even in JSON mode), Seam's `--json` mode always writes a structured envelope to stdout
   and exits non-zero. Shell pipelines and CI steps can branch on the `ok` key reliably.
+- **MCP error contract ≠ CLI envelope — same code+message, different transport signal**:
+  the CLI returns `{"ok":false,"error":{"code","message"}}`. The MCP tools (via `_finalize`
+  in `seam/server/mcp.py`) instead **raise** on the handler's `{"error","message"}` sentinel so
+  FastMCP sets `isError=True` with content `"<CODE>: <message>"` — because FastMCP only flips
+  `isError` on a raise (returning a dict leaves `isError=False`, which an agent reads as success).
+  A handler `None` ("nothing found") is normalized to `{"found": false}` (NOT empty content, NOT
+  an error). Handlers/CLI/output.py are unchanged — only the MCP boundary normalizes.
+- **`seam init` writes `.seam/.gitignore` (`*`)**: keeps the index (db/-shm/-wal) out of git so
+  `seam_changes` never reports Seam's own artifacts as changed files. Written INSIDE `.seam/` —
+  Seam still touches nothing outside `.seam/`. Idempotent (only written if absent).
 - **Phase 4 enrichment fields are NULL until the next full `seam init` after upgrade**: the
   v4→v5 migration (run automatically on `connect()`) adds the five columns to the schema but
   does NOT backfill existing rows. Only a full re-index (`seam init`) populates signature,

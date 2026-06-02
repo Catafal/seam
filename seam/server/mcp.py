@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 
 import seam.config as config
 from seam.analysis.changes import DEFAULT_BASE_REF
@@ -63,6 +64,29 @@ _AFFECTED_DEPTH_DEFAULT = config.SEAM_AFFECTED_DEPTH
 _IMPACT_LIMIT_DEFAULT = config.SEAM_IMPACT_MAX_RESULTS
 
 
+def _finalize(result: Any) -> Any:
+    """Normalize a handler result to the MCP transport's native failure contract.
+
+    WHY: FastMCP only sets isError=True when a tool *raises* — returning an error
+    dict leaves isError=False, so a protocol-compliant agent (which checks isError)
+    reads a rejection as success. The handlers return {"error": CODE, "message": ...}
+    sentinels (kept for the CLI's {ok:false,error:{code,message}} envelope), so here —
+    at the MCP boundary only — we raise on that sentinel and let FastMCP flip isError.
+    A None ("handler found nothing") becomes a structured {"found": false} so agents
+    never receive empty content for a valid no-result answer. Every other value
+    (success dict, list) passes through byte-identical.
+
+    The CLI and MCP thus expose the SAME code+message via each transport's native
+    error signal — not byte-identical JSON (clean JSON cannot survive FastMCP's
+    "Error executing tool <name>: " content prefix on a raise).
+    """
+    if result is None:
+        return {"found": False}
+    if isinstance(result, dict) and "error" in result and "message" in result:
+        raise ToolError(f"{result['error']}: {result['message']}")
+    return result
+
+
 def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
     """Configure and return a FastMCP server with all ten Seam tools registered.
 
@@ -92,7 +116,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         No `verbose` flag: query results carry no Phase 4/5 enrichment fields, so lean
         mode would be a no-op — query is enrichment-free, like seam_search.
         """
-        return handle_seam_query(conn, concept, root, limit=limit)
+        return _finalize(handle_seam_query(conn, concept, root, limit=limit))
 
     @mcp.tool()
     def seam_context(symbol: str, verbose: bool = True) -> Any:
@@ -104,8 +128,10 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         visibility, qualified_name) and receive a compact response. signature and all
         core identity fields are always kept.
         verbose=true (default) is byte-identical to the pre-Phase-8 output.
+
+        Returns {found: false} when the symbol is not in the index.
         """
-        return handle_seam_context(conn, symbol, root, verbose=verbose)
+        return _finalize(handle_seam_context(conn, symbol, root, verbose=verbose))
 
     @mcp.tool()
     def seam_search(text: str, limit: int = _SEARCH_LIMIT_DEFAULT) -> Any:
@@ -114,7 +140,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         Use when you know a keyword but not the exact symbol name.
         Supports FTS5 operators: AND, OR, NOT, phrase search in quotes.
         """
-        return handle_seam_search(conn, text, root, limit=limit)
+        return _finalize(handle_seam_search(conn, text, root, limit=limit))
 
     @mcp.tool()
     def seam_impact(
@@ -156,15 +182,17 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
 
         Use before editing any symbol to understand the blast radius.
         """
-        return handle_seam_impact(
-            conn,
-            target,
-            root,
-            direction=direction,
-            max_depth=max_depth,
-            include_tests=include_tests,
-            verbose=verbose,
-            limit=limit,
+        return _finalize(
+            handle_seam_impact(
+                conn,
+                target,
+                root,
+                direction=direction,
+                max_depth=max_depth,
+                include_tests=include_tests,
+                verbose=verbose,
+                limit=limit,
+            )
         )
 
     @mcp.tool()
@@ -196,7 +224,9 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         Set verbose=false to omit heavy fields (resolved_by, best_candidate) from
         every hop and edge hop. verbose=true (default) is byte-identical to pre-Phase-8.
         """
-        return handle_seam_trace(conn, source, target, root, max_depth=max_depth, verbose=verbose)
+        return _finalize(
+            handle_seam_trace(conn, source, target, root, max_depth=max_depth, verbose=verbose)
+        )
 
     @mcp.tool()
     def seam_changes(
@@ -219,9 +249,9 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
           branch  — git diff <base_ref>...HEAD (entire branch vs base ref)
 
         Use before committing to understand what your changes break.
-        Returns NOT_A_GIT_REPO error when run outside a git repository.
+        Fails (isError) with NOT_A_GIT_REPO when run outside a git repository.
         """
-        return handle_seam_changes(conn, root, base_ref=base_ref, scope=scope)
+        return _finalize(handle_seam_changes(conn, root, base_ref=base_ref, scope=scope))
 
     @mcp.tool()
     def seam_why(
@@ -245,7 +275,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         Returns an empty list (not an error) when a file/symbol has no semantic comments.
         Use before editing a function to read the documented intent and known caveats.
         """
-        return handle_seam_why(conn, root, file=file, line=line, symbol=symbol)
+        return _finalize(handle_seam_why(conn, root, file=file, line=line, symbol=symbol))
 
     @mcp.tool()
     def seam_clusters(cluster_id: int | None = None) -> Any:
@@ -267,7 +297,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         Use this to understand the codebase's functional areas before diving into a
         specific subsystem. Then use seam_context to see a symbol's cluster peers.
         """
-        return handle_seam_clusters(conn, root, cluster_id=cluster_id)
+        return _finalize(handle_seam_clusters(conn, root, cluster_id=cluster_id))
 
     @mcp.tool()
     def seam_affected(
@@ -291,11 +321,11 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
 
         A changed file that is itself a test file is always included in affected_tests.
         Files not in the index are silently skipped (they have no graph dependents).
-        Returns INVALID_INPUT error when changed_files is empty.
+        Fails (isError) with INVALID_INPUT when changed_files is empty.
 
         Use this to determine the minimal set of tests to run before committing.
         """
-        return handle_seam_affected(conn, changed_files, root, depth=depth)
+        return _finalize(handle_seam_affected(conn, changed_files, root, depth=depth))
 
     @mcp.tool()
     def seam_context_pack(symbol: str, verbose: bool = True) -> Any:
@@ -324,9 +354,9 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         visibility, qualified_name) from target and every neighbor. signature and core
         fields are always kept. verbose=true (default) is byte-identical to pre-Phase-8.
 
-        Returns None when the symbol is not in the index (same contract as seam_context).
-        Returns INVALID_INPUT error when symbol is blank or whitespace-only.
+        Returns {found: false} when the symbol is not in the index (same contract as
+        seam_context). Fails (isError) with INVALID_INPUT when symbol is blank/whitespace.
         """
-        return handle_seam_context_pack(conn, symbol, root, verbose=verbose)
+        return _finalize(handle_seam_context_pack(conn, symbol, root, verbose=verbose))
 
     return mcp
