@@ -6,23 +6,40 @@ Local code intelligence MCP server for AI agents. Index your codebase once; let 
 
 Phase 10 complete — Swift support (11 → 12 languages); Kotlin deferred (grammar maturity).
 Agentic-readiness hardening done (MCP error/not-found contract, `.seam/` gitignore, distribution → `seam-mcp`).
-`seam install` ships — one-command MCP wiring for Claude Code / Cursor / Codex. 1492 tests. Gate green.
+`seam install` ships — one-command MCP wiring for Claude Code / Cursor / Codex.
+Full CLI-only surface (`query`/`search`/`context` + analysis commands) usable with no MCP server. 1504 tests. Gate green.
 
 ## Quickstart
 
 Not yet published to PyPI (the name `seam` there belongs to an unrelated package;
 the distribution will be `seam-mcp`). Install from source for now:
 
+Not yet published to PyPI (the distribution will be `seam-mcp`; the import package and
+`seam` command keep that name). Install from source for now:
+
 ```bash
-# Install from source
 git clone <repo-url> && cd seam
-uv sync              # installs the `seam` command into .venv
+uv sync                 # CLI only (no MCP server)
+uv sync --extra server  # add the MCP server (`seam start`) — needs the `mcp` package
+```
 
-# Index your project
+The **MCP server is optional**. The CLI works on its own — these all query the index
+directly, no server needed:
+
+```bash
 cd /path/to/your/project
-uv run seam init
+uv run seam init                       # index the project
+uv run seam search "auth token"        # full-text search
+uv run seam query "verify user login"  # hybrid FTS + graph search
+uv run seam context authenticate_user  # 360-degree view of a symbol
+uv run seam impact authenticate_user   # blast radius
+# also: trace · changes · why · clusters · affected · pack · status · sync
+```
 
-# Wire Seam into your agent (writes the MCP config for you)
+To expose Seam to an AI agent, install the `server` extra and let `seam install` write
+the MCP config for you:
+
+```bash
 uv run seam install                    # Claude Code, project scope (.mcp.json)
 uv run seam install --target all --location user   # Claude + Cursor + Codex, user scope
 uv run seam install --print-config     # preview the config; write nothing

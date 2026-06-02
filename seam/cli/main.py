@@ -58,6 +58,7 @@ from seam.analysis.impact import (
 )
 from seam.cli.install import install_command, uninstall_command
 from seam.cli.output import check_mutual_exclusion, emit_json, emit_json_error, print_quiet
+from seam.cli.read import context_command, query_command, search_command
 from seam.indexer.cluster_index import get_llm_naming_summary, index_clusters
 from seam.indexer.db import connect, init_db
 from seam.indexer.pipeline import index_one_file, walk_project
@@ -65,7 +66,10 @@ from seam.indexer.sync import sync as sync_project
 from seam.query.clusters import cluster_members as query_cluster_members
 from seam.query.clusters import list_clusters as query_list_clusters
 from seam.query.comments import why as comments_why
-from seam.server.mcp import create_server
+
+# NOTE: seam.server.mcp (and the `mcp` package it needs) is imported LAZILY inside the
+# `start` command — see _load_create_server(). This keeps the entire CLI usable with the
+# `mcp` extra UNINSTALLED (pure-CLI install): only `seam start` requires it.
 from seam.server.tools import (
     handle_seam_affected,
     handle_seam_changes,
@@ -84,10 +88,14 @@ app = typer.Typer(
 
 console = Console()
 
-# Register `seam install` / `seam uninstall` (defined in cli/install.py to keep this
-# file from growing further — main.py is already large).
+# Register commands defined in sibling modules (kept out of this file, which is large).
 app.command(name="install")(install_command)
 app.command(name="uninstall")(uninstall_command)
+# query/search/context complete the CLI-only surface — they reuse the transport-agnostic
+# handlers and query SQLite directly, so they work with NO MCP server (and no `mcp` dep).
+app.command(name="query")(query_command)
+app.command(name="search")(search_command)
+app.command(name="context")(context_command)
 
 # Top-level keys in a handle_seam_impact response that are NOT direction groups.
 # Every consumer that iterates the impact result to find tier groups (quiet output,
@@ -380,6 +388,25 @@ def status(
     console.print(table)
 
 
+def _load_create_server() -> Any:
+    """Import the MCP server factory lazily — the `mcp` package is an OPTIONAL extra.
+
+    WHY lazy (not a top-of-file import): the whole CLI must stay usable when `mcp`
+    is not installed (the pure-CLI install profile). Only `seam start` needs it, so
+    a missing extra yields a clear install hint here instead of crashing CLI startup.
+    """
+    try:
+        from seam.server.mcp import create_server
+    except ImportError as exc:
+        Console(stderr=True).print(
+            "[red]MCP server support is not installed.[/red]\n"
+            "Install it with:  [bold]pip install 'seam-mcp[server]'[/bold]"
+            "  (from source: [bold]uv sync --extra server[/bold])"
+        )
+        raise typer.Exit(code=1) from exc
+    return create_server
+
+
 @app.command()
 def start(
     path: str = typer.Argument(".", help="Project root to watch (default: current directory)"),
@@ -410,6 +437,10 @@ def start(
     if not db_path.exists():
         Console(stderr=True).print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
         raise typer.Exit(code=1)
+
+    # Resolve the optional MCP server factory NOW — before spawning the watcher — so a
+    # pure-CLI install (no `mcp` extra) fails fast with an actionable hint, not mid-startup.
+    create_server = _load_create_server()
 
     # Refuse to spawn a second watcher if a live one is already recorded —
     # two writers on one DB is exactly the corruption we just designed out.

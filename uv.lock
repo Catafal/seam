@@ -954,7 +954,6 @@ name = "seam-mcp"
 version = "0.2.0"
 source = { editable = "." }
 dependencies = [
-    { name = "mcp" },
     { name = "tomlkit" },
     { name = "tree-sitter" },
     { name = "tree-sitter-c" },
@@ -973,8 +972,14 @@ dependencies = [
     { name = "watchdog" },
 ]
 
+[package.optional-dependencies]
+server = [
+    { name = "mcp" },
+]
+
 [package.dev-dependencies]
 dev = [
+    { name = "mcp" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -983,7 +988,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "mcp", specifier = ">=1.0.0" },
+    { name = "mcp", marker = "extra == 'server'", specifier = ">=1.0.0" },
     { name = "tomlkit", specifier = ">=0.15.0" },
     { name = "tree-sitter", specifier = ">=0.22.0" },
     { name = "tree-sitter-c", specifier = ">=0.24.2" },
@@ -1001,9 +1006,11 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12.0" },
     { name = "watchdog", specifier = ">=4.0.0" },
 ]
+provides-extras = ["server"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "mcp", specifier = ">=1.0.0" },
     { name = "mypy", specifier = ">=1.10.0" },
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "pytest-cov", specifier = ">=5.0.0" },

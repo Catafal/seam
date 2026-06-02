@@ -34,8 +34,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Schema SQL relative to this file: ../../docs/database/schema.sql
-_SCHEMA_PATH = Path(__file__).parents[2] / "docs" / "database" / "schema.sql"
+# Schema SQL location. Two layouts must both work:
+#   - INSTALLED wheel: shipped inside the package at seam/_data/schema.sql (via hatch
+#     force-include in pyproject) — docs/ is NOT packaged, so the dev path is absent.
+#   - DEV checkout / editable install: the canonical file at <repo>/docs/database/schema.sql.
+# Packaged-first so a real `pip install` works; falls back to the repo copy in dev.
+_PACKAGED_SCHEMA_PATH = Path(__file__).parent.parent / "_data" / "schema.sql"
+_DEV_SCHEMA_PATH = Path(__file__).parents[2] / "docs" / "database" / "schema.sql"
+_SCHEMA_PATH = _PACKAGED_SCHEMA_PATH if _PACKAGED_SCHEMA_PATH.exists() else _DEV_SCHEMA_PATH
 
 # Busy timeout (ms) so a concurrent reader (MCP server) doesn't make a
 # concurrent writer (watcher) fail immediately with "database is locked".
