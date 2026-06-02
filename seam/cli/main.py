@@ -269,7 +269,7 @@ def status(
         conn = connect(db_path)
     except sqlite3.Error as exc:
         if json_:
-            emit_json_error("INVALID_INPUT", f"Failed to open database: {exc}")
+            emit_json_error("DB_ERROR", f"Failed to open database: {exc}")
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
@@ -499,7 +499,7 @@ def impact_cmd(
         conn = connect(db_path)
     except sqlite3.Error as exc:
         if json_:
-            emit_json_error("INVALID_INPUT", f"Failed to open database: {exc}")
+            emit_json_error("DB_ERROR", f"Failed to open database: {exc}")
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
@@ -670,7 +670,7 @@ def trace_cmd(
         conn = connect(db_path)
     except sqlite3.Error as exc:
         if json_:
-            emit_json_error("INVALID_INPUT", f"Failed to open database: {exc}")
+            emit_json_error("DB_ERROR", f"Failed to open database: {exc}")
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
@@ -785,10 +785,10 @@ def changes_cmd(
         False,
         "--stdin",
         help=(
-            "Read a newline-delimited list of file paths from stdin and restrict "
-            "the analysis to those files. Filters changed_symbols and affected to "
-            "only the subset touching the provided files. "
-            "Does NOT bypass git — the git diff still runs; stdin restricts the output."
+            "Read a newline-delimited list of file paths from stdin. "
+            "Narrows changed_symbols and new_files to only those files. "
+            "affected and risk_level intentionally reflect the FULL git diff "
+            "(conservative — never under-reports risk)."
         ),
     ),
 ) -> None:
@@ -836,7 +836,7 @@ def changes_cmd(
         conn = connect(db_path)
     except sqlite3.Error as exc:
         if json_:
-            emit_json_error("INVALID_INPUT", f"Failed to open database: {exc}")
+            emit_json_error("DB_ERROR", f"Failed to open database: {exc}")
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
@@ -877,15 +877,15 @@ def changes_cmd(
 
     # ── Apply stdin file filter (when --stdin was given) ─────────────────────
     # WHY filter after report: detect_changes always runs the full git diff; we then
-    # restrict the displayed/returned result to the user-provided file subset.
-    # This matches the user story: "restrict the analysis to those files" — meaning
-    # the output is scoped to the intersection, not that git runs differently.
-    # The risk_level is NOT recomputed — it reflects the full diff (conservative).
-    # NOTE: When the report has an "error" key (e.g. NOT_A_GIT_REPO), skip filter.
+    # narrow changed_symbols and new_files to the user-provided file subset.
+    # risk_level and affected intentionally reflect the FULL diff (conservative —
+    # never under-reports risk to the caller).
+    # Skip the filter when the report is an error dict (NOT_A_GIT_REPO etc).
     if (
         stdin_files is not None
-        and not isinstance(report, dict)
-        or (isinstance(report, dict) and not report.get("error") and stdin_files is not None)
+        and isinstance(report, dict)
+        and not report.get("error")
+        and "changed_symbols" in report
     ):
         # Determine the key used for file lookup in changed_symbols entries.
         # handle_seam_changes returns relativized paths; detect_changes returns absolute.
@@ -909,11 +909,20 @@ def changes_cmd(
                 f for f in report.get("new_files", []) if _abs_sym_file(f) in stdin_files
             ]
 
+    # ── Error guard — applies to ALL output modes ─────────────────────────────
+    # handle_seam_changes returns {"error": "...", "message": "..."} for NOT_A_GIT_REPO.
+    # Without this guard, --quiet calls print_quiet(report, "risk_level") → KeyError,
+    # and --rich (default) would crash on report["risk_level"] below.
+    # Mirror the --json branch: surface the error uniformly regardless of output mode.
+    if isinstance(report, dict) and report.get("error"):
+        if json_:
+            emit_json_error(report["error"], report.get("message", ""))
+        # --quiet and rich: print error to stderr and exit non-zero
+        sys.stderr.write(f"Error [{report['error']}]: {report.get('message', '')}\n")
+        raise typer.Exit(code=1)
+
     # ── JSON mode ─────────────────────────────────────────────────────────────
     if json_:
-        # handle_seam_changes returns an error dict on NOT_A_GIT_REPO
-        if isinstance(report, dict) and report.get("error"):
-            emit_json_error(report["error"], report.get("message", ""))
         emit_json(report)
         return
 
@@ -1128,7 +1137,7 @@ def why_cmd(
         conn = connect(db_path)
     except sqlite3.Error as exc:
         if json_:
-            emit_json_error("INVALID_INPUT", f"Failed to open database: {exc}")
+            emit_json_error("DB_ERROR", f"Failed to open database: {exc}")
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
@@ -1237,7 +1246,7 @@ def clusters_cmd(
         conn = connect(db_path)
     except sqlite3.Error as exc:
         if json_:
-            emit_json_error("INVALID_INPUT", f"Failed to open database: {exc}")
+            emit_json_error("DB_ERROR", f"Failed to open database: {exc}")
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
@@ -1375,8 +1384,20 @@ def affected_cmd(
         raise typer.Exit(code=1)
 
     # ── Determine input file list ─────────────────────────────────────────────
-    # --stdin and positional args are mutually exclusive. If --stdin is given,
-    # read from stdin; otherwise use positional args. Both empty -> INVALID_INPUT.
+    # --stdin and positional args are mutually exclusive.
+    # L1: Enforce this explicitly — if both are given, error cleanly rather than
+    # silently ignoring the positional args (which would confuse the caller).
+    if stdin and files:
+        if json_:
+            emit_json_error(
+                "INVALID_INPUT",
+                "Provide file paths as positional arguments OR use --stdin, not both.",
+            )
+        console.print(
+            "[red]Error:[/red] Use positional arguments OR [bold]--stdin[/bold], not both."
+        )
+        raise typer.Exit(code=1)
+
     if stdin:
         raw_lines = sys.stdin.read().splitlines()
         input_files = [ln.strip() for ln in raw_lines if ln.strip()]
@@ -1398,7 +1419,7 @@ def affected_cmd(
         conn = connect(db_path)
     except sqlite3.Error as exc:
         if json_:
-            emit_json_error("INVALID_INPUT", f"Failed to open database: {exc}")
+            emit_json_error("DB_ERROR", f"Failed to open database: {exc}")
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
@@ -1409,10 +1430,19 @@ def affected_cmd(
     finally:
         conn.close()
 
+    # ── Error guard — applies to ALL output modes ─────────────────────────────
+    # handle_seam_affected returns {"error": ..., "message": ...} on INVALID_INPUT.
+    # Without this guard, --quiet and rich modes silently degrade to "No affected test
+    # files found" even though the handler actually errored (e.g. oversized file list).
+    if isinstance(result, dict) and result.get("error"):
+        if json_:
+            emit_json_error(result["error"], result.get("message", ""))
+        # --quiet and rich: write error to stderr and exit non-zero
+        sys.stderr.write(f"Error [{result['error']}]: {result.get('message', '')}\n")
+        raise typer.Exit(code=1)
+
     # ── JSON mode ─────────────────────────────────────────────────────────────
     if json_:
-        if isinstance(result, dict) and result.get("error"):
-            emit_json_error(result["error"], result.get("message", ""))
         emit_json(result)
         return
 

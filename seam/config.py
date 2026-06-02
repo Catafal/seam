@@ -63,6 +63,17 @@ SEAM_CLUSTER_MIN_SIZE: int = int(os.getenv("SEAM_CLUSTER_MIN_SIZE", "2"))
 # Higher values find more distant test files but increase runtime on large graphs.
 SEAM_AFFECTED_DEPTH: int = int(os.getenv("SEAM_AFFECTED_DEPTH", "5"))
 
+# Maximum number of changed files accepted by handle_seam_affected.
+# Inputs larger than this are rejected with INVALID_INPUT (agent mistake guard).
+# Mirrors the _clamp discipline used by other bounded handlers.
+SEAM_MAX_AFFECTED_FILES: int = int(os.getenv("SEAM_MAX_AFFECTED_FILES", "200"))
+
+# Maximum symbols analyzed per file in affected().
+# When a file defines more symbols than this, only the first N are traversed
+# and AffectedResult.partial is set to True.
+# Reuses the SEAM_MAX_IMPACT_SYMBOLS env var pattern for consistency.
+SEAM_MAX_AFFECTED_SYMBOLS: int = int(os.getenv("SEAM_MAX_AFFECTED_SYMBOLS", "50"))
+
 # ── Phase 3: Search / fuzzy fallback configuration ───────────────────────────
 
 # Maximum Damerau-Levenshtein edit distance for the fuzzy fallback.

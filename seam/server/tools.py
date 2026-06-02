@@ -620,6 +620,16 @@ def handle_seam_affected(
     if not changed_files:
         return _invalid_input("changed_files must not be empty")
 
+    # Clamp: reject oversized file lists (SEAM_MAX_AFFECTED_FILES cap).
+    # An agent accidentally passing the entire repo diff should get a clear error,
+    # not a silent O(n * symbols) traversal. Mirrors the _clamp discipline of other handlers.
+    max_files = config.SEAM_MAX_AFFECTED_FILES
+    if len(changed_files) > max_files:
+        return _invalid_input(
+            f"changed_files length {len(changed_files)} exceeds maximum {max_files}; "
+            "split the file list into smaller batches"
+        )
+
     # Run the core affected-tests algorithm.
     result: AffectedResult = run_affected(
         conn,
@@ -635,4 +645,6 @@ def handle_seam_affected(
         "changed_files": [_relativize(p, root) for p in result["changed_files"]],
         "affected_tests": [_relativize(p, root) for p in result["affected_tests"]],
         "total_dependents_traversed": result["total_dependents_traversed"],
+        # partial=True when a file exceeded SEAM_MAX_AFFECTED_SYMBOLS; result may be incomplete.
+        "partial": result["partial"],
     }

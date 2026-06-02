@@ -31,6 +31,7 @@ from typing import TypedDict
 from seam.config import SEAM_FUZZY_MAX_CANDIDATES, SEAM_FUZZY_MAX_DIST
 from seam.query import fts
 from seam.query.clusters import cluster_peers as _cluster_peers
+from seam.query.fts import extract_terms as _extract_terms
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,22 @@ def _bounded_edit_distance(a: str, b: str, max_dist: int) -> int:
 # ── LIKE→fuzzy fallback ───────────────────────────────────────────────────────
 
 
+def _escape_like(term: str) -> str:
+    """Escape LIKE metacharacters in a term so they are treated as literals.
+
+    SQLite LIKE has three special characters: % (any sequence), _ (any single char),
+    and the escape char itself (here: backslash). Escaping prevents a query for
+    'get_user' from matching 'getXuser' due to the _ wildcard.
+
+    Must be paired with ESCAPE '\\' in the SQL clause.
+    """
+    # Order matters: escape backslash first so we do not double-escape
+    term = term.replace("\\", "\\\\")
+    term = term.replace("%", "\\%")
+    term = term.replace("_", "\\_")
+    return term
+
+
 def _like_fallback(
     conn: sqlite3.Connection,
     term: str,
@@ -129,7 +146,12 @@ def _like_fallback(
 
     Returns rows in the same dict shape as the FTS query (symbol, file, line,
     snippet="", score=0.0, cluster_id) so they can pass through rescore().
+
+    WHY escape: SQLite LIKE treats '_' as a single-char wildcard and '%' as a
+    multi-char wildcard. Without escaping, a search for 'get_user' matches
+    'getXuser', 'get1user', etc. — over-broadening the fallback results.
     """
+    escaped = _escape_like(term)
     sql = """
         SELECT
             s.name          AS symbol,
@@ -138,10 +160,10 @@ def _like_fallback(
             s.cluster_id    AS cluster_id
         FROM symbols s
         JOIN files f ON f.id = s.file_id
-        WHERE s.name LIKE ?
+        WHERE s.name LIKE ? ESCAPE '\\'
         LIMIT ?
     """
-    rows = conn.execute(sql, (f"%{term}%", limit)).fetchall()
+    rows = conn.execute(sql, (f"%{escaped}%", limit)).fetchall()
     return [
         {
             "symbol": row["symbol"],
@@ -170,13 +192,30 @@ def _fuzzy_fallback(
     WHY bounded candidate cap: this is O(n * |term|) per call. On large indexes
     (thousands of symbols), scanning all names would be slow. The cap keeps the
     tail-case bounded; SEAM_FUZZY_MAX_CANDIDATES controls it via env var.
+
+    WHY length-window pre-filter: only names whose length is within max_dist of the
+    term length can possibly achieve edit-distance <= max_dist. Filtering in SQL
+    before the Python DL loop avoids scanning irrelevant names (e.g. a 20-char name
+    can never match a 3-char term at dist=1). This also makes the cap more meaningful:
+    all names that CAN match are eligible, not just the first N in rowid order.
+
+    WHY ORDER BY name: deterministic ordering means repeated calls with the same
+    inputs return the same result set (reproducible for agents/tests).
     """
     term_lower = term.lower()
+    term_len = len(term_lower)
 
-    # Fetch a bounded set of distinct symbol names for edit-distance comparison
+    # Pre-filter by length window: |len(name) - len(term)| <= max_dist is a necessary
+    # (not sufficient) condition for edit-distance <= max_dist. Filter in SQL so we
+    # only pull names that can possibly match, then order deterministically.
     name_rows = conn.execute(
-        "SELECT DISTINCT name FROM symbols LIMIT ?",
-        (candidate_cap,),
+        """
+        SELECT DISTINCT name FROM symbols
+        WHERE length(name) BETWEEN ? AND ?
+        ORDER BY name
+        LIMIT ?
+        """,
+        (max(1, term_len - max_dist), term_len + max_dist, candidate_cap),
     ).fetchall()
 
     matches: list[str] = []
@@ -216,33 +255,11 @@ def _fuzzy_fallback(
     ]
 
 
-def _cluster_id_for_rows(conn: sqlite3.Connection, rows: list[dict]) -> list[dict]:
-    """Enrich a list of rows with cluster_id if not already present.
-
-    Used to annotate LIKE/fuzzy fallback rows so rescore() can apply the cluster
-    boost signal. Rows already carrying cluster_id are left unchanged.
-    """
-    # For now the LIKE/fuzzy queries already select cluster_id from symbols,
-    # so this is a no-op enrichment pass (kept as a hook for future enrichment).
-    return rows
-
-
 # ── Search helpers ────────────────────────────────────────────────────────────
-
-
-def _extract_terms(text: str) -> list[str]:
-    """Extract plain query terms from raw user text (no FTS5 operators).
-
-    Mirrors the stripping logic in build_match_query() but returns the plain
-    tokens for use in rescore() signal computation.
-    """
-    import re
-
-    # Strip FTS5 special characters, split, filter operators and short tokens
-    special_chars = re.compile(r'["\'\(\)\*\+\-\^\:\.]')
-    operators = frozenset({"AND", "OR", "NOT", "NEAR"})
-    cleaned = special_chars.sub(" ", text)
-    return [t for t in cleaned.split() if t.upper() not in operators and len(t) >= 2]
+# _extract_terms is imported from seam.query.fts (single source of truth).
+# engine.py previously had its own copy with the same logic + an inline `import re`.
+# That duplicate is now removed. Both the query builder (build_match_query) and the
+# rescore signal computation use the same tokeniser from fts.py.
 
 
 # ── A3 — search ──────────────────────────────────────────────────────────────
@@ -324,6 +341,15 @@ def search(conn: sqlite3.Connection, text: str, limit: int = 20) -> list[SearchR
     # ── Step 2: LIKE fallback — FTS returned zero rows ────────────────────────
     # WHY: FTS5 requires tokens to be indexed. A query term that was never seen
     # (a typo like 'autenticate') gets zero FTS hits. LIKE %term% catches substrings.
+    if not match_expr:
+        # match_expr was empty sentinel — all tokens were stripped (operators/short).
+        # Log at INFO to distinguish "query discarded" from "genuine no-match".
+        logger.info(
+            "search: match_expr empty (query discarded) — all tokens stripped from %r; "
+            "returning []",
+            text,
+        )
+        return []
     logger.debug("search: FTS returned zero rows for %r — trying LIKE fallback", text)
 
     like_rows: list[dict] = []
@@ -381,6 +407,11 @@ def search(conn: sqlite3.Connection, text: str, limit: int = 20) -> list[SearchR
             for r in rescored[:limit]
         ]
 
+    # All three tiers exhausted — genuine miss (not a query-discard).
+    logger.info(
+        "search: all tiers ran (FTS + LIKE + fuzzy), genuine miss for %r — returning []",
+        text,
+    )
     return []
 
 
@@ -449,6 +480,19 @@ def query(conn: sqlite3.Connection, concept: str, limit: int = 10) -> list[Query
                 seed_map[row["symbol"]] = (row["file"], row["line"], row["score"])
 
     if not seed_map:
+        if not match_expr:
+            # Empty sentinel: query was discarded (all tokens stripped).
+            logger.info(
+                "query: match_expr empty (query discarded) — all tokens stripped from %r; "
+                "returning []",
+                concept,
+            )
+        else:
+            # FTS ran but found nothing — genuine miss.
+            logger.info(
+                "query: FTS5 ran, genuine miss for %r — returning []",
+                concept,
+            )
         return []
 
     # Step 3: 1-hop expansion — collect neighbors of seed symbols

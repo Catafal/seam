@@ -46,13 +46,17 @@ class AffectedResult(TypedDict):
     Fields:
         changed_files          — resolved absolute paths of the input changed files
         affected_tests         — sorted unique absolute paths of affected test files
-        total_dependents_traversed — count of all unique dependent entries found across
-                                     all symbols from all changed files
+        total_dependents_traversed — total dependent entries traversed (may double-count
+                                     across changed symbols from different files when the
+                                     same dependent is reachable from multiple changed symbols)
+        partial                — True when the per-file symbol cap (SEAM_MAX_AFFECTED_SYMBOLS)
+                                 was hit for at least one file; the affected set may be incomplete
     """
 
     changed_files: list[str]
     affected_tests: list[str]
     total_dependents_traversed: int
+    partial: bool
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
@@ -155,19 +159,29 @@ def affected(
 
     Returns:
         AffectedResult TypedDict with:
-            changed_files          — resolved absolute paths of input files
-            affected_tests         — sorted unique absolute paths of affected test files
-            total_dependents_traversed — count of all dependent entries found
+            changed_files              — resolved absolute paths of input files
+            affected_tests             — sorted unique absolute paths of affected test files
+            total_dependents_traversed — total entries traversed (may double-count when the
+                                         same dependent is reachable from multiple changed symbols)
+            partial                    — True when a file had more symbols than
+                                         SEAM_MAX_AFFECTED_SYMBOLS; result may be incomplete
 
     Never raises. Files not in the index are silently skipped (no error).
     A changed file with no dependents yields an empty contribution (not an error).
     """
+    sym_cap = config.SEAM_MAX_AFFECTED_SYMBOLS
+
     # Resolve all input paths to absolute (DB storage contract).
     resolved_inputs = [_resolve_path(p, repo_root) for p in changed_files]
 
     # Collect test files and dependent counts across all changed files.
     all_test_files: set[str] = set()
     total_dependents = 0
+    hit_cap = False
+
+    # Memoize impact() results within this call so a dependent reachable from multiple
+    # changed symbols is not re-traversed. Key: symbol name (string).
+    impact_cache: dict[str, tuple[list[str], int]] = {}
 
     for abs_path in resolved_inputs:
         # (a) The changed file itself is a test file -> include directly.
@@ -178,14 +192,38 @@ def affected(
         # (b) Look up all symbols defined in this file.
         symbol_names = _symbols_in_file(conn, abs_path)
 
-        if not symbol_names:
-            logger.debug(
-                "affected: no symbols found for %r in index — skipping graph step", abs_path
+        if not symbol_names and not is_test_file(abs_path):
+            # A non-test file with no indexed symbols is likely a stale index or path mismatch.
+            # Log at INFO so this silent case is visible to operators — an empty affected set
+            # from a stale index is a false-negative, not a safe "nothing to test".
+            logger.info(
+                "affected: %r has no indexed symbols and is not a test file — "
+                "possible stale index or path mismatch; contributing 0 test dependents",
+                abs_path,
             )
 
-        # (c) For each symbol, find its upstream dependents and collect test files.
+        # (c) Apply per-file symbol cap to prevent unbounded O(n) impact traversal.
+        if len(symbol_names) > sym_cap:
+            logger.info(
+                "affected: %r has %d symbols, exceeds cap %d — truncating to first %d; "
+                "result.partial will be True",
+                abs_path,
+                len(symbol_names),
+                sym_cap,
+                sym_cap,
+            )
+            symbol_names = symbol_names[:sym_cap]
+            hit_cap = True
+
+        # (d) For each symbol, find its upstream dependents and collect test files.
+        # Memoize to avoid re-traversing the same symbol from multiple changed files.
         for sym_name in symbol_names:
-            test_files, count = _collect_test_dependents(conn, sym_name, depth)
+            if sym_name in impact_cache:
+                test_files, count = impact_cache[sym_name]
+            else:
+                test_files, count = _collect_test_dependents(conn, sym_name, depth)
+                impact_cache[sym_name] = (test_files, count)
+
             all_test_files.update(test_files)
             total_dependents += count
 
@@ -193,15 +231,17 @@ def affected(
     sorted_test_files = sorted(all_test_files)
 
     logger.debug(
-        "affected(%d files, depth=%d) -> %d affected tests, %d dependents traversed",
+        "affected(%d files, depth=%d) -> %d affected tests, %d dependents traversed, partial=%s",
         len(changed_files),
         depth,
         len(sorted_test_files),
         total_dependents,
+        hit_cap,
     )
 
     return AffectedResult(
         changed_files=resolved_inputs,
         affected_tests=sorted_test_files,
         total_dependents_traversed=total_dependents,
+        partial=hit_cap,
     )

@@ -18,9 +18,11 @@ WHY these as module-level functions rather than a class:
 
 Stable error codes (reuse vocabulary from existing MCP handlers):
   NO_INDEX       — index not found; run seam init first
-  INVALID_INPUT  — blank/missing required argument
+  INVALID_INPUT  — blank/missing required argument (user-supplied bad input)
   INVALID_QUERY  — bad FTS5 syntax (rare after Phase 3 sanitization)
   NOT_A_GIT_REPO — changes command outside a git repository
+  DB_ERROR       — database file exists but could not be opened (corrupted, locked, etc.)
+                   Distinct from INVALID_INPUT (which implies the user sent bad data).
 """
 
 import json

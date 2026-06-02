@@ -45,8 +45,11 @@ _FTS5_SPECIAL_CHARS: re.Pattern = re.compile(r'["\'\(\)\*\+\-\^\:\.]')
 _FTS5_OPERATORS: frozenset[str] = frozenset({"AND", "OR", "NOT", "NEAR"})
 
 # Minimum token length to include in the MATCH expression.
-# Very short tokens (1-2 chars) produce too many FTS5 matches and hurt precision.
-_MIN_TERM_LEN: int = 2
+# 1-char prefix queries are valid FTS5 and can match single-letter symbols (e.g. 'x').
+# WHY 1 not 2: a search for 'x' should find symbol 'x'. The original 2 silently dropped
+# single-char queries, making them appear to return no results.
+# NOTE: fuzzy fallback still requires >= 3 chars (too noisy for short terms).
+_MIN_TERM_LEN: int = 1
 
 # Sentinel returned when the input strips to nothing — yields zero FTS5 rows safely.
 # An empty string is passed through as-is; FTS5 handles it without error.
@@ -71,6 +74,26 @@ _TEST_QUERY_SIGNALS: frozenset[str] = frozenset({"test", "tests", "spec", "fixtu
 # ═══════════════════════════════════════════════════════════════════════════════
 # Public API
 # ═══════════════════════════════════════════════════════════════════════════════
+
+
+def extract_terms(text: str) -> list[str]:
+    """Extract plain query terms from raw user text (no FTS5 operators).
+
+    Public single source of truth for tokenisation used by both build_match_query()
+    and engine.py rescore() signal computation.
+
+    Algorithm mirrors build_match_query() step 1-4 but returns plain tokens
+    (NOT wrapped as quoted prefixes). Used by rescore() to compute name/path signals.
+
+    WHY public: engine.py previously had a private _extract_terms that duplicated
+    this exact logic (same regex, same operator set, same min-len). Centralising
+    here ensures that the tokeniser and query builder always agree.
+    """
+    if not text or not text.strip():
+        return []
+    cleaned = _FTS5_SPECIAL_CHARS.sub(" ", text)
+    tokens = cleaned.split()
+    return [t for t in tokens if t.upper() not in _FTS5_OPERATORS and len(t) >= _MIN_TERM_LEN]
 
 
 def build_match_query(text: str) -> str:
@@ -115,7 +138,11 @@ def build_match_query(text: str) -> str:
         surviving.append(token)
 
     if not surviving:
-        logger.debug("fts: all tokens stripped from query %r — returning sentinel", text)
+        # Log at INFO so operators can see when a query was fully discarded.
+        # This distinguishes "query discarded" from "genuine miss" in the logs.
+        logger.info(
+            "fts: all tokens stripped from query %r — returning sentinel (zero FTS5 rows)", text
+        )
         return _EMPTY_SENTINEL
 
     # Step 5+6: build quoted-prefix OR expression
