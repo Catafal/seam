@@ -128,4 +128,4 @@ CREATE TABLE IF NOT EXISTS metadata (
 -- Existing older DBs keep their stored version; db.py migrations bump them in place.
 INSERT OR IGNORE INTO metadata(key, value) VALUES
     ('schema_version', '4'),
-    ('seam_version',   '0.1.0');
+    ('seam_version',   '0.2.0');
