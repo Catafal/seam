@@ -55,6 +55,8 @@ SEAM_LANGUAGE_MAP: dict[str, str] = {
     ".hxx": "cpp",
     # Phase 9 — PHP
     ".php": "php",
+    # Phase 10 — Swift
+    ".swift": "swift",
 }
 
 

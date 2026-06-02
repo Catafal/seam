@@ -21,6 +21,7 @@ import tree_sitter_php as tsphp
 import tree_sitter_python as tspython
 import tree_sitter_ruby as tsruby
 import tree_sitter_rust as tsrust
+import tree_sitter_swift as tsswift
 import tree_sitter_typescript as tstypescript
 from tree_sitter import Language, Node, Parser
 
@@ -42,6 +43,8 @@ _C_LANG = Language(tsc.language())
 _CPP_LANG = Language(tscpp.language())
 # PHP: language_php() (not language()) to handle the <?php open tag correctly.
 _PHP_LANG = Language(tsphp.language_php())
+# Phase 10 — Swift
+_SWIFT_LANG = Language(tsswift.language())
 
 
 def _parse(path: Path, language: Language) -> Node | None:
@@ -187,3 +190,15 @@ def parse_php(path: Path) -> Node | None:
     Malformed PHP still returns a (possibly partial) tree with ERROR nodes.
     """
     return _parse(path, _PHP_LANG)
+
+
+# ── Phase 10 parser ────────────────────────────────────────────────────────────
+
+
+def parse_swift(path: Path) -> Node | None:
+    """Parse a Swift source file (.swift).
+
+    Returns tree-sitter root Node, or None for binary/oversized/unreadable files.
+    Malformed Swift still returns a (possibly partial) tree with ERROR nodes.
+    """
+    return _parse(path, _SWIFT_LANG)

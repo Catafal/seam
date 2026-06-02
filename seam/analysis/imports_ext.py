@@ -704,3 +704,77 @@ def _resolve_php(
     fall back to the name-count rule (AMBIGUOUS if multiple declarations exist).
     """
     return []  # Out of scope per spec — PHP PSR-4 autoload not implemented
+
+
+# ── Swift ─────────────────────────────────────────────────────────────────────
+
+
+def _extract_swift(root: object, filepath: Path) -> _ImportMappingList:
+    """Extract ImportMapping records from a Swift AST root node.
+
+    Handles:
+        import Foundation        → local_name='Foundation', source_module='Foundation'
+        import UIKit.UIView      → local_name='UIView', source_module='UIKit.UIView'
+            (last segment of dotted path per spec)
+
+    Resolution: Swift modules are not file-path-resolvable in-repo without a build
+    graph (frameworks live outside the project tree). _resolve_swift always returns [].
+    Never raises. Returns [] on any failure.
+    """
+    result: _ImportMappingList = []
+    try:
+        from tree_sitter import Node
+
+        if not isinstance(root, Node):
+            return result
+
+        def _walk(node: Any) -> None:
+            if node.type == "import_declaration":
+                line = node.start_point[0] + 1
+                # Find the 'identifier' child → collect simple_identifier segments → last one.
+                for child in node.children:
+                    if child.type == "identifier":
+                        segments = [
+                            _text_node(gc)
+                            for gc in child.children
+                            if gc.type == "simple_identifier"
+                        ]
+                        if segments:
+                            target = segments[-1]
+                            full = ".".join(s for s in segments if s)
+                            result.append(
+                                _make_mapping(
+                                    local_name=target,
+                                    exported_name=target,
+                                    source_module=full,
+                                    line=line,
+                                    is_default=True,
+                                )
+                            )
+                        break
+                return  # No recursion into import_declaration needed.
+            for child in node.named_children:
+                _walk(child)
+
+        _walk(root)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_extract_swift: extraction failed for %s: %r", filepath, exc)
+    return result
+
+
+def _resolve_swift(
+    source_module: str,
+    referencing_file: Path,
+    repo_root: Path,
+) -> list[str]:
+    """Resolve a Swift import path to source file paths.
+
+    Swift modules (Foundation, UIKit, SwiftUI, etc.) are Apple SDK frameworks
+    and are NOT file-path-resolvable within the repo without a full build graph.
+    Returns [] — degrading cleanly to the name-count resolution rule in confidence.py.
+
+    WHY: Swift module resolution requires Xcode project / SwiftPM manifest parsing
+    which is out of scope per the spec. The degraded name-count rule still provides
+    EXTRACTED/AMBIGUOUS distinction for in-repo symbols.
+    """
+    return []  # Out of scope per spec — Swift module resolution not implemented

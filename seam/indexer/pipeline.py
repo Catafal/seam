@@ -28,6 +28,7 @@ from seam.indexer.parser import (
     parse_python,
     parse_ruby,
     parse_rust,
+    parse_swift,
     parse_typescript,
 )
 
@@ -81,6 +82,9 @@ def _dispatch_parser(path: Path, language: str):  # type: ignore[return]
         return parse_cpp(path)
     if language == "php":
         return parse_php(path)
+    # Phase 10 — Swift
+    if language == "swift":
+        return parse_swift(path)
     return None
 
 

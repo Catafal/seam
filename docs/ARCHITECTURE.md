@@ -7,7 +7,7 @@
 ## System Diagram
 
 ```
-Source files (Python, TypeScript, JavaScript, Go, Rust, Java, C#, Ruby, C, C++, PHP)
+Source files (Python, TypeScript, JavaScript, Go, Rust, Java, C#, Ruby, C, C++, PHP, Swift)
         │
         ▼ tree-sitter (structural parsing)
         │
@@ -397,6 +397,7 @@ Per-language rules (original 5 — `seam/indexer/signatures.py`; Phase 9 additio
 - **C** (Phase 9) — return type + declarator; decorators always `[]`; `static` storage class → `visibility="private"`, `is_exported=false`; otherwise `is_exported=true`.
 - **C++** (Phase 9) — return type + declarator; decorators always `[]`; visibility = `null` (MVP — access specifiers not threaded to individual symbols); is_exported = `null`.
 - **PHP** (Phase 9) — full declaration header; decorators = PHP attribute lists (`#[Route(...)]`); export/visibility from `public`/`private`/`protected` modifier.
+- **Swift** (Phase 10) — declaration header; decorators = Swift `@attributes` (`@objc`, `@available`); visibility/is_exported from access modifiers (`public`/`open` → exported; `private`/`fileprivate`/`internal` → not exported).
 
 Never raises — any extraction error returns safe defaults (all `null`/`[]`).
 

@@ -35,7 +35,8 @@ Local code intelligence MCP server — indexes codebases with tree-sitter, store
 ## Package Layout
 ```
 seam/config.py               ← all settings (env vars with defaults)
-                                SEAM_LANGUAGE_MAP: .py .ts .tsx .js .mjs .cjs .go .rs
+                                SEAM_LANGUAGE_MAP: .py .ts .tsx .js .mjs .cjs .go .rs .java .cs .rb
+                                  .c .h .cpp .cc .cxx .c++ .hpp .hh .hxx .php .swift (12 languages)
                                                    .java .cs .rb .c .h .cpp .cc .cxx .c++ .hpp .hh .hxx .php
                                 SEAM_CLUSTER_NAMING: "deterministic" | "llm" (default: deterministic)
                                 SEAM_LLM_API_KEY: optional, required for llm naming
@@ -89,8 +90,11 @@ seam/indexer/graph_ruby.py   ← Ruby symbol/edge/comment extractors (Phase 9)
                                 imports graph_common only; handles def self.x singleton methods
 seam/indexer/graph_php.py    ← PHP symbol/edge/comment extractors (Phase 9)
                                 imports graph_common only; handles grouped-use and enum methods
+seam/indexer/graph_swift.py  ← Swift symbol/edge/comment extractors (Phase 10)
+                                imports graph_common only; class/struct/actor/extension→class,
+                                enum→type, protocol→interface; /// and /** */ docstrings
 seam/indexer/graph.py        ← Python/TS dispatchers; re-exports types from graph_common;
-                                imports Go/Rust/Java/C#/C/C++/Ruby/PHP extractors at top level
+                                imports Go/Rust/Java/C#/C/C++/Ruby/PHP/Swift extractors at top level
 seam/indexer/signatures.py   ← LEAF: Phase 4 enrichment — extract_node_fields(node, language, ...) → NodeFields
                                 per-language: signature, decorators, is_exported, visibility, qualified_name
                                 for Python / TypeScript / JavaScript / Go / Rust; never raises
@@ -145,21 +149,27 @@ tests/fixtures/              ← sample.py, sample.ts, sample.go, sample.rs
 - **Edges use string names** (not symbol IDs) — required for independent re-indexing
 
 ## Current Phase
-Phase 9 complete — language expansion (5 → 11 languages): Java, C#, Ruby, C, C++, PHP added.
-- **New grammars:** tree-sitter-java 0.23.5, tree-sitter-c-sharp 0.23.5, tree-sitter-ruby 0.23.1,
-  tree-sitter-c 0.24.2, tree-sitter-cpp 0.23.4, tree-sitter-php 0.24.1 (all parse against tree-sitter 0.25.2).
-- **New extractor modules:** graph_java_csharp.py, graph_c_cpp.py, graph_ruby.py, graph_php.py — one file
-  per language pair, mirroring the graph_go_rust.py split, to stay under the 1000-line limit.
-- **New leaf modules:** signatures_ext.py (Phase 4 enrichment for the 6 new langs) and imports_ext.py
-  (Phase 5 import-mapping extraction). Both re-declare their TypedDicts to avoid circular imports;
-  drift tests assert field-key parity against the originals.
-- **Kind mapping:** closed vocabulary function|class|method|interface|type covers all 6 new languages.
-  Enrichment: Java annotations + C# attributes + PHP attributes as decorators; C static→private visibility;
-  C++/Ruby visibility=null (dynamic/MVP).
-- **Edges:** import + bare-identifier calls only (member/qualified calls require type inference — skipped).
+Phase 10 complete — Swift support (11 → 12 languages). **Kotlin evaluated and deferred.**
+- **New grammar:** tree-sitter-swift 0.7.3 (parses cleanly against tree-sitter 0.25.2, has_error=False).
+  Entry point is `tree_sitter_swift.language()`.
+- **Kotlin deferred:** the only available grammar (tree-sitter-kotlin 1.1.0) emits ERROR nodes on common
+  constructs (interfaces, objects, classes-with-constructor) and recovered ~1 of 6 symbols on a realistic
+  file — would silently drop most code. Revisit when a robust grammar ships. See ADR-009.
+- **New extractor module:** graph_swift.py (mirrors graph_go_rust.py). class/struct/actor/extension→class,
+  enum→type, protocol→interface, methods→Type.method; bare-identifier calls only; /// and /** */ docstrings.
+- Swift wired into signatures_ext.py (visibility from access modifiers, @attributes as decorators) and
+  imports_ext.py (import-mapping extraction; resolution returns [] — modules not file-resolvable in-repo).
 - No schema change, no migration, MCP tool count stays 10.
-- 1395 tests passing; gate green.
+- 1454 tests passing; gate green.
 See `progress.txt` for session history. Next: roadmap item 8 (`seam install`) / v0.1.0 release prep.
+
+### Prior phase
+Phase 9 complete — language expansion (5 → 11 languages): Java, C#, Ruby, C, C++, PHP added.
+- New grammars: tree-sitter-{java,c-sharp,ruby,c,cpp,php}; per-family extractor modules
+  (graph_java_csharp.py, graph_c_cpp.py, graph_ruby.py, graph_php.py) mirroring graph_go_rust.py.
+- New leaf modules signatures_ext.py + imports_ext.py (Phase 4 enrichment + Phase 5 import mappings
+  for the new langs; TypedDicts re-declared to avoid circular imports, guarded by drift tests).
+- Kind mapping uses the closed vocabulary; import + bare-identifier call edges only. See ADR-008.
 
 ### Prior phase
 Phase 8 complete — lean output (`verbose`) + `seam_impact` summary tier shipped.

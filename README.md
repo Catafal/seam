@@ -4,7 +4,7 @@ Local code intelligence MCP server for AI agents. Index your codebase once; let 
 
 ## Status
 
-Phase 9 complete — language expansion (5 → 11): Java, C#, Ruby, C, C++, PHP added. 1395 tests. Gate green.
+Phase 10 complete — Swift support (11 → 12 languages); Kotlin deferred (grammar maturity). 1454 tests. Gate green.
 
 ## Quickstart
 
@@ -34,7 +34,7 @@ Add to your Claude Code MCP config:
 
 ## Supported Languages
 
-Seam indexes 11 languages via tree-sitter:
+Seam indexes 12 languages via tree-sitter:
 
 | Language | Extensions |
 |----------|-----------|
@@ -49,6 +49,11 @@ Seam indexes 11 languages via tree-sitter:
 | C | `.c`, `.h` |
 | C++ | `.cpp`, `.cc`, `.cxx`, `.c++`, `.hpp`, `.hh`, `.hxx` |
 | PHP | `.php` |
+| Swift | `.swift` |
+
+> Kotlin is **not yet supported** — the available tree-sitter-kotlin grammar mis-parses common
+> constructs (interfaces, objects, classes with constructors). Tracked for a future release once a
+> robust grammar is available. See `docs/adr/009-swift-support.md`.
 
 All languages surface the same 10 MCP tools, the same symbol kinds (`function`, `class`, `method`, `interface`, `type`), and the same enrichment fields. See [Known Limitations](#known-limitations-phase-1b-candidates) for per-language caveats.
 
