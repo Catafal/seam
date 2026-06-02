@@ -4,6 +4,8 @@ namespace App\Http\Controllers;
 
 use App\Models\User;
 use App\Services\Logger;
+use App\Contracts\{Repository, Cacheable};
+use App\Support\Collection as Col;
 
 /**
  * UserController handles user HTTP requests.
@@ -48,6 +50,25 @@ enum Status
 {
     case Active;
     case Inactive;
+}
+
+/**
+ * A backed enum for card suits.
+ */
+#[Attr]
+enum Suit: string
+{
+    case H = 'hearts';
+    case D = 'diamonds';
+
+    /** Return display color for this suit. */
+    public function color(): string
+    {
+        return match($this) {
+            Suit::H, Suit::D => 'red',
+            default => 'black',
+        };
+    }
 }
 
 /**

@@ -351,6 +351,17 @@ def _extract_symbols_java(root: Node, filepath: Path) -> list[Symbol]:
                             qualified_name=name,
                         )
                     )
+                    # WHY recurse: enums can have methods in their body (enum_body_declarations).
+                    # Before this fix the branch returned here, silently dropping enum methods
+                    # like 'EntityStatus.label'. Mirror the interface/class recursion pattern.
+                    # The enum body node is 'enum_body'; methods live in 'enum_body_declarations'.
+                    body = node.child_by_field_name("body")
+                    if body is not None:
+                        for body_child in body.named_children:
+                            # enum_body_declarations holds the method nodes
+                            if body_child.type == "enum_body_declarations":
+                                for decl in body_child.named_children:
+                                    _walk(decl, class_name=name)
 
             elif ntype == "record_declaration":
                 name = _node_name(node)
@@ -487,12 +498,20 @@ def _handle_java_import(decl_node: Node, file_str: str, file_stem: str, edges: l
     Extracts the last segment of the qualified name:
         import java.util.List  → 'List'  (scoped_identifier.name field)
         import java.util.*     → skipped (asterisk — no single target)
+
+    WHY pre-scan: in `import java.util.*;` the tree is:
+        import_declaration → [scoped_identifier('java.util'), '.', asterisk, ';']
+    Iterating named_children left-to-right processes 'java.util' BEFORE the
+    asterisk, which would emit 'util' as a spurious target. Pre-scan prevents this.
     """
     line = decl_node.start_point[0] + 1
-    # The first named child is the scoped_identifier (or identifier for simple imports).
+    # Pre-scan all children (not just named) for an asterisk node.
+    # If found, this is a wildcard import — skip it entirely.
+    if any(child.type == "asterisk" for child in decl_node.children):
+        return  # Wildcard import — no target to record.
+
+    # Non-wildcard: extract the last segment of the qualified name.
     for child in decl_node.named_children:
-        if child.type == "asterisk":
-            return  # Wildcard import — no target to record.
         target = _java_import_last_segment(child)
         if target:
             edges.append(
@@ -798,9 +817,41 @@ def _handle_csharp_using(
     Extracts the last segment of the namespace:
         using System                     → 'System'   (identifier)
         using System.Collections.Generic → 'Generic'  (qualified_name, name field)
+        using Foo = System.Collections.Generic → 'Generic' (alias form, skip alias identifier)
+
+    WHY alias detection: in `using Foo = System.Collections.Generic;` the grammar produces:
+        using_directive → [using, identifier('Foo'), '=', qualified_name('System...Generic'), ';']
+    Without alias detection, named_children iteration hits identifier('Foo') first and emits
+    'Foo' as the target — a spurious alias edge.
+    Fix: if both an identifier AND a qualified_name are present → alias form.
+    Emit only the qualified_name's last segment; skip the alias identifier.
     """
     line = using_node.start_point[0] + 1
-    for child in using_node.named_children:
+    named = using_node.named_children
+    # Detect alias form: identifier + qualified_name siblings → `using Alias = Namespace`.
+    # Only the qualified_name carries the actual namespace; the identifier is the alias.
+    has_identifier = any(c.type == "identifier" for c in named)
+    has_qualified = any(c.type == "qualified_name" for c in named)
+    if has_identifier and has_qualified:
+        # Alias form: emit only the qualified_name segment, not the alias.
+        for child in named:
+            if child.type == "qualified_name":
+                target = _csharp_using_last_segment(child)
+                if target:
+                    edges.append(
+                        Edge(
+                            source=file_stem,
+                            target=target,
+                            kind="import",
+                            file=file_str,
+                            line=line,
+                            confidence="INFERRED",
+                        )
+                    )
+        return
+
+    # Non-alias form: emit the last segment of whichever name node is present.
+    for child in named:
         target = _csharp_using_last_segment(child)
         if target:
             edges.append(

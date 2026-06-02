@@ -129,10 +129,19 @@ def _extract_java(root: object, filepath: Path) -> _ImportMappingList:
         def _walk(node: Any) -> None:
             if node.type == "import_declaration":
                 line = node.start_point[0] + 1
+                # WHY pre-scan: in `import java.util.*;` the tree is:
+                #   import_declaration → [scoped_identifier('java.util'), '.', asterisk, ';']
+                # Iterating named_children left-to-right processes 'java.util' BEFORE the
+                # asterisk, which would emit 'util' as a spurious mapping. Pre-scan prevents.
+                if any(child.type == "asterisk" for child in node.children):
+                    # Wildcard import (`import java.util.*;`) — no single binding target.
+                    # Skip entirely: emitting 'util' (the scope before the *) would be a
+                    # spurious mapping that does not correspond to any importable symbol.
+                    # This matches the convention in imports.py where wildcard imports that
+                    # cannot be meaningfully resolved are omitted from the mapping list.
+                    return  # No need to recurse.
+
                 for child in node.named_children:
-                    if child.type == "asterisk":
-                        # Wildcard import — no single target, skip.
-                        return
                     last = _java_scoped_identifier_last_segment(child)
                     full = _java_scoped_identifier_full(child)
                     if last:
@@ -209,7 +218,36 @@ def _extract_csharp(root: object, filepath: Path) -> _ImportMappingList:
         def _walk(node: Any) -> None:
             if node.type == "using_directive":
                 line = node.start_point[0] + 1
-                for child in node.named_children:
+                named = node.named_children
+                # WHY alias detection: `using Foo = System.Collections.Generic;` produces:
+                #   using_directive → [using, identifier('Foo'), '=', qualified_name(...), ';']
+                # Without this check, the first named child (identifier 'Foo') is emitted as
+                # the import target — a spurious alias edge. Detect the alias form by checking
+                # for BOTH an identifier AND a qualified_name sibling; if present, use only
+                # the qualified_name's last segment; the alias identifier is the local_name.
+                has_identifier = any(c.type == "identifier" for c in named)
+                has_qualified = any(c.type == "qualified_name" for c in named)
+                if has_identifier and has_qualified:
+                    # Alias form: record alias as local_name, real namespace as exported_name.
+                    alias = next((_text_node(c) for c in named if c.type == "identifier"), None)
+                    for child in named:
+                        if child.type == "qualified_name":
+                            last = _csharp_using_last_segment(child)
+                            full = _text_node(child).strip()
+                            if last and alias:
+                                result.append(
+                                    _make_mapping(
+                                        local_name=alias,
+                                        exported_name=last,
+                                        source_module=full,
+                                        line=line,
+                                        is_default=True,
+                                    )
+                                )
+                    return  # No further children needed.
+
+                # Non-alias form: emit the last segment of whichever name is present.
+                for child in named:
                     last = _csharp_using_last_segment(child)
                     full = _text_node(child).strip()
                     if last:
@@ -305,6 +343,7 @@ def _extract_ruby(root: object, filepath: Path) -> _ImportMappingList:
                                 content = _ruby_require_string_content(child)
                                 if content:
                                     from pathlib import Path as _Path
+
                                     local = _Path(content).stem
                                     result.append(
                                         _make_mapping(
@@ -544,12 +583,75 @@ def _php_qualified_name_last_segment(node: Any) -> str | None:
     return None
 
 
+def _php_clause_mapping(clause: Any, line: int) -> "_ImportMapping | None":
+    """Extract an ImportMapping from a single PHP namespace_use_clause node.
+
+    Handles two forms:
+      Plain:   namespace_use_clause → qualified_name (→ name segments)
+               local_name = exported_name = last segment (e.g. 'User')
+      Aliased: namespace_use_clause → qualified_name + 'as' + name (alias)
+               local_name = alias (e.g. 'Col'), exported_name = last segment (e.g. 'Collection')
+               WHY: consistent with TS/Rust alias convention — local_name is the
+               binding used in this file; exported_name is the real symbol name.
+
+    Returns None if the clause cannot be parsed.
+    """
+    named = clause.named_children
+    if not named:
+        return None
+
+    # Detect alias form: named_children = [qualified_name, name(alias)]
+    # The alias 'name' follows the qualified_name (and the 'as' keyword child).
+    qual_node = None
+    alias_node = None
+    for child in named:
+        if child.type == "qualified_name":
+            qual_node = child
+        elif child.type == "name":
+            # This is either a bare clause (use Foo) or the alias after 'as'.
+            alias_node = child
+
+    if qual_node is not None:
+        exported = _php_qualified_name_last_segment(qual_node)
+        full = _text_node(qual_node).strip()
+        if not exported:
+            return None
+        if alias_node is not None:
+            # Aliased: use App\Foo as Bar → local_name='Bar', exported_name='Foo'
+            local = _text_node(alias_node).strip()
+        else:
+            # Plain: use App\Foo → local_name='Foo', exported_name='Foo'
+            local = exported
+        return _make_mapping(
+            local_name=local,
+            exported_name=exported,
+            source_module=full,
+            line=line,
+            is_default=True,
+        )
+
+    if alias_node is not None:
+        # Bare name clause (e.g. inside a group: use App\{Foo} → bare 'Foo')
+        name = _text_node(alias_node).strip()
+        if name:
+            return _make_mapping(
+                local_name=name,
+                exported_name=name,
+                source_module=name,
+                line=line,
+                is_default=True,
+            )
+
+    return None
+
+
 def _extract_php(root: object, filepath: Path) -> _ImportMappingList:
     """Extract ImportMapping records from a PHP AST root node.
 
     Handles:
-        use App\\Models\\User;         → local_name='User', source_module='App\\Models\\User'
-        use App\\Services\\Logger;     → local_name='Logger', source_module='App\\Services\\Logger'
+        use App\\Models\\User;              → local_name='User', source='App\\Models\\User'
+        use App\\Support\\Collection as Col → local_name='Col', exported_name='Collection'
+        use App\\{Foo, Bar};               → local_name='Foo'; local_name='Bar'
 
     Resolution: PSR-4 autoload mapping is out of scope per the spec → returns [].
     Never raises. Returns [] on any failure.
@@ -566,20 +668,16 @@ def _extract_php(root: object, filepath: Path) -> _ImportMappingList:
                 line = node.start_point[0] + 1
                 for child in node.named_children:
                     if child.type == "namespace_use_clause":
-                        # namespace_use_clause → qualified_name or name
-                        for qnode in child.named_children:
-                            last = _php_qualified_name_last_segment(qnode)
-                            full = _text_node(qnode).strip()
-                            if last:
-                                result.append(
-                                    _make_mapping(
-                                        local_name=last,
-                                        exported_name=last,
-                                        source_module=full,
-                                        line=line,
-                                        is_default=True,
-                                    )
-                                )
+                        mapping = _php_clause_mapping(child, line)
+                        if mapping is not None:
+                            result.append(mapping)
+                    elif child.type == "namespace_use_group":
+                        # Grouped use: use App\{Foo, Bar} — descend into the group.
+                        for clause in child.named_children:
+                            if clause.type == "namespace_use_clause":
+                                mapping = _php_clause_mapping(clause, line)
+                                if mapping is not None:
+                                    result.append(mapping)
                 return  # no recursion needed into use declaration
 
             for child in node.named_children:

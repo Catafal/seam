@@ -1,6 +1,7 @@
 // WHY: Sample C# fixture exercising all extraction targets for Phase 9 tests.
 using System;
 using System.Collections.Generic;
+using Coll = System.Collections.Generic;
 
 namespace SampleApp.Services
 {

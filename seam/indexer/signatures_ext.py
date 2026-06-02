@@ -322,13 +322,22 @@ def _ruby_signature(node: Node) -> str | None:
 
     Covers: method, singleton_method, class, module nodes.
     Strategy: collect text from all children BEFORE body_statement, join, normalize.
+    SKIP 'comment' child nodes — inline comments like `module Utils # NOTE: ...`
+    can appear between the name (constant) and body_statement and must not be
+    included in the signature text.
     """
     try:
         body_stop_types = frozenset({"body_statement", "end"})
+        # WHY skip comment: class/module nodes may have inline comment children
+        # between the class/module name and the body_statement. Including them
+        # would corrupt the signature (e.g. 'module Utils # NOTE: ...').
+        skip_types = frozenset({"comment"})
         parts: list[str] = []
         for child in node.children:
             if child.type in body_stop_types:
                 break
+            if child.type in skip_types:
+                continue  # skip inline comments
             text = _text(child).strip()
             if text:
                 parts.append(text)
@@ -366,9 +375,9 @@ def _extract_ruby(
 
         return NodeFields(
             signature=sig,
-            decorators=[],   # Ruby has no annotation/decorator syntax
+            decorators=[],  # Ruby has no annotation/decorator syntax
             is_exported=None,  # Dynamic visibility — not tracked statically
-            visibility=None,   # Dynamic visibility — not tracked statically
+            visibility=None,  # Dynamic visibility — not tracked statically
             qualified_name=qualified_name,
         )
     except Exception:  # noqa: BLE001
@@ -400,11 +409,13 @@ def _c_signature(node: Node) -> str | None:
     type_definition.
     """
     try:
-        body_types = frozenset({
-            "compound_statement",
-            "field_declaration_list",
-            "enumerator_list",
-        })
+        body_types = frozenset(
+            {
+                "compound_statement",
+                "field_declaration_list",
+                "enumerator_list",
+            }
+        )
         parts: list[str] = []
         for child in node.children:
             if child.type in body_types:
@@ -469,12 +480,14 @@ def _cpp_signature(node: Node) -> str | None:
     function_definition.
     """
     try:
-        body_types = frozenset({
-            "compound_statement",
-            "field_declaration_list",
-            "enumerator_list",
-            "declaration_list",
-        })
+        body_types = frozenset(
+            {
+                "compound_statement",
+                "field_declaration_list",
+                "enumerator_list",
+                "declaration_list",
+            }
+        )
         parts: list[str] = []
         for child in node.children:
             if child.type in body_types:
@@ -521,7 +534,7 @@ def _extract_cpp(
             signature=sig,
             decorators=[],
             is_exported=True,  # Conservative: assume exportable at extraction time
-            visibility=None,   # Stateful tracking required; out of scope for MVP
+            visibility=None,  # Stateful tracking required; out of scope for MVP
             qualified_name=qualified_name,
         )
     except Exception:  # noqa: BLE001
@@ -581,11 +594,13 @@ def _php_signature(node: Node) -> str | None:
     children (those are decorators, not signature header).
     """
     try:
-        body_stop_types = frozenset({
-            "compound_statement",
-            "declaration_list",
-            "enum_declaration_list",
-        })
+        body_stop_types = frozenset(
+            {
+                "compound_statement",
+                "declaration_list",
+                "enum_declaration_list",
+            }
+        )
         skip_types = frozenset({"attribute_list"})
         parts: list[str] = []
         for child in node.children:

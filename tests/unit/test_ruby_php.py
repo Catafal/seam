@@ -101,10 +101,7 @@ class TestRubySymbols:
         root = _get_rb_root()
         symbols = extract_symbols(root, "ruby", SAMPLE_RB)
         sym = _sym(symbols, "Person.greet")
-        assert sym is not None, (
-            "Person.greet not found. "
-            f"Symbols: {[s['name'] for s in symbols]}"
-        )
+        assert sym is not None, f"Person.greet not found. Symbols: {[s['name'] for s in symbols]}"
         assert sym["kind"] == "method"
 
     def test_singleton_method_inside_class_qualified(self) -> None:
@@ -113,8 +110,7 @@ class TestRubySymbols:
         symbols = extract_symbols(root, "ruby", SAMPLE_RB)
         sym = _sym(symbols, "Person.create")
         assert sym is not None, (
-            "Person.create (singleton_method) not found. "
-            f"Symbols: {[s['name'] for s in symbols]}"
+            f"Person.create (singleton_method) not found. Symbols: {[s['name'] for s in symbols]}"
         )
         assert sym["kind"] == "method"
 
@@ -139,10 +135,7 @@ class TestRubySymbols:
         root = _get_rb_root()
         symbols = extract_symbols(root, "ruby", SAMPLE_RB)
         sym = _sym(symbols, "Utils.fmt")
-        assert sym is not None, (
-            "Utils.fmt not found. "
-            f"Symbols: {[s['name'] for s in symbols]}"
-        )
+        assert sym is not None, f"Utils.fmt not found. Symbols: {[s['name'] for s in symbols]}"
         assert sym["kind"] == "method"
 
     def test_method_has_docstring(self) -> None:
@@ -195,10 +188,7 @@ class TestPhpSymbols:
         root = _get_php_root()
         symbols = extract_symbols(root, "php", SAMPLE_PHP)
         sym = _sym(symbols, "UserController")
-        assert sym is not None, (
-            "UserController not found. "
-            f"Symbols: {[s['name'] for s in symbols]}"
-        )
+        assert sym is not None, f"UserController not found. Symbols: {[s['name'] for s in symbols]}"
         assert sym["kind"] == "class"
 
     def test_interface_extracted_as_interface(self) -> None:
@@ -239,8 +229,7 @@ class TestPhpSymbols:
         symbols = extract_symbols(root, "php", SAMPLE_PHP)
         sym = _sym(symbols, "UserController.index")
         assert sym is not None, (
-            "UserController.index not found. "
-            f"Symbols: {[s['name'] for s in symbols]}"
+            f"UserController.index not found. Symbols: {[s['name'] for s in symbols]}"
         )
         assert sym["kind"] == "method"
 
@@ -321,7 +310,7 @@ class TestRubyEdges:
         e = _edge(edges, target="say_hello", kind="call")
         assert e is not None, (
             "Expected call edge for say_hello. "
-            f"Call edge targets: {[x['target'] for x in edges if x['kind']=='call']}"
+            f"Call edge targets: {[x['target'] for x in edges if x['kind'] == 'call']}"
         )
 
     def test_call_edge_source_is_enclosing_method(self) -> None:
@@ -392,7 +381,7 @@ class TestPhpEdges:
         e = _edge(edges, target="getUsers", kind="call")
         assert e is not None, (
             "Expected call edge for getUsers. "
-            f"Call targets: {[x['target'] for x in edges if x['kind']=='call']}"
+            f"Call targets: {[x['target'] for x in edges if x['kind'] == 'call']}"
         )
 
     def test_call_edge_source_is_enclosing_method(self) -> None:
@@ -840,3 +829,187 @@ class TestRubyPhpBuiltins:
         from seam.analysis.builtins import is_builtin
 
         assert is_builtin("puts", "php") is False
+
+
+# ── R12: PHP regression fixes (Phase 9 code review) ───────────────────────────
+
+
+class TestPhpRegressions:
+    """R12: Regression tests for PHP extraction bugs found in Phase 9 code review.
+
+    Bug 7  — Grouped use: use App\\{Foo, Bar} emits ZERO edges/mappings.
+    Bug 8  — Aliased use: local_name should be the alias, exported_name the real name.
+    Bug 9  — Enum methods dropped: method_declaration inside enum body not extracted.
+    Bug 10 — Dead code: attribute_list prev_sibling branch in phpdoc lookup removed;
+             phpdoc on attributed enum must still resolve via real adjacent comment.
+    """
+
+    # -- Bug 7: grouped use edges ---
+
+    def test_grouped_use_foo_import_edge(self) -> None:
+        """use App\\{Foo, Bar} → import edge with target='Foo' (grouped use clause)."""
+        root = _get_php_root()
+        edges = extract_edges(root, "php", SAMPLE_PHP)
+        targets = {e["target"] for e in edges if e["kind"] == "import"}
+        assert "Repository" in targets, (
+            f"Expected 'Repository' import from grouped use, got: {targets}"
+        )
+
+    def test_grouped_use_bar_import_edge(self) -> None:
+        """use App\\{Repository, Cacheable} → import edge with target='Cacheable'."""
+        root = _get_php_root()
+        edges = extract_edges(root, "php", SAMPLE_PHP)
+        targets = {e["target"] for e in edges if e["kind"] == "import"}
+        assert "Cacheable" in targets, (
+            f"Expected 'Cacheable' import from grouped use, got: {targets}"
+        )
+
+    def test_grouped_use_import_mapping_foo(self) -> None:
+        """use App\\{Repository, Cacheable} → ImportMapping local_name='Repository'."""
+        from seam.analysis.imports import extract_import_mappings
+        from seam.indexer.parser import parse_php
+
+        root = parse_php(SAMPLE_PHP)
+        assert root is not None
+        mappings = extract_import_mappings(root, SAMPLE_PHP, "php")
+        names = {m["local_name"] for m in mappings}
+        assert "Repository" in names, f"Expected 'Repository' mapping, got: {names}"
+
+    def test_grouped_use_import_mapping_bar(self) -> None:
+        """use App\\{Repository, Cacheable} → ImportMapping local_name='Cacheable'."""
+        from seam.analysis.imports import extract_import_mappings
+        from seam.indexer.parser import parse_php
+
+        root = parse_php(SAMPLE_PHP)
+        assert root is not None
+        mappings = extract_import_mappings(root, SAMPLE_PHP, "php")
+        names = {m["local_name"] for m in mappings}
+        assert "Cacheable" in names, f"Expected 'Cacheable' mapping, got: {names}"
+
+    # -- Bug 8: aliased use import mapping ---
+
+    def test_aliased_use_local_name_is_alias(self) -> None:
+        """use App\\Support\\Collection as Col → local_name='Col' (the alias)."""
+        from seam.analysis.imports import extract_import_mappings
+        from seam.indexer.parser import parse_php
+
+        root = parse_php(SAMPLE_PHP)
+        assert root is not None
+        mappings = extract_import_mappings(root, SAMPLE_PHP, "php")
+        col_mapping = next((m for m in mappings if m["local_name"] == "Col"), None)
+        assert col_mapping is not None, (
+            f"No mapping with local_name='Col' found. Mappings: {[(m['local_name'], m['exported_name']) for m in mappings]}"
+        )
+        assert col_mapping["exported_name"] == "Collection", (
+            f"Expected exported_name='Collection', got {col_mapping['exported_name']!r}"
+        )
+
+    def test_aliased_use_no_spurious_real_name_mapping(self) -> None:
+        """use App\\Support\\Collection as Col → only ONE mapping (Col), not also 'Collection'."""
+        from seam.analysis.imports import extract_import_mappings
+        from seam.indexer.parser import parse_php
+
+        root = parse_php(SAMPLE_PHP)
+        assert root is not None
+        mappings = extract_import_mappings(root, SAMPLE_PHP, "php")
+        # Should have exactly one mapping related to this use statement, with local_name='Col'
+        col_mappings = [m for m in mappings if m["exported_name"] == "Collection"]
+        assert len(col_mappings) == 1, (
+            f"Expected exactly 1 mapping for Collection, got {len(col_mappings)}: "
+            f"{[(m['local_name'], m['exported_name']) for m in col_mappings]}"
+        )
+        assert col_mappings[0]["local_name"] == "Col"
+
+    def test_aliased_use_graph_edge_targets_real_name(self) -> None:
+        """use App\\Support\\Collection as Col → graph import edge targets 'Collection' (real name).
+
+        WHY: the edge targets the REAL exported symbol so it links to the declaration;
+        the local alias 'Col' is tracked separately in the import mapping.
+        """
+        root = _get_php_root()
+        edges = extract_edges(root, "php", SAMPLE_PHP)
+        targets = {e["target"] for e in edges if e["kind"] == "import"}
+        assert "Collection" in targets, (
+            f"Expected 'Collection' import edge for aliased use, got: {targets}"
+        )
+
+    # -- Bug 9: enum methods ---
+
+    def test_enum_method_extracted(self) -> None:
+        """method_declaration inside enum Suit → symbol 'Suit.color' kind='method'."""
+        root = _get_php_root()
+        symbols = extract_symbols(root, "php", SAMPLE_PHP)
+        sym = _sym(symbols, "Suit.color")
+        assert sym is not None, (
+            f"'Suit.color' not found in enum body. Symbols: {[s['name'] for s in symbols]}"
+        )
+        assert sym["kind"] == "method"
+
+    def test_enum_itself_still_type(self) -> None:
+        """enum Suit itself is still emitted as kind='type' after method recursion fix."""
+        root = _get_php_root()
+        symbols = extract_symbols(root, "php", SAMPLE_PHP)
+        sym = _sym(symbols, "Suit")
+        assert sym is not None, "'Suit' enum not found"
+        assert sym["kind"] == "type"
+
+    # -- Bug 10: dead attribute_list prev_sibling branch removed ---
+
+    def test_phpdoc_on_attributed_enum_resolves(self) -> None:
+        """Enum Suit has /** A backed enum... */ phpdoc plus #[Attr] attribute.
+
+        The attribute is a CHILD of the declaration (not prev_sibling), so the phpdoc
+        lookup must find the adjacent comment above the enum_declaration node.
+        With the dead attribute_list branch removed, the real phpdoc must still resolve.
+        """
+        root = _get_php_root()
+        symbols = extract_symbols(root, "php", SAMPLE_PHP)
+        sym = _sym(symbols, "Suit")
+        assert sym is not None, "'Suit' not found"
+        assert sym["docstring"] is not None, "Expected phpdoc for Suit (/** A backed enum... */)"
+        assert "backed enum" in sym["docstring"].lower(), (
+            f"Expected 'backed enum' in docstring, got: {sym['docstring']!r}"
+        )
+
+
+# ── R13: Ruby signature regression (Phase 9 code review) ──────────────────────
+
+
+class TestRubySignatureRegression:
+    """R13: Ruby class/module signatures must not include inline comment text.
+
+    Bug 11 — Ruby class/module signatures sweep in inline comment nodes between
+    the name and body_statement. The signature collector must skip 'comment' nodes.
+    """
+
+    def test_utils_module_signature_no_comment(self) -> None:
+        """module Utils # NOTE: ... → signature should be 'module Utils' (no '#' text)."""
+        root = _get_rb_root()
+        symbols = extract_symbols(root, "ruby", SAMPLE_RB)
+        sym = _sym(symbols, "Utils")
+        assert sym is not None, "'Utils' module not found"
+        sig = sym["signature"]
+        assert sig is not None, "Expected non-None signature for Utils"
+        assert "#" not in sig, f"Signature contains inline comment text '#': {sig!r}"
+        assert "NOTE" not in sig, f"Signature contains comment marker 'NOTE': {sig!r}"
+
+    def test_person_class_signature_no_comment(self) -> None:
+        """class Person # Initialize... → signature should be 'class Person' (no '#' text)."""
+        root = _get_rb_root()
+        symbols = extract_symbols(root, "ruby", SAMPLE_RB)
+        sym = _sym(symbols, "Person")
+        assert sym is not None, "'Person' not found"
+        sig = sym["signature"]
+        assert sig is not None, "Expected non-None signature for Person"
+        assert "#" not in sig, f"Signature contains inline comment text '#': {sig!r}"
+
+    def test_utils_module_signature_content(self) -> None:
+        """Utils signature is exactly 'module Utils' (keyword + name only)."""
+        root = _get_rb_root()
+        symbols = extract_symbols(root, "ruby", SAMPLE_RB)
+        sym = _sym(symbols, "Utils")
+        assert sym is not None
+        sig = sym["signature"]
+        # Normalize whitespace for comparison
+        normalized = " ".join(sig.split()) if sig else ""
+        assert normalized == "module Utils", f"Expected 'module Utils', got: {sig!r}"

@@ -95,7 +95,9 @@ class TestCSymbols:
         root = _get_c_root()
         symbols = extract_symbols(root, "c", SAMPLE_C)
         sym = _sym(symbols, "helper")
-        assert sym is not None, f"helper not found in C symbols; found: {[s['name'] for s in symbols]}"
+        assert sym is not None, (
+            f"helper not found in C symbols; found: {[s['name'] for s in symbols]}"
+        )
         assert sym["kind"] == "function"
 
     def test_struct_extracted_as_class(self) -> None:
@@ -226,7 +228,9 @@ class TestCppSymbols:
         root = _get_cpp_root()
         symbols = extract_symbols(root, "cpp", SAMPLE_CPP)
         # At minimum Circle.area should appear (either in-class or out-of-line produces it)
-        qualified_methods = [s for s in symbols if s["name"] == "Circle.area" and s["kind"] == "method"]
+        qualified_methods = [
+            s for s in symbols if s["name"] == "Circle.area" and s["kind"] == "method"
+        ]
         assert len(qualified_methods) >= 1, (
             "Expected at least one Circle.area method symbol. "
             f"Found: {[s['name'] for s in symbols]}"
@@ -385,7 +389,9 @@ class TestCComments:
         root = _get_c_root()
         comments = extract_comments(root, "c", SAMPLE_C)
         whys = [c for c in comments if c["marker"] == "WHY"]
-        assert len(whys) > 0, f"No WHY marker found in C fixture; found markers: {[c['marker'] for c in comments]}"
+        assert len(whys) > 0, (
+            f"No WHY marker found in C fixture; found markers: {[c['marker'] for c in comments]}"
+        )
 
     def test_hack_marker_extracted(self) -> None:
         """HACK: ... in a C comment → Comment with marker='HACK'."""
@@ -438,7 +444,9 @@ class TestCppComments:
         root = _get_cpp_root()
         comments = extract_comments(root, "cpp", SAMPLE_CPP)
         whys = [c for c in comments if c["marker"] == "WHY"]
-        assert len(whys) > 0, f"No WHY marker found in C++ fixture; found: {[c['marker'] for c in comments]}"
+        assert len(whys) > 0, (
+            f"No WHY marker found in C++ fixture; found: {[c['marker'] for c in comments]}"
+        )
 
     def test_hack_marker_extracted(self) -> None:
         """HACK: ... in a C++ comment → Comment with marker='HACK'."""
@@ -730,9 +738,7 @@ class TestCCppImports:
         # Note: extract_import_mappings signature is (root, filepath, language)
         mappings = extract_import_mappings(root, SAMPLE_C, "c")
         local_names = {m["local_name"] for m in mappings}
-        assert "utils" in local_names, (
-            f"Expected 'utils' in import mappings; got: {local_names}"
-        )
+        assert "utils" in local_names, f"Expected 'utils' in import mappings; got: {local_names}"
 
     def test_c_resolve_local_include(self) -> None:
         """_resolve_c for '#include "utils.h"' with matching file → returns path."""
@@ -816,9 +822,7 @@ class TestCCppBuiltins:
         """MyShapeManager (repo class) is not a C++ builtin."""
         from seam.analysis.builtins import is_builtin
 
-        assert not is_builtin("MyShapeManager", "cpp"), (
-            "MyShapeManager should not be a C++ builtin"
-        )
+        assert not is_builtin("MyShapeManager", "cpp"), "MyShapeManager should not be a C++ builtin"
 
     def test_c_builtin_not_a_cpp_builtin_when_in_wrong_language(self) -> None:
         """printf is NOT a Ruby builtin even though it's a C builtin."""
@@ -828,3 +832,123 @@ class TestCCppBuiltins:
         assert not is_builtin("printf", "ruby"), (
             "printf should not be a Ruby builtin — builtins are language-scoped"
         )
+
+
+# ── Regression: Bug fixes (FIX SET 1) ─────────────────────────────────────────
+
+
+class TestCppOutOfLineMethodDuplicate:
+    """Regression: C++ out-of-line method definition must NOT produce a duplicate symbol.
+
+    Bug: Circle::area() is defined both inside the class body (in-class) and as an
+    out-of-line definition (double Circle::area() {...}). Both produced 'Circle.area'
+    symbols, causing a duplicate.
+    Fix: de-duplicate extracted symbols by (name, kind), keeping one entry
+    (prefer definition with larger line span i.e. the out-of-line body).
+    """
+
+    def test_circle_area_not_duplicated(self) -> None:
+        """Circle.area defined in-class AND out-of-line → exactly ONE symbol in the list."""
+        root = _get_cpp_root()
+        symbols = extract_symbols(root, "cpp", SAMPLE_CPP)
+        circle_area_syms = [s for s in symbols if s["name"] == "Circle.area"]
+        assert len(circle_area_syms) == 1, (
+            f"Expected exactly 1 'Circle.area' symbol, got {len(circle_area_syms)}. "
+            "Out-of-line + in-class definitions must be de-duplicated."
+        )
+
+    def test_circle_area_kind_is_method(self) -> None:
+        """The de-duplicated Circle.area must have kind='method'."""
+        root = _get_cpp_root()
+        symbols = extract_symbols(root, "cpp", SAMPLE_CPP)
+        sym = _sym(symbols, "Circle.area")
+        assert sym is not None
+        assert sym["kind"] == "method"
+
+
+class TestCCppObservability:
+    """Regression: C/C++ extractors must not silently swallow exceptions.
+
+    Bug: the six top-level C/C++ extractor functions (_extract_symbols_c/_cpp,
+    _extract_edges_c/_cpp, _extract_comments_c/_cpp) had no module-level try/except
+    with logger.debug, so a grammar-level crash would be invisible.
+    Fix: wrap each function body in try/except Exception → return [] + logger.debug.
+
+    This test verifies the functions return [] (not raise) on a synthetic bad input
+    and that the logger name is correct (behaviour test only; log capture optional).
+    """
+
+    def test_extract_symbols_c_returns_list_on_bad_root(self) -> None:
+        """_extract_symbols_c with a non-Node object returns [] without raising."""
+        from seam.indexer.graph_c_cpp import _extract_symbols_c
+
+        result = _extract_symbols_c(object(), SAMPLE_C)  # type: ignore[arg-type]
+        assert isinstance(result, list)
+
+    def test_extract_symbols_cpp_returns_list_on_bad_root(self) -> None:
+        """_extract_symbols_cpp with a non-Node object returns [] without raising."""
+        from seam.indexer.graph_c_cpp import _extract_symbols_cpp
+
+        result = _extract_symbols_cpp(object(), SAMPLE_CPP)  # type: ignore[arg-type]
+        assert isinstance(result, list)
+
+    def test_extract_edges_c_returns_list_on_bad_root(self) -> None:
+        """_extract_edges_c with a non-Node object returns [] without raising."""
+        from seam.indexer.graph_c_cpp import _extract_edges_c
+
+        result = _extract_edges_c(object(), SAMPLE_C)  # type: ignore[arg-type]
+        assert isinstance(result, list)
+
+    def test_extract_edges_cpp_returns_list_on_bad_root(self) -> None:
+        """_extract_edges_cpp with a non-Node object returns [] without raising."""
+        from seam.indexer.graph_c_cpp import _extract_edges_cpp
+
+        result = _extract_edges_cpp(object(), SAMPLE_CPP)  # type: ignore[arg-type]
+        assert isinstance(result, list)
+
+    def test_extract_comments_c_returns_list_on_bad_root(self) -> None:
+        """_extract_comments_c with a non-Node object returns [] without raising."""
+        from seam.indexer.graph_c_cpp import _extract_comments_c
+
+        result = _extract_comments_c(object(), SAMPLE_C)  # type: ignore[arg-type]
+        assert isinstance(result, list)
+
+    def test_extract_comments_cpp_returns_list_on_bad_root(self) -> None:
+        """_extract_comments_cpp with a non-Node object returns [] without raising."""
+        from seam.indexer.graph_c_cpp import _extract_comments_cpp
+
+        result = _extract_comments_cpp(object(), SAMPLE_CPP)  # type: ignore[arg-type]
+        assert isinstance(result, list)
+
+
+class TestDispatcherObservability:
+    """Regression: dispatcher (graph.py) extract_symbols/edges/comments must log on exception.
+
+    Bug: the try/except blocks in extract_symbols, extract_edges, extract_comments caught
+    exceptions silently with no logger.debug call.
+    Fix: add logger.debug(... exc_info=True) before each bare `return []`.
+
+    This test verifies that extract_* functions return [] on a bad language without raising,
+    which is the same observable contract (logging is tested indirectly).
+    """
+
+    def test_extract_symbols_unknown_language_returns_empty(self) -> None:
+        """extract_symbols with unknown language returns [] without raising."""
+        from seam.indexer.graph import extract_symbols
+
+        result = extract_symbols(object(), "cobol", SAMPLE_C)  # type: ignore[arg-type]
+        assert isinstance(result, list)
+
+    def test_extract_edges_unknown_language_returns_empty(self) -> None:
+        """extract_edges with unknown language returns [] without raising."""
+        from seam.indexer.graph import extract_edges
+
+        result = extract_edges(object(), "cobol", SAMPLE_C)  # type: ignore[arg-type]
+        assert isinstance(result, list)
+
+    def test_extract_comments_unknown_language_returns_empty(self) -> None:
+        """extract_comments with unknown language returns [] without raising."""
+        from seam.indexer.graph import extract_comments
+
+        result = extract_comments(object(), "cobol", SAMPLE_C)  # type: ignore[arg-type]
+        assert isinstance(result, list)

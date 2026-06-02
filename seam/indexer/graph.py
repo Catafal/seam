@@ -38,7 +38,7 @@ import seam.config as config
 
 # ── Phase 9 extractors — top-level imports, no cycle ─────────────────────────
 # Each family module imports only graph_common (leaf), so the import chain is
-# graph.py → graph_java_csharp/graph_c_cpp/graph_ruby_php → graph_common (leaf).
+# graph.py → graph_java_csharp/graph_c_cpp/graph_ruby/graph_php → graph_common (leaf).
 # No circular dependencies.
 from seam.indexer.graph_c_cpp import (
     _extract_comments_c,
@@ -85,12 +85,14 @@ from seam.indexer.graph_java_csharp import (
     _extract_symbols_csharp,
     _extract_symbols_java,
 )
-from seam.indexer.graph_ruby_php import (
+from seam.indexer.graph_php import (
     _extract_comments_php,
-    _extract_comments_ruby,
     _extract_edges_php,
-    _extract_edges_ruby,
     _extract_symbols_php,
+)
+from seam.indexer.graph_ruby import (
+    _extract_comments_ruby,
+    _extract_edges_ruby,
     _extract_symbols_ruby,
 )
 
@@ -776,6 +778,15 @@ def extract_symbols(node: object, language: str, filepath: Path) -> list[Symbol]
         elif language == "php":
             return _extract_symbols_php(node, filepath)
     except Exception:  # noqa: BLE001
+        # WHY log: a silent except here would make a grammar-version break
+        # or a bad language string completely invisible. Logging at debug
+        # preserves the never-raise contract while surfacing the root cause.
+        logger.debug(
+            "extract_symbols: unhandled exception for language=%r file=%s",
+            language,
+            filepath,
+            exc_info=True,
+        )
         return []
     return []
 
@@ -819,6 +830,12 @@ def extract_comments(node: object, language: str, filepath: Path) -> list[Commen
         elif language == "php":
             return _extract_comments_php(node, filepath)
     except Exception:  # noqa: BLE001
+        logger.debug(
+            "extract_comments: unhandled exception for language=%r file=%s",
+            language,
+            filepath,
+            exc_info=True,
+        )
         return []
     return []
 
@@ -885,4 +902,10 @@ def extract_edges(
         return raw_edges
 
     except Exception:  # noqa: BLE001
+        logger.debug(
+            "extract_edges: unhandled exception for language=%r file=%s",
+            language,
+            filepath,
+            exc_info=True,
+        )
         return []

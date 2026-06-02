@@ -2,6 +2,7 @@ package com.example.service;
 
 import java.util.List;
 import java.util.Map;
+import java.util.*;
 
 // WHY: Sample Java fixture exercising all extraction targets for Phase 9 tests.
 
@@ -20,7 +21,12 @@ public interface DataRepository {
 public enum EntityStatus {
     ACTIVE,
     INACTIVE,
-    DELETED
+    DELETED;
+
+    /** WHY: provides a lowercase label for display purposes */
+    public String label() {
+        return name().toLowerCase();
+    }
 }
 
 /**

@@ -887,3 +887,124 @@ class TestJavaCSharpBuiltins:
         # 'Integer' is Java-specific; not a C# builtin
         assert is_builtin("Integer", "java") is True
         assert is_builtin("Integer", "csharp") is False
+
+
+# ── Regression: Bug fixes (FIX SET 1) ─────────────────────────────────────────
+
+
+class TestJavaWildcardImport:
+    """Regression: Java wildcard import (import java.util.*;) must NOT emit a
+    spurious edge/mapping with target='util'.
+
+    Bug: the pre-fix code iterated named_children and processed scoped_identifier
+    ('java.util') before checking the asterisk child, emitting 'util' as a target.
+    Fix: pre-scan for asterisk first; skip entire declaration if found.
+    """
+
+    def test_wildcard_import_no_util_edge(self) -> None:
+        """import java.util.*; must NOT produce an import edge with target='util'."""
+        root = _get_java_root()
+        edges = extract_edges(root, "java", SAMPLE_JAVA)
+        import_targets = {e["target"] for e in edges if e["kind"] == "import"}
+        assert "util" not in import_targets, (
+            f"Wildcard import 'java.util.*' spuriously emitted 'util' edge. "
+            f"Import targets: {import_targets}"
+        )
+
+    def test_wildcard_import_no_util_mapping(self) -> None:
+        """import java.util.*; must NOT produce an ImportMapping with local_name='util'."""
+        from seam.analysis.imports import extract_import_mappings
+        from seam.indexer.parser import parse_java
+
+        root = parse_java(SAMPLE_JAVA)
+        assert root is not None
+        mappings = extract_import_mappings(root, SAMPLE_JAVA, "java")
+        local_names = [m["local_name"] for m in mappings]
+        assert "util" not in local_names, (
+            f"Wildcard import 'java.util.*' spuriously emitted 'util' mapping. "
+            f"local_names: {local_names}"
+        )
+
+    def test_non_wildcard_imports_still_extracted(self) -> None:
+        """Non-wildcard imports (java.util.List, java.util.Map) are unaffected by fix."""
+        root = _get_java_root()
+        edges = extract_edges(root, "java", SAMPLE_JAVA)
+        import_targets = {e["target"] for e in edges if e["kind"] == "import"}
+        assert "List" in import_targets, "import java.util.List should still produce List edge"
+        assert "Map" in import_targets, "import java.util.Map should still produce Map edge"
+
+
+class TestCSharpUsingAlias:
+    """Regression: C# using-alias (using Coll = System.Collections.Generic;) must
+    emit the namespace last segment ('Generic') as target, NOT the alias ('Coll').
+
+    Bug: the pre-fix code iterated named_children and emitted the first identifier
+    node ('Coll') as the target without checking for the alias form.
+    Fix: detect presence of both identifier + qualified_name siblings → alias form.
+    Use the qualified_name's last segment as the target; skip the alias identifier.
+    """
+
+    def test_using_alias_no_alias_edge(self) -> None:
+        """using Coll = System.Collections.Generic; must NOT emit an edge target='Coll'."""
+        root = _get_cs_root()
+        edges = extract_edges(root, "csharp", SAMPLE_CS)
+        import_targets = {e["target"] for e in edges if e["kind"] == "import"}
+        assert "Coll" not in import_targets, (
+            f"Using-alias 'using Coll = ...' spuriously emitted 'Coll' edge. "
+            f"Import targets: {import_targets}"
+        )
+
+    def test_using_alias_no_alias_mapping(self) -> None:
+        """using Coll = System.Collections.Generic; must NOT produce mapping local_name='Coll'
+        as an imported-namespace target (alias-keyed mappings are intentional but
+        the alias name 'Coll' must not appear as an import *target* edge)."""
+        from seam.analysis.imports import extract_import_mappings
+        from seam.indexer.parser import parse_csharp
+
+        root = parse_csharp(SAMPLE_CS)
+        assert root is not None
+        mappings = extract_import_mappings(root, SAMPLE_CS, "csharp")
+        # The mapping for the alias form should use 'Coll' as local_name (alias),
+        # but 'Generic' as exported_name / or be absent. It must NOT use 'Coll' as exported_name.
+        for m in mappings:
+            assert m["local_name"] != "Coll" or m.get("exported_name") != "Coll", (
+                "Using-alias should not emit Coll→Coll mapping; alias must point to real namespace"
+            )
+
+    def test_normal_using_still_extracted(self) -> None:
+        """Normal using directives (System, Generic) are unaffected by alias fix."""
+        root = _get_cs_root()
+        edges = extract_edges(root, "csharp", SAMPLE_CS)
+        import_targets = {e["target"] for e in edges if e["kind"] == "import"}
+        assert "System" in import_targets, "using System; should still produce System edge"
+        assert "Generic" in import_targets, (
+            "using System.Collections.Generic; should still produce Generic edge"
+        )
+
+
+class TestJavaEnumMethods:
+    """Regression: Java enum with methods must emit the methods as qualified symbols.
+
+    Bug: the enum_declaration branch emitted the enum as 'type' but never recursed
+    into enum_body_declarations, dropping methods like 'EntityStatus.label'.
+    Fix: recurse into enum body declarations and emit methods qualified as 'Enum.method'.
+    """
+
+    def test_enum_method_extracted(self) -> None:
+        """EntityStatus.label() inside enum body must appear as a symbol."""
+        root = _get_java_root()
+        symbols = extract_symbols(root, "java", SAMPLE_JAVA)
+        sym = _sym(symbols, "EntityStatus.label")
+        assert sym is not None, (
+            "EntityStatus.label() not found — enum methods not recursed. "
+            f"Symbols: {[s['name'] for s in symbols]}"
+        )
+        assert sym["kind"] == "method"
+
+    def test_enum_type_symbol_still_present(self) -> None:
+        """Enum type symbol (EntityStatus) is still emitted alongside its methods."""
+        root = _get_java_root()
+        symbols = extract_symbols(root, "java", SAMPLE_JAVA)
+        sym = _sym(symbols, "EntityStatus")
+        assert sym is not None, "EntityStatus (enum type) must still be present"
+        assert sym["kind"] == "type"

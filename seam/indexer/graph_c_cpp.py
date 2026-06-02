@@ -184,39 +184,45 @@ def _extract_symbols_c(root: Node, filepath: Path) -> list[Symbol]:
     C has no class/method concept; all functions are 'function' kind.
     Static functions are file-local (visibility='private', is_exported=False).
     """
-    symbols: list[Symbol] = []
-    file_str = str(filepath)
+    try:
+        symbols: list[Symbol] = []
+        file_str = str(filepath)
 
-    def _walk(node: Node) -> None:
-        if node.type == "function_definition":
-            _handle_c_function(node, file_str, symbols)
-            # Do NOT recurse into function body for top-level symbols
+        def _walk(node: Node) -> None:
+            if node.type == "function_definition":
+                _handle_c_function(node, file_str, symbols)
+                # Do NOT recurse into function body for top-level symbols
 
-        elif node.type == "struct_specifier":
-            _handle_c_aggregate(node, "class", file_str, symbols)
+            elif node.type == "struct_specifier":
+                _handle_c_aggregate(node, "class", file_str, symbols)
 
-        elif node.type == "union_specifier":
-            _handle_c_aggregate(node, "class", file_str, symbols)
+            elif node.type == "union_specifier":
+                _handle_c_aggregate(node, "class", file_str, symbols)
 
-        elif node.type == "enum_specifier":
-            _handle_c_aggregate(node, "type", file_str, symbols)
+            elif node.type == "enum_specifier":
+                _handle_c_aggregate(node, "type", file_str, symbols)
 
-        elif node.type == "type_definition":
-            _handle_c_typedef(node, file_str, symbols)
+            elif node.type == "type_definition":
+                _handle_c_typedef(node, file_str, symbols)
 
-        else:
-            for child in node.children:
-                _walk(child)
+            else:
+                for child in node.children:
+                    _walk(child)
 
-    for child in root.children:
-        _walk(child)
+        for child in root.children:
+            _walk(child)
 
-    return symbols
+        return symbols
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "_extract_symbols_c: unhandled exception for file=%s",
+            filepath,
+            exc_info=True,
+        )
+        return []
 
 
-def _handle_c_function(
-    node: Node, file_str: str, symbols: list[Symbol]
-) -> None:
+def _handle_c_function(node: Node, file_str: str, symbols: list[Symbol]) -> None:
     """Emit a C function symbol from a function_definition node."""
     try:
         name = _c_function_name(node)
@@ -224,13 +230,18 @@ def _handle_c_function(
             return
         doc = _c_doc_comment(node)
         fields = extract_node_fields(
-            node, "c",
+            node,
+            "c",
             qualified_name=name,
             max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
         )
         symbols.append(
             _make_symbol(
-                name, "function", file_str, node, doc,
+                name,
+                "function",
+                file_str,
+                node,
+                doc,
                 signature=fields["signature"],
                 decorators=fields["decorators"],
                 is_exported=fields["is_exported"],
@@ -242,9 +253,7 @@ def _handle_c_function(
         logger.debug("_handle_c_function: failed for node at row %d", node.start_point[0])
 
 
-def _handle_c_aggregate(
-    node: Node, kind: str, file_str: str, symbols: list[Symbol]
-) -> None:
+def _handle_c_aggregate(node: Node, kind: str, file_str: str, symbols: list[Symbol]) -> None:
     """Emit a C struct/union/enum symbol from a named specifier node.
 
     Only named specifiers (those with a 'name' field) are emitted.
@@ -259,13 +268,18 @@ def _handle_c_aggregate(
             return
         doc = _c_doc_comment(node)
         fields = extract_node_fields(
-            node, "c",
+            node,
+            "c",
             qualified_name=name,
             max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
         )
         symbols.append(
             _make_symbol(
-                name, kind, file_str, node, doc,
+                name,
+                kind,
+                file_str,
+                node,
+                doc,
                 signature=fields["signature"],
                 decorators=fields["decorators"],
                 is_exported=fields["is_exported"],
@@ -277,9 +291,7 @@ def _handle_c_aggregate(
         logger.debug("_handle_c_aggregate: failed for node at row %d", node.start_point[0])
 
 
-def _handle_c_typedef(
-    node: Node, file_str: str, symbols: list[Symbol]
-) -> None:
+def _handle_c_typedef(node: Node, file_str: str, symbols: list[Symbol]) -> None:
     """Emit a C typedef symbol from a type_definition node.
 
     The typedef alias name is the last type_identifier child of the type_definition.
@@ -301,13 +313,18 @@ def _handle_c_typedef(
             return
         doc = _c_doc_comment(node)
         fields = extract_node_fields(
-            node, "c",
+            node,
+            "c",
             qualified_name=name,
             max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
         )
         symbols.append(
             _make_symbol(
-                name, "type", file_str, node, doc,
+                name,
+                "type",
+                file_str,
+                node,
+                doc,
                 signature=fields["signature"],
                 decorators=fields["decorators"],
                 is_exported=fields["is_exported"],
@@ -332,43 +349,49 @@ def _extract_edges_c(root: Node, filepath: Path) -> list[Edge]:
         call_expression where 'function' field is an identifier → kind="call".
         source = enclosing function name (via _find_enclosing_function).
     """
-    edges: list[Edge] = []
-    file_str = str(filepath)
-    file_stem = filepath.stem
+    try:
+        edges: list[Edge] = []
+        file_str = str(filepath)
+        file_stem = filepath.stem
 
-    def _walk(node: Node) -> None:
-        if node.type == "preproc_include":
-            _handle_c_include(node, file_str, file_stem, edges)
-            return  # no need to recurse into include node
+        def _walk(node: Node) -> None:
+            if node.type == "preproc_include":
+                _handle_c_include(node, file_str, file_stem, edges)
+                return  # no need to recurse into include node
 
-        elif node.type == "call_expression":
-            func_child = node.child_by_field_name("function")
-            if func_child and func_child.type == "identifier":
-                source = _find_enclosing_function(node, "c")
-                if source is not None:
-                    edges.append(
-                        Edge(
-                            source=source,
-                            target=_text(func_child),
-                            kind="call",
-                            file=file_str,
-                            line=node.start_point[0] + 1,
-                            confidence="INFERRED",
+            elif node.type == "call_expression":
+                func_child = node.child_by_field_name("function")
+                if func_child and func_child.type == "identifier":
+                    source = _find_enclosing_function(node, "c")
+                    if source is not None:
+                        edges.append(
+                            Edge(
+                                source=source,
+                                target=_text(func_child),
+                                kind="call",
+                                file=file_str,
+                                line=node.start_point[0] + 1,
+                                confidence="INFERRED",
+                            )
                         )
-                    )
 
-        for child in node.children:
+            for child in node.children:
+                _walk(child)
+
+        for child in root.children:
             _walk(child)
 
-    for child in root.children:
-        _walk(child)
+        return edges
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "_extract_edges_c: unhandled exception for file=%s",
+            filepath,
+            exc_info=True,
+        )
+        return []
 
-    return edges
 
-
-def _handle_c_include(
-    node: Node, file_str: str, file_stem: str, edges: list[Edge]
-) -> None:
+def _handle_c_include(node: Node, file_str: str, file_stem: str, edges: list[Edge]) -> None:
     """Emit an import edge from a C/C++ preproc_include node.
 
     Both local (#include "x.h") and system (#include <x.h>) includes produce edges.
@@ -422,33 +445,43 @@ def _extract_comments_c(root: Node, filepath: Path) -> list[Comment]:
     Block comments: every line is scanned via _block_comment_lines.
     Line comments: // prefix stripped before marker matching.
     """
-    comments: list[Comment] = []
+    try:
+        comments: list[Comment] = []
 
-    def _walk(node: Node) -> None:
-        if node.type == "comment":
-            raw = _text(node)
-            base_row = node.start_point[0] + 1
-            if raw.startswith("/*"):
-                for offset, body in _block_comment_lines(raw):
+        def _walk(node: Node) -> None:
+            if node.type == "comment":
+                raw = _text(node)
+                base_row = node.start_point[0] + 1
+                if raw.startswith("/*"):
+                    for offset, body in _block_comment_lines(raw):
+                        result = _match_marker(body)
+                        if result is not None:
+                            marker, text = result
+                            comments.append(
+                                Comment(marker=marker, text=text, line=base_row + offset)
+                            )
+                else:
+                    # Line comment: strip // prefix
+                    body = raw.lstrip("/").strip()
                     result = _match_marker(body)
                     if result is not None:
                         marker, text = result
-                        comments.append(Comment(marker=marker, text=text, line=base_row + offset))
-            else:
-                # Line comment: strip // prefix
-                body = raw.lstrip("/").strip()
-                result = _match_marker(body)
-                if result is not None:
-                    marker, text = result
-                    comments.append(Comment(marker=marker, text=text, line=base_row))
+                        comments.append(Comment(marker=marker, text=text, line=base_row))
 
-        for child in node.children:
+            for child in node.children:
+                _walk(child)
+
+        for child in root.children:
             _walk(child)
 
-    for child in root.children:
-        _walk(child)
-
-    return comments
+        return comments
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "_extract_comments_c: unhandled exception for file=%s",
+            filepath,
+            exc_info=True,
+        )
+        return []
 
 
 # ── C++ extraction ─────────────────────────────────────────────────────────────
@@ -512,6 +545,39 @@ def _cpp_enclosing_class_name(node: Node) -> str | None:
     return None
 
 
+def _dedup_cpp_symbols(symbols: list[Symbol]) -> list[Symbol]:
+    """De-duplicate C++ symbols by (name, kind), keeping one per (name, kind) pair.
+
+    WHY: a class method declared in-class AND defined out-of-line both produce a
+    symbol with the same qualified name and kind (e.g. 'Circle.area' / 'method').
+    The de-duplication rule: prefer the entry with the larger line span (out-of-line
+    definitions typically have a full body). On tie, keep the first occurrence.
+
+    This does NOT merge different (name, kind) combinations — those remain distinct.
+    """
+    seen: dict[tuple[str, str], Symbol] = {}
+    for sym in symbols:
+        key = (sym["name"], sym["kind"])
+        if key not in seen:
+            seen[key] = sym
+        else:
+            # Prefer the symbol with a larger line span (end_line - start_line).
+            existing = seen[key]
+            existing_span = existing["end_line"] - existing["start_line"]
+            current_span = sym["end_line"] - sym["start_line"]
+            if current_span > existing_span:
+                seen[key] = sym
+    # Preserve original order (first occurrence wins for equal spans).
+    result: list[Symbol] = []
+    added: set[tuple[str, str]] = set()
+    for sym in symbols:
+        key = (sym["name"], sym["kind"])
+        if seen[key] is sym and key not in added:
+            result.append(sym)
+            added.add(key)
+    return result
+
+
 def _extract_symbols_cpp(root: Node, filepath: Path) -> list[Symbol]:
     """Walk a C++ AST and extract class, struct, union, enum, and function symbols.
 
@@ -527,49 +593,61 @@ def _extract_symbols_cpp(root: Node, filepath: Path) -> list[Symbol]:
 
     C++ '::' qualified names are normalized to 'Class.method' (dot notation)
     for cross-language uniformity with Python/TS/Go/Rust.
+
+    De-duplication is applied at the end: in-class + out-of-line definitions of the
+    same method both produce the same (name, kind) — only one is retained.
     """
-    symbols: list[Symbol] = []
-    file_str = str(filepath)
+    try:
+        symbols: list[Symbol] = []
+        file_str = str(filepath)
 
-    def _walk(node: Node, class_name: str | None = None) -> None:
-        """Recursively walk AST, tracking enclosing class for method qualification."""
-        if node.type == "namespace_definition":
-            # Traverse namespace body but do NOT emit the namespace as a symbol.
-            body = node.child_by_field_name("body")
-            if body is not None:
-                for child in body.children:
+        def _walk(node: Node, class_name: str | None = None) -> None:
+            """Recursively walk AST, tracking enclosing class for method qualification."""
+            if node.type == "namespace_definition":
+                # Traverse namespace body but do NOT emit the namespace as a symbol.
+                body = node.child_by_field_name("body")
+                if body is not None:
+                    for child in body.children:
+                        _walk(child, class_name)
+
+            elif node.type in ("class_specifier", "struct_specifier"):
+                _handle_cpp_class(node, file_str, symbols, _walk)
+
+            elif node.type == "union_specifier":
+                _handle_cpp_union(node, file_str, symbols, _walk)
+
+            elif node.type == "enum_specifier":
+                _handle_cpp_enum(node, file_str, symbols)
+
+            elif node.type == "function_definition":
+                _handle_cpp_function(node, file_str, symbols, class_name)
+
+            elif node.type == "template_declaration":
+                # Look inside the template for the actual declaration
+                for child in node.children:
+                    if child.type in (
+                        "class_specifier",
+                        "struct_specifier",
+                        "function_definition",
+                    ):
+                        _walk(child, class_name)
+
+            else:
+                for child in node.children:
                     _walk(child, class_name)
 
-        elif node.type in ("class_specifier", "struct_specifier"):
-            _handle_cpp_class(node, file_str, symbols, _walk)
+        for child in root.children:
+            _walk(child, class_name=None)
 
-        elif node.type == "union_specifier":
-            _handle_cpp_union(node, file_str, symbols, _walk)
-
-        elif node.type == "enum_specifier":
-            _handle_cpp_enum(node, file_str, symbols)
-
-        elif node.type == "function_definition":
-            _handle_cpp_function(node, file_str, symbols, class_name)
-
-        elif node.type == "template_declaration":
-            # Look inside the template for the actual declaration
-            for child in node.children:
-                if child.type in (
-                    "class_specifier",
-                    "struct_specifier",
-                    "function_definition",
-                ):
-                    _walk(child, class_name)
-
-        else:
-            for child in node.children:
-                _walk(child, class_name)
-
-    for child in root.children:
-        _walk(child, class_name=None)
-
-    return symbols
+        # De-duplicate: in-class + out-of-line definitions share the same (name, kind).
+        return _dedup_cpp_symbols(symbols)
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "_extract_symbols_cpp: unhandled exception for file=%s",
+            filepath,
+            exc_info=True,
+        )
+        return []
 
 
 def _handle_cpp_class(
@@ -588,13 +666,18 @@ def _handle_cpp_class(
             return
         doc = _c_doc_comment(node)
         fields = extract_node_fields(
-            node, "cpp",
+            node,
+            "cpp",
             qualified_name=cls_name,
             max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
         )
         symbols.append(
             _make_symbol(
-                cls_name, "class", file_str, node, doc,
+                cls_name,
+                "class",
+                file_str,
+                node,
+                doc,
                 signature=fields["signature"],
                 decorators=fields["decorators"],
                 is_exported=fields["is_exported"],
@@ -628,13 +711,18 @@ def _handle_cpp_union(
             return
         doc = _c_doc_comment(node)
         fields = extract_node_fields(
-            node, "cpp",
+            node,
+            "cpp",
             qualified_name=name,
             max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
         )
         symbols.append(
             _make_symbol(
-                name, "class", file_str, node, doc,
+                name,
+                "class",
+                file_str,
+                node,
+                doc,
                 signature=fields["signature"],
                 decorators=fields["decorators"],
                 is_exported=fields["is_exported"],
@@ -646,9 +734,7 @@ def _handle_cpp_union(
         logger.debug("_handle_cpp_union: failed for node at row %d", node.start_point[0])
 
 
-def _handle_cpp_enum(
-    node: Node, file_str: str, symbols: list[Symbol]
-) -> None:
+def _handle_cpp_enum(node: Node, file_str: str, symbols: list[Symbol]) -> None:
     """Emit a C++ enum symbol from an enum_specifier node."""
     try:
         name_node = node.child_by_field_name("name")
@@ -659,13 +745,18 @@ def _handle_cpp_enum(
             return
         doc = _c_doc_comment(node)
         fields = extract_node_fields(
-            node, "cpp",
+            node,
+            "cpp",
             qualified_name=name,
             max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
         )
         symbols.append(
             _make_symbol(
-                name, "type", file_str, node, doc,
+                name,
+                "type",
+                file_str,
+                node,
+                doc,
                 signature=fields["signature"],
                 decorators=fields["decorators"],
                 is_exported=fields["is_exported"],
@@ -714,13 +805,18 @@ def _handle_cpp_function(
 
         doc = _c_doc_comment(node)
         fields = extract_node_fields(
-            node, "cpp",
+            node,
+            "cpp",
             qualified_name=qualified,
             max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
         )
         symbols.append(
             _make_symbol(
-                qualified, kind, file_str, node, doc,
+                qualified,
+                kind,
+                file_str,
+                node,
+                doc,
                 signature=fields["signature"],
                 decorators=fields["decorators"],
                 is_exported=fields["is_exported"],
@@ -743,39 +839,47 @@ def _extract_edges_cpp(root: Node, filepath: Path) -> list[Edge]:
         call_expression where 'function' is an identifier → kind="call".
         Selector/member calls (obj.m(), Class::f()) are NOT tracked in this MVP.
     """
-    edges: list[Edge] = []
-    file_str = str(filepath)
-    file_stem = filepath.stem
+    try:
+        edges: list[Edge] = []
+        file_str = str(filepath)
+        file_stem = filepath.stem
 
-    def _walk(node: Node) -> None:
-        if node.type == "preproc_include":
-            # Reuse the shared C/C++ include handler
-            _handle_c_include(node, file_str, file_stem, edges)
-            return
+        def _walk(node: Node) -> None:
+            if node.type == "preproc_include":
+                # Reuse the shared C/C++ include handler
+                _handle_c_include(node, file_str, file_stem, edges)
+                return
 
-        elif node.type == "call_expression":
-            func_child = node.child_by_field_name("function")
-            if func_child and func_child.type == "identifier":
-                source = _find_enclosing_function(node, "cpp")
-                if source is not None:
-                    edges.append(
-                        Edge(
-                            source=source,
-                            target=_text(func_child),
-                            kind="call",
-                            file=file_str,
-                            line=node.start_point[0] + 1,
-                            confidence="INFERRED",
+            elif node.type == "call_expression":
+                func_child = node.child_by_field_name("function")
+                if func_child and func_child.type == "identifier":
+                    source = _find_enclosing_function(node, "cpp")
+                    if source is not None:
+                        edges.append(
+                            Edge(
+                                source=source,
+                                target=_text(func_child),
+                                kind="call",
+                                file=file_str,
+                                line=node.start_point[0] + 1,
+                                confidence="INFERRED",
+                            )
                         )
-                    )
 
-        for child in node.children:
+            for child in node.children:
+                _walk(child)
+
+        for child in root.children:
             _walk(child)
 
-    for child in root.children:
-        _walk(child)
-
-    return edges
+        return edges
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "_extract_edges_cpp: unhandled exception for file=%s",
+            filepath,
+            exc_info=True,
+        )
+        return []
 
 
 def _extract_comments_cpp(root: Node, filepath: Path) -> list[Comment]:
@@ -784,29 +888,39 @@ def _extract_comments_cpp(root: Node, filepath: Path) -> list[Comment]:
     C++ shares the same 'comment' node type as C (covers both // and /* */),
     so this function mirrors _extract_comments_c exactly.
     """
-    comments: list[Comment] = []
+    try:
+        comments: list[Comment] = []
 
-    def _walk(node: Node) -> None:
-        if node.type == "comment":
-            raw = _text(node)
-            base_row = node.start_point[0] + 1
-            if raw.startswith("/*"):
-                for offset, body in _block_comment_lines(raw):
+        def _walk(node: Node) -> None:
+            if node.type == "comment":
+                raw = _text(node)
+                base_row = node.start_point[0] + 1
+                if raw.startswith("/*"):
+                    for offset, body in _block_comment_lines(raw):
+                        result = _match_marker(body)
+                        if result is not None:
+                            marker, text = result
+                            comments.append(
+                                Comment(marker=marker, text=text, line=base_row + offset)
+                            )
+                else:
+                    body = raw.lstrip("/").strip()
                     result = _match_marker(body)
                     if result is not None:
                         marker, text = result
-                        comments.append(Comment(marker=marker, text=text, line=base_row + offset))
-            else:
-                body = raw.lstrip("/").strip()
-                result = _match_marker(body)
-                if result is not None:
-                    marker, text = result
-                    comments.append(Comment(marker=marker, text=text, line=base_row))
+                        comments.append(Comment(marker=marker, text=text, line=base_row))
 
-        for child in node.children:
+            for child in node.children:
+                _walk(child)
+
+        for child in root.children:
             _walk(child)
 
-    for child in root.children:
-        _walk(child)
-
-    return comments
+        return comments
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "_extract_comments_cpp: unhandled exception for file=%s",
+            filepath,
+            exc_info=True,
+        )
+        return []
