@@ -16,8 +16,11 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+import seam.config as config
 from seam.analysis import flows as flows_module
 from seam.analysis import impact as impact_module
+from seam.analysis.affected import AffectedResult
+from seam.analysis.affected import affected as run_affected
 from seam.analysis.changes import (
     DEFAULT_BASE_REF,
     VALID_SCOPES,
@@ -160,8 +163,8 @@ def handle_seam_context(
         "docstring": result["docstring"],
         "callers": result["callers"],
         "callees": result["callees"],
-        "ambiguous": result["ambiguous"],       # Phase 1: True when name collision detected
-        "cluster_id": result["cluster_id"],     # Phase 2: None when not clustered
+        "ambiguous": result["ambiguous"],  # Phase 1: True when name collision detected
+        "cluster_id": result["cluster_id"],  # Phase 2: None when not clustered
         "cluster_label": result["cluster_label"],  # Phase 2: None when not clustered
         "cluster_peers": result["cluster_peers"],  # Phase 2: [] when not clustered / solo
     }
@@ -441,9 +444,7 @@ def handle_seam_changes(
     """
     # Validate scope.
     if scope not in VALID_SCOPES:
-        return _invalid_input(
-            f"scope must be one of {sorted(VALID_SCOPES)}; got {scope!r}"
-        )
+        return _invalid_input(f"scope must be one of {sorted(VALID_SCOPES)}; got {scope!r}")
 
     # Validate base_ref is not blank (only used for branch scope, but validate always).
     if not base_ref or not base_ref.strip():
@@ -574,10 +575,7 @@ def handle_seam_clusters(
     if cluster_id is None:
         # List all clusters — no file paths to relativize
         clusters = query_list_clusters(conn)
-        return [
-            {"id": c["id"], "label": c["label"], "size": c["size"]}
-            for c in clusters
-        ]
+        return [{"id": c["id"], "label": c["label"], "size": c["size"]} for c in clusters]
 
     # List members of a specific cluster — relativize file paths
     members = query_cluster_members(conn, cluster_id)
@@ -590,3 +588,63 @@ def handle_seam_clusters(
         }
         for m in members
     ]
+
+
+def handle_seam_affected(
+    conn: sqlite3.Connection,
+    changed_files: list[str],
+    root: Path,
+    depth: int = config.SEAM_AFFECTED_DEPTH,
+) -> dict[str, Any]:
+    """Handler for the seam_affected MCP tool.
+
+    Given a list of changed file paths, finds all test files that depend on
+    symbols defined in those files (via upstream impact traversal).
+
+    Args:
+        conn:          Open SQLite connection (read-only).
+        changed_files: List of file paths (absolute or relative to root).
+                       Must not be empty.
+        root:          Project root for path relativization and relative-path resolution.
+        depth:         Max traversal depth for upstream impact. Default from config.
+
+    Returns:
+        A dict with keys:
+            changed_files          — relativized paths of input files
+            affected_tests         — relativized paths of affected test files (sorted)
+            total_dependents_traversed — count of all dependent entries traversed
+        Or an error dict on invalid input:
+            {"error": "INVALID_INPUT", "message": "..."}
+    """
+    # Validate: empty input is not useful and likely an agent mistake.
+    if not changed_files:
+        return _invalid_input("changed_files must not be empty")
+
+    # Clamp: reject oversized file lists (SEAM_MAX_AFFECTED_FILES cap).
+    # An agent accidentally passing the entire repo diff should get a clear error,
+    # not a silent O(n * symbols) traversal. Mirrors the _clamp discipline of other handlers.
+    max_files = config.SEAM_MAX_AFFECTED_FILES
+    if len(changed_files) > max_files:
+        return _invalid_input(
+            f"changed_files length {len(changed_files)} exceeds maximum {max_files}; "
+            "split the file list into smaller batches"
+        )
+
+    # Run the core affected-tests algorithm.
+    result: AffectedResult = run_affected(
+        conn,
+        changed_files,
+        depth=depth,
+        repo_root=root,
+    )
+
+    # Relativize all file paths so the MCP consumer gets portable paths.
+    # The analysis layer returns absolute paths (DB storage contract);
+    # the handler contract (like all other handlers) is to relativize before returning.
+    return {
+        "changed_files": [_relativize(p, root) for p in result["changed_files"]],
+        "affected_tests": [_relativize(p, root) for p in result["affected_tests"]],
+        "total_dependents_traversed": result["total_dependents_traversed"],
+        # partial=True when a file exceeded SEAM_MAX_AFFECTED_SYMBOLS; result may be incomplete.
+        "partial": result["partial"],
+    }

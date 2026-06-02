@@ -270,19 +270,31 @@ def test_seam_search_blank_text_returns_invalid_input(
     assert result.get("error") == "INVALID_INPUT"
 
 
-# ── T10: seam_search INVALID_QUERY ────────────────────────────────────────────
+# ── T10: seam_search with formerly-malformed FTS5 input ──────────────────────
 
 
-def test_seam_search_fts5_syntax_error_returns_invalid_query(
+def test_seam_search_fts5_operator_only_returns_empty(
     seeded_db: tuple[sqlite3.Connection, Path],
 ) -> None:
-    """seam_search must return INVALID_QUERY when the text triggers an FTS5 syntax error."""
+    """Phase 3: 'AND' alone is stripped by build_match_query() and returns no results.
+
+    Before Phase 3, 'AND' as a bare FTS5 operator triggered OperationalError →
+    INVALID_QUERY. After Phase 3, build_match_query() strips FTS5 operators before
+    constructing the MATCH expression, so 'AND' alone produces the empty sentinel
+    (no query sent to FTS5) and the handler returns an empty list.
+
+    The INVALID_QUERY error path is still present in the handler for any inputs
+    that survive sanitization with genuine FTS5 syntax errors, but operator-only
+    queries are now gracefully handled as zero-result searches.
+    """
     conn, root = seeded_db
-    # FTS5 rejects a bare AND — this is a known malformed syntax trigger
+    # 'AND' is stripped → empty sentinel → zero FTS rows → [] returned
     result = handle_seam_search(conn, "AND", root)
 
-    assert isinstance(result, dict)
-    assert result.get("error") == "INVALID_QUERY"
+    # After Phase 3: returns a list (empty), not an error dict
+    assert isinstance(result, list), (
+        f"Expected [] for operator-only query after Phase 3 sanitization, got: {result}"
+    )
 
 
 # ── T11: seam_search limit clamping ───────────────────────────────────────────

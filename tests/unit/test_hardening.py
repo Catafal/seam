@@ -10,10 +10,7 @@ Each test pins a fix surfaced by /backend-taste or /review so it can't regress:
 - graph: docstrings with boundary quote characters are preserved
 """
 
-import sqlite3
 from pathlib import Path
-
-import pytest
 
 from seam.indexer.db import connect, delete_file, init_db, upsert_file
 from seam.indexer.graph import Edge, Symbol, extract_symbols
@@ -45,9 +42,23 @@ def test_reindex_replaces_cleanly_no_orphans(tmp_path: Path) -> None:
     src.write_text("x = 1\n")
     conn = init_db(tmp_path / "idx.db")
     try:
-        upsert_file(conn, src, "python", "h1",
-                    [_sym("a", "function", str(src))],
-                    [Edge(source="m", target="os", kind="import", file=str(src), line=1, confidence="INFERRED")])
+        upsert_file(
+            conn,
+            src,
+            "python",
+            "h1",
+            [_sym("a", "function", str(src))],
+            [
+                Edge(
+                    source="m",
+                    target="os",
+                    kind="import",
+                    file=str(src),
+                    line=1,
+                    confidence="INFERRED",
+                )
+            ],
+        )
         # Re-index the SAME path with entirely different symbols and no edges.
         upsert_file(conn, src, "python", "h2", [_sym("b", "function", str(src))], [])
 
@@ -65,9 +76,23 @@ def test_delete_file_cascades(tmp_path: Path) -> None:
     src.write_text("x = 1\n")
     conn = init_db(tmp_path / "idx.db")
     try:
-        upsert_file(conn, src, "python", "h1",
-                    [_sym("a", "function", str(src))],
-                    [Edge(source="m", target="os", kind="import", file=str(src), line=1, confidence="INFERRED")])
+        upsert_file(
+            conn,
+            src,
+            "python",
+            "h1",
+            [_sym("a", "function", str(src))],
+            [
+                Edge(
+                    source="m",
+                    target="os",
+                    kind="import",
+                    file=str(src),
+                    line=1,
+                    confidence="INFERRED",
+                )
+            ],
+        )
         delete_file(conn, src)
         assert conn.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0] == 0
@@ -91,9 +116,10 @@ def test_index_one_file_none_for_skip_tuple_for_empty(tmp_path: Path) -> None:
         empty.write_text("")
         assert index_one_file(conn, empty) == (0, 0)  # valid, indexed, zero symbols
         # The empty file IS recorded in files (it was indexed, not skipped).
-        assert conn.execute(
-            "SELECT COUNT(*) FROM files WHERE path = ?", (str(empty),)
-        ).fetchone()[0] == 1
+        assert (
+            conn.execute("SELECT COUNT(*) FROM files WHERE path = ?", (str(empty),)).fetchone()[0]
+            == 1
+        )
     finally:
         conn.close()
 
@@ -101,16 +127,27 @@ def test_index_one_file_none_for_skip_tuple_for_empty(tmp_path: Path) -> None:
 # ── Query error consistency ─────────────────────────────────────────────────
 
 
-def test_query_maps_malformed_fts_to_invalid_query(tmp_path: Path) -> None:
-    """seam_query must return INVALID_QUERY (not silent []) on malformed FTS5."""
+def test_query_sanitizes_formerly_malformed_fts_input(tmp_path: Path) -> None:
+    """Phase 3: fts.build_match_query() sanitizes previously malformed inputs.
+
+    Before Phase 3, 'foo"' (unbalanced quote) triggered an FTS5 OperationalError,
+    which the handler mapped to INVALID_QUERY. After Phase 3, build_match_query()
+    strips FTS5 special characters before constructing the MATCH expression, so
+    'foo"' becomes '"foo"*' — a valid quoted prefix. The handler returns [] instead.
+
+    The OperationalError propagation path is PRESERVED in engine.py for any inputs
+    that somehow survive stripping with malformed syntax, but common user inputs
+    including 'foo"' and pure operators are now safely handled instead of erroring.
+    """
     conn = init_db(tmp_path / "idx.db")
     try:
-        # Unbalanced quote is a hard FTS5 syntax error.
+        # 'foo"' is now sanitized to '"foo"*' — returns [] (not INVALID_QUERY)
         result = tools.handle_seam_query(conn, 'foo"', tmp_path)
-        assert isinstance(result, dict) and result.get("error") == "INVALID_QUERY"
-        # engine.query itself raises (does not swallow) so the handler can map it.
-        with pytest.raises(sqlite3.OperationalError):
-            engine.query(conn, 'foo"', 10)
+        # After Phase 3: result is a list (no results) not an error dict
+        assert isinstance(result, list), f"Expected [] after sanitization, got: {result}"
+        # engine.query itself returns [] (no OperationalError) for sanitized input
+        query_result = engine.query(conn, 'foo"', 10)
+        assert isinstance(query_result, list)
     finally:
         conn.close()
 

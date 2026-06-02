@@ -1,4 +1,4 @@
-"""MCP server setup — FastMCP stdio transport, eight tools registered.
+"""MCP server setup — FastMCP stdio transport, nine tools registered.
 
 Creates and configures the MCP server instance.
 Tool handlers in tools.py are thin adapters; this module wires them to FastMCP.
@@ -7,7 +7,7 @@ Usage (from cli/main.py):
     server = create_server(conn, root)
     server.run(transport="stdio")
 
-Tools registered (Phase 0 + Phase 1 + Phase 1b + Phase 2):
+Tools registered (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3):
     seam_query    — FTS5 + 1-hop graph expansion search
     seam_context  — 360-degree symbol view (callers, callees, location, cluster)
     seam_search   — full-text search (FTS5 BM25)
@@ -16,6 +16,7 @@ Tools registered (Phase 0 + Phase 1 + Phase 1b + Phase 2):
     seam_changes  — git diff → changed symbols → risk level (Phase 1)
     seam_why      — semantic comments (WHY/HACK/NOTE/TODO/FIXME) near a location (Phase 1b)
     seam_clusters — list clusters or members of a cluster (Phase 2)
+    seam_affected — changed files → impacted test files via reverse-dependency BFS (Phase 3)
 
 Design:
 - One FastMCP instance per process; connection is injected at creation time.
@@ -31,8 +32,10 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+import seam.config as config
 from seam.analysis.changes import DEFAULT_BASE_REF
 from seam.server.tools import (
+    handle_seam_affected,
     handle_seam_changes,
     handle_seam_clusters,
     handle_seam_context,
@@ -53,6 +56,8 @@ _CHANGES_SCOPE_DEFAULT = "working"
 # Import DEFAULT_BASE_REF from analysis.changes instead of redefining it
 # to avoid drift when the canonical default changes.
 _CHANGES_BASE_REF_DEFAULT = DEFAULT_BASE_REF
+
+_AFFECTED_DEPTH_DEFAULT = config.SEAM_AFFECTED_DEPTH
 
 
 def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
@@ -124,7 +129,9 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         Use before editing any symbol to understand the blast radius.
         """
         return handle_seam_impact(
-            conn, target, root,
+            conn,
+            target,
+            root,
             direction=direction,
             max_depth=max_depth,
             include_tests=include_tests,
@@ -227,5 +234,33 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         specific subsystem. Then use seam_context to see a symbol's cluster peers.
         """
         return handle_seam_clusters(conn, root, cluster_id=cluster_id)
+
+    @mcp.tool()
+    def seam_affected(
+        changed_files: list[str],
+        depth: int = _AFFECTED_DEPTH_DEFAULT,
+    ) -> Any:
+        """Find which test files are impacted by a set of changed source files.
+
+        Given a list of changed file paths, traverses the reverse-dependency graph
+        (upstream impact) to find all test files that depend on symbols in those files.
+
+        Result shape:
+            changed_files          — the input files (relativized to project root)
+            affected_tests         — sorted unique test files that must be re-run
+            total_dependents_traversed — count of all dependency entries examined
+
+        Usage pattern (agent workflow):
+            1. Get changed files from git: `git diff --name-only`
+            2. Pass them to seam_affected to get the impacted test files
+            3. Run only those tests: `pytest <affected_tests>`
+
+        A changed file that is itself a test file is always included in affected_tests.
+        Files not in the index are silently skipped (they have no graph dependents).
+        Returns INVALID_INPUT error when changed_files is empty.
+
+        Use this to determine the minimal set of tests to run before committing.
+        """
+        return handle_seam_affected(conn, changed_files, root, depth=depth)
 
     return mcp

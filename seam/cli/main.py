@@ -32,6 +32,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -55,6 +56,7 @@ from seam.analysis.impact import (
     TIER_WILL_BREAK,
     impact,
 )
+from seam.cli.output import check_mutual_exclusion, emit_json, emit_json_error, print_quiet
 from seam.indexer.cluster_index import get_llm_naming_summary, index_clusters
 from seam.indexer.db import connect, init_db
 from seam.indexer.pipeline import index_one_file, walk_project
@@ -62,6 +64,14 @@ from seam.query.clusters import cluster_members as query_cluster_members
 from seam.query.clusters import list_clusters as query_list_clusters
 from seam.query.comments import why as comments_why
 from seam.server.mcp import create_server
+from seam.server.tools import (
+    handle_seam_affected,
+    handle_seam_changes,
+    handle_seam_clusters,
+    handle_seam_impact,
+    handle_seam_trace,
+    handle_seam_why,
+)
 
 app = typer.Typer(
     name="seam",
@@ -216,12 +226,16 @@ def init(
 
 @app.command()
 def status(
-    path: str = typer.Argument(".", help="Project root whose index to inspect (default: current directory)"),
+    path: str = typer.Argument(
+        ".", help="Project root whose index to inspect (default: current directory)"
+    ),
     db_dir: str = typer.Option(
         "",
         "--db-dir",
         help="Override DB directory (default: same as project root)",
     ),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
 ) -> None:
     """Show index statistics and watcher status.
 
@@ -231,12 +245,21 @@ def status(
     - watcher PID (if a live watcher is recorded)
     - freshness: newest DB mtime vs newest on-disk file mtime
     """
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
     # Mirror `init`: DB lives under the project root unless --db-dir overrides.
     project_root = Path(path).resolve()
     db_root = Path(db_dir).resolve() if db_dir else project_root
     db_path = config.get_db_path(db_root)
 
     if not db_path.exists():
+        if json_:
+            emit_json_error(
+                "NO_INDEX", "No index found. Run 'seam init' first to create the index."
+            )
         console.print(
             "[red]No index found.[/red] Run [bold]seam init[/bold] first to create the index."
         )
@@ -245,6 +268,8 @@ def status(
     try:
         conn = connect(db_path)
     except sqlite3.Error as exc:
+        if json_:
+            emit_json_error("DB_ERROR", f"Failed to open database: {exc}")
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
@@ -295,6 +320,27 @@ def status(
     alive_pid = _watcher_is_alive(pid_file)
     watcher_status = f"PID {alive_pid}" if alive_pid is not None else "not running"
 
+    # ── JSON mode — build stats dict inline (no handler exists for status) ────
+    if json_:
+        stats = {
+            "files": file_count,
+            "symbols": symbol_count,
+            "edges": edge_count,
+            "clusters": cluster_count,
+            "last_indexed": last_indexed_str,
+            "watcher": watcher_status,
+            "freshness": freshness,
+        }
+        emit_json(stats)
+        return
+
+    # ── Quiet mode — print freshness (the single load-bearing field for CI gating)
+    if quiet:
+        sys.stdout.write(freshness + "\n")
+        return
+
+    # ── Rich (default) mode — existing rendering, unchanged ──────────────────
+
     # Print summary table
     table = Table(title="seam status", show_header=False, box=None)
     table.add_column("key", style="bold cyan", width=16)
@@ -337,9 +383,7 @@ def start(
     db_path = config.get_db_path(db_root)
 
     if not db_path.exists():
-        Console(stderr=True).print(
-            "[red]No index found.[/red] Run [bold]seam init[/bold] first."
-        )
+        Console(stderr=True).print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
         raise typer.Exit(code=1)
 
     # Refuse to spawn a second watcher if a live one is already recorded —
@@ -395,8 +439,12 @@ def start(
 
 @app.command(name="impact")
 def impact_cmd(
-    symbol: str = typer.Argument(..., help="Symbol name to analyze (e.g. 'upsert_file', 'UserService.validate')"),
-    direction: str = typer.Option("upstream", "--direction", "-d", help="upstream | downstream | both"),
+    symbol: str = typer.Argument(
+        ..., help="Symbol name to analyze (e.g. 'upsert_file', 'UserService.validate')"
+    ),
+    direction: str = typer.Option(
+        "upstream", "--direction", "-d", help="upstream | downstream | both"
+    ),
     depth: int = typer.Option(3, "--depth", help="Max hop depth (1-10)"),
     path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
@@ -405,6 +453,8 @@ def impact_cmd(
         "--production-only",
         help="Filter out test-file dependents; show only production blast radius.",
     ),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
 ) -> None:
     """Show the blast radius of a symbol — what breaks if you change it.
 
@@ -417,22 +467,39 @@ def impact_cmd(
     Test-file dependents are marked [test] in the output. Use --production-only
     to filter them out and see only the production blast radius.
     """
+    # WHY: check mutual exclusion before any DB work so the error is immediate.
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
     project_root = Path(path).resolve()
     db_root = Path(db_dir).resolve() if db_dir else project_root
     db_path = config.get_db_path(db_root)
 
     if not db_path.exists():
+        if json_:
+            emit_json_error("NO_INDEX", "No index found. Run 'seam init' first.")
         console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
         raise typer.Exit(code=1)
 
     valid_directions = {"upstream", "downstream", "both"}
     if direction not in valid_directions:
-        console.print(f"[red]Invalid direction:[/red] {direction!r}. Choose: upstream, downstream, or both.")
+        if json_:
+            emit_json_error(
+                "INVALID_INPUT",
+                f"direction must be one of: upstream, downstream, both; got {direction!r}",
+            )
+        console.print(
+            f"[red]Invalid direction:[/red] {direction!r}. Choose: upstream, downstream, or both."
+        )
         raise typer.Exit(code=1)
 
     try:
         conn = connect(db_path)
     except sqlite3.Error as exc:
+        if json_:
+            emit_json_error("DB_ERROR", f"Failed to open database: {exc}")
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
@@ -440,9 +507,45 @@ def impact_cmd(
     include_tests = not production_only
 
     try:
-        result = impact(conn, target=symbol, direction=direction, max_depth=depth, include_tests=include_tests)
+        # WHY: reuse handle_seam_impact (MCP handler) for --json so that CLI --json
+        # output is byte-identical to the MCP tool response (Article #37 parity).
+        # For the Rich path we still call impact() directly to preserve behavior.
+        if json_ or quiet:
+            result = handle_seam_impact(
+                conn,
+                target=symbol,
+                root=project_root,
+                direction=direction,
+                max_depth=depth,
+                include_tests=include_tests,
+            )
+        else:
+            result = impact(
+                conn,
+                target=symbol,
+                direction=direction,
+                max_depth=depth,
+                include_tests=include_tests,
+            )
     finally:
         conn.close()
+
+    # ── JSON mode ─────────────────────────────────────────────────────────────
+    if json_:
+        emit_json(result)
+        return
+
+    # ── Quiet mode — print one name per dependent entry ───────────────────────
+    if quiet:
+        for dir_key, tier_group in result.items():
+            if dir_key in ("found", "target", "hidden_tests") or not isinstance(tier_group, dict):
+                continue
+            for entries in tier_group.values():
+                for entry in entries:
+                    print_quiet(entry, field="name")
+        return
+
+    # ── Rich (default) mode — existing rendering, unchanged ──────────────────
 
     # Distinguish "symbol not in the index" from "indexed but no dependents".
     if not result.get("found", True):
@@ -489,7 +592,9 @@ def impact_cmd(
     for direction_key, tier_group in result.items():
         if direction_key in ("found", "target") or not isinstance(tier_group, dict):
             continue
-        console.print(f"\n[bold cyan]Impact ({direction_key})[/bold cyan] of [bold]{symbol}[/bold]:")
+        console.print(
+            f"\n[bold cyan]Impact ({direction_key})[/bold cyan] of [bold]{symbol}[/bold]:"
+        )
         any_in_direction = any(len(entries) > 0 for entries in tier_group.values())
         if not any_in_direction:
             console.print("  [dim]No dependents.[/dim]")
@@ -525,10 +630,14 @@ def impact_cmd(
 @app.command(name="trace")
 def trace_cmd(
     source: str = typer.Argument(..., help="Starting symbol name (e.g. 'init', 'parse_file')"),
-    target: str = typer.Argument(..., help="Destination symbol name (e.g. 'upsert_file', 'init_db')"),
+    target: str = typer.Argument(
+        ..., help="Destination symbol name (e.g. 'upsert_file', 'init_db')"
+    ),
     depth: int = typer.Option(10, "--depth", help="Max hop depth (1-10)"),
     path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
 ) -> None:
     """Trace the call/dependency path from one symbol to another.
 
@@ -542,17 +651,26 @@ def trace_cmd(
 
     Exits with a clear message when no path exists between the symbols.
     """
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
     project_root = Path(path).resolve()
     db_root = Path(db_dir).resolve() if db_dir else project_root
     db_path = config.get_db_path(db_root)
 
     if not db_path.exists():
+        if json_:
+            emit_json_error("NO_INDEX", "No index found. Run 'seam init' first.")
         console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
         raise typer.Exit(code=1)
 
     try:
         conn = connect(db_path)
     except sqlite3.Error as exc:
+        if json_:
+            emit_json_error("DB_ERROR", f"Failed to open database: {exc}")
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
@@ -560,13 +678,36 @@ def trace_cmd(
     safe_depth = max(1, min(10, depth))
 
     try:
-        paths = flows_trace(conn, source, target, max_depth=safe_depth)
-        callers_src = flows_callers(conn, source)
-        callees_src = flows_callees(conn, source)
-        callers_tgt = flows_callers(conn, target)
-        callees_tgt = flows_callees(conn, target)
+        # WHY: reuse handle_seam_trace for --json/--quiet to ensure MCP/CLI parity.
+        if json_ or quiet:
+            result = handle_seam_trace(
+                conn, source=source, target=target, root=project_root, max_depth=safe_depth
+            )
+        else:
+            paths = flows_trace(conn, source, target, max_depth=safe_depth)
+            callers_src = flows_callers(conn, source)
+            callees_src = flows_callees(conn, source)
+            callers_tgt = flows_callers(conn, target)
+            callees_tgt = flows_callees(conn, target)
     finally:
         conn.close()
+
+    # ── JSON mode ─────────────────────────────────────────────────────────────
+    if json_:
+        emit_json(result)
+        return
+
+    # ── Quiet mode — print hop names from the first path ─────────────────────
+    if quiet:
+        if result.get("found") and result.get("paths"):
+            for hop in result["paths"][0]:
+                sys.stdout.write(hop["from_name"] + "\n")
+            # Print the final destination
+            if result["paths"][0]:
+                sys.stdout.write(result["paths"][0][-1]["to_name"] + "\n")
+        return
+
+    # ── Rich (default) mode — existing rendering, unchanged ──────────────────
 
     # Confidence -> rich color mapping, used throughout.
     def _conf_color(c: str) -> str:
@@ -638,6 +779,18 @@ def changes_cmd(
     ),
     path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
+    stdin: bool = typer.Option(
+        False,
+        "--stdin",
+        help=(
+            "Read a newline-delimited list of file paths from stdin. "
+            "Narrows changed_symbols and new_files to only those files. "
+            "affected and risk_level intentionally reflect the FULL git diff "
+            "(conservative — never under-reports risk)."
+        ),
+    ),
 ) -> None:
     """Pre-commit risk check — show what your changes break.
 
@@ -648,13 +801,25 @@ def changes_cmd(
       working — unstaged changes (git diff)
       staged  — staged changes (git diff --cached)
       branch  — all changes on this branch vs base ref (git diff <base>...HEAD)
+
+    Use --stdin to restrict the analysis to a precomputed file list, e.g.:
+      git diff --name-only | seam changes --stdin --json
     """
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
     project_root = Path(path).resolve()
     db_root = Path(db_dir).resolve() if db_dir else project_root
     db_path = config.get_db_path(db_root)
 
     # Validate scope early for a helpful message.
     if scope not in VALID_SCOPES:
+        if json_:
+            emit_json_error(
+                "INVALID_INPUT", f"scope must be one of {sorted(VALID_SCOPES)}; got {scope!r}"
+            )
         console.print(
             f"[red]Invalid scope:[/red] {scope!r}. "
             f"Choose one of: {', '.join(sorted(VALID_SCOPES))}."
@@ -662,22 +827,111 @@ def changes_cmd(
         raise typer.Exit(code=1)
 
     if not db_path.exists():
+        if json_:
+            emit_json_error("NO_INDEX", "No index found. Run 'seam init' first.")
         console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
         raise typer.Exit(code=1)
 
     try:
         conn = connect(db_path)
     except sqlite3.Error as exc:
+        if json_:
+            emit_json_error("DB_ERROR", f"Failed to open database: {exc}")
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
+    # Read stdin before dispatching to detect_changes/handle_seam_changes because stdin
+    # is a one-shot stream — it must be drained before the output-mode branch so the
+    # resolved file set is available to both the json/quiet and Rich paths.
+    # Paths are resolved here so they match the absolute paths stored in the DB.
+    stdin_files: set[str] | None = None
+    if stdin:
+        raw_lines = sys.stdin.read().splitlines()
+        resolved = []
+        for line in raw_lines:
+            line = line.strip()
+            if line:
+                resolved.append(
+                    str((project_root / line).resolve())
+                    if not Path(line).is_absolute()
+                    else str(Path(line).resolve())
+                )
+        stdin_files = set(resolved)
+
+    # WHY `Any`: handle_seam_changes returns dict[str,Any]; detect_changes returns
+    # ChangeReport (a TypedDict). Both are accessed with the same string keys at
+    # runtime, but mypy cannot unify them — `Any` is the honest annotation here.
+    report: Any
     try:
-        report = detect_changes(conn, base_ref=base, scope=scope, repo_root=project_root)
-    except NotAGitRepoError as exc:
-        console.print(f"[red]Not a git repository:[/red] {exc}")
-        raise typer.Exit(code=1) from exc
+        # WHY: reuse handle_seam_changes for --json/--quiet (MCP/CLI parity).
+        if json_ or quiet:
+            report = handle_seam_changes(conn, root=project_root, base_ref=base, scope=scope)
+        else:
+            try:
+                report = detect_changes(conn, base_ref=base, scope=scope, repo_root=project_root)
+            except NotAGitRepoError as exc:
+                console.print(f"[red]Not a git repository:[/red] {exc}")
+                raise typer.Exit(code=1) from exc
     finally:
         conn.close()
+
+    # ── Apply stdin file filter (when --stdin was given) ─────────────────────
+    # WHY filter after report: detect_changes always runs the full git diff; we then
+    # narrow changed_symbols and new_files to the user-provided file subset.
+    # risk_level and affected intentionally reflect the FULL diff (conservative —
+    # never under-reports risk to the caller).
+    # Skip the filter when the report is an error dict (NOT_A_GIT_REPO etc).
+    if (
+        stdin_files is not None
+        and isinstance(report, dict)
+        and not report.get("error")
+        and "changed_symbols" in report
+    ):
+        # Determine the key used for file lookup in changed_symbols entries.
+        # handle_seam_changes returns relativized paths; detect_changes returns absolute.
+        # We filter by checking if the symbol's file appears in stdin_files.
+        # For handle_seam_changes (json/quiet paths), file is relative; we need to
+        # resolve it to compare with the resolved stdin_files set.
+        def _abs_sym_file(sym_file: str | None) -> str | None:
+            if sym_file is None:
+                return None
+            p = Path(sym_file)
+            if p.is_absolute():
+                return str(p)
+            return str((project_root / p).resolve())
+
+        if isinstance(report, dict) and "changed_symbols" in report:
+            report = dict(report)  # shallow copy so we don't mutate the TypedDict
+            report["changed_symbols"] = [
+                s for s in report["changed_symbols"] if _abs_sym_file(s.get("file")) in stdin_files
+            ]
+            report["new_files"] = [
+                f for f in report.get("new_files", []) if _abs_sym_file(f) in stdin_files
+            ]
+
+    # ── Error guard — applies to ALL output modes ─────────────────────────────
+    # handle_seam_changes returns {"error": "...", "message": "..."} for NOT_A_GIT_REPO.
+    # Without this guard, --quiet calls print_quiet(report, "risk_level") → KeyError,
+    # and --rich (default) would crash on report["risk_level"] below.
+    # Mirror the --json branch: surface the error uniformly regardless of output mode.
+    if isinstance(report, dict) and report.get("error"):
+        if json_:
+            emit_json_error(report["error"], report.get("message", ""))
+        # --quiet and rich: print error to stderr and exit non-zero
+        sys.stderr.write(f"Error [{report['error']}]: {report.get('message', '')}\n")
+        raise typer.Exit(code=1)
+
+    # ── JSON mode ─────────────────────────────────────────────────────────────
+    if json_:
+        emit_json(report)
+        return
+
+    # ── Quiet mode — print the risk level ────────────────────────────────────
+    if quiet:
+        print_quiet(report, field="risk_level")
+        return
+
+    # ── Rich (default) mode — existing rendering, unchanged ──────────────────
 
     # ── Summary header ────────────────────────────────────────────────────────
     risk_color = {
@@ -693,8 +947,11 @@ def changes_cmd(
     )
     console.print(
         f"Risk: [{risk_color}]{report['risk_level'].upper()}[/{risk_color}]"
-        + (" [yellow](AMBIGUOUS edges — estimate uncertain)[/yellow]"
-           if report["ambiguous_warning"] else "")
+        + (
+            " [yellow](AMBIGUOUS edges — estimate uncertain)[/yellow]"
+            if report["ambiguous_warning"]
+            else ""
+        )
     )
 
     # Partial verdict marker: printed after the risk line when the impact cap was hit.
@@ -705,9 +962,7 @@ def changes_cmd(
     # match — otherwise the displayed fraction does not reconcile with what was capped.
     if report.get("partial"):
         cap = config.SEAM_MAX_IMPACT_SYMBOLS
-        real_total = sum(
-            1 for s in report["changed_symbols"] if not s["name"].startswith("<")
-        )
+        real_total = sum(1 for s in report["changed_symbols"] if not s["name"].startswith("<"))
         analyzed = min(cap, real_total)
         console.print(
             f"[yellow]⚠ PARTIAL[/yellow] — impact cap ({cap}) hit; "
@@ -720,7 +975,9 @@ def changes_cmd(
         return
 
     if report["new_files"]:
-        console.print(f"\n[bold cyan]New / untracked files ({len(report['new_files'])}):[/bold cyan]")
+        console.print(
+            f"\n[bold cyan]New / untracked files ({len(report['new_files'])}):[/bold cyan]"
+        )
         for f in report["new_files"]:
             # Relativize for display
             try:
@@ -744,11 +1001,10 @@ def changes_cmd(
                 lines_str = (
                     f"  lines {sym['changed_lines'][:5]}"
                     + ("…" if len(sym["changed_lines"]) > 5 else "")
-                    if sym["changed_lines"] else ""
+                    if sym["changed_lines"]
+                    else ""
                 )
-                console.print(
-                    f"  [bold]{sym['name']}[/bold] [dim]{rel_file}{lines_str}[/dim]"
-                )
+                console.print(f"  [bold]{sym['name']}[/bold] [dim]{rel_file}{lines_str}[/dim]")
 
         if module_syms:
             console.print(f"\n[dim]Module-level changes ({len(module_syms)} file(s)).[/dim]")
@@ -808,7 +1064,7 @@ def _parse_why_target(target: str) -> tuple[str, int | None]:
     # Split on the last ':' to handle paths that may contain ':' (e.g. Windows drives)
     last_colon = target.rfind(":")
     if last_colon != -1:
-        maybe_line = target[last_colon + 1:]
+        maybe_line = target[last_colon + 1 :]
         try:
             line = int(maybe_line)
             return target[:last_colon], line
@@ -832,6 +1088,8 @@ def why_cmd(
     ),
     path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
 ) -> None:
     """Show semantic comments (WHY/HACK/NOTE/TODO/FIXME) near a file location or symbol.
 
@@ -840,11 +1098,18 @@ def why_cmd(
       seam why app.py:42               -- comments near line 42
       seam why --symbol my_func        -- comments inside or above my_func
     """
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
     project_root = Path(path).resolve()
     db_root = Path(db_dir).resolve() if db_dir else project_root
     db_path = config.get_db_path(db_root)
 
     if not db_path.exists():
+        if json_:
+            emit_json_error("NO_INDEX", "No index found. Run 'seam init' first.")
         console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
         raise typer.Exit(code=1)
 
@@ -863,24 +1128,55 @@ def why_cmd(
 
     # If neither resolved_file nor resolved_symbol is set after parsing, error out
     if not resolved_file and not resolved_symbol:
+        if json_:
+            emit_json_error("INVALID_INPUT", "Provide a file path or --symbol.")
         console.print("[red]Error:[/red] Provide a file path or --symbol.")
         raise typer.Exit(code=1)
 
     try:
         conn = connect(db_path)
     except sqlite3.Error as exc:
+        if json_:
+            emit_json_error("DB_ERROR", f"Failed to open database: {exc}")
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
+    # WHY `Any`: handle_seam_why returns list[dict[str,Any]] | dict[str,Any];
+    # comments_why returns list[CommentHit]. Both are accessed with same string
+    # keys at runtime; `Any` is the honest annotation to unify them for mypy.
+    hits: Any
     try:
-        hits = comments_why(
-            conn,
-            file=resolved_file,
-            line=line_arg,
-            symbol=resolved_symbol,
-        )
+        # WHY: reuse handle_seam_why for --json/--quiet (MCP/CLI parity).
+        if json_ or quiet:
+            hits = handle_seam_why(
+                conn,
+                root=project_root,
+                file=file_arg if file_arg else None,
+                line=line_arg,
+                symbol=resolved_symbol,
+            )
+        else:
+            hits = comments_why(
+                conn,
+                file=resolved_file,
+                line=line_arg,
+                symbol=resolved_symbol,
+            )
     finally:
         conn.close()
+
+    # ── JSON mode ─────────────────────────────────────────────────────────────
+    if json_:
+        emit_json(hits)
+        return
+
+    # ── Quiet mode — print marker: text per hit ───────────────────────────────
+    if quiet:
+        for hit in hits:
+            sys.stdout.write(f"{hit['marker']}: {hit['text']}\n")
+        return
+
+    # ── Rich (default) mode — existing rendering, unchanged ──────────────────
 
     if not hits:
         console.print("[dim]No semantic comments found[/dim]")
@@ -922,6 +1218,8 @@ def clusters_cmd(
     ),
     path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
 ) -> None:
     """List all clusters or members of one cluster.
 
@@ -929,29 +1227,61 @@ def clusters_cmd(
       seam clusters              -- list all clusters with id, label, size
       seam clusters --id 3       -- list all member symbols of cluster 3
     """
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
     project_root = Path(path).resolve()
     db_root = Path(db_dir).resolve() if db_dir else project_root
     db_path = config.get_db_path(db_root)
 
     if not db_path.exists():
+        if json_:
+            emit_json_error("NO_INDEX", "No index found. Run 'seam init' first.")
         console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
         raise typer.Exit(code=1)
 
     try:
         conn = connect(db_path)
     except sqlite3.Error as exc:
+        if json_:
+            emit_json_error("DB_ERROR", f"Failed to open database: {exc}")
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
     try:
-        if cluster_id >= 0:
-            # Members of a specific cluster
-            members = query_cluster_members(conn, cluster_id)
+        # WHY: reuse handle_seam_clusters for --json/--quiet (MCP/CLI parity).
+        if json_ or quiet:
+            cid = cluster_id if cluster_id >= 0 else None
+            cluster_data = handle_seam_clusters(conn, root=project_root, cluster_id=cid)
         else:
-            members = None
-            clusters = query_list_clusters(conn)
+            if cluster_id >= 0:
+                members = query_cluster_members(conn, cluster_id)
+            else:
+                members = None
+                clusters = query_list_clusters(conn)
     finally:
         conn.close()
+
+    # ── JSON mode ─────────────────────────────────────────────────────────────
+    if json_:
+        emit_json(cluster_data)
+        return
+
+    # ── Quiet mode — print labels (cluster list) or names (member list) ───────
+    if quiet:
+        if cluster_id >= 0:
+            # Quiet for members: print symbol names
+            for item in cluster_data:
+                sys.stdout.write(item["name"] + "\n")
+        else:
+            # Quiet for cluster list: print labels
+            for item in cluster_data:
+                sys.stdout.write(item["label"] + "\n")
+        return
+
+    # ── Rich (default) mode — existing rendering, unchanged ──────────────────
 
     if cluster_id >= 0:
         # Display members
@@ -991,3 +1321,154 @@ def clusters_cmd(
         for c in clusters:
             table.add_row(str(c["id"]), c["label"], str(c["size"]))
         console.print(table)
+
+
+# ── seam affected ─────────────────────────────────────────────────────────────
+
+
+@app.command(name="affected")
+def affected_cmd(
+    files: list[str] = typer.Argument(
+        default=None,
+        help="Changed file paths to analyze. Mutually exclusive with --stdin.",
+    ),
+    stdin: bool = typer.Option(
+        False,
+        "--stdin",
+        help=(
+            "Read changed file paths from stdin (newline-delimited). "
+            "Mutually exclusive with positional file arguments."
+        ),
+    ),
+    depth: int = typer.Option(
+        config.SEAM_AFFECTED_DEPTH,
+        "--depth",
+        help="Max upstream traversal depth (default: SEAM_AFFECTED_DEPTH env var).",
+    ),
+    path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
+    db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        help="Print bare test-file paths one per line (for piping into pytest).",
+    ),
+) -> None:
+    """Find which test files are impacted by changed source files.
+
+    Given changed files (as positional args or via --stdin), traverses the reverse-
+    dependency graph to find all test files that depend on symbols in those files.
+
+    Examples:
+      seam affected src/foo.py src/bar.py --json
+      git diff --name-only | seam affected --stdin --quiet | xargs pytest
+      seam affected src/foo.py --quiet   # bare test paths, one per line
+
+    A changed file that is itself a test file is always included in the output.
+    Files not in the index are silently skipped.
+    """
+    # Mutual exclusion check (--json + --quiet is not allowed)
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
+    project_root = Path(path).resolve()
+    db_root = Path(db_dir).resolve() if db_dir else project_root
+    db_path = config.get_db_path(db_root)
+
+    if not db_path.exists():
+        if json_:
+            emit_json_error("NO_INDEX", "No index found. Run 'seam init' first.")
+        console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
+        raise typer.Exit(code=1)
+
+    # ── Determine input file list ─────────────────────────────────────────────
+    # Enforce mutual exclusion explicitly — if both are given, error cleanly rather
+    # than silently discarding the positional args (which would confuse the caller
+    # into thinking their file list was analyzed when it was not).
+    if stdin and files:
+        if json_:
+            emit_json_error(
+                "INVALID_INPUT",
+                "Provide file paths as positional arguments OR use --stdin, not both.",
+            )
+        console.print(
+            "[red]Error:[/red] Use positional arguments OR [bold]--stdin[/bold], not both."
+        )
+        raise typer.Exit(code=1)
+
+    if stdin:
+        raw_lines = sys.stdin.read().splitlines()
+        input_files = [ln.strip() for ln in raw_lines if ln.strip()]
+    else:
+        input_files = list(files) if files else []
+
+    if not input_files:
+        if json_:
+            emit_json_error(
+                "INVALID_INPUT",
+                "Provide file paths as arguments or use --stdin to read from stdin.",
+            )
+        console.print(
+            "[red]Error:[/red] Provide file paths as arguments or use [bold]--stdin[/bold]."
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        conn = connect(db_path)
+    except sqlite3.Error as exc:
+        if json_:
+            emit_json_error("DB_ERROR", f"Failed to open database: {exc}")
+        console.print(f"[red]Failed to open database:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        # Always route through handle_seam_affected so CLI output is byte-identical to
+        # the MCP tool response (MCP/CLI parity). The handler also relativizes paths,
+        # applies the file-list size cap, and returns a structured error dict on INVALID_INPUT
+        # rather than raising — which the error guard below relies on.
+        result = handle_seam_affected(conn, input_files, project_root, depth=depth)
+    finally:
+        conn.close()
+
+    # ── Error guard — applies to ALL output modes ─────────────────────────────
+    # handle_seam_affected returns {"error": ..., "message": ...} on INVALID_INPUT.
+    # Without this guard, --quiet and rich modes silently degrade to "No affected test
+    # files found" even though the handler actually errored (e.g. oversized file list).
+    if isinstance(result, dict) and result.get("error"):
+        if json_:
+            emit_json_error(result["error"], result.get("message", ""))
+        # --quiet and rich: write error to stderr and exit non-zero
+        sys.stderr.write(f"Error [{result['error']}]: {result.get('message', '')}\n")
+        raise typer.Exit(code=1)
+
+    # ── JSON mode ─────────────────────────────────────────────────────────────
+    if json_:
+        emit_json(result)
+        return
+
+    # ── Quiet mode — bare test-file paths for piping into pytest ─────────────
+    if quiet:
+        for test_path in result.get("affected_tests", []):
+            sys.stdout.write(test_path + "\n")
+        return
+
+    # ── Rich (default) mode ───────────────────────────────────────────────────
+    affected_tests = result.get("affected_tests", [])
+    total = result.get("total_dependents_traversed", 0)
+
+    if not affected_tests:
+        console.print(
+            f"[dim]No affected test files found.[/dim] [dim]({total} dependent(s) traversed)[/dim]"
+        )
+        return
+
+    console.print(
+        f"\n[bold cyan]Affected tests[/bold cyan] "
+        f"for [bold]{len(input_files)}[/bold] changed file(s) "
+        f"[dim]({total} dependent(s) traversed):[/dim]"
+    )
+    for test_path in affected_tests:
+        console.print(f"  [green]•[/green] {test_path}")
+    console.print(f"\n[dim]Run with:[/dim] [bold]pytest {' '.join(affected_tests)}[/bold]")

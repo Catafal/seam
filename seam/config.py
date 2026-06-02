@@ -55,6 +55,38 @@ SEAM_LLM_MODEL: str = os.getenv("SEAM_LLM_MODEL", "gpt-4o-mini")
 SEAM_CLUSTER_MIN_SIZE: int = int(os.getenv("SEAM_CLUSTER_MIN_SIZE", "2"))
 
 
+# ── Phase 3: Affected-tests configuration ────────────────────────────────────
+
+# Maximum hop depth for the affected-tests traversal.
+# Controls how far upstream (through the call/import graph) the `seam affected`
+# command walks from each changed symbol to find dependent test files.
+# Higher values find more distant test files but increase runtime on large graphs.
+SEAM_AFFECTED_DEPTH: int = int(os.getenv("SEAM_AFFECTED_DEPTH", "5"))
+
+# Maximum number of changed files accepted by handle_seam_affected.
+# Inputs larger than this are rejected with INVALID_INPUT (agent mistake guard).
+# Mirrors the _clamp discipline used by other bounded handlers.
+SEAM_MAX_AFFECTED_FILES: int = int(os.getenv("SEAM_MAX_AFFECTED_FILES", "200"))
+
+# Maximum symbols analyzed per file in affected().
+# When a file defines more symbols than this, only the first N are traversed
+# and AffectedResult.partial is set to True.
+# Reuses the SEAM_MAX_IMPACT_SYMBOLS env var pattern for consistency.
+SEAM_MAX_AFFECTED_SYMBOLS: int = int(os.getenv("SEAM_MAX_AFFECTED_SYMBOLS", "50"))
+
+# ── Phase 3: Search / fuzzy fallback configuration ───────────────────────────
+
+# Maximum Damerau-Levenshtein edit distance for the fuzzy fallback.
+# Applied when both FTS and LIKE fallbacks return zero rows.
+# 1 = catch single-char typos (conservative); 2 = broader (may add noise).
+SEAM_FUZZY_MAX_DIST: int = int(os.getenv("SEAM_FUZZY_MAX_DIST", "1"))
+
+# Maximum candidate symbol names to evaluate in the fuzzy fallback.
+# Caps the O(n) edit-distance scan over distinct symbol names.
+# On very large codebases, raise this via env var if precision matters more.
+SEAM_FUZZY_MAX_CANDIDATES: int = int(os.getenv("SEAM_FUZZY_MAX_CANDIDATES", "500"))
+
+
 def get_db_path(project_root: Path) -> Path:
     """Resolve the database path relative to the project root."""
     return project_root / SEAM_DB_PATH
