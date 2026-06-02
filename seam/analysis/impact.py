@@ -4,7 +4,7 @@ Given a symbol name and direction, runs the traversal walk and buckets
 reachable symbols into risk tiers by distance.
 
 Public interface:
-    ``impact(conn, target, direction, max_depth) -> ImpactResult``
+    ``impact(conn, target, direction, max_depth, repo_root=None) -> ImpactResult``
 
 Risk tiers (from PRD / CLAUDE.md):
     WILL_BREAK       — distance 1 (direct dependents — definitely affected)
@@ -29,6 +29,7 @@ TieredEntry structure:
     name        — symbol name
     distance    — hop count from the target
     confidence  — path confidence (EXTRACTED | INFERRED | AMBIGUOUS)
+    resolved_by — Phase 5: how confidence was decided (from walk); None for pre-wired rows
     tier        — risk tier string (WILL_BREAK | LIKELY_AFFECTED | MAY_NEED_TESTING)
     file        — absolute file path if the name is an indexed symbol; None otherwise
 
@@ -44,6 +45,7 @@ Import hierarchy:
 
 import logging
 import sqlite3
+from pathlib import Path
 from typing import Any
 
 from seam.analysis.testpaths import is_test_file
@@ -175,10 +177,12 @@ def _build_tier_group(
 
     Initializes all three tier keys so callers can always index without KeyError,
     even if some tiers are empty. Each entry includes:
-      - file      (str | None) — absolute path for indexed symbols; None otherwise
-      - is_test   (bool)       — True when the file is a test file (per is_test_file());
-                                 False for production files AND for file=None (unresolved
-                                 symbols are never labelled as production or test).
+      - file        (str | None) — absolute path for indexed symbols; None otherwise
+      - is_test     (bool)       — True when the file is a test file (per is_test_file());
+                                   False for production files AND for file=None (unresolved
+                                   symbols are never labelled as production or test).
+      - resolved_by (str | None) — Phase 5 provenance string from walk(); None for
+                                   fast-path (name-count only) or pre-Phase-5 rows.
     """
     group: TierGroup = {
         TIER_WILL_BREAK: [],
@@ -193,10 +197,15 @@ def _build_tier_group(
                 "name": r["name"],
                 "distance": r["distance"],
                 "confidence": r["confidence"],
+                # Phase 5: resolved_by from walk() (None for fast-path / no import context)
+                "resolved_by": r.get("resolved_by"),
                 "tier": tier,
                 "file": file_path,
                 # is_test_file(None) returns False — safe default for unresolved names.
                 "is_test": is_test_file(file_path),
+                # Phase 5: best_candidate is the highest-proximity declaring file for
+                # AMBIGUOUS entries (PRD story 6). None for non-AMBIGUOUS or unavailable.
+                "best_candidate": r.get("best_candidate"),
             }
         )
     return group
@@ -238,6 +247,7 @@ def impact(
     direction: str = "upstream",
     max_depth: int = _DEFAULT_DEPTH,
     include_tests: bool = True,
+    repo_root: Path | None = None,
 ) -> ImpactResult:
     """Compute the blast radius of a symbol.
 
@@ -252,6 +262,10 @@ def impact(
                        file lives in a test tree are filtered out from all tiers.
                        Entries with file=None (unresolved names) are always included
                        because their provenance is unknown (is_test=False by rule).
+        repo_root:     Repository root for Phase 5 import-promotion resolution.
+                       When provided and SEAM_IMPORT_RESOLUTION="on", hop confidence
+                       is resolved via resolve_edge() so imported homonyms promote
+                       to EXTRACTED 'import'.  None → name-count resolution only.
 
     Returns:
         ImpactResult dict with the following keys:
@@ -302,10 +316,10 @@ def impact(
     downstream_reached: list[Reached] = []
 
     if direction in ("upstream", "both"):
-        upstream_reached = walk(conn, [target], "upstream", safe_depth)
+        upstream_reached = walk(conn, [target], "upstream", safe_depth, repo_root=repo_root)
 
     if direction in ("downstream", "both"):
-        downstream_reached = walk(conn, [target], "downstream", safe_depth)
+        downstream_reached = walk(conn, [target], "downstream", safe_depth, repo_root=repo_root)
 
     # Batch lookup of files for all reached symbol names (single query per batch).
     all_names = [r["name"] for r in upstream_reached] + [r["name"] for r in downstream_reached]

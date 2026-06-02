@@ -2,7 +2,7 @@
 
 Contract
 --------
-``walk(conn, seeds, direction, max_depth) -> list[Reached]``
+``walk(conn, seeds, direction, max_depth, repo_root=None) -> list[Reached]``
 
     Walk the edges table starting from ``seeds``, returning every reachable
     symbol with its minimum distance from any seed and the aggregated path
@@ -18,6 +18,8 @@ Reached TypedDict:
     name        — symbol name (string, from edges table)
     distance    — hops from any seed (1-based; seeds themselves are NOT in output)
     confidence  — aggregated path confidence at this distance (see path-confidence rule)
+    resolved_by — Phase 5: how the final hop's confidence was decided
+                  (from resolve_edge when repo_root is available, else from name-count).
 
 Path-confidence rule (from PRD):
     The confidence of a path is its WEAKEST hop.
@@ -42,20 +44,26 @@ Self-edges:
     from being "reached" from itself in 1 hop.
 
 Module imports:
-    Only sqlite3, typing, and logging (stdlib). No server/cli/query imports.
+    Only sqlite3, typing, logging, pathlib (stdlib). No server/cli/query imports.
 """
 
 import logging
 import sqlite3
+from pathlib import Path
 from typing import TypedDict
 
+import seam.config as config
 from seam.analysis.confidence import (
     CONFIDENCE_AMBIGUOUS,
     CONFIDENCE_EXTRACTED,
     CONFIDENCE_INFERRED,
+    Resolution,
+    load_import_mappings,
     load_name_counts,
     resolve,
+    resolve_edge,
 )
+from seam.analysis.imports import ImportMapping
 
 logger = logging.getLogger(__name__)
 
@@ -96,19 +104,29 @@ class Reached(TypedDict):
     """A symbol reachable from the walk seeds, with its distance and path confidence.
 
     Fields:
-        name        — symbol name (string, matches edges.source_name / target_name)
-        distance    — number of hops from the nearest seed (1-based)
-        confidence  — aggregated path confidence at this distance:
-                      EXTRACTED if all hops are EXTRACTED;
-                      INFERRED if any hop is INFERRED (no AMBIGUOUS);
-                      AMBIGUOUS if any hop is AMBIGUOUS.
-                      When multiple paths reach the same symbol at the same distance,
-                      the STRONGEST confidence among those paths is reported.
+        name           — symbol name (string, matches edges.source_name / target_name)
+        distance       — number of hops from the nearest seed (1-based)
+        confidence     — aggregated path confidence at this distance:
+                         EXTRACTED if all hops are EXTRACTED;
+                         INFERRED if any hop is INFERRED (no AMBIGUOUS);
+                         AMBIGUOUS if any hop is AMBIGUOUS.
+                         When multiple paths reach the same symbol at the same distance,
+                         the STRONGEST confidence among those paths is reported.
+        resolved_by    — Phase 5: how the final hop's confidence was decided.
+                         None for fast-path walk (name-count only, no import context).
+                         NOTE: resolved_by comes from the FINAL hop of the winning path,
+                         while confidence is the WEAKEST hop — so resolved_by='import'
+                         can accompany confidence='AMBIGUOUS' on multi-hop paths.
+        best_candidate — Phase 5: for AMBIGUOUS final-hop entries, the most
+                         file-path-proximate declaring file (absolute path string).
+                         None for non-AMBIGUOUS hops or when proximity data is unavailable.
     """
 
     name: str
     distance: int
     confidence: str
+    resolved_by: str | None
+    best_candidate: str | None
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
@@ -134,20 +152,24 @@ def _fetch_neighbors_with_parents(
     conn: sqlite3.Connection,
     names: set[str],
     direction: str,
-) -> list[tuple[str, str, str]]:
-    """Fetch one-hop neighbors for a set of symbol names, including parent and target info.
+) -> list[tuple[str, str, str, str, str]]:
+    """Fetch one-hop neighbors for a set of symbol names, with file context for Phase 5.
 
-    Returns a list of (neighbor_name, parent_name, edge_target_name) tuples.
-    Self-edges (source == target) are excluded.
+    Returns a list of (neighbor_name, parent_name, edge_target_name, ref_file_path, language).
 
     The 3rd column — edge_target_name — is always the edge's target_name column,
     regardless of traversal direction.  This lets the caller resolve confidence
-    against the whole-index name map keyed on the callee/importee name, which is
-    direction-independent and unambiguous.
+    against the whole-index name map keyed on the callee/importee name.
+
+    4th column — ref_file_path — is the absolute path of the file the edge was extracted
+    from (edges.file_id → files.path).  Used by resolve_edge() for import-promotion.
+
+    5th column — language — is files.language for the referencing file.  Used by
+    resolve_edge() for builtin-check and import source resolution.
 
     The stored edges.confidence column is intentionally NOT selected: hop
     confidence is resolved whole-index from edge_target_name at read time
-    (see confidence.resolve), so the stored same-file value never feeds traversal.
+    (see confidence.resolve_edge), so the stored same-file value never feeds traversal.
 
     Splits the IN-clause into batches of _SQL_VAR_BATCH to avoid hitting
     SQLite's SQLITE_MAX_VARIABLE_NUMBER limit (999 on Linux/CI).
@@ -161,7 +183,7 @@ def _fetch_neighbors_with_parents(
         return []
 
     names_list = list(names)
-    all_rows: list[tuple[str, str, str]] = []
+    all_rows: list[tuple[str, str, str, str, str]] = []
 
     # Process in batches to avoid SQLITE_MAX_VARIABLE_NUMBER (999 on most builds).
     for batch_start in range(0, len(names_list), _SQL_VAR_BATCH):
@@ -171,29 +193,43 @@ def _fetch_neighbors_with_parents(
         if direction == "upstream":
             # Who depends on us? → edges pointing at us → source_name is the caller.
             # edge_target_name = target_name (the callee, i.e. the seed symbol).
+            # JOIN files to get the referencing file path and language for resolve_edge.
             sql = f"""
-                SELECT source_name AS neighbor,
-                       target_name AS parent,
-                       target_name AS edge_target_name
-                FROM edges
-                WHERE target_name IN ({placeholders})
-                  AND source_name != target_name
+                SELECT e.source_name AS neighbor,
+                       e.target_name AS parent,
+                       e.target_name AS edge_target_name,
+                       f.path        AS ref_file_path,
+                       f.language    AS language
+                FROM edges e
+                JOIN files f ON f.id = e.file_id
+                WHERE e.target_name IN ({placeholders})
+                  AND e.source_name != e.target_name
             """
         else:
             # What do we depend on? → edges going out from us → target_name is dep.
             # edge_target_name = target_name (the callee, i.e. the neighbor).
             sql = f"""
-                SELECT target_name AS neighbor,
-                       source_name AS parent,
-                       target_name AS edge_target_name
-                FROM edges
-                WHERE source_name IN ({placeholders})
-                  AND source_name != target_name
+                SELECT e.target_name AS neighbor,
+                       e.source_name AS parent,
+                       e.target_name AS edge_target_name,
+                       f.path        AS ref_file_path,
+                       f.language    AS language
+                FROM edges e
+                JOIN files f ON f.id = e.file_id
+                WHERE e.source_name IN ({placeholders})
+                  AND e.source_name != e.target_name
             """
 
         rows = conn.execute(sql, batch).fetchall()
         all_rows.extend(
-            (row["neighbor"], row["parent"], row["edge_target_name"]) for row in rows
+            (
+                row["neighbor"],
+                row["parent"],
+                row["edge_target_name"],
+                row["ref_file_path"],
+                row["language"],
+            )
+            for row in rows
         )
 
     return all_rows
@@ -207,6 +243,7 @@ def walk(
     seeds: list[str],
     direction: str,
     max_depth: int,
+    repo_root: Path | None = None,
 ) -> list[Reached]:
     """Walk the edge graph from seed symbols, returning reachable symbols.
 
@@ -216,11 +253,21 @@ def walk(
         direction:  "upstream" (callers/importers) or "downstream" (callees/importees).
         max_depth:  Maximum number of hops from any seed (1-based). Must be >= 1.
                     Clamping to [1, 10] is the CALLER's responsibility (impact.py does this).
+        repo_root:  Repository root. When provided (and SEAM_IMPORT_RESOLUTION="on"),
+                    each hop's confidence is resolved via resolve_edge() with full
+                    import-promotion context (Phase 5 homonym fix).  When None or when
+                    SEAM_IMPORT_RESOLUTION="off", falls back to name-count resolution.
 
     Returns:
         List of Reached dicts — one per reachable symbol (excluding the seeds themselves).
         Ordered by distance ascending, then name alphabetically.
         Empty list if seeds is empty, no edges, or all reachable are already seeds.
+
+    Phase 5 resolved_by:
+        When repo_root is provided and SEAM_IMPORT_RESOLUTION="on", each Reached entry
+        has resolved_by populated from the final-hop's Resolution["resolved_by"]:
+        "import" for import-promoted hops, "name-unique"/"name-collision"/"builtin"/
+        "unresolved" for name-count-resolved hops, or None on any failure (degrade).
 
     Cycle safety:
         Uses a ``visited`` set to avoid revisiting symbols. A symbol is visited
@@ -237,25 +284,43 @@ def walk(
         return []
 
     # Load whole-index name-count map ONCE per walk call.
-    # This single GROUP BY query is the foundation of whole-index confidence resolution:
-    # instead of using the stored edges.confidence (same-file lower bound), we resolve
-    # each hop's confidence from the edge's target_name against this global map.
+    # This single GROUP BY query is the foundation of whole-index confidence resolution.
     name_counts = load_name_counts(conn)
+
+    # Determine whether full import-promotion is enabled for this walk call.
+    # Both repo_root AND SEAM_IMPORT_RESOLUTION="on" are required.
+    use_import_promotion = repo_root is not None and config.SEAM_IMPORT_RESOLUTION == "on"
+
+    # Per-file import mapping cache: path -> list[ImportMapping].
+    # Populated lazily on first access per file within this walk call.
+    # This prevents N re-queries of load_import_mappings for every hop in large graphs.
+    _import_cache: dict[str, list[ImportMapping]] = {}
+
+    # Per-(file, target) resolution-result cache keyed on (ref_file_path, target_name).
+    # A hub symbol (many callers from the same file) produces many edge rows with the
+    # same pair, so without this cache each row would re-run the declaration-check and
+    # proximity SELECT in resolve_edge — O(edge rows) DB queries instead of O(distinct pairs).
+    _resolution_cache: dict[tuple[str, str], Resolution] = {}
+
+    def _get_import_mappings(file_path: str) -> list[ImportMapping]:
+        """Lazily load and cache import mappings for a referencing file path."""
+        if file_path not in _import_cache:
+            _import_cache[file_path] = load_import_mappings(conn, file_path)
+        return _import_cache[file_path]
 
     # BFS state:
     #   visited: symbols already processed (prevents revisiting and cycles)
     #   current_frontier: set of (name, path_rank) for the current BFS level
-    #   results: name -> (distance, best_path_rank_at_that_distance)
+    #   results: name -> (distance, best_path_rank, resolved_by_for_best_path, best_candidate)
     seed_set = set(seeds)
     visited: set[str] = set(seeds)  # seeds are "visited" — we don't return them
 
-    # For the initial frontier, each seed has a "perfect" path rank (it IS the seed).
-    # Confidence of the path to a seed is irrelevant since seeds are excluded from output.
-    # We track path_rank as a per-symbol accumulated rank from the seed to this symbol.
-    # Initial frontier: all seeds, no hops yet.
-    current_frontier: list[tuple[str, int]] = [(s, 2) for s in seeds]  # 2 = EXTRACTED rank (perfect start)
+    # Initial frontier: all seeds at EXTRACTED rank (perfect start — the seed IS the seed).
+    current_frontier: list[tuple[str, int]] = [(s, 2) for s in seeds]
 
-    results: dict[str, tuple[int, int]] = {}  # name -> (distance, best_path_rank)
+    # Results map: name -> (distance, best_path_rank, resolved_by_of_best_path_hop, best_candidate)
+    # best_candidate is from the final hop's Resolution (surface AMBIGUOUS tie-break).
+    results: dict[str, tuple[int, int, str | None, str | None]] = {}
 
     for depth in range(1, max_depth + 1):
         if not current_frontier:
@@ -264,73 +329,104 @@ def walk(
         # Build a map: parent_name -> path_rank so we can propagate confidence.
         parent_rank: dict[str, int] = {}
         for name, pr in current_frontier:
-            # If a name appears multiple times in frontier (shouldn't, but defensive),
-            # keep the strongest rank.
             if name not in parent_rank or pr > parent_rank[name]:
                 parent_rank[name] = pr
 
         # Fetch one-hop neighbors for all symbols in the current frontier.
-        # Single batched query (with _SQL_VAR_BATCH chunking) per BFS level.
-        # Returns (neighbor, parent, edge_target_name).
+        # Returns (neighbor, parent, edge_target_name, ref_file_path, language).
         frontier_names = {name for name, _ in current_frontier}
         rows = _fetch_neighbors_with_parents(conn, frontier_names, direction)
 
         if not rows:
             break
 
-        next_frontier: dict[str, int] = {}  # name -> best_path_rank for this depth
+        # next_frontier tracks: name -> (best_path_rank, resolved_by, best_candidate)
+        next_frontier: dict[str, tuple[int, str | None, str | None]] = {}
 
-        for neighbor, parent, edge_target_name in rows:
+        for neighbor, parent, edge_target_name, ref_file_path, language in rows:
             # Skip seeds — they are never returned as reachable.
             if neighbor in seed_set:
                 continue
 
-            # Resolve hop confidence from the EDGE'S target_name against the whole index.
-            # This overrides the stored edges.confidence (same-file lower-bound hint).
-            # Resolution: count=1 → EXTRACTED, count>1 → AMBIGUOUS, count=0 → INFERRED.
-            hop_confidence = resolve(edge_target_name, name_counts)
+            # Resolve hop confidence using full Phase 5 resolver when available.
+            # Falls back to plain name-count when import promotion is disabled/unavailable.
+            # Resolution cache: (ref_file_path, edge_target_name) pairs recur
+            # on hub symbols — cache results to collapse O(edge rows) → O(distinct pairs).
+            hop_best_candidate: str | None = None
+            if use_import_promotion and ref_file_path and language:
+                cache_key = (ref_file_path, edge_target_name)
+                if cache_key not in _resolution_cache:
+                    import_mappings = _get_import_mappings(ref_file_path)
+                    _resolution_cache[cache_key] = resolve_edge(
+                        target_name=edge_target_name,
+                        name_counts=name_counts,
+                        language=language,
+                        import_mappings=import_mappings,
+                        referencing_file=Path(ref_file_path),
+                        repo_root=repo_root,
+                        conn=conn,
+                        max_import_candidates=config.SEAM_MAX_IMPORT_CANDIDATES,
+                        max_proximity_candidates=config.SEAM_PROXIMITY_MAX_CANDIDATES,
+                    )
+                resolution = _resolution_cache[cache_key]
+                hop_confidence = resolution["confidence"]
+                hop_resolved_by = resolution["resolved_by"]
+                # best_candidate is only present on AMBIGUOUS hops (proximity tie-break);
+                # captured here so it surfaces in the final Reached output.
+                hop_best_candidate = resolution.get("best_candidate")
+            else:
+                # Fast-path: name-count only (SEAM_IMPORT_RESOLUTION="off" or no context).
+                hop_confidence = resolve(edge_target_name, name_counts)
+                hop_resolved_by = None
 
-            # Compute path rank: propagate weakest-hop rule from the parent's path rank.
+            # Propagate weakest-hop rule: path confidence = min(parent_rank, this_hop_rank).
             parent_path_rank = parent_rank.get(parent, _DEFAULT_RANK)
             hop_rank = _rank(hop_confidence)
             path_rank = _min_rank(parent_path_rank, hop_rank)
 
             if neighbor in visited:
-                # Already recorded at a shorter distance. Skip (BFS guarantees first
-                # encounter is minimum distance). But if same distance, we might see
-                # the same neighbor again via a different path in this BFS level —
-                # handled via next_frontier deduplication below.
+                # Already at a shorter distance (BFS guarantees minimum-distance-first).
                 continue
 
-            # Track the best (strongest) path rank for this neighbor at this depth.
-            if neighbor not in next_frontier or path_rank > next_frontier[neighbor]:
-                next_frontier[neighbor] = path_rank
+            # Keep the strongest path rank for this neighbor at this BFS level.
+            # When replacing with a stronger path, update resolved_by and best_candidate
+            # from the winning hop.
+            existing = next_frontier.get(neighbor)
+            if existing is None or path_rank > existing[0]:
+                next_frontier[neighbor] = (path_rank, hop_resolved_by, hop_best_candidate)
 
-        # Commit next_frontier to results and update visited.
+        # Commit next_frontier to results and advance visited set.
         new_frontier: list[tuple[str, int]] = []
-        for name, pr in next_frontier.items():
+        for name, (pr, resolved_by, best_candidate) in next_frontier.items():
             visited.add(name)
-            results[name] = (depth, pr)
+            results[name] = (depth, pr, resolved_by, best_candidate)
             new_frontier.append((name, pr))
 
         current_frontier = new_frontier
 
     # Convert results to Reached list, sorted by distance then name.
+    # resolved_by reflects the FINAL hop of the winning (strongest-confidence) path,
+    # while confidence is the WEAKEST hop — so resolved_by='import' can accompany
+    # confidence='AMBIGUOUS' on multi-hop paths where an earlier hop was ambiguous.
+    # best_candidate is from the final hop's Resolution (only set for AMBIGUOUS hops).
     reached: list[Reached] = [
         Reached(
             name=name,
             distance=distance,
             confidence=_RANK_CONFIDENCE.get(best_rank, CONFIDENCE_INFERRED),
+            resolved_by=resolved_by,
+            best_candidate=best_candidate,
         )
-        for name, (distance, best_rank) in results.items()
+        for name, (distance, best_rank, resolved_by, best_candidate) in results.items()
     ]
     reached.sort(key=lambda r: (r["distance"], r["name"]))
 
     logger.debug(
-        "walk(seeds=%s, direction=%s, max_depth=%d) -> %d reached",
+        "walk(seeds=%s, direction=%s, max_depth=%d, import_promotion=%s) -> %d reached",
         seeds,
         direction,
         max_depth,
+        use_import_promotion,
         len(reached),
     )
 

@@ -1,4 +1,4 @@
--- Seam SQLite Schema (v5 — Phase 4: node-field enrichment)
+-- Seam SQLite Schema (v6 — Phase 5: import resolution)
 -- Run via db.py:init_db() — idempotent (CREATE TABLE IF NOT EXISTS).
 -- FTS5 is required; init_db() verifies availability before proceeding.
 -- Schema v2 adds: edges.confidence (DEFAULT 'INFERRED').
@@ -6,10 +6,12 @@
 -- Schema v4 adds: clusters table + symbols.cluster_id (graph community detection).
 -- Schema v5 adds: symbols.signature, decorators, is_exported, visibility, qualified_name;
 --                 FTS5 rebuilt to index (name, docstring, signature).
+-- Schema v6 adds: import_mappings table (Phase 5 import resolution).
 -- Migration from v1: db.py:_run_migration_v1_to_v2() (guarded ALTER TABLE).
 -- Migration from v2: db.py:_run_migration_v2_to_v3() (guards schema_version bump).
 -- Migration from v3: db.py:_run_migration_v3_to_v4() (adds clusters table + cluster_id).
 -- Migration from v4: db.py:_run_migration_v4_to_v5() (adds 5 enrichment cols + FTS rebuild).
+-- Migration from v5: db.py:_run_migration_v5_to_v6() (adds import_mappings table).
 
 PRAGMA journal_mode = WAL;      -- Write-ahead logging for concurrent reads
 PRAGMA foreign_keys = ON;
@@ -127,6 +129,29 @@ CREATE TABLE IF NOT EXISTS clusters (
 
 CREATE INDEX IF NOT EXISTS idx_clusters_id ON clusters(id);
 
+-- ── Import Mappings ──────────────────────────────────────────────────────────
+-- One row per import binding extracted from a source file during indexing.
+-- Populated by pipeline.py (index_one_file) alongside symbols/edges.
+-- Refreshed per-file by the watcher (delete-then-insert, same as upsert_file).
+-- NOT backfilled by migration — only a full `seam init` populates these rows.
+-- Schema v6 addition (Phase 5: import resolution confidence promotion).
+CREATE TABLE IF NOT EXISTS import_mappings (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id       INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    local_name    TEXT NOT NULL,   -- name used in the referencing file (alias or original)
+    exported_name TEXT NOT NULL,   -- original name in the source module
+    source_module TEXT NOT NULL,   -- import source as written (e.g. 'app.parser', './utils')
+    is_default    INTEGER NOT NULL DEFAULT 0,   -- 1 for default imports (import X from ...)
+    is_namespace  INTEGER NOT NULL DEFAULT 0,   -- 1 for namespace imports (import * as ns)
+    is_wildcard   INTEGER NOT NULL DEFAULT 0,   -- 1 for wildcard imports (from x import *)
+    line          INTEGER NOT NULL              -- 1-based line number of the import statement
+);
+
+-- Index for fast lookup by file (primary access pattern: load all mappings for a file)
+CREATE INDEX IF NOT EXISTS idx_import_mappings_file_id ON import_mappings(file_id);
+-- Index for fast lookup by local name (used in import-promotion step A)
+CREATE INDEX IF NOT EXISTS idx_import_mappings_local_name ON import_mappings(local_name);
+
 -- ── Metadata ─────────────────────────────────────────────────────────────────
 -- Key-value store for index metadata (version, created_at, etc.)
 CREATE TABLE IF NOT EXISTS metadata (
@@ -135,9 +160,9 @@ CREATE TABLE IF NOT EXISTS metadata (
 );
 
 -- NOTE: INSERT OR IGNORE does not update existing rows. Fresh DBs are seeded at
--- the CURRENT schema version ('5') so a brand-new `seam init` is born current and
+-- the CURRENT schema version ('6') so a brand-new `seam init` is born current and
 -- does NOT trigger any migration advisory.
 -- Existing older DBs keep their stored version; db.py migrations bump them in place.
 INSERT OR IGNORE INTO metadata(key, value) VALUES
-    ('schema_version', '5'),
+    ('schema_version', '6'),
     ('seam_version',   '0.2.0');

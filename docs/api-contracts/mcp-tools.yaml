@@ -318,6 +318,19 @@ tools:
           is_test:     bool — True if the entry's file is a test file (per path heuristic);
                        False for production files AND for entries with file=null
                        (unresolved names are never labelled as test, to avoid false positives).
+          resolved_by: Phase 5. How the confidence tier was decided.
+                       Stable string enum:
+                         import         — promoted via a resolved same-file import (homonym fix)
+                         name-unique    — target name appears exactly once in the full index
+                         name-collision — target name shared by >1 indexed symbol
+                         builtin        — known language builtin/stdlib (count==0 guard)
+                         unresolved     — count==0, not a known builtin
+                       null for pre-v6 indexes or when resolution context is unavailable.
+                       Treat null as "unknown" — same null-contract as Phase 4 enrichment fields.
+          best_candidate: Phase 5. For AMBIGUOUS entries (resolved_by: name-collision), the
+                          file-path-proximate most-likely declaring file (relative path from
+                          project root). null when resolved_by != name-collision, or when
+                          proximity data is unavailable (no conn, no referencing-file context).
 
         Present only when include_tests=false:
           hidden_tests: int — count of test-file dependents that were filtered out across
@@ -387,18 +400,28 @@ tools:
           callees_target (list) — one-hop callees of target (list[EdgeHop]).
 
         Hop shape (per edge in a path):
-          from_name   (str) — source of this edge
-          to_name     (str) — target of this edge
-          kind        (str) — 'call' | 'import'
-          confidence  (str) — EXTRACTED | INFERRED | AMBIGUOUS
-                              Resolved at read time against the whole index
-                              (EXTRACTED = to_name unique in index; AMBIGUOUS = shared name;
-                               INFERRED = to_name not indexed)
+          from_name      (str)      — source of this edge
+          to_name        (str)      — target of this edge
+          kind           (str)      — 'call' | 'import'
+          confidence     (str)      — EXTRACTED | INFERRED | AMBIGUOUS
+                                      Resolved at read time against the whole index
+                                      (EXTRACTED = to_name unique in index; AMBIGUOUS = shared name;
+                                       INFERRED = to_name not indexed)
+          resolved_by    (str|null) — Phase 5. Provenance of this hop's confidence.
+                                      Stable enum: import | name-unique | name-collision |
+                                                   builtin | unresolved
+                                      null for pre-v6 indexes or missing resolution context.
+          best_candidate (str|null) — Phase 5. For AMBIGUOUS hops (resolved_by: name-collision),
+                                      the most file-path-proximate declaring file (relative path).
+                                      null when resolved_by != name-collision or no proximity data.
 
         EdgeHop shape (for callers_* / callees_* lists):
-          name        (str) — neighboring symbol name
-          kind        (str) — 'call' | 'import'
-          confidence  (str) — EXTRACTED | INFERRED | AMBIGUOUS
+          name           (str)      — neighboring symbol name
+          kind           (str)      — 'call' | 'import'
+          confidence     (str)      — EXTRACTED | INFERRED | AMBIGUOUS
+          resolved_by    (str|null) — Phase 5. Same provenance vocabulary as Hop above.
+                                      null for pre-v6 indexes or missing context.
+          best_candidate (str|null) — Phase 5. Same semantics as Hop above.
 
         Special case: source == target → found=true, paths=[[]] (empty inner path,
         zero hops, trivially connected to itself).

@@ -28,7 +28,7 @@ from seam.analysis.changes import (
     NotAGitRepoError,
     detect_changes,
 )
-from seam.analysis.flows import EdgeHop
+from seam.analysis.flows import EdgeHop, Hop
 from seam.query import engine
 from seam.query.clusters import cluster_members as query_cluster_members
 from seam.query.clusters import list_clusters as query_list_clusters
@@ -57,12 +57,39 @@ _TRACE_DEPTH_DEFAULT = 10
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _serialize_edge_hop(hop: EdgeHop) -> dict[str, Any]:
-    """Serialize an EdgeHop TypedDict to a plain dict for JSON-safe output."""
+def _serialize_hop(hop: Hop, root: Path) -> dict[str, Any]:
+    """Serialize a flows.Hop dict for JSON output with path relativization.
+
+    Includes best_candidate (relativized) for AMBIGUOUS hops.
+    """
+    raw_candidate: str | None = hop.get("best_candidate")
+    return {
+        "from_name": hop["from_name"],
+        "to_name": hop["to_name"],
+        "kind": hop["kind"],
+        "confidence": hop["confidence"],
+        "resolved_by": hop.get("resolved_by"),
+        "best_candidate": _relativize(raw_candidate, root) if raw_candidate is not None else None,
+    }
+
+
+def _serialize_edge_hop(hop: EdgeHop, root: Path | None = None) -> dict[str, Any]:
+    """Serialize an EdgeHop TypedDict to a plain dict for JSON-safe output.
+
+    Phase 5: includes resolved_by for provenance (null when not available).
+    Includes best_candidate (relativized) for AMBIGUOUS hops.
+    """
+    raw_candidate = hop.get("best_candidate")
     return {
         "name": hop["name"],
         "kind": hop["kind"],
         "confidence": hop["confidence"],
+        "resolved_by": hop.get("resolved_by"),  # Phase 5: null = unknown/fast-path
+        # best_candidate for AMBIGUOUS hops; relativized when root is provided.
+        "best_candidate": (
+            _relativize(raw_candidate, root) if (raw_candidate is not None and root is not None)
+            else raw_candidate
+        ),
     }
 
 
@@ -279,6 +306,8 @@ def handle_seam_impact(
         direction=direction,
         max_depth=safe_depth,
         include_tests=include_tests,
+        # Thread repo_root for Phase 5 import-promotion (root is already the project root).
+        repo_root=root,
     )
 
     # Build the response: pass found/target through, relativize file paths in entries.
@@ -300,9 +329,20 @@ def handle_seam_impact(
                     "name": entry["name"],
                     "distance": entry["distance"],
                     "confidence": entry["confidence"],
+                    # Phase 5: resolved_by carries import-promotion provenance.
+                    # null when name-count fast-path was used (repo_root absent or "off").
+                    "resolved_by": entry.get("resolved_by"),
                     "tier": entry["tier"],
                     "file": _relativize(entry["file"], root) if entry["file"] is not None else None,
                     "is_test": entry["is_test"],
+                    # Phase 5: best_candidate surfaces the most-proximate declaring
+                    # file for AMBIGUOUS entries (PRD story 6). Null for non-AMBIGUOUS or
+                    # when proximity data was unavailable. Relativized like other file paths.
+                    "best_candidate": (
+                        _relativize(entry["best_candidate"], root)
+                        if entry.get("best_candidate") is not None
+                        else None
+                    ),
                 }
                 for entry in entries
             ]
@@ -379,24 +419,24 @@ def handle_seam_trace(
     clean_target = target.strip()
 
     # Find the shortest path from source to target.
-    paths = flows_module.trace(conn, clean_source, clean_target, max_depth=safe_depth)
+    # Thread root as repo_root for Phase 5 import-promotion (root is the project root).
+    paths = flows_module.trace(conn, clean_source, clean_target,
+                               max_depth=safe_depth, repo_root=root)
 
     # Gather one-hop neighborhood for both symbols — useful context for the agent.
-    callers_source = flows_module.callers(conn, clean_source)
-    callees_source = flows_module.callees(conn, clean_source)
-    callers_target = flows_module.callers(conn, clean_target)
-    callees_target = flows_module.callees(conn, clean_target)
+    # Thread repo_root so callers/callees also surface import-promotion provenance.
+    callers_source = flows_module.callers(conn, clean_source, repo_root=root)
+    callees_source = flows_module.callees(conn, clean_source, repo_root=root)
+    callers_target = flows_module.callers(conn, clean_target, repo_root=root)
+    callees_target = flows_module.callees(conn, clean_target, repo_root=root)
 
     # Serialize paths: each Path is list[Hop]; Hop is already a plain TypedDict.
     # Convert to plain dicts for JSON-safety.
+    # Phase 5: include resolved_by for provenance (null when fast-path / not available).
+    # Include best_candidate (relativized) for AMBIGUOUS hops.
     serialized_paths = [
         [
-            {
-                "from_name": hop["from_name"],
-                "to_name": hop["to_name"],
-                "kind": hop["kind"],
-                "confidence": hop["confidence"],
-            }
+            _serialize_hop(hop, root)
             for hop in path
         ]
         for path in paths
@@ -407,10 +447,10 @@ def handle_seam_trace(
         "source": clean_source,
         "target": clean_target,
         "paths": serialized_paths,
-        "callers_source": [_serialize_edge_hop(h) for h in callers_source],
-        "callees_source": [_serialize_edge_hop(h) for h in callees_source],
-        "callers_target": [_serialize_edge_hop(h) for h in callers_target],
-        "callees_target": [_serialize_edge_hop(h) for h in callees_target],
+        "callers_source": [_serialize_edge_hop(h, root) for h in callers_source],
+        "callees_source": [_serialize_edge_hop(h, root) for h in callees_source],
+        "callers_target": [_serialize_edge_hop(h, root) for h in callers_target],
+        "callees_target": [_serialize_edge_hop(h, root) for h in callees_target],
     }
 
 

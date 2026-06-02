@@ -31,6 +31,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -520,12 +521,16 @@ def impact_cmd(
                 include_tests=include_tests,
             )
         else:
+            # WHY: pass repo_root so Rich mode uses the same Phase 5 import-promotion
+            # as --json mode. Without this, the same symbol shows AMBIGUOUS in Rich
+            # but EXTRACTED [via import] in --json — a confusing parity gap.
             result = impact(
                 conn,
                 target=symbol,
                 direction=direction,
                 max_depth=depth,
                 include_tests=include_tests,
+                repo_root=project_root,
             )
     finally:
         conn.close()
@@ -613,10 +618,16 @@ def impact_cmd(
                 }.get(entry["confidence"], "white")
                 # Show [test] marker when tests are included and this entry is from a test file.
                 test_marker = " [dim][test][/dim]" if entry.get("is_test") else ""
+                # Phase 5: surface the proximity best_candidate on AMBIGUOUS entries
+                # (story 6) so a human sees the likeliest declaration for a homonym.
+                best = entry.get("best_candidate")
+                best_marker = (
+                    f" [dim](best: {os.path.relpath(best, project_root)})[/dim]" if best else ""
+                )
                 console.print(
                     f"    [bold]{entry['name']}[/bold]  "
                     f"[{confidence_color}]{entry['confidence']}[/{confidence_color}]  "
-                    f"[dim]d={entry['distance']}[/dim]{test_marker}"
+                    f"[dim]d={entry['distance']}[/dim]{test_marker}{best_marker}"
                 )
 
     # Footer: when production dependents were shown but tests were also hidden,
@@ -684,11 +695,13 @@ def trace_cmd(
                 conn, source=source, target=target, root=project_root, max_depth=safe_depth
             )
         else:
-            paths = flows_trace(conn, source, target, max_depth=safe_depth)
-            callers_src = flows_callers(conn, source)
-            callees_src = flows_callees(conn, source)
-            callers_tgt = flows_callers(conn, target)
-            callees_tgt = flows_callees(conn, target)
+            # Thread project_root as repo_root for Phase 5 import-promotion so
+            # imported homonym bindings resolve as EXTRACTED rather than AMBIGUOUS.
+            paths = flows_trace(conn, source, target, max_depth=safe_depth, repo_root=project_root)
+            callers_src = flows_callers(conn, source, repo_root=project_root)
+            callees_src = flows_callees(conn, source, repo_root=project_root)
+            callers_tgt = flows_callers(conn, target, repo_root=project_root)
+            callees_tgt = flows_callees(conn, target, repo_root=project_root)
     finally:
         conn.close()
 
@@ -707,11 +720,20 @@ def trace_cmd(
                 sys.stdout.write(result["paths"][0][-1]["to_name"] + "\n")
         return
 
-    # ── Rich (default) mode — existing rendering, unchanged ──────────────────
+    # ── Rich (default) mode ───────────────────────────────────────────────────
 
     # Confidence -> rich color mapping, used throughout.
     def _conf_color(c: str) -> str:
         return {"EXTRACTED": "green", "INFERRED": "yellow", "AMBIGUOUS": "red"}.get(c, "white")
+
+    # Phase 5: best_candidate is the proximity-ranked most-likely target attached to
+    # AMBIGUOUS hops (story 6). Rendered relative to the project root so a human
+    # scanning a homonym sees the likeliest declaration alongside the ambiguity.
+    def _best_suffix(d: Mapping[str, Any]) -> str:
+        best = d.get("best_candidate")
+        if not best:
+            return ""
+        return f" [dim](best: {os.path.relpath(best, project_root)})[/dim]"
 
     # ── Path result ───────────────────────────────────────────────────────────
     if not paths:
@@ -731,14 +753,17 @@ def trace_cmd(
                 f"\n[bold cyan]Path[/bold cyan] from [bold]{source}[/bold] to [bold]{target}[/bold] "
                 f"({len(found_path)} hop(s)):"
             )
-            # Print each hop as: from → to  (kind)  CONFIDENCE
             arrow = "  →  "
             for hop in found_path:
                 color = _conf_color(hop["confidence"])
+                # Phase 5: append resolved_by when present for provenance visibility.
+                # Format: "EXTRACTED [via import]" so users can spot promoted hops.
+                rby = hop.get("resolved_by")
+                rby_suffix = f" [dim][via {rby}][/dim]" if rby else ""
                 console.print(
                     f"  [bold]{hop['from_name']}[/bold]{arrow}[bold]{hop['to_name']}[/bold]"
                     f"  [dim]{hop['kind']}[/dim]"
-                    f"  [{color}]{hop['confidence']}[/{color}]"
+                    f"  [{color}]{hop['confidence']}[/{color}]{rby_suffix}{_best_suffix(hop)}"
                 )
 
     # ── One-hop neighborhood ──────────────────────────────────────────────────
@@ -749,9 +774,12 @@ def trace_cmd(
         console.print(f"\n  [bold]{label}[/bold]:")
         for h in hops:
             color = _conf_color(h["confidence"])
+            # Phase 5: show resolved_by in neighbourhood hops too when present.
+            rby = h.get("resolved_by")
+            rby_suffix = f" [dim][via {rby}][/dim]" if rby else ""
             console.print(
                 f"    [bold]{h['name']}[/bold]  [dim]{h['kind']}[/dim]"
-                f"  [{color}]{h['confidence']}[/{color}]"
+                f"  [{color}]{h['confidence']}[/{color}]{rby_suffix}{_best_suffix(h)}"
             )
 
     console.print(f"\n[bold cyan]Neighborhood of [bold]{source}[/bold][/bold cyan]:")

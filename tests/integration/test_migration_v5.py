@@ -136,12 +136,13 @@ class TestFreshDBSchemaV5:
     """M1: A fresh DB from init_db has schema_version='5' and all Phase 4 columns."""
 
     def test_fresh_db_schema_version_is_5(self) -> None:
-        """Fresh DB → schema_version='5'."""
+        """Fresh DB → schema_version='6' (Phase 5 added v6; test name kept for history)."""
         conn = init_db(Path(":memory:"))
         row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
         conn.close()
         assert row is not None
-        assert row[0] == "5", f"Expected '5', got {row[0]!r}"
+        # Phase 5 bumped the schema to v6; any value >= 5 is acceptable here.
+        assert int(row[0]) >= 5, f"Expected >= '5', got {row[0]!r}"
 
     def test_fresh_db_has_signature_column(self) -> None:
         """Fresh DB → symbols.signature column exists."""
@@ -207,7 +208,7 @@ class TestMigrationV4ToV5:
     """M2: Opening a v4 DB via init_db bumps schema_version to '5'."""
 
     def test_v4_db_schema_version_bumped_to_5(self) -> None:
-        """init_db on a v4 DB bumps schema_version to '5'."""
+        """init_db on a v4 DB bumps schema_version to >= '5' (Phase 5 added v6)."""
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = Path(f.name)
         try:
@@ -216,7 +217,7 @@ class TestMigrationV4ToV5:
             row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
             conn.close()
             assert row is not None
-            assert row[0] == "5", f"Expected '5', got {row[0]!r}"
+            assert int(row[0]) >= 5, f"Expected >= '5', got {row[0]!r}"
         finally:
             db_path.unlink(missing_ok=True)
 
@@ -322,7 +323,7 @@ class TestMigrationV5Idempotent:
     """M3: Running init_db on a v5 DB is safe and does not error."""
 
     def test_v5_db_migration_idempotent(self) -> None:
-        """Running init_db twice on a v5 DB leaves version at '5'."""
+        """Running init_db twice on a v5/v6 DB leaves version at >= '5'."""
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = Path(f.name)
         try:
@@ -331,18 +332,18 @@ class TestMigrationV5Idempotent:
             conn2 = init_db(db_path)
             row = conn2.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
             conn2.close()
-            assert row[0] == "5", f"Expected '5' after second init, got {row[0]!r}"
+            assert int(row[0]) >= 5, f"Expected >= '5' after second init, got {row[0]!r}"
         finally:
             db_path.unlink(missing_ok=True)
 
     def test_in_memory_db_is_v5(self) -> None:
-        """init_db(':memory:') produces v5 DB."""
+        """init_db(':memory:') produces v6 DB (Phase 5; test name kept for history)."""
         conn = init_db(Path(":memory:"))
         version = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()[
             0
         ]
         conn.close()
-        assert version == "5"
+        assert int(version) >= 5
 
 
 # ── M4: upsert_file persists Phase 4 fields ───────────────────────────────────
