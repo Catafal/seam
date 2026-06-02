@@ -61,6 +61,7 @@ from seam.cli.output import check_mutual_exclusion, emit_json, emit_json_error, 
 from seam.indexer.cluster_index import get_llm_naming_summary, index_clusters
 from seam.indexer.db import connect, init_db
 from seam.indexer.pipeline import index_one_file, walk_project
+from seam.indexer.sync import sync as sync_project
 from seam.query.clusters import cluster_members as query_cluster_members
 from seam.query.clusters import list_clusters as query_list_clusters
 from seam.query.comments import why as comments_why
@@ -1670,4 +1671,180 @@ def pack_cmd(
         console.print(
             f"\n  [bold]cluster peers[/bold]: {', '.join(peers[:8])}"
             + (f" +{len(peers) - 8} more" if len(peers) > 8 else "")
+        )
+
+
+# ── seam sync ─────────────────────────────────────────────────────────────────
+
+
+@app.command(name="sync")
+def sync_cmd(
+    path: str = typer.Argument(".", help="Project root to sync (default: current directory)"),
+    db_dir: str = typer.Option(
+        "",
+        "--db-dir",
+        help="Override DB directory (default: same as project root)",
+    ),
+    force_clusters: bool = typer.Option(
+        False,
+        "--force-clusters",
+        help=(
+            "Recompute clusters even when zero files changed "
+            "(useful after the watcher already indexed your edits)."
+        ),
+    ),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        "-q",
+        help="Print bare key:value output, one per line (for hook use).",
+    ),
+) -> None:
+    """Incrementally refresh the Seam index by reconciling against the filesystem.
+
+    Detects files that changed since the last index (via mtime + SHA-1), re-indexes
+    only those files, removes deleted files, and recomputes clusters if the graph
+    changed. Much faster than `seam init` when only a few files changed.
+
+    Requires an existing index (run `seam init` first).
+
+    Examples:
+      seam sync                       -- sync current directory
+      seam sync /path/to/project      -- sync a specific project
+      seam sync --force-clusters      -- recompute clusters even if nothing changed
+      seam sync -q >/dev/null 2>&1    -- quiet for git hook use
+      seam sync --json                -- structured output for CI / agents
+    """
+    # WHY: check mutual exclusion before any DB work so the error is immediate.
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
+    project_root = Path(path).resolve()
+
+    if not project_root.is_dir():
+        if json_:
+            emit_json_error("INVALID_INPUT", f"'{project_root}' is not a directory.")
+        console.print(f"[red]Error:[/red] '{project_root}' is not a directory.")
+        raise typer.Exit(code=1)
+
+    # Mirror `init`'s path/db-dir resolution.
+    db_root = Path(db_dir).resolve() if db_dir else project_root
+    db_path = config.get_db_path(db_root)
+
+    # sync requires an existing index — use connect() (NOT init_db).
+    # WHY: sync's responsibility is "reconcile an existing index"; bootstrapping
+    # a new one is init's job. Failing clearly here prevents silent data loss
+    # (e.g. the user accidentally runs sync in the wrong directory and gets an
+    # empty index instead of an error).
+    if not db_path.exists():
+        if json_:
+            emit_json_error(
+                "NO_INDEX",
+                f"No index found at '{db_path}'. Run 'seam init' first to create the index.",
+            )
+        console.print(
+            "[red]No index found.[/red] Run [bold]seam init[/bold] first to create the index."
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        conn = connect(db_path)
+    except sqlite3.Error as exc:
+        if json_:
+            emit_json_error("DB_ERROR", f"Failed to open database: {exc}")
+        console.print(f"[red]Failed to open database:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        result = sync_project(
+            conn,
+            project_root,
+            recompute_clusters=True,
+            force_clusters=force_clusters,
+            naming_mode=config.SEAM_CLUSTER_NAMING,
+            llm_api_key=config.SEAM_LLM_API_KEY,
+            llm_model=config.SEAM_LLM_MODEL,
+            min_size=config.SEAM_CLUSTER_MIN_SIZE,
+        )
+    except sqlite3.Error as exc:
+        # A genuine database-layer failure (lock, corruption, disk full mid-write).
+        if json_:
+            emit_json_error("DB_ERROR", f"Sync failed: {exc}")
+        console.print(f"[red]Sync failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    except Exception as exc:  # noqa: BLE001
+        # Catch-all so an unexpected error (e.g. an OSError walking the tree) still
+        # produces a structured envelope instead of a raw traceback — the --json
+        # contract must never be broken. DB_ERROR is the closest data-layer bucket
+        # in the documented code set (NO_INDEX/INVALID_INPUT/INVALID_QUERY/
+        # NOT_A_GIT_REPO/DB_ERROR); we do not invent a new code. The message keeps
+        # the real error visible for diagnosis.
+        if json_:
+            emit_json_error("DB_ERROR", f"Sync failed: {exc}")
+        console.print(f"[red]Sync failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    finally:
+        conn.close()
+
+    # ── JSON mode ─────────────────────────────────────────────────────────────
+    if json_:
+        emit_json(result)
+        return
+
+    # ── Quiet mode — key:value pairs, one per line, for hook use ─────────────
+    # WHY key:value (not bare values): with 8 mixed int/bool fields, bare positional
+    # values are ambiguous to parse. "key: value\n" lets hooks do `grep "^added:"`.
+    if quiet:
+        sys.stdout.write(f"added: {result['added']}\n")
+        sys.stdout.write(f"modified: {result['modified']}\n")
+        sys.stdout.write(f"removed: {result['removed']}\n")
+        sys.stdout.write(f"unchanged: {result['unchanged']}\n")
+        sys.stdout.write(f"skipped: {result['skipped']}\n")
+        sys.stdout.write(f"graph_changed: {result['graph_changed']}\n")
+        sys.stdout.write(f"clusters_recomputed: {result['clusters_recomputed']}\n")
+        sys.stdout.write(f"cluster_count: {result['cluster_count']}\n")
+        return
+
+    # ── Rich (default) mode — summary table ───────────────────────────────────
+    # cluster_count: None = recompute skipped (gate false); -1 = recompute RAN but
+    # FAILED (index_clusters' error sentinel); >= 0 = success. Mirror `seam init`'s
+    # display so a failed recompute reads as "failed", never a misleading "-1".
+    cluster_count = result["cluster_count"]
+    clustering_failed = cluster_count is not None and cluster_count < 0
+    if cluster_count is None:
+        cluster_display = "skipped"
+    elif clustering_failed:
+        cluster_display = "failed"
+    else:
+        cluster_display = str(cluster_count)
+
+    table = Table(title="seam sync — complete", show_header=False, box=None)
+    table.add_column("key", style="bold cyan", width=20)
+    table.add_column("value")
+    table.add_row("root", str(project_root))
+    table.add_row("added", str(result["added"]))
+    table.add_row("modified", str(result["modified"]))
+    table.add_row("removed", str(result["removed"]))
+    table.add_row("unchanged", str(result["unchanged"]))
+    table.add_row("skipped", str(result["skipped"]))
+    table.add_row("clusters", cluster_display)
+    console.print(table)
+
+    # Visible failure warning when the gated cluster recompute failed — without
+    # this the operator sees only "clusters: failed" in the table and might miss
+    # that the index's clusters are now stale. Mirrors `seam init`'s guard.
+    if clustering_failed:
+        console.print(
+            "[yellow]clusters: recompute failed[/yellow] "
+            "[dim](clusters may be stale — run 'seam init' to rebuild; "
+            "set SEAM_LOG_LEVEL=DEBUG to see the error)[/dim]"
+        )
+
+    if result["skipped"] > 0:
+        console.print(
+            f"[dim]{result['skipped']} file(s) skipped (binary/oversize/parse error). "
+            "Set SEAM_LOG_LEVEL=DEBUG to see which.[/dim]"
         )

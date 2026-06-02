@@ -14,6 +14,7 @@ Local code intelligence MCP server — indexes codebases with tree-sitter, store
 - `make install-dev` — Install all deps including dev
 - `make fmt` — Format + fix lint (not part of gate)
 - `uv run seam init` — Index current directory
+- `uv run seam sync` — Incrementally reconcile the index (changed/added/removed files) + gated cluster recompute
 - `uv run seam start` — Start MCP server + watcher
 - `uv run seam status` — Show index stats
 
@@ -52,8 +53,16 @@ seam/config.py               ← all settings (env vars with defaults)
                                 SEAM_PACK_NEIGHBOR_LIMIT: max enriched callers and max enriched callees in context_pack (default: 10)
                                 SEAM_PACK_PER_FILE_CAP: max neighbor entries from any single file — diversity cap (default: 3)
                                 SEAM_PACK_MAX_COMMENTS: max WHY/HACK/NOTE comments in context_pack bundle (default: 10)
-seam/cli/main.py             ← Typer CLI (init, start, status, impact, trace, changes, why, clusters, affected, pack)
+seam/cli/main.py             ← Typer CLI (init, sync, start, status, impact, trace, changes, why, clusters, affected, pack)
                                 --json / --quiet on read commands; --stdin on affected + changes
+                                sync: --json / --quiet / --force-clusters (Phase 7)
+seam/indexer/sync.py         ← LEAF: Phase 7 reconcile engine — sync(conn, root, *, recompute_clusters,
+                                force_clusters, naming_mode, llm_api_key, llm_model, min_size) → SyncResult
+                                mtime pre-filter → SHA-1 confirm; existsSync-guarded delete; FULL cluster
+                                recompute gated on graph_changed (added+modified+removed>0) or force_clusters
+                                reuses walk_project + index_one_file + sha1 + delete_file + index_clusters
+                                SyncResult: added, modified, removed, unchanged, skipped, graph_changed,
+                                clusters_recomputed, cluster_count (None=skipped, -1=recompute failed, ≥0=ok)
 seam/cli/output.py           ← LEAF: agent-output contract — success/error JSON envelope, quiet renderer
                                 {"ok":true,"data":...} / {"ok":false,"error":{"code","message"}}
                                 error codes: NO_INDEX INVALID_INPUT INVALID_QUERY NOT_A_GIT_REPO DB_ERROR
@@ -119,18 +128,23 @@ tests/fixtures/              ← sample.py, sample.ts, sample.go, sample.rs
 - **Edges use string names** (not symbol IDs) — required for independent re-indexing
 
 ## Current Phase
-Phase 6 complete — context-pack primitive shipped.
-- New leaf module `seam/query/pack.py`: `context_pack(conn, symbol_name) → ContextPack | None`.
-- ContextPack bundles: target (full ContextResult), callers (enriched NeighborRef list), callees
-  (enriched NeighborRef list), why (CommentHit list), cluster_peers, truncated counts.
-- NeighborRef enrichment: single batched WHERE name IN (...) lookup — O(1) queries regardless of fan-out.
-- Per-file diversity cap (SEAM_PACK_PER_FILE_CAP=3): applied before global limit to keep bundle diverse.
-- Global caps: SEAM_PACK_NEIGHBOR_LIMIT=10 per list; SEAM_PACK_MAX_COMMENTS=10 for WHY comments.
-- New MCP tool `seam_context_pack` in tools.py + mcp.py (tool count 9 → 10).
-- New CLI command `seam pack <symbol>` with --json / --quiet modes.
-- No schema change, no new deps, no migration needed.
-- 969 tests passing; gate green.
-See `progress.txt` for session history. Next: benchmarking / v0.1.0 release prep.
+Phase 7 complete — one-shot `seam sync` with gated cluster recompute shipped.
+- New leaf module `seam/indexer/sync.py`: `sync(conn, root, *, …) → SyncResult`.
+- Filesystem reconcile (NOT git): mtime pre-filter → SHA-1 confirm; re-index only changed/added
+  files, delete removed ones. Reuses walk_project + index_one_file + sha1 + delete_file.
+- Delete is existsSync-guarded (roadmap §6.1): a tracked file is removed ONLY once it genuinely no
+  longer exists on disk — a transient walk hiccup / wrong-dir / --db-dir mismatch can't wipe the index.
+- FULL cluster recompute (clusters are global Louvain — no correct incremental update), GATED on
+  `graph_changed = (added+modified+removed) > 0`; skipped when nothing changed. `--force-clusters`
+  recomputes anyway (covers the live-watcher-already-indexed case → kills the stale-clusters gotcha).
+- `cluster_count`: None = recompute skipped, -1 = recompute RAN but FAILED (index_clusters sentinel,
+  surfaced as "failed" + warning, mirroring `seam init`), ≥0 = success. `clusters_recomputed` is
+  True only on success.
+- New CLI command `seam sync [path]` with --json / --quiet / --force-clusters. CLI-only —
+  NO new MCP tool (MCP server stays read-only; tool count stays 10).
+- No schema change, no new deps, no migration, no new config knobs (reuses SEAM_CLUSTER_*).
+- 1031 tests passing; gate green.
+See `progress.txt` for session history. Next: roadmap item 8 (`seam install`) / v0.1.0 release prep.
 
 ## MCP Tools
 - `seam_query` — FTS5 + 1-hop graph expansion (Phase 0); OR-join + rescore since Phase 3
@@ -151,9 +165,23 @@ All ten tools return the five Phase 4 enrichment fields where available: `signat
 `seam_context_pack` returns `truncated: {callers, callees, comments}` counts of entries dropped by caps. When a neighbor name has no indexed declaration it is silently skipped (not an error). Use `seam_impact` for the full blast radius when the pack is truncated.
 
 ## Known Gotchas
-- **Clusters recomputed only on full `seam init`**: the file watcher does NOT recompute
-  clusters after per-file edits. New symbols after `seam init` get `cluster_id=NULL` until
-  the next full re-index. Run `seam init` again to refresh clusters.
+- **Clusters recomputed only on full `seam init` OR `seam sync` (Phase 7)**: the file *watcher*
+  still does NOT recompute clusters after per-file edits — new symbols indexed by the live watcher
+  get `cluster_id=NULL` until a recompute runs. `seam sync` now closes this: it recomputes clusters
+  (gated on graph change) after reconciling. If the watcher already indexed your edits (so `seam sync`
+  sees no on-disk drift → graph unchanged → recompute skipped), run `seam sync --force-clusters`
+  (cheap — recomputes clusters without re-indexing files) or `seam init`.
+- **`seam sync` is filesystem-reconcile, not git**: it detects changes by mtime + SHA-1 against the
+  `files` table, so it works in non-git repos and catches pulled/merged/checked-out changes. Blind
+  spot (same as CodeGraph): a content change that preserves mtime EXACTLY is missed — `seam init`
+  (full re-index) is the escape hatch. A tracked file is deleted from the index only once it
+  genuinely no longer exists on disk (existsSync guard) — a file the walk skipped but that still
+  exists is kept, not removed.
+- **`seam sync` requires an existing index**: it reconciles, it does not bootstrap. On a directory
+  with no `.seam/seam.db` it errors `NO_INDEX` (run `seam init` first). It is CLI-only — there is no
+  `seam_sync` MCP tool (the MCP server is read-only). A failed cluster recompute during sync surfaces
+  as `cluster_count=-1` / `clusters_recomputed=false` / a "clusters: failed" warning (exit still 0 —
+  the file reconcile succeeded); run `seam init` to rebuild clusters.
 - **Homonym collapse**: the community detection graph is keyed on symbol NAME (not file+name),
   matching the `edges` table. Two files both defining a symbol named `helper` share one graph
   node — both get the same `cluster_id`. Visible in `clusters.size` (counts DB rows, not names).

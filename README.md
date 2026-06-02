@@ -4,7 +4,7 @@ Local code intelligence MCP server for AI agents. Index your codebase once; let 
 
 ## Status
 
-Phase 6 complete — context-pack primitive shipped (`seam_context_pack` / `seam pack`). 975 tests. Gate green.
+Phase 7 complete — one-shot `seam sync` (incremental reconcile + gated cluster recompute) shipped. 1031 tests. Gate green.
 
 ## Quickstart
 
@@ -75,6 +75,33 @@ Five new nullable fields are now extracted at parse time and returned by `seam_c
 **Schema v5:** the `symbols` table gained five nullable columns (see `docs/database/schema.sql`). The `connect()` function auto-runs the v4→v5 migration on first open so existing indexes don't break. Field values are `null` until the next full `seam init` re-index — migration adds the columns but cannot backfill parse-time data.
 
 **New config knob:** `SEAM_MAX_SIGNATURE_LEN` (default `300`) — hard cap on stored signature length. Signatures longer than this are truncated with `...`. Useful when pathological function headers would dominate FTS results or make MCP responses painful to read.
+
+### Phase 7 — One-Shot `seam sync`
+
+`seam sync` incrementally refreshes the index instead of a full `seam init`. It is **CLI-only** (a maintenance command — no MCP tool; the server stays read-only):
+
+```bash
+seam sync                    # reconcile the current project against the index
+seam sync /path/to/project   # reconcile a specific project
+seam sync --force-clusters   # recompute clusters even if nothing changed
+seam sync -q >/dev/null 2>&1 # quiet, for a git post-merge / post-checkout hook
+seam sync --json             # structured envelope for CI / agents
+```
+
+**How it decides what changed** — filesystem reconcile, *not* git: each file's on-disk `st_mtime` is compared to the stored value (cheap pre-filter); on a mismatch the content is SHA-1 hashed and compared, so a `touch` that doesn't change content is *not* re-indexed. Added files are indexed, content-changed files re-indexed, and a tracked file is removed **only once it genuinely no longer exists on disk** (an `existsSync` guard — a transient walk hiccup, a wrong directory, or a `--db-dir` mismatch cannot silently wipe the index). Works in non-git repos and catches pulled/merged/checked-out changes.
+
+**Gated cluster recompute** — Seam's clusters are a *global* Louvain partition (one new edge can re-partition unrelated communities), so there is no correct cheap incremental update. After reconcile, `seam sync` runs the **same full `index_clusters` pass `seam init` uses, but only when the graph changed** (`added + modified + removed > 0`). A no-op sync skips it entirely (no churned cluster IDs, near-free). This closes the long-standing "clusters go stale after edits" gotcha for the sync path; `--force-clusters` covers the case where the live watcher already indexed your edits (so sync sees no drift) but left clusters stale.
+
+The `--json` / `--quiet` payload (`SyncResult`):
+
+| Field | Description |
+|-------|-------------|
+| `added` / `modified` / `removed` / `unchanged` / `skipped` | File reconcile counts (`skipped` = unsupported / oversize / binary / parse error). |
+| `graph_changed` | `(added + modified + removed) > 0` — the cluster-recompute gate. |
+| `clusters_recomputed` | `true` only when the recompute ran **and succeeded**. |
+| `cluster_count` | `null` = recompute skipped · `-1` = recompute **ran but failed** (surfaced as a "clusters: failed" warning, exit still 0) · `≥0` = cluster count. |
+
+**No schema change, no migration, no new config knobs** (reuses `SEAM_CLUSTER_NAMING` / `SEAM_CLUSTER_MIN_SIZE` / `SEAM_LLM_*`). `seam sync` requires an existing index — on a directory with no `.seam/seam.db` it returns `NO_INDEX` (run `seam init` first).
 
 ### Phase 6 — Context-Pack Primitive
 

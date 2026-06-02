@@ -583,3 +583,72 @@ is byte-identical between MCP and CLI.
 | `SEAM_PACK_NEIGHBOR_LIMIT` | `10` | Max enriched callers and max enriched callees per bundle |
 | `SEAM_PACK_PER_FILE_CAP` | `3` | Max neighbor entries from any single file (homonym diversity) |
 | `SEAM_PACK_MAX_COMMENTS` | `10` | Max WHY comments included in the bundle |
+
+## Phase 7 — One-Shot `seam sync` with Gated Cluster Recompute
+
+> Phase 7 shipped on branch `feat/phase7-seam-sync`. **No schema change, no migration, no new
+> config knobs** — pure orchestration over the existing indexing primitives and the `files` table's
+> existing `mtime` + `file_hash` columns.
+
+### Why a New Leaf Module (`seam/indexer/sync.py`)
+
+`seam sync` is the *one-shot* complement to the always-on watcher daemon and the full `seam init`.
+The reconcile logic lives in `indexer/sync.py` (not `cli/main.py`) so the import hierarchy stays
+`cli → indexer.sync → {indexer.pipeline, indexer.db, indexer.cluster_index}` and the engine is
+testable without Typer. It adds **no extraction logic** — it composes `walk_project`,
+`index_one_file`, `sha1`, `delete_file`, and `index_clusters`.
+
+### Reconcile Data Flow (`sync`)
+
+```
+files table ──┐                       walk_project(root) ──┐
+  {path: (mtime, hash)}                  current on-disk set
+              │                                            │
+              └────────────► per file classify ◄───────────┘
+                                   │
+   not tracked ──────────────► index_one_file → added   (None → skipped)
+   tracked, st_mtime == stored ─► UNCHANGED (no read — cheap pre-filter)
+   tracked, mtime differs ─► read + sha1
+        hash == stored ─────► UNCHANGED (touch without content change; no re-index)
+        hash != stored ─────► index_one_file → modified (None → skipped)
+   tracked, absent from walk set AND not exists() ─► delete_file → removed
+                                   │
+                          graph_changed = (added + modified + removed) > 0
+                                   │
+   recompute_clusters and (graph_changed or force_clusters) ─► index_clusters (FULL pass)
+```
+
+**Why mtime → hash (not git):** filesystem reconcile catches non-git repos *and* committed changes
+from pull/checkout/merge/rebase (git bumps mtime, so the cheap pre-filter still fires). The accepted
+blind spot — a content change that preserves mtime exactly — is escaped by a full `seam init`.
+
+**Why the `exists()` guard on delete (roadmap §6.1):** trusting the walk set alone to decide
+deletions means a transient FS/permission hiccup, a wrong-directory sync, or a `--db-dir` pointed at
+another project's index would silently delete *every* tracked file. A tracked path is removed only
+once it genuinely no longer exists on disk; a path the walk merely skipped (still present) is kept.
+
+### Why a FULL, Gated Cluster Recompute
+
+Seam's clusters are a **global** Louvain partition over the name-keyed edge graph — one new edge can
+re-partition unrelated communities, so there is no correct *incremental* cluster update (this is the
+key divergence from CodeGraph, which has no clustering). `seam sync` therefore runs the **same
+whole-graph `index_clusters`** that `seam init` runs, but **gated** on `graph_changed or
+force_clusters`. A no-op sync skips it entirely — no Louvain cost, no churned cluster IDs.
+`--force-clusters` covers the case where the live watcher already indexed edits into `files` (so
+sync sees no on-disk drift) but left clusters stale.
+
+`index_clusters` returns its documented `-1` sentinel on failure (it never raises). `sync` preserves
+that in `cluster_count` and sets `clusters_recomputed = cluster_count >= 0`, so a failed recompute is
+**not** reported as success — the CLI renders it as `clusters: failed` + a warning, mirroring
+`seam init`'s `clustering_failed` guard. `cluster_count` is therefore three-valued: `None` (skipped),
+`-1` (ran but failed), `≥0` (succeeded).
+
+### CLI-Only, Read-Only MCP Preserved
+
+`seam sync` is a maintenance/write command and joins `init`/`start`/`status` as **CLI-only** — there
+is no `seam_sync` MCP tool, so the MCP server read path stays 100% local and read-only (tool count
+stays 10). It requires an existing index (`connect()`, not `init_db()`); on a directory with no
+`.seam/seam.db` it returns `NO_INDEX`. The `--json` / `--quiet` output flows through the same
+`seam/cli/output.py` envelope as the read commands; `--quiet` emits `key: value` lines (one per
+field) rather than the read commands' bare single-value form, because the 8-field `SyncResult` would
+be ambiguous as bare positional values.
