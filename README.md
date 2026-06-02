@@ -4,7 +4,7 @@ Local code intelligence MCP server for AI agents. Index your codebase once; let 
 
 ## Status
 
-Phase 5 complete — import resolution and confidence promotion shipped. 939 tests. Gate green.
+Phase 6 complete — context-pack primitive shipped (`seam_context_pack` / `seam pack`). 975 tests. Gate green.
 
 ## Quickstart
 
@@ -75,6 +75,22 @@ Five new nullable fields are now extracted at parse time and returned by `seam_c
 **Schema v5:** the `symbols` table gained five nullable columns (see `docs/database/schema.sql`). The `connect()` function auto-runs the v4→v5 migration on first open so existing indexes don't break. Field values are `null` until the next full `seam init` re-index — migration adds the columns but cannot backfill parse-time data.
 
 **New config knob:** `SEAM_MAX_SIGNATURE_LEN` (default `300`) — hard cap on stored signature length. Signatures longer than this are truncated with `...`. Useful when pathological function headers would dominate FTS results or make MCP responses painful to read.
+
+### Phase 6 — Context-Pack Primitive
+
+- `seam_context_pack(symbol)` — one call returns a ready-to-paste bundle for a symbol instead of chaining `seam_context` + `seam_why` + per-neighbor lookups. The bundle is:
+
+| Field | Description |
+|-------|-------------|
+| `target` | The full `seam_context` payload (360° view + Phase 4/5 enrichment). |
+| `callers` / `callees` | Direct 1-hop neighbors **enriched** to `{name, file, line, kind, signature, …}` — not bare names. Deterministically ordered by lowest symbol id within each file. |
+| `why` | The `WHY/HACK/NOTE/TODO/FIXME` comments attached to the symbol. |
+| `cluster_peers` | The symbol's functional-area peers. |
+| `truncated` | `{callers, callees, comments}` — counts dropped **by the caps**, so you know the bundle is partial and can fall back to `seam_impact`. |
+
+Pure read-time orchestration over existing primitives — **no schema change, no network, 1-hop only.** Homonym mitigation: neighbors are capped per source file (`SEAM_PACK_PER_FILE_CAP`, default 3) so one file's same-named symbols can't flood the bundle, then globally capped (`SEAM_PACK_NEIGHBOR_LIMIT`, default 10 per list); comments cap at `SEAM_PACK_MAX_COMMENTS` (default 10). Neighbor names with no symbol row in the index (external/unindexed) are silently skipped and do **not** count toward `truncated`.
+
+**New config knobs:** `SEAM_PACK_NEIGHBOR_LIMIT` (10), `SEAM_PACK_PER_FILE_CAP` (3), `SEAM_PACK_MAX_COMMENTS` (10).
 
 #### When to use each Phase 1 tool
 
@@ -230,6 +246,19 @@ git diff --name-only | seam affected --stdin --quiet | xargs pytest
 # A changed file that is itself a test file is always included in the output.
 # Files not in the index are silently skipped (no error).
 # --stdin and positional arguments are mutually exclusive.
+```
+
+### Phase 6 — Context-Pack
+
+```bash
+# One-shot context bundle: target + enriched callers/callees + WHY comments + peers
+seam pack context
+seam pack context --json     # {"ok":true,"data":{"target":{…},"callers":[…],"truncated":{…}}}
+seam pack context --quiet    # terse: target line, caller/callee names, WHY comments
+
+# A missing symbol is NOT an error — it returns a success envelope with found:false,
+# mirroring `seam context`. Neighbors are capped per file and globally; the `truncated`
+# counts tell you when the bundle was clipped.
 ```
 
 **JSON envelope (all read commands when `--json` is set):**

@@ -116,6 +116,23 @@ SEAM_MAX_IMPORT_CANDIDATES: int = int(os.getenv("SEAM_MAX_IMPORT_CANDIDATES", "2
 SEAM_PROXIMITY_MAX_CANDIDATES: int = int(os.getenv("SEAM_PROXIMITY_MAX_CANDIDATES", "25"))
 
 
+# ── Phase 6: Context-Pack configuration ─────────────────────────────────────
+
+# Maximum enriched callers AND maximum enriched callees in one context_pack bundle.
+# When the raw neighbor list exceeds this, the list is truncated and the count of
+# dropped entries is reported in ContextPack.truncated.callers/callees.
+SEAM_PACK_NEIGHBOR_LIMIT: int = int(os.getenv("SEAM_PACK_NEIGHBOR_LIMIT", "10"))
+
+# Maximum neighbor entries from any single file (homonym diversity cap).
+# When a hot utility file defines many same-named symbols, capping per file
+# keeps the bundle diverse across the codebase.
+# Applied BEFORE the global neighbor limit (PRD §4.5a).
+SEAM_PACK_PER_FILE_CAP: int = int(os.getenv("SEAM_PACK_PER_FILE_CAP", "3"))
+
+# Maximum WHY/HACK/NOTE/TODO/FIXME comments in the bundle.
+SEAM_PACK_MAX_COMMENTS: int = int(os.getenv("SEAM_PACK_MAX_COMMENTS", "10"))
+
+
 def get_db_path(project_root: Path) -> Path:
     """Resolve the database path relative to the project root."""
     return project_root / SEAM_DB_PATH

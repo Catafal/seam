@@ -517,3 +517,69 @@ No column additions to existing tables — purely additive. Fresh DBs are seeded
 | `SEAM_BUILTIN_FILTERING` | `"on"` | Master switch for step C builtin tagging |
 | `SEAM_MAX_IMPORT_CANDIDATES` | `25` | Cap on candidate declaring files per import lookup |
 | `SEAM_PROXIMITY_MAX_CANDIDATES` | `25` | Cap on collision candidates for step D proximity ranking |
+
+---
+
+## Phase 6 — Context-Pack Primitive
+
+> Phase 6 shipped on branch `feat/phase6-context-pack`. **No schema change** — pure read-time
+> orchestration over existing primitives.
+
+### Why a New Leaf Module Instead of Extending `engine.py`
+
+`seam/query/pack.py` deliberately adds *no* extraction or schema. It composes three existing
+read primitives into one bundle so an agent makes a single call instead of chaining
+`seam_context` + `seam_why` + a `seam_context` per neighbor. Keeping it in its own module makes
+that "orchestration only" boundary explicit and keeps the already-large `engine.py` focused on
+the core search/query/context path.
+
+### Bundle Assembly (`context_pack`)
+
+```
+context_pack(conn, symbol_name) -> ContextPack | None
+  target        ← engine.context(conn, symbol_name)            (verbatim; None ⇒ not found)
+  callers/callees ← target["callers"/"callees"] names, ENRICHED via _enrich_neighbors()
+  why           ← comments.why(conn, symbol=symbol_name)        (capped)
+  cluster_peers ← target["cluster_peers"]                       (no extra query)
+  truncated     ← {callers, callees, comments} dropped BY CAPS
+```
+
+### Neighbor Enrichment (`_enrich_neighbors`)
+
+1. **Deduplicate** the neighbor names (order-preserving).
+2. **Batched lookup** in chunks of `_SQLITE_MAX_IN_PARAMS` (900) — one `WHERE name IN (...)`
+   per chunk, merged. Chunking exists because SQLite's default host-parameter limit is 999; a
+   hot symbol with thousands of distinct neighbors would otherwise raise `OperationalError` and
+   silently return an empty list. Each name appears in exactly one chunk, so merging is a dict
+   update. `GROUP BY name` + `MIN(s.id)` gives a deterministic first-match-per-name.
+3. **Per-file cap** (`SEAM_PACK_PER_FILE_CAP`, default 3) applied first, in lowest-symbol-id
+   order, so one file's homonyms cannot flood the bundle (the §4.5a diversity mitigation).
+4. **Global cap** (`SEAM_PACK_NEIGHBOR_LIMIT`, default 10 per list) applied to the diverse list.
+5. **`truncated`** counts ONLY cap drops — per-file + global. A neighbor name with no symbol row
+   (external/unindexed) is skipped and logged at debug, but does NOT inflate `truncated`, because
+   a larger cap would never retrieve it (distinct from "the bundle was clipped").
+
+The `decorators` JSON + `is_exported` 0/1/NULL decode is shared with `engine.context()` via the
+extracted `engine.decode_enrichment_fields(row)` helper — one decode contract, two callers.
+
+### Contract Parity
+
+`context_pack` returns `None` for an unknown symbol — the same contract as `engine.context()`.
+Both the MCP tool (`handle_seam_context_pack`) and the CLI (`seam pack`) surface a missing symbol
+as a **success** envelope (`{found: false, symbol}`), not an error — mirroring `seam_context`.
+No new error code is introduced. Both entry points route through the same handler, so the bundle
+is byte-identical between MCP and CLI.
+
+### New Leaf Module + 10th Tool
+
+- `seam/query/pack.py` — `context_pack()`, `ContextPack`/`NeighborRef`/`TruncatedCounts` TypedDicts.
+- `seam_context_pack` registered in `seam/server/mcp.py` — the 10th MCP tool.
+- `seam pack <symbol>` CLI command in `seam/cli/main.py` (`--json` / `--quiet`).
+
+### Config Knobs (Phase 6)
+
+| Knob | Default | Purpose |
+|------|---------|---------|
+| `SEAM_PACK_NEIGHBOR_LIMIT` | `10` | Max enriched callers and max enriched callees per bundle |
+| `SEAM_PACK_PER_FILE_CAP` | `3` | Max neighbor entries from any single file (homonym diversity) |
+| `SEAM_PACK_MAX_COMMENTS` | `10` | Max WHY comments included in the bundle |

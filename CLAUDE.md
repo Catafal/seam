@@ -49,7 +49,10 @@ seam/config.py               ← all settings (env vars with defaults)
                                 SEAM_IMPORT_RESOLUTION: "on" | "off" — import-promotion step A (default: on)
                                 SEAM_MAX_IMPORT_CANDIDATES: cap on declaring files per import lookup (default: 25)
                                 SEAM_PROXIMITY_MAX_CANDIDATES: cap on collision candidates for proximity ranking (default: 25)
-seam/cli/main.py             ← Typer CLI (init, start, status, impact, trace, changes, why, clusters, affected)
+                                SEAM_PACK_NEIGHBOR_LIMIT: max enriched callers and max enriched callees in context_pack (default: 10)
+                                SEAM_PACK_PER_FILE_CAP: max neighbor entries from any single file — diversity cap (default: 3)
+                                SEAM_PACK_MAX_COMMENTS: max WHY/HACK/NOTE comments in context_pack bundle (default: 10)
+seam/cli/main.py             ← Typer CLI (init, start, status, impact, trace, changes, why, clusters, affected, pack)
                                 --json / --quiet on read commands; --stdin on affected + changes
 seam/cli/output.py           ← LEAF: agent-output contract — success/error JSON envelope, quiet renderer
                                 {"ok":true,"data":...} / {"ok":false,"error":{"code","message"}}
@@ -91,7 +94,10 @@ seam/query/engine.py         ← query(), context(), search() — read path
                                 all three return signature/decorators/is_exported/visibility/qualified_name (Phase 4)
 seam/query/clusters.py       ← cluster read queries (Phase 2): list_clusters, cluster_members,
                                 cluster_peers; guards pre-v4 indexes
-seam/server/tools.py         ← MCP tool handlers (thin adapters → engine + clusters)
+seam/query/pack.py           ← LEAF: context_pack(conn, symbol_name) → ContextPack | None
+                                orchestrates context()+why() into one enriched bundle; applies caps from config
+                                ContextPack: target, callers, callees (NeighborRef), why, cluster_peers, truncated
+seam/server/tools.py         ← MCP tool handlers (thin adapters → engine + clusters + pack)
 seam/watcher/daemon.py       ← watchdog daemon (debounced re-index)
 tests/fixtures/              ← sample.py, sample.ts, sample.go, sample.rs
 ```
@@ -113,19 +119,17 @@ tests/fixtures/              ← sample.py, sample.ts, sample.go, sample.rs
 - **Edges use string names** (not symbol IDs) — required for independent re-indexing
 
 ## Current Phase
-Phase 5 complete — import resolution and confidence promotion shipped.
-- Import-promotion (step A): when a same-file import binds a target name to exactly one indexed
-  declaring file, the edge is promoted to EXTRACTED with `resolved_by: import` — the core homonym fix.
-- Provenance (`resolved_by`): every resolved edge now reports how its tier was decided.
-  Stable vocabulary: `import` | `name-unique` | `name-collision` | `builtin` | `unresolved`.
-- Builtin/stdlib filtering (step C): count==0 names that are known language builtins are tagged
-  `resolved_by: builtin` (INFERRED) instead of `unresolved`. Guard: the builtin check fires ONLY at
-  count==0, so a user `def get()` is never silently filtered as the builtin `get`.
-- Proximity tie-break (step D): residual AMBIGUOUS edges (collision, no import to resolve) report a
-  `best_candidate` — the most file-path-proximate declaring file — so agents have a most-likely target.
-- Schema v6: new `import_mappings` table stores per-file import bindings; `connect()` auto-migrates
-  v5→v6 on open (additive, fresh-DB-safe, no backfill — run `seam init` to populate).
-- 939 tests passing; gate green.
+Phase 6 complete — context-pack primitive shipped.
+- New leaf module `seam/query/pack.py`: `context_pack(conn, symbol_name) → ContextPack | None`.
+- ContextPack bundles: target (full ContextResult), callers (enriched NeighborRef list), callees
+  (enriched NeighborRef list), why (CommentHit list), cluster_peers, truncated counts.
+- NeighborRef enrichment: single batched WHERE name IN (...) lookup — O(1) queries regardless of fan-out.
+- Per-file diversity cap (SEAM_PACK_PER_FILE_CAP=3): applied before global limit to keep bundle diverse.
+- Global caps: SEAM_PACK_NEIGHBOR_LIMIT=10 per list; SEAM_PACK_MAX_COMMENTS=10 for WHY comments.
+- New MCP tool `seam_context_pack` in tools.py + mcp.py (tool count 9 → 10).
+- New CLI command `seam pack <symbol>` with --json / --quiet modes.
+- No schema change, no new deps, no migration needed.
+- 969 tests passing; gate green.
 See `progress.txt` for session history. Next: benchmarking / v0.1.0 release prep.
 
 ## MCP Tools
@@ -138,10 +142,13 @@ See `progress.txt` for session history. Next: benchmarking / v0.1.0 release prep
 - `seam_why` — semantic comments WHY/HACK/NOTE/TODO/FIXME (Phase 1b)
 - `seam_clusters` — list functional areas or drill into one cluster (Phase 2)
 - `seam_affected` — changed files → impacted test files via reverse-dependency traversal (Phase 3)
+- `seam_context_pack` — enriched context bundle: target + NeighborRef callers/callees + WHY + cluster peers + truncated counts (Phase 6)
 
-All nine tools (seam_context, seam_search, seam_query) return the five Phase 4 enrichment fields where available: `signature`, `decorators`, `is_exported`, `visibility`, `qualified_name`. Fields are `null` (not absent) for pre-v5 rows or unsupported scenarios — callers treat `null` as "unknown".
+All ten tools return the five Phase 4 enrichment fields where available: `signature`, `decorators`, `is_exported`, `visibility`, `qualified_name`. Fields are `null` (not absent) for pre-v5 rows or unsupported scenarios — callers treat `null` as "unknown".
 
 `seam_impact` and `seam_trace` additionally return `resolved_by` and `best_candidate` on each entry/hop since Phase 5. Both are `null` for pre-v6 rows or when resolution context is unavailable (same null-contract as Phase 4 fields).
+
+`seam_context_pack` returns `truncated: {callers, callees, comments}` counts of entries dropped by caps. When a neighbor name has no indexed declaration it is silently skipped (not an error). Use `seam_impact` for the full blast radius when the pack is truncated.
 
 ## Known Gotchas
 - **Clusters recomputed only on full `seam init`**: the file watcher does NOT recompute

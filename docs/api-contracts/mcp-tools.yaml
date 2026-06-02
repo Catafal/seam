@@ -695,3 +695,115 @@ tools:
     errors:
       - code: INVALID_INPUT
         condition: neither file nor symbol is provided
+
+  seam_context_pack:
+    status: IMPLEMENTED
+    phase: 6
+    description: |
+      Get a ready-to-paste context bundle for a symbol in ONE call: the target's full
+      360° view PLUS its direct callers/callees already ENRICHED (signature, file, line,
+      kind — not just names), the WHY/HACK/NOTE comments that explain it, and its
+      functional-area peers. Use this instead of chaining seam_context + seam_why +
+      repeated seam_context lookups on each neighbor.
+
+      Pure read-time orchestration over existing primitives (engine.context, comments.why,
+      the name-keyed edge graph) — no new extraction, no schema change. 1-hop only:
+      neighbors-of-neighbors are out of scope.
+
+      Homonym mitigation: enriched neighbors are capped per source file
+      (SEAM_PACK_PER_FILE_CAP, default 3) so one file's same-named symbols cannot flood
+      the bundle, then globally capped (SEAM_PACK_NEIGHBOR_LIMIT, default 10 per list).
+      Comments are capped at SEAM_PACK_MAX_COMMENTS (default 10). The `truncated` counts
+      report how many entries each cap dropped so the agent knows the bundle is partial
+      and can fall back to seam_impact for the full blast radius. Neighbor names that have
+      no symbol row in the index (external/unindexed) are silently skipped and do NOT
+      count toward `truncated`.
+    input:
+      symbol:
+        type: string
+        required: true
+        description: Exact symbol name (e.g. "context_pack", "UserService.validate")
+        min_length: 1
+        max_length: 200
+    output:
+      type: object
+      nullable: true
+      null_message: "Symbol '{symbol}' not found in index"
+      fields:
+        target:
+          type: object
+          description: |
+            The full seam_context payload for the symbol (all fields documented under
+            seam_context: symbol/file/line/end_line/kind/docstring/callers/callees/
+            ambiguous/cluster_id/cluster_label/cluster_peers + the Phase 4 enrichment
+            fields). File path relativized to project root.
+        callers:
+          type: array
+          description: |
+            Direct 1-hop callers, enriched and capped. Ordered by lowest symbol id within
+            each file (deterministic). Per-file capped then globally capped.
+          items:
+            name:
+              type: string
+            file:
+              type: string
+              description: Relative path from project root
+            line:
+              type: integer
+            kind:
+              type: string
+              enum: [function, class, method, interface, type]
+            signature:
+              type: string
+              nullable: true
+              description: Phase 4 signature; null for pre-v5 rows or unextracted headers.
+            decorators:
+              type: array
+              items: string
+            is_exported:
+              type: boolean
+              nullable: true
+            visibility:
+              type: string
+              nullable: true
+            qualified_name:
+              type: string
+              nullable: true
+        callees:
+          type: array
+          description: Direct 1-hop callees, enriched and capped (same item shape as callers).
+          items: "see callers.items"
+        why:
+          type: array
+          description: |
+            WHY/HACK/NOTE/TODO/FIXME comments attached to the symbol (same item shape as
+            seam_why output), capped at SEAM_PACK_MAX_COMMENTS.
+          items:
+            file:
+              type: string
+            line:
+              type: integer
+            marker:
+              type: string
+              enum: [WHY, HACK, NOTE, TODO, FIXME]
+            text:
+              type: string
+        cluster_peers:
+          type: array
+          items: string
+          description: Functional-area peers from the target (same as seam_context.cluster_peers).
+        truncated:
+          type: object
+          description: |
+            Counts of entries dropped BY CAPS (not by being unindexed) in each list, so the
+            caller knows the bundle is partial.
+          fields:
+            callers:
+              type: integer
+            callees:
+              type: integer
+            comments:
+              type: integer
+    errors:
+      - code: INVALID_INPUT
+        condition: symbol is empty string or whitespace-only

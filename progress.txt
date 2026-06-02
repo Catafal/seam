@@ -156,3 +156,24 @@
 #     - seam_changes + seam_affected deliberately DO NOT use import promotion (byte-stable verdicts)
 #     - Go module-qualified imports (github.com/...) out of scope — Go homonyms stay AMBIGUOUS
 # Next: benchmarking / v0.1.0 release prep
+# 2026-06-02: Phase 6 — Context-Pack Primitive complete (branch feat/phase6-context-pack)
+#   New modules:
+#     seam/query/pack.py            — LEAF: context_pack(conn, symbol_name) → ContextPack | None
+#                                     orchestrates engine.context() + comments.why() into one enriched bundle
+#                                     ContextPack: target, callers, callees (NeighborRef), why, cluster_peers, truncated
+#                                     batched enrichment: single WHERE name IN (...) — O(1) DB round-trips
+#                                     per-file diversity cap (SEAM_PACK_PER_FILE_CAP) applied before global limit
+#   Updated:
+#     seam/config.py                — SEAM_PACK_NEIGHBOR_LIMIT (default 10)
+#                                     SEAM_PACK_PER_FILE_CAP (default 3)
+#                                     SEAM_PACK_MAX_COMMENTS (default 10)
+#     seam/server/tools.py          — handle_seam_context_pack (thin adapter)
+#     seam/server/mcp.py            — seam_context_pack tool registered (10 tools total)
+#     seam/cli/main.py              — `seam pack <symbol>` command (--json / --quiet)
+#     CLAUDE.md                     — new config knobs documented, pack.py in package layout
+#   Test files:
+#     tests/unit/test_pack.py               — 14 unit tests (orchestration, enrichment, caps, graceful degradation)
+#     tests/integration/test_pack_parity.py — 11 integration tests (handler vs pack parity, JSON envelope, INVALID_INPUT)
+#     tests/integration/test_pack_homonym.py— 9 integration tests (per-file cap, diversity, ambiguous target)
+#   Test count: 975 (939 baseline + 36 Phase 6, incl. review-fix tests) (gate green — ruff + mypy + pytest)
+#   No schema change, no migration, no new deps

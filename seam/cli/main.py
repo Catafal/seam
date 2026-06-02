@@ -69,6 +69,7 @@ from seam.server.tools import (
     handle_seam_affected,
     handle_seam_changes,
     handle_seam_clusters,
+    handle_seam_context_pack,
     handle_seam_impact,
     handle_seam_trace,
     handle_seam_why,
@@ -1500,3 +1501,173 @@ def affected_cmd(
     for test_path in affected_tests:
         console.print(f"  [green]•[/green] {test_path}")
     console.print(f"\n[dim]Run with:[/dim] [bold]pytest {' '.join(affected_tests)}[/bold]")
+
+
+# ── seam pack ─────────────────────────────────────────────────────────────────
+
+
+@app.command(name="pack")
+def pack_cmd(
+    symbol: str = typer.Argument(..., help="Symbol name to build context pack for."),
+    path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
+    db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        help="Print terse human rendering without the JSON envelope.",
+    ),
+) -> None:
+    """Get a ready-to-paste context bundle for a symbol.
+
+    Returns target info, enriched callers/callees (with file, line, kind,
+    signature), WHY/HACK/NOTE comments, cluster peers, and truncation counts —
+    all in one call.
+
+    Examples:
+      seam pack my_func
+      seam pack my_func --json
+      seam pack my_func --quiet
+    """
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
+    project_root = Path(path).resolve()
+    db_root = Path(db_dir).resolve() if db_dir else project_root
+    db_path = config.get_db_path(db_root)
+
+    if not db_path.exists():
+        if json_:
+            emit_json_error("NO_INDEX", "No index found. Run 'seam init' first.")
+        console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
+        raise typer.Exit(code=1)
+
+    try:
+        conn = connect(db_path)
+    except sqlite3.Error as exc:
+        if json_:
+            emit_json_error("DB_ERROR", f"Failed to open database: {exc}")
+        console.print(f"[red]Failed to open database:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        # WHY: always route through handle_seam_context_pack so MCP and CLI
+        # produce the identical bundle (same paths, same caps, same truncation).
+        result = handle_seam_context_pack(conn, symbol, project_root)
+    finally:
+        conn.close()
+
+    # ── Error dict from handler (blank input) ────────────────────────────────
+    if isinstance(result, dict) and result.get("error"):
+        if json_:
+            emit_json_error(result["error"], result.get("message", ""))
+        console.print(f"[red]Error:[/red] {result.get('message', result['error'])}")
+        raise typer.Exit(code=1)
+
+    # ── Symbol not found ─────────────────────────────────────────────────────
+    # WHY success envelope (not error): mirrors seam_context's contract.
+    # A missing symbol is a valid answer — the agent reads found:false and
+    # knows to check the name or run 'seam init'. Using emit_json_error with
+    # a NOT_FOUND code would invent an undocumented error code AND diverge
+    # from seam_context, which returns null (not an error) for missing symbols.
+    if result is None:
+        if json_:
+            emit_json({"found": False, "symbol": symbol})
+            return
+        console.print(
+            f"[yellow]Symbol '{symbol}' not found in the index[/yellow]"
+            " — check the name or run 'seam init'."
+        )
+        return
+
+    # ── JSON mode ─────────────────────────────────────────────────────────────
+    if json_:
+        emit_json(result)
+        return
+
+    # ── Quiet mode — terse rendering ─────────────────────────────────────────
+    if quiet:
+        target = result["target"]
+        sys.stdout.write(
+            f"{target['symbol']}  {target['kind']}  {target['file']}:{target['line']}\n"
+        )
+        if result["callers"]:
+            sys.stdout.write(
+                "callers: " + ", ".join(nb["name"] for nb in result["callers"]) + "\n"
+            )
+        if result["callees"]:
+            sys.stdout.write(
+                "callees: " + ", ".join(nb["name"] for nb in result["callees"]) + "\n"
+            )
+        for hit in result["why"]:
+            sys.stdout.write(f"{hit['marker']}: {hit['text']}\n")
+        return
+
+    # ── Rich (default) mode ───────────────────────────────────────────────────
+    target = result["target"]
+    trunc = result["truncated"]
+
+    # ── Target header ─────────────────────────────────────────────────────────
+    ambig_marker = " [yellow](ambiguous)[/yellow]" if target.get("ambiguous") else ""
+    console.print(
+        f"\n[bold cyan]seam pack[/bold cyan] "
+        f"[bold]{target['symbol']}[/bold]{ambig_marker}"
+        f"  [dim]{target['kind']}  {target['file']}:{target['line']}[/dim]"
+    )
+
+    if target.get("signature"):
+        console.print(f"  [dim]sig:[/dim] {target['signature']}")
+    if target.get("docstring"):
+        console.print(f"  [dim]doc:[/dim] {target['docstring'][:100]}")
+
+    # ── Enriched callers/callees table ────────────────────────────────────────
+    def _print_neighbors(label: str, neighbors: list, dropped: int) -> None:
+        if not neighbors and not dropped:
+            console.print(f"\n  [dim]{label}: none[/dim]")
+            return
+        suffix = f" [dim](+{dropped} truncated)[/dim]" if dropped else ""
+        console.print(f"\n  [bold]{label}[/bold]{suffix}:")
+        table = Table(show_header=True, box=None, padding=(0, 1))
+        table.add_column("name", style="bold", width=28)
+        table.add_column("kind", style="dim", width=10)
+        table.add_column("file:line", style="dim")
+        table.add_column("signature", style="dim")
+        for nb in neighbors:
+            sig = (nb.get("signature") or "")[:50]
+            table.add_row(
+                nb["name"],
+                nb["kind"],
+                f"{nb['file']}:{nb['line']}",
+                sig,
+            )
+        console.print(table)
+
+    _print_neighbors("callers", result["callers"], trunc["callers"])
+    _print_neighbors("callees", result["callees"], trunc["callees"])
+
+    # ── WHY comments ─────────────────────────────────────────────────────────
+    why_hits = result["why"]
+    if why_hits:
+        suffix = f" [dim](+{trunc['comments']} truncated)[/dim]" if trunc["comments"] else ""
+        console.print(f"\n  [bold]why[/bold]{suffix}:")
+        for hit in why_hits:
+            marker_color = {
+                "WHY": "cyan", "HACK": "yellow", "NOTE": "blue",
+                "TODO": "green", "FIXME": "red",
+            }.get(hit["marker"], "white")
+            console.print(
+                f"    [{marker_color}]{hit['marker']}[/{marker_color}]"
+                f"  [dim]line {hit['line']}[/dim]  {hit['text']}"
+            )
+    else:
+        console.print("\n  [dim]why: no semantic comments[/dim]")
+
+    # ── Cluster peers ─────────────────────────────────────────────────────────
+    peers = result.get("cluster_peers", [])
+    if peers:
+        console.print(
+            f"\n  [bold]cluster peers[/bold]: {', '.join(peers[:8])}"
+            + (f" +{len(peers) - 8} more" if len(peers) > 8 else "")
+        )

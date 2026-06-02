@@ -1,4 +1,4 @@
-"""MCP server setup — FastMCP stdio transport, nine tools registered.
+"""MCP server setup — FastMCP stdio transport, ten tools registered.
 
 Creates and configures the MCP server instance.
 Tool handlers in tools.py are thin adapters; this module wires them to FastMCP.
@@ -7,16 +7,17 @@ Usage (from cli/main.py):
     server = create_server(conn, root)
     server.run(transport="stdio")
 
-Tools registered (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3):
-    seam_query    — FTS5 + 1-hop graph expansion search
-    seam_context  — 360-degree symbol view (callers, callees, location, cluster)
-    seam_search   — full-text search (FTS5 BM25)
-    seam_impact   — blast-radius analysis by risk tier (Phase 1)
-    seam_trace    — shortest call/dependency path between two symbols (Phase 1)
-    seam_changes  — git diff → changed symbols → risk level (Phase 1)
-    seam_why      — semantic comments (WHY/HACK/NOTE/TODO/FIXME) near a location (Phase 1b)
-    seam_clusters — list clusters or members of a cluster (Phase 2)
-    seam_affected — changed files → impacted test files via reverse-dependency BFS (Phase 3)
+Tools registered (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3 + Phase 6):
+    seam_query        — FTS5 + 1-hop graph expansion search
+    seam_context      — 360-degree symbol view (callers, callees, location, cluster)
+    seam_search       — full-text search (FTS5 BM25)
+    seam_impact       — blast-radius analysis by risk tier (Phase 1)
+    seam_trace        — shortest call/dependency path between two symbols (Phase 1)
+    seam_changes      — git diff → changed symbols → risk level (Phase 1)
+    seam_why          — semantic comments (WHY/HACK/NOTE/TODO/FIXME) near a location (Phase 1b)
+    seam_clusters     — list clusters or members of a cluster (Phase 2)
+    seam_affected     — changed files → impacted test files via reverse-dependency BFS (Phase 3)
+    seam_context_pack — enriched context bundle: target + neighbors + WHY + peers (Phase 6)
 
 Design:
 - One FastMCP instance per process; connection is injected at creation time.
@@ -39,6 +40,7 @@ from seam.server.tools import (
     handle_seam_changes,
     handle_seam_clusters,
     handle_seam_context,
+    handle_seam_context_pack,
     handle_seam_impact,
     handle_seam_query,
     handle_seam_search,
@@ -61,12 +63,14 @@ _AFFECTED_DEPTH_DEFAULT = config.SEAM_AFFECTED_DEPTH
 
 
 def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
-    """Configure and return a FastMCP server with all eight Seam tools registered.
+    """Configure and return a FastMCP server with all ten Seam tools registered.
 
     Phase 0:  seam_query, seam_context, seam_search
     Phase 1:  seam_impact, seam_trace, seam_changes
     Phase 1b: seam_why
     Phase 2:  seam_clusters
+    Phase 3:  seam_affected
+    Phase 6:  seam_context_pack
 
     Args:
         conn: Open SQLite connection to the Seam index DB.
@@ -262,5 +266,33 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         Use this to determine the minimal set of tests to run before committing.
         """
         return handle_seam_affected(conn, changed_files, root, depth=depth)
+
+    @mcp.tool()
+    def seam_context_pack(symbol: str) -> Any:
+        """Get a ready-to-paste context bundle for a symbol.
+
+        Returns a single payload containing:
+          target        — the symbol's full 360-degree view (file, kind, docstring,
+                          signature, decorators, is_exported, visibility, ambiguous flag,
+                          cluster info, raw callers/callees name lists)
+          callers       — 1-hop callers, each enriched with {name, file, line, kind,
+                          signature} — not just names. Capped at SEAM_PACK_NEIGHBOR_LIMIT.
+          callees       — 1-hop callees, similarly enriched and capped.
+          why           — WHY/HACK/NOTE/TODO/FIXME comments attached to the symbol.
+                          Capped at SEAM_PACK_MAX_COMMENTS.
+          cluster_peers — the symbol's functional-area peers (from seam_clusters).
+          truncated     — {callers, callees, comments} counts of entries dropped by caps.
+
+        When a neighbor name has no indexed declaration (external/unindexed symbol),
+        it is silently skipped in callers/callees — not an error.
+
+        Use this before modifying a symbol to get everything you need in one call:
+        location, enriched neighbors, rationale comments, and functional area — without
+        the five separate seam_context / seam_why / seam_context-on-each-neighbor calls.
+
+        Returns None when the symbol is not in the index (same contract as seam_context).
+        Returns INVALID_INPUT error when symbol is blank or whitespace-only.
+        """
+        return handle_seam_context_pack(conn, symbol, root)
 
     return mcp
