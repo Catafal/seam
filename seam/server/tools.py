@@ -38,6 +38,37 @@ from seam.query.pack import context_pack as run_context_pack
 
 logger = logging.getLogger(__name__)
 
+# ── Lean-output: heavy fields stripped when verbose=False ────────────────────
+
+# These 6 fields are valuable in verbose mode but inflate every record unnecessarily
+# when the agent only needs the core identity + signature.
+# Keys are ABSENT (not null) in lean mode — lean mode's whole point is fewer bytes.
+_HEAVY_FIELDS: frozenset[str] = frozenset({
+    "decorators",
+    "is_exported",
+    "visibility",
+    "qualified_name",
+    "resolved_by",
+    "best_candidate",
+})
+
+
+def _apply_verbosity(record: dict[str, Any], verbose: bool) -> dict[str, Any]:
+    """Strip heavy enrichment fields from a record when verbose=False.
+
+    Returns a new dict — never mutates the original.
+
+    verbose=True  → record returned unchanged (backward compatible).
+    verbose=False → the 6 heavy keys (decorators, is_exported, visibility,
+                    qualified_name, resolved_by, best_candidate) are ABSENT.
+                    signature and all core identity fields are kept.
+    """
+    if verbose:
+        return record
+    # Build a copy without the heavy fields; missing keys are silently skipped.
+    return {k: v for k, v in record.items() if k not in _HEAVY_FIELDS}
+
+
 # ── Limit bounds (from mcp-tools.yaml) ────────────────────────────────────────
 
 _QUERY_LIMIT_MIN = 1
@@ -128,6 +159,7 @@ def handle_seam_query(
     concept: str,
     root: Path,
     limit: int = _QUERY_LIMIT_DEFAULT,
+    verbose: bool = True,
 ) -> list[dict[str, Any]] | dict[str, Any]:
     """Handler for the seam_query MCP tool.
 
@@ -135,6 +167,8 @@ def handle_seam_query(
     Returns a list of QueryResult dicts, or an error dict on bad input.
 
     Limit is clamped to [1, 50].
+    verbose=True (default): output byte-identical to pre-Phase-8.
+    verbose=False: heavy enrichment fields omitted from every record.
     """
     # Validate: concept must not be empty or whitespace-only
     if not concept or not concept.strip():
@@ -150,16 +184,18 @@ def handle_seam_query(
     except sqlite3.OperationalError as exc:
         return _invalid_query(f"FTS5 query syntax error: {exc}")
 
-    # Relativize file paths so consumers get portable paths
+    # Relativize file paths so consumers get portable paths.
+    # query results carry no Phase 4/5 heavy fields in their base schema,
+    # but _apply_verbosity is still called for consistency — it is a no-op here.
     return [
-        {
+        _apply_verbosity({
             "symbol": r["symbol"],
             "file": _relativize(r["file"], root),
             "line": r["line"],
             "score": r["score"],
             "callers_count": r["callers_count"],
             "callees_count": r["callees_count"],
-        }
+        }, verbose)
         for r in results
     ]
 
@@ -168,11 +204,16 @@ def handle_seam_context(
     conn: sqlite3.Connection,
     symbol: str,
     root: Path,
+    verbose: bool = True,
 ) -> dict[str, Any] | None:
     """Handler for the seam_context MCP tool.
 
     Returns a ContextResult dict for a known symbol, None for unknown symbols,
     or an error dict on blank input.
+
+    verbose=True (default): output byte-identical to pre-Phase-8.
+    verbose=False: decorators, is_exported, visibility, qualified_name are omitted.
+                   signature and all core fields are kept.
     """
     # Validate: symbol must not be empty or whitespace-only
     if not symbol or not symbol.strip():
@@ -183,7 +224,10 @@ def handle_seam_context(
     if result is None:
         return None
 
-    return {
+    # Build the full record first, then apply verbosity stripping at the edge.
+    # WHY build-then-strip: the record is always fully built in verbose mode (backward
+    # compat); in lean mode _apply_verbosity removes only the 6 heavy keys.
+    record = {
         "symbol": result["symbol"],
         "file": _relativize(result["file"], root),
         "line": result["line"],
@@ -203,6 +247,7 @@ def handle_seam_context(
         "visibility": result["visibility"],
         "qualified_name": result["qualified_name"],
     }
+    return _apply_verbosity(record, verbose)
 
 
 def handle_seam_search(
@@ -252,6 +297,7 @@ def handle_seam_impact(
     direction: str = _IMPACT_DIRECTION_DEFAULT,
     max_depth: int = _IMPACT_DEPTH_DEFAULT,
     include_tests: bool = True,
+    verbose: bool = True,
 ) -> dict[str, Any]:
     """Handler for the seam_impact MCP tool.
 
@@ -321,13 +367,14 @@ def handle_seam_impact(
     # Relativize each TieredEntry's `file` field using the provided root.
     # `file` is an absolute path (or None) from the analysis layer.
     # Pass is_test through so MCP callers can see the tag.
+    # Apply _apply_verbosity to each entry so lean mode reaches nested tier lists.
     for dir_key in ("upstream", "downstream"):
         if dir_key not in raw:
             continue
         tier_group = raw[dir_key]
         response[dir_key] = {
             tier: [
-                {
+                _apply_verbosity({
                     "name": entry["name"],
                     "distance": entry["distance"],
                     "confidence": entry["confidence"],
@@ -345,7 +392,7 @@ def handle_seam_impact(
                         if entry.get("best_candidate") is not None
                         else None
                     ),
-                }
+                }, verbose)
                 for entry in entries
             ]
             for tier, entries in tier_group.items()
@@ -366,6 +413,7 @@ def handle_seam_trace(
     target: str,
     root: Path,
     max_depth: int = _TRACE_DEPTH_DEFAULT,
+    verbose: bool = True,
 ) -> dict[str, Any]:
     """Handler for the seam_trace MCP tool.
 
@@ -436,9 +484,10 @@ def handle_seam_trace(
     # Convert to plain dicts for JSON-safety.
     # Phase 5: include resolved_by for provenance (null when fast-path / not available).
     # Include best_candidate (relativized) for AMBIGUOUS hops.
+    # Apply _apply_verbosity to each hop so lean mode strips resolved_by/best_candidate.
     serialized_paths = [
         [
-            _serialize_hop(hop, root)
+            _apply_verbosity(_serialize_hop(hop, root), verbose)
             for hop in path
         ]
         for path in paths
@@ -449,10 +498,10 @@ def handle_seam_trace(
         "source": clean_source,
         "target": clean_target,
         "paths": serialized_paths,
-        "callers_source": [_serialize_edge_hop(h, root) for h in callers_source],
-        "callees_source": [_serialize_edge_hop(h, root) for h in callees_source],
-        "callers_target": [_serialize_edge_hop(h, root) for h in callers_target],
-        "callees_target": [_serialize_edge_hop(h, root) for h in callees_target],
+        "callers_source": [_apply_verbosity(_serialize_edge_hop(h, root), verbose) for h in callers_source],
+        "callees_source": [_apply_verbosity(_serialize_edge_hop(h, root), verbose) for h in callees_source],
+        "callers_target": [_apply_verbosity(_serialize_edge_hop(h, root), verbose) for h in callers_target],
+        "callees_target": [_apply_verbosity(_serialize_edge_hop(h, root), verbose) for h in callees_target],
     }
 
 
@@ -702,6 +751,7 @@ def handle_seam_context_pack(
     conn: sqlite3.Connection,
     symbol: str,
     root: Path,
+    verbose: bool = True,
 ) -> dict[str, Any] | None:
     """Handler for the seam_context_pack MCP tool.
 
@@ -720,6 +770,9 @@ def handle_seam_context_pack(
         - blank/whitespace → INVALID_INPUT error dict
         - unknown symbol   → None
         - found symbol     → serialized ContextPack with paths relativized
+
+    verbose=True (default): output byte-identical to pre-Phase-8.
+    verbose=False: heavy fields stripped from target and each neighbor.
     """
     # Validate: symbol must not be empty or whitespace-only
     if not symbol or not symbol.strip():
@@ -733,9 +786,10 @@ def handle_seam_context_pack(
     if pack is None:
         return None
 
-    # Relativize file path in target (mirrors handle_seam_context)
+    # Relativize file path in target (mirrors handle_seam_context).
+    # Apply _apply_verbosity so lean mode strips heavy fields from the target record.
     target = pack["target"]
-    serialized_target = {
+    serialized_target = _apply_verbosity({
         "symbol": target["symbol"],
         "file": _relativize(target["file"], root),
         "line": target["line"],
@@ -753,14 +807,15 @@ def handle_seam_context_pack(
         "is_exported": target["is_exported"],
         "visibility": target["visibility"],
         "qualified_name": target["qualified_name"],
-    }
+    }, verbose)
 
     # Relativize file paths in enriched neighbors.
     # WHY direct key access (not .get()): NeighborRef is a TypedDict with all
     # required keys — using .get() would silently return None for a renamed field
     # instead of raising a KeyError that makes the bug visible.
+    # Apply _apply_verbosity so lean mode strips heavy fields from each neighbor.
     def _serialize_neighbor(nb: NeighborRef) -> dict[str, Any]:
-        return {
+        return _apply_verbosity({
             "name": nb["name"],
             "file": _relativize(nb["file"], root),
             "line": nb["line"],
@@ -770,7 +825,7 @@ def handle_seam_context_pack(
             "is_exported": nb["is_exported"],
             "visibility": nb["visibility"],
             "qualified_name": nb["qualified_name"],
-        }
+        }, verbose)
 
     return {
         "target": serialized_target,

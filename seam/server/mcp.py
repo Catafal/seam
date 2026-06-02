@@ -83,20 +83,30 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
     mcp: FastMCP = FastMCP(name="seam")
 
     @mcp.tool()
-    def seam_query(concept: str, limit: int = _QUERY_LIMIT_DEFAULT) -> Any:
+    def seam_query(concept: str, limit: int = _QUERY_LIMIT_DEFAULT, verbose: bool = True) -> Any:
         """Find all code related to a concept using hybrid search (FTS5 + 1-hop graph expansion).
 
         Use this when you need to find where a concept lives across the codebase.
+
+        Set verbose=false to omit the heavy Phase 4/5 enrichment fields (decorators,
+        is_exported, visibility, qualified_name, resolved_by, best_candidate) and get a
+        compact response. signature and all core identity fields are always kept.
+        verbose=true (default) is byte-identical to the pre-Phase-8 output.
         """
-        return handle_seam_query(conn, concept, root, limit=limit)
+        return handle_seam_query(conn, concept, root, limit=limit, verbose=verbose)
 
     @mcp.tool()
-    def seam_context(symbol: str) -> Any:
+    def seam_context(symbol: str, verbose: bool = True) -> Any:
         """Get a 360-degree view of a symbol: its callers, callees, file location, and docstring.
 
         Use before touching any existing function or class.
+
+        Set verbose=false to omit heavy enrichment fields (decorators, is_exported,
+        visibility, qualified_name) and receive a compact response. signature and all
+        core identity fields are always kept.
+        verbose=true (default) is byte-identical to the pre-Phase-8 output.
         """
-        return handle_seam_context(conn, symbol, root)
+        return handle_seam_context(conn, symbol, root, verbose=verbose)
 
     @mcp.tool()
     def seam_search(text: str, limit: int = _SEARCH_LIMIT_DEFAULT) -> Any:
@@ -113,6 +123,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         direction: str = _IMPACT_DIRECTION_DEFAULT,
         max_depth: int = _IMPACT_DEPTH_DEFAULT,
         include_tests: bool = True,
+        verbose: bool = True,
     ) -> Any:
         """Blast-radius analysis — what breaks if I change this symbol?
 
@@ -130,6 +141,10 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         Set include_tests=false to filter out test-file dependents and see only the
         production blast radius — useful when test callers dominate the results.
 
+        Set verbose=false to omit heavy enrichment fields (resolved_by, best_candidate)
+        from every tier entry and get a compact response.
+        verbose=true (default) is byte-identical to the pre-Phase-8 output.
+
         Use before editing any symbol to understand the blast radius.
         """
         return handle_seam_impact(
@@ -139,6 +154,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
             direction=direction,
             max_depth=max_depth,
             include_tests=include_tests,
+            verbose=verbose,
         )
 
     @mcp.tool()
@@ -146,6 +162,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         source: str,
         target: str,
         max_depth: int = _TRACE_DEPTH_DEFAULT,
+        verbose: bool = True,
     ) -> Any:
         """Trace the call/dependency path between two symbols.
 
@@ -165,8 +182,11 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         Per-hop confidence lets you flag any hop that rests on an AMBIGUOUS edge
         (name collision at extraction time) so you know which conclusions are certain
         and which need manual verification.
+
+        Set verbose=false to omit heavy fields (resolved_by, best_candidate) from
+        every hop and edge hop. verbose=true (default) is byte-identical to pre-Phase-8.
         """
-        return handle_seam_trace(conn, source, target, root, max_depth=max_depth)
+        return handle_seam_trace(conn, source, target, root, max_depth=max_depth, verbose=verbose)
 
     @mcp.tool()
     def seam_changes(
@@ -268,7 +288,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         return handle_seam_affected(conn, changed_files, root, depth=depth)
 
     @mcp.tool()
-    def seam_context_pack(symbol: str) -> Any:
+    def seam_context_pack(symbol: str, verbose: bool = True) -> Any:
         """Get a ready-to-paste context bundle for a symbol.
 
         Returns a single payload containing:
@@ -290,9 +310,13 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         location, enriched neighbors, rationale comments, and functional area — without
         the five separate seam_context / seam_why / seam_context-on-each-neighbor calls.
 
+        Set verbose=false to omit heavy enrichment fields (decorators, is_exported,
+        visibility, qualified_name) from target and every neighbor. signature and core
+        fields are always kept. verbose=true (default) is byte-identical to pre-Phase-8.
+
         Returns None when the symbol is not in the index (same contract as seam_context).
         Returns INVALID_INPUT error when symbol is blank or whitespace-only.
         """
-        return handle_seam_context_pack(conn, symbol, root)
+        return handle_seam_context_pack(conn, symbol, root, verbose=verbose)
 
     return mcp

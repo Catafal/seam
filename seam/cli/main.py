@@ -456,6 +456,14 @@ def impact_cmd(
         "--production-only",
         help="Filter out test-file dependents; show only production blast radius.",
     ),
+    lean: bool = typer.Option(
+        False,
+        "--lean",
+        help=(
+            "Omit heavy enrichment fields (resolved_by, best_candidate) from every tier entry. "
+            "signature and core fields are always kept. Identical to verbose=false in MCP."
+        ),
+    ),
     json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
     quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
 ) -> None:
@@ -509,6 +517,10 @@ def impact_cmd(
     # include_tests=False when --production-only is set; True (default) otherwise.
     include_tests = not production_only
 
+    # --lean sets verbose=False; output becomes byte-identical to the MCP tool
+    # called with verbose=False — heavy fields absent from every tier entry.
+    verbose = not lean
+
     try:
         # WHY: reuse handle_seam_impact (MCP handler) for --json so that CLI --json
         # output is byte-identical to the MCP tool response (Article #37 parity).
@@ -521,6 +533,7 @@ def impact_cmd(
                 direction=direction,
                 max_depth=depth,
                 include_tests=include_tests,
+                verbose=verbose,
             )
         else:
             # WHY: pass repo_root so Rich mode uses the same Phase 5 import-promotion
@@ -649,6 +662,14 @@ def trace_cmd(
     depth: int = typer.Option(10, "--depth", help="Max hop depth (1-10)"),
     path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+    lean: bool = typer.Option(
+        False,
+        "--lean",
+        help=(
+            "Omit heavy enrichment fields (resolved_by, best_candidate) from every hop. "
+            "Identical to verbose=false in MCP."
+        ),
+    ),
     json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
     quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
 ) -> None:
@@ -690,11 +711,16 @@ def trace_cmd(
     # Clamp depth to [1, 10]
     safe_depth = max(1, min(10, depth))
 
+    # --lean sets verbose=False; output becomes byte-identical to the MCP tool
+    # called with verbose=False — heavy fields absent from every hop.
+    verbose = not lean
+
     try:
         # WHY: reuse handle_seam_trace for --json/--quiet to ensure MCP/CLI parity.
         if json_ or quiet:
             result = handle_seam_trace(
-                conn, source=source, target=target, root=project_root, max_depth=safe_depth
+                conn, source=source, target=target, root=project_root,
+                max_depth=safe_depth, verbose=verbose,
             )
         else:
             # Thread project_root as repo_root for Phase 5 import-promotion so
@@ -1512,6 +1538,14 @@ def pack_cmd(
     symbol: str = typer.Argument(..., help="Symbol name to build context pack for."),
     path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+    lean: bool = typer.Option(
+        False,
+        "--lean",
+        help=(
+            "Omit heavy enrichment fields (decorators, is_exported, visibility, qualified_name) "
+            "from target and all neighbors. Identical to verbose=false in MCP."
+        ),
+    ),
     json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
     quiet: bool = typer.Option(
         False,
@@ -1528,6 +1562,7 @@ def pack_cmd(
     Examples:
       seam pack my_func
       seam pack my_func --json
+      seam pack my_func --lean --json
       seam pack my_func --quiet
     """
     try:
@@ -1553,10 +1588,14 @@ def pack_cmd(
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
+    # --lean sets verbose=False; output becomes byte-identical to the MCP tool
+    # called with verbose=False — heavy fields absent from target and all neighbors.
+    verbose = not lean
+
     try:
         # WHY: always route through handle_seam_context_pack so MCP and CLI
         # produce the identical bundle (same paths, same caps, same truncation).
-        result = handle_seam_context_pack(conn, symbol, project_root)
+        result = handle_seam_context_pack(conn, symbol, project_root, verbose=verbose)
     finally:
         conn.close()
 
