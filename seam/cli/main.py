@@ -32,6 +32,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -55,6 +56,7 @@ from seam.analysis.impact import (
     TIER_WILL_BREAK,
     impact,
 )
+from seam.cli.output import check_mutual_exclusion, emit_json, emit_json_error, print_quiet
 from seam.indexer.cluster_index import get_llm_naming_summary, index_clusters
 from seam.indexer.db import connect, init_db
 from seam.indexer.pipeline import index_one_file, walk_project
@@ -62,6 +64,13 @@ from seam.query.clusters import cluster_members as query_cluster_members
 from seam.query.clusters import list_clusters as query_list_clusters
 from seam.query.comments import why as comments_why
 from seam.server.mcp import create_server
+from seam.server.tools import (
+    handle_seam_changes,
+    handle_seam_clusters,
+    handle_seam_impact,
+    handle_seam_trace,
+    handle_seam_why,
+)
 
 app = typer.Typer(
     name="seam",
@@ -222,6 +231,8 @@ def status(
         "--db-dir",
         help="Override DB directory (default: same as project root)",
     ),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
 ) -> None:
     """Show index statistics and watcher status.
 
@@ -231,12 +242,19 @@ def status(
     - watcher PID (if a live watcher is recorded)
     - freshness: newest DB mtime vs newest on-disk file mtime
     """
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
     # Mirror `init`: DB lives under the project root unless --db-dir overrides.
     project_root = Path(path).resolve()
     db_root = Path(db_dir).resolve() if db_dir else project_root
     db_path = config.get_db_path(db_root)
 
     if not db_path.exists():
+        if json_:
+            emit_json_error("NO_INDEX", "No index found. Run 'seam init' first to create the index.")
         console.print(
             "[red]No index found.[/red] Run [bold]seam init[/bold] first to create the index."
         )
@@ -245,6 +263,8 @@ def status(
     try:
         conn = connect(db_path)
     except sqlite3.Error as exc:
+        if json_:
+            emit_json_error("INVALID_INPUT", f"Failed to open database: {exc}")
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
@@ -294,6 +314,27 @@ def status(
     pid_file = db_path.parent / "watcher.pid"
     alive_pid = _watcher_is_alive(pid_file)
     watcher_status = f"PID {alive_pid}" if alive_pid is not None else "not running"
+
+    # ── JSON mode — build stats dict inline (no handler exists for status) ────
+    if json_:
+        stats = {
+            "files": file_count,
+            "symbols": symbol_count,
+            "edges": edge_count,
+            "clusters": cluster_count,
+            "last_indexed": last_indexed_str,
+            "watcher": watcher_status,
+            "freshness": freshness,
+        }
+        emit_json(stats)
+        return
+
+    # ── Quiet mode — print freshness (the single load-bearing field for CI gating)
+    if quiet:
+        sys.stdout.write(freshness + "\n")
+        return
+
+    # ── Rich (default) mode — existing rendering, unchanged ──────────────────
 
     # Print summary table
     table = Table(title="seam status", show_header=False, box=None)
@@ -405,6 +446,8 @@ def impact_cmd(
         "--production-only",
         help="Filter out test-file dependents; show only production blast radius.",
     ),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
 ) -> None:
     """Show the blast radius of a symbol — what breaks if you change it.
 
@@ -417,22 +460,34 @@ def impact_cmd(
     Test-file dependents are marked [test] in the output. Use --production-only
     to filter them out and see only the production blast radius.
     """
+    # WHY: check mutual exclusion before any DB work so the error is immediate.
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
     project_root = Path(path).resolve()
     db_root = Path(db_dir).resolve() if db_dir else project_root
     db_path = config.get_db_path(db_root)
 
     if not db_path.exists():
+        if json_:
+            emit_json_error("NO_INDEX", "No index found. Run 'seam init' first.")
         console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
         raise typer.Exit(code=1)
 
     valid_directions = {"upstream", "downstream", "both"}
     if direction not in valid_directions:
+        if json_:
+            emit_json_error("INVALID_INPUT", f"direction must be one of: upstream, downstream, both; got {direction!r}")
         console.print(f"[red]Invalid direction:[/red] {direction!r}. Choose: upstream, downstream, or both.")
         raise typer.Exit(code=1)
 
     try:
         conn = connect(db_path)
     except sqlite3.Error as exc:
+        if json_:
+            emit_json_error("INVALID_INPUT", f"Failed to open database: {exc}")
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
@@ -440,9 +495,35 @@ def impact_cmd(
     include_tests = not production_only
 
     try:
-        result = impact(conn, target=symbol, direction=direction, max_depth=depth, include_tests=include_tests)
+        # WHY: reuse handle_seam_impact (MCP handler) for --json so that CLI --json
+        # output is byte-identical to the MCP tool response (Article #37 parity).
+        # For the Rich path we still call impact() directly to preserve behavior.
+        if json_ or quiet:
+            result = handle_seam_impact(
+                conn, target=symbol, root=project_root,
+                direction=direction, max_depth=depth, include_tests=include_tests,
+            )
+        else:
+            result = impact(conn, target=symbol, direction=direction, max_depth=depth, include_tests=include_tests)
     finally:
         conn.close()
+
+    # ── JSON mode ─────────────────────────────────────────────────────────────
+    if json_:
+        emit_json(result)
+        return
+
+    # ── Quiet mode — print one name per dependent entry ───────────────────────
+    if quiet:
+        for dir_key, tier_group in result.items():
+            if dir_key in ("found", "target", "hidden_tests") or not isinstance(tier_group, dict):
+                continue
+            for entries in tier_group.values():
+                for entry in entries:
+                    print_quiet(entry, field="name")
+        return
+
+    # ── Rich (default) mode — existing rendering, unchanged ──────────────────
 
     # Distinguish "symbol not in the index" from "indexed but no dependents".
     if not result.get("found", True):
@@ -529,6 +610,8 @@ def trace_cmd(
     depth: int = typer.Option(10, "--depth", help="Max hop depth (1-10)"),
     path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
 ) -> None:
     """Trace the call/dependency path from one symbol to another.
 
@@ -542,17 +625,26 @@ def trace_cmd(
 
     Exits with a clear message when no path exists between the symbols.
     """
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
     project_root = Path(path).resolve()
     db_root = Path(db_dir).resolve() if db_dir else project_root
     db_path = config.get_db_path(db_root)
 
     if not db_path.exists():
+        if json_:
+            emit_json_error("NO_INDEX", "No index found. Run 'seam init' first.")
         console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
         raise typer.Exit(code=1)
 
     try:
         conn = connect(db_path)
     except sqlite3.Error as exc:
+        if json_:
+            emit_json_error("INVALID_INPUT", f"Failed to open database: {exc}")
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
@@ -560,13 +652,34 @@ def trace_cmd(
     safe_depth = max(1, min(10, depth))
 
     try:
-        paths = flows_trace(conn, source, target, max_depth=safe_depth)
-        callers_src = flows_callers(conn, source)
-        callees_src = flows_callees(conn, source)
-        callers_tgt = flows_callers(conn, target)
-        callees_tgt = flows_callees(conn, target)
+        # WHY: reuse handle_seam_trace for --json/--quiet to ensure MCP/CLI parity.
+        if json_ or quiet:
+            result = handle_seam_trace(conn, source=source, target=target, root=project_root, max_depth=safe_depth)
+        else:
+            paths = flows_trace(conn, source, target, max_depth=safe_depth)
+            callers_src = flows_callers(conn, source)
+            callees_src = flows_callees(conn, source)
+            callers_tgt = flows_callers(conn, target)
+            callees_tgt = flows_callees(conn, target)
     finally:
         conn.close()
+
+    # ── JSON mode ─────────────────────────────────────────────────────────────
+    if json_:
+        emit_json(result)
+        return
+
+    # ── Quiet mode — print hop names from the first path ─────────────────────
+    if quiet:
+        if result.get("found") and result.get("paths"):
+            for hop in result["paths"][0]:
+                sys.stdout.write(hop["from_name"] + "\n")
+            # Print the final destination
+            if result["paths"][0]:
+                sys.stdout.write(result["paths"][0][-1]["to_name"] + "\n")
+        return
+
+    # ── Rich (default) mode — existing rendering, unchanged ──────────────────
 
     # Confidence -> rich color mapping, used throughout.
     def _conf_color(c: str) -> str:
@@ -638,6 +751,8 @@ def changes_cmd(
     ),
     path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
 ) -> None:
     """Pre-commit risk check — show what your changes break.
 
@@ -649,12 +764,19 @@ def changes_cmd(
       staged  — staged changes (git diff --cached)
       branch  — all changes on this branch vs base ref (git diff <base>...HEAD)
     """
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
     project_root = Path(path).resolve()
     db_root = Path(db_dir).resolve() if db_dir else project_root
     db_path = config.get_db_path(db_root)
 
     # Validate scope early for a helpful message.
     if scope not in VALID_SCOPES:
+        if json_:
+            emit_json_error("INVALID_INPUT", f"scope must be one of {sorted(VALID_SCOPES)}; got {scope!r}")
         console.print(
             f"[red]Invalid scope:[/red] {scope!r}. "
             f"Choose one of: {', '.join(sorted(VALID_SCOPES))}."
@@ -662,22 +784,50 @@ def changes_cmd(
         raise typer.Exit(code=1)
 
     if not db_path.exists():
+        if json_:
+            emit_json_error("NO_INDEX", "No index found. Run 'seam init' first.")
         console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
         raise typer.Exit(code=1)
 
     try:
         conn = connect(db_path)
     except sqlite3.Error as exc:
+        if json_:
+            emit_json_error("INVALID_INPUT", f"Failed to open database: {exc}")
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
+    # WHY `Any`: handle_seam_changes returns dict[str,Any]; detect_changes returns
+    # ChangeReport (a TypedDict). Both are accessed with the same string keys at
+    # runtime, but mypy cannot unify them — `Any` is the honest annotation here.
+    report: Any
     try:
-        report = detect_changes(conn, base_ref=base, scope=scope, repo_root=project_root)
-    except NotAGitRepoError as exc:
-        console.print(f"[red]Not a git repository:[/red] {exc}")
-        raise typer.Exit(code=1) from exc
+        # WHY: reuse handle_seam_changes for --json/--quiet (MCP/CLI parity).
+        if json_ or quiet:
+            report = handle_seam_changes(conn, root=project_root, base_ref=base, scope=scope)
+        else:
+            try:
+                report = detect_changes(conn, base_ref=base, scope=scope, repo_root=project_root)
+            except NotAGitRepoError as exc:
+                console.print(f"[red]Not a git repository:[/red] {exc}")
+                raise typer.Exit(code=1) from exc
     finally:
         conn.close()
+
+    # ── JSON mode ─────────────────────────────────────────────────────────────
+    if json_:
+        # handle_seam_changes returns an error dict on NOT_A_GIT_REPO
+        if isinstance(report, dict) and report.get("error"):
+            emit_json_error(report["error"], report.get("message", ""))
+        emit_json(report)
+        return
+
+    # ── Quiet mode — print the risk level ────────────────────────────────────
+    if quiet:
+        print_quiet(report, field="risk_level")
+        return
+
+    # ── Rich (default) mode — existing rendering, unchanged ──────────────────
 
     # ── Summary header ────────────────────────────────────────────────────────
     risk_color = {
@@ -832,6 +982,8 @@ def why_cmd(
     ),
     path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
 ) -> None:
     """Show semantic comments (WHY/HACK/NOTE/TODO/FIXME) near a file location or symbol.
 
@@ -840,11 +992,18 @@ def why_cmd(
       seam why app.py:42               -- comments near line 42
       seam why --symbol my_func        -- comments inside or above my_func
     """
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
     project_root = Path(path).resolve()
     db_root = Path(db_dir).resolve() if db_dir else project_root
     db_path = config.get_db_path(db_root)
 
     if not db_path.exists():
+        if json_:
+            emit_json_error("NO_INDEX", "No index found. Run 'seam init' first.")
         console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
         raise typer.Exit(code=1)
 
@@ -863,24 +1022,55 @@ def why_cmd(
 
     # If neither resolved_file nor resolved_symbol is set after parsing, error out
     if not resolved_file and not resolved_symbol:
+        if json_:
+            emit_json_error("INVALID_INPUT", "Provide a file path or --symbol.")
         console.print("[red]Error:[/red] Provide a file path or --symbol.")
         raise typer.Exit(code=1)
 
     try:
         conn = connect(db_path)
     except sqlite3.Error as exc:
+        if json_:
+            emit_json_error("INVALID_INPUT", f"Failed to open database: {exc}")
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
+    # WHY `Any`: handle_seam_why returns list[dict[str,Any]] | dict[str,Any];
+    # comments_why returns list[CommentHit]. Both are accessed with same string
+    # keys at runtime; `Any` is the honest annotation to unify them for mypy.
+    hits: Any
     try:
-        hits = comments_why(
-            conn,
-            file=resolved_file,
-            line=line_arg,
-            symbol=resolved_symbol,
-        )
+        # WHY: reuse handle_seam_why for --json/--quiet (MCP/CLI parity).
+        if json_ or quiet:
+            hits = handle_seam_why(
+                conn,
+                root=project_root,
+                file=file_arg if file_arg else None,
+                line=line_arg,
+                symbol=resolved_symbol,
+            )
+        else:
+            hits = comments_why(
+                conn,
+                file=resolved_file,
+                line=line_arg,
+                symbol=resolved_symbol,
+            )
     finally:
         conn.close()
+
+    # ── JSON mode ─────────────────────────────────────────────────────────────
+    if json_:
+        emit_json(hits)
+        return
+
+    # ── Quiet mode — print marker: text per hit ───────────────────────────────
+    if quiet:
+        for hit in hits:
+            sys.stdout.write(f"{hit['marker']}: {hit['text']}\n")
+        return
+
+    # ── Rich (default) mode — existing rendering, unchanged ──────────────────
 
     if not hits:
         console.print("[dim]No semantic comments found[/dim]")
@@ -922,6 +1112,8 @@ def clusters_cmd(
     ),
     path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
 ) -> None:
     """List all clusters or members of one cluster.
 
@@ -929,29 +1121,61 @@ def clusters_cmd(
       seam clusters              -- list all clusters with id, label, size
       seam clusters --id 3       -- list all member symbols of cluster 3
     """
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
     project_root = Path(path).resolve()
     db_root = Path(db_dir).resolve() if db_dir else project_root
     db_path = config.get_db_path(db_root)
 
     if not db_path.exists():
+        if json_:
+            emit_json_error("NO_INDEX", "No index found. Run 'seam init' first.")
         console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
         raise typer.Exit(code=1)
 
     try:
         conn = connect(db_path)
     except sqlite3.Error as exc:
+        if json_:
+            emit_json_error("INVALID_INPUT", f"Failed to open database: {exc}")
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
     try:
-        if cluster_id >= 0:
-            # Members of a specific cluster
-            members = query_cluster_members(conn, cluster_id)
+        # WHY: reuse handle_seam_clusters for --json/--quiet (MCP/CLI parity).
+        if json_ or quiet:
+            cid = cluster_id if cluster_id >= 0 else None
+            cluster_data = handle_seam_clusters(conn, root=project_root, cluster_id=cid)
         else:
-            members = None
-            clusters = query_list_clusters(conn)
+            if cluster_id >= 0:
+                members = query_cluster_members(conn, cluster_id)
+            else:
+                members = None
+                clusters = query_list_clusters(conn)
     finally:
         conn.close()
+
+    # ── JSON mode ─────────────────────────────────────────────────────────────
+    if json_:
+        emit_json(cluster_data)
+        return
+
+    # ── Quiet mode — print labels (cluster list) or names (member list) ───────
+    if quiet:
+        if cluster_id >= 0:
+            # Quiet for members: print symbol names
+            for item in cluster_data:
+                sys.stdout.write(item["name"] + "\n")
+        else:
+            # Quiet for cluster list: print labels
+            for item in cluster_data:
+                sys.stdout.write(item["label"] + "\n")
+        return
+
+    # ── Rich (default) mode — existing rendering, unchanged ──────────────────
 
     if cluster_id >= 0:
         # Display members
