@@ -64,12 +64,14 @@ class Symbol(TypedDict):
     start_line: int
     end_line: int
     docstring: str | None
-    # Phase 4 — Node-field enrichment (all nullable; None when not extracted)
-    signature: str | None       # declaration header, single line, truncated
-    decorators: list[str]       # verbatim decorator strings (Python/TS); [] otherwise
-    is_exported: bool | None    # True = public API; None = unknown/unsupported
-    visibility: str | None      # "public" | "private" | "protected" | "crate" | None
-    qualified_name: str | None  # "ClassName.method" or plain name; None if unknown
+    # Phase 4 — Node-field enrichment. All nullable: None means "not yet extracted"
+    # (e.g. pre-v5 rows) rather than "has no value". Callers must not treat None as
+    # equivalent to empty string or False.
+    signature: str | None       # declaration header, single line, truncated at SEAM_MAX_SIGNATURE_LEN
+    decorators: list[str]       # verbatim decorator text (Python/TS only); [] for Go/Rust
+    is_exported: bool | None    # export status; None when language has no uniform export concept
+    visibility: str | None      # "public"|"private"|"protected"|"crate"; Python uses heuristic
+    qualified_name: str | None  # "ClassName.method" for methods; None for anonymous/top-level unknown
 
 
 class Edge(TypedDict):
@@ -128,9 +130,9 @@ def _make_symbol(
 ) -> Symbol:
     """Construct a Symbol TypedDict from a tree-sitter node.
 
-    Phase 4 fields (signature, decorators, is_exported, visibility, qualified_name)
-    are optional keyword arguments defaulting to None/[]. Callers that haven't been
-    updated yet for Phase 4 keep working unchanged.
+    Phase 4 enrichment fields default to None/[] so callers that don't yet call
+    extract_node_fields continue to work without changes — backward-compatible extension
+    rather than requiring every call site to be updated simultaneously.
     """
     return Symbol(
         name=name,

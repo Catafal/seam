@@ -28,15 +28,13 @@ from tree_sitter import Node
 
 logger = logging.getLogger(__name__)
 
-# Default maximum signature length in characters.
-# The actual limit is threaded in as a parameter from the caller (graph.py / graph_go_rust.py),
-# which reads it from seam.config.SEAM_MAX_SIGNATURE_LEN. This default is only used when
-# the caller does not explicitly pass max_signature_len (e.g. in tests or ad-hoc calls).
-# WHY a constant here instead of reading the env var directly:
-#   CLAUDE.md requires config access through seam.config only. signatures.py is a pure
-#   leaf module that must not import from any other seam module (including seam.config).
-#   The solution is parameter threading: callers pass the configured value, and this
-#   module stays dependency-free. The constant 300 matches seam.config's default.
+# Fallback when callers omit max_signature_len (e.g. unit tests calling extract_node_fields
+# directly). The real limit comes from seam.config.SEAM_MAX_SIGNATURE_LEN, which callers
+# (graph.py / graph_go_rust.py) read and pass in as a parameter. Keeping config reading
+# in the caller rather than here preserves this module's leaf property: a leaf must not
+# import from any other seam module, including seam.config. Parameter threading is the
+# only way to honour both the config-centralisation rule and the leaf-purity rule.
+# 300 must match the seam.config default so tests and prod see the same truncation point.
 _DEFAULT_MAX_SIG_LEN = 300
 
 
@@ -97,7 +95,8 @@ def _py_signature(node: Node) -> str | None:
     try:
         node_type = node.type
 
-        # Unwrap decorated_definition to get the inner definition
+        # decorated_definition wraps the inner function_definition; recurse to extract
+        # the signature from the actual declaration, not the decorator wrapper node.
         if node_type == "decorated_definition":
             inner = node.child_by_field_name("definition")
             if inner is not None:
@@ -124,7 +123,6 @@ def _py_signature(node: Node) -> str | None:
 
         if node_type == "class_definition":
             name_node = node.child_by_field_name("name")
-            # Superclasses are in the argument_list node (if present)
             superclasses_node = node.child_by_field_name("superclasses")
             name = _text(name_node)
             if superclasses_node:
@@ -133,7 +131,8 @@ def _py_signature(node: Node) -> str | None:
             return _normalize_to_one_line(f"class {name}")
 
     except Exception as exc:  # noqa: BLE001
-        # Log so extraction-quality degradation is traceable (Finding 8).
+        # Log at DEBUG so extraction failures surface during development without
+        # polluting production logs — callers emit the symbol with signature=None.
         logger.debug("_py_signature extraction failed for node.type=%r: %s", node.type, exc)
     return None
 
@@ -415,7 +414,9 @@ def _extract_go(node: Node, qualified_name: str | None, max_sig_len: int) -> Nod
 
         return NodeFields(
             signature=sig,
-            decorators=[],  # Go has no decorators
+            # Go has no decorator syntax; unlike Python @decorator or TS @Decorator,
+            # struct tags and //go:generate directives are not captured here.
+            decorators=[],
             is_exported=_go_is_exported(name) if name else None,
             visibility=_go_visibility(name) if name else None,
             qualified_name=qualified_name,
@@ -521,7 +522,10 @@ def _extract_rust(node: Node, qualified_name: str | None, max_sig_len: int) -> N
 
         return NodeFields(
             signature=sig,
-            decorators=[],  # Rust attributes (#[...]) are out of scope per PRD
+            # Rust #[...] attributes are not decorators in the Python/TS sense and are
+            # intentionally excluded per PRD: they appear before the item, would require
+            # separate attribute_item walking, and rarely appear in symbol-level queries.
+            decorators=[],
             is_exported=is_exported,
             visibility=vis,
             qualified_name=qualified_name,
@@ -576,8 +580,6 @@ def extract_node_fields(
     if node is None:
         return _safe_defaults(qualified_name)
 
-    # Import Node class here for isinstance check — this is still leaf-compliant
-    # because tree_sitter is in the stdlib-or-build-time-available category.
     if not isinstance(node, Node):
         return _safe_defaults(qualified_name)
 
@@ -591,7 +593,8 @@ def extract_node_fields(
         elif language == "rust":
             return _extract_rust(node, qualified_name, max_signature_len)
         else:
-            # Unknown language — return safe defaults (not an error)
+            # Unsupported language — safe defaults, not an error; callers may index
+            # languages not yet wired to an extractor.
             return _safe_defaults(qualified_name)
     except Exception:  # noqa: BLE001
         # Belt-and-suspenders: any unhandled exception → safe defaults

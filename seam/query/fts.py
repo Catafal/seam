@@ -22,6 +22,8 @@ rescore(rows, terms) -> list
       3. Path relevance:      +10 per term found in file path (directory/filename)
       4. Test-file dampening: -30 when query has no test-signal and file is a test file
       5. Cluster boost:       +20 when row shares the dominant seed's cluster_id
+      6. Signature boost:     +15 per term found in signature (Phase 4; additive/small
+                               to avoid displacing exact-name matches — see constant comment)
 
     Score is an UNBOUNDED relevance heuristic — document as "relevance", never as %.
 """

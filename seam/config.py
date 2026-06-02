@@ -87,12 +87,12 @@ SEAM_FUZZY_MAX_DIST: int = int(os.getenv("SEAM_FUZZY_MAX_DIST", "1"))
 SEAM_FUZZY_MAX_CANDIDATES: int = int(os.getenv("SEAM_FUZZY_MAX_CANDIDATES", "500"))
 
 
-
 # ── Phase 4: Node-field enrichment configuration ─────────────────────────────
 
-# Maximum length (in characters) for the signature field captured at index time.
-# Signatures longer than this are truncated with '...' to keep query results readable
-# and prevent pathologically long function signatures from bloating a single row.
+# Hard cap on stored signature length. Without a cap, a function with many type-annotated
+# parameters can produce a 500+ character signature that dominates the FTS index and makes
+# MCP responses painful to read. 300 chars captures the full header of all but pathological
+# cases; truncation appends '...' so consumers can detect incomplete signatures.
 SEAM_MAX_SIGNATURE_LEN: int = int(os.getenv("SEAM_MAX_SIGNATURE_LEN", "300"))
 
 

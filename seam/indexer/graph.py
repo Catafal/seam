@@ -65,8 +65,7 @@ from seam.indexer.graph_go_rust import (
     _extract_symbols_rust,
 )
 
-# Phase 4: node-field extractor (leaf module — no seam deps other than tree_sitter).
-# Imported AFTER graph_go_rust to maintain the established import ordering convention.
+# signatures.py is a leaf (no seam deps) so importing it here does not create a cycle.
 from seam.indexer.signatures import extract_node_fields
 
 # Keep these names visible for `from seam.indexer.graph import ...` callers.
@@ -166,7 +165,8 @@ def _extract_symbols_python(root: Node, filepath: Path) -> list[Symbol]:
                 kind = "method" if class_name else "function"
                 qualified = f"{class_name}.{name}" if class_name else name
                 doc = _py_docstring(node)
-                # Phase 4: extract enrichment fields; pass qualified name from our scope-walker.
+                # Phase 4: pass qualified name from our scope-walker so signatures.py doesn't
+                # need to re-resolve it independently — single source of qualified-name truth.
                 fields = extract_node_fields(
                     node,
                     "python",
@@ -200,7 +200,8 @@ def _extract_symbols_python(root: Node, filepath: Path) -> list[Symbol]:
                     kind = "method" if class_name else "function"
                     qualified = f"{class_name}.{name}" if class_name else name
                     doc = _py_docstring(definition)
-                    # Phase 4: pass the decorated_definition node for decorator capture.
+                    # Pass the decorated_definition node (not the inner definition) so
+                    # signatures.py can traverse its children for @decorator nodes.
                     fields = extract_node_fields(
                         node,
                         "python",
@@ -229,7 +230,7 @@ def _extract_symbols_python(root: Node, filepath: Path) -> list[Symbol]:
                 name = _node_name(definition)
                 if name:
                     doc = _py_docstring(definition)
-                    # Phase 4: pass decorated_definition node for decorator capture.
+                    # Pass decorated_definition node so class decorators are captured.
                     fields = extract_node_fields(
                         node,
                         "python",
@@ -259,7 +260,6 @@ def _extract_symbols_python(root: Node, filepath: Path) -> list[Symbol]:
             name = _node_name(node)
             if name:
                 doc = _py_docstring(node)
-                # Phase 4: extract enrichment fields for class node.
                 fields = extract_node_fields(
                     node,
                     "python",
@@ -398,7 +398,6 @@ def _extract_symbols_typescript(root: Node, filepath: Path) -> list[Symbol]:
                 kind = "method" if class_name else "function"
                 qualified = f"{class_name}.{name}" if class_name else name
                 doc = _ts_jsdoc(node)
-                # Phase 4: extract enrichment fields.
                 fields = extract_node_fields(
                     node,
                     "typescript",
@@ -430,7 +429,6 @@ def _extract_symbols_typescript(root: Node, filepath: Path) -> list[Symbol]:
                 name = _text(name_node)
                 qualified = f"{class_name}.{name}" if class_name else name
                 doc = _ts_jsdoc(node)
-                # Phase 4: extract enrichment fields.
                 fields = extract_node_fields(
                     node,
                     "typescript",
@@ -457,7 +455,6 @@ def _extract_symbols_typescript(root: Node, filepath: Path) -> list[Symbol]:
             if name_node:
                 cls_name = _text(name_node)
                 doc = _ts_jsdoc(node)
-                # Phase 4: extract enrichment fields.
                 fields = extract_node_fields(
                     node,
                     "typescript",
@@ -488,7 +485,6 @@ def _extract_symbols_typescript(root: Node, filepath: Path) -> list[Symbol]:
             if name_node:
                 name = _text(name_node)
                 doc = _ts_jsdoc(node)
-                # Phase 4: extract enrichment fields.
                 fields = extract_node_fields(
                     node,
                     "typescript",
@@ -515,7 +511,6 @@ def _extract_symbols_typescript(root: Node, filepath: Path) -> list[Symbol]:
             if name_node:
                 name = _text(name_node)
                 doc = _ts_jsdoc(node)
-                # Phase 4: extract enrichment fields.
                 fields = extract_node_fields(
                     node,
                     "typescript",

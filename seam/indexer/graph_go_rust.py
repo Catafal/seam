@@ -41,7 +41,7 @@ from seam.indexer.graph_common import (
     _text,
 )
 
-# Phase 4: node-field extractor (leaf module — no seam deps other than tree_sitter).
+# signatures.py is a leaf (no seam deps) so importing it here does not create a cycle.
 from seam.indexer.signatures import extract_node_fields
 
 # ── Doc-comment adjacency helpers ──────────────────────────────────────────────
@@ -148,7 +148,6 @@ def _extract_symbols_go(root: Node, filepath: Path) -> list[Symbol]:
             name = _node_name(node)
             if name:
                 doc = _go_doc_comment(node)
-                # Phase 4: extract enrichment fields.
                 fields = extract_node_fields(
                     node, "go", qualified_name=name, max_signature_len=config.SEAM_MAX_SIGNATURE_LEN
                 )
@@ -173,7 +172,6 @@ def _extract_symbols_go(root: Node, filepath: Path) -> list[Symbol]:
             if method_name and recv_name:
                 qualified = f"{recv_name}.{method_name}"
                 doc = _go_doc_comment(node)
-                # Phase 4: pass node — Go method export is based on method name capitalization.
                 fields = extract_node_fields(
                     node,
                     "go",
@@ -227,7 +225,6 @@ def _extract_symbols_go(root: Node, filepath: Path) -> list[Symbol]:
                     if name_node:
                         type_name = _text(name_node)
                         doc = _go_doc_comment(node)
-                        # Phase 4: pass the type_declaration node.
                         fields = extract_node_fields(
                             node,
                             "go",
@@ -275,7 +272,6 @@ def _handle_go_type_spec(
     type_node = type_spec.child_by_field_name("type")
     doc = _go_doc_comment(decl_node)
 
-    # Phase 4: extract enrichment fields from the decl_node (type_declaration).
     fields = extract_node_fields(
         decl_node, "go", qualified_name=name, max_signature_len=config.SEAM_MAX_SIGNATURE_LEN
     )
@@ -454,7 +450,6 @@ def _extract_symbols_rust(root: Node, filepath: Path) -> list[Symbol]:
             name = _node_name(node)
             if name:
                 doc = _rust_doc_comment(node)
-                # Phase 4: extract enrichment fields.
                 if impl_type is not None:
                     qualified = f"{impl_type}.{name}"
                     fields = extract_node_fields(

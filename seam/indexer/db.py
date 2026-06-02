@@ -236,8 +236,8 @@ def _run_migration_v4_to_v5(conn: sqlite3.Connection) -> None:
 
     ATOMICITY: all structural changes (ALTERs, DROP, CREATE, INSERT) and the version bump
     run inside a SINGLE explicit transaction using BEGIN IMMEDIATE / COMMIT / ROLLBACK.
-    We use individual conn.execute() calls throughout — NOT the conn.executescript method
-    which issues an implicit COMMIT before running, breaking transaction atomicity.
+    Every DDL statement uses conn.execute(), NOT conn.executescript — the batch method
+    issues an implicit COMMIT before running, which would make each DDL non-transactional.
 
     WHY explicit BEGIN IMMEDIATE:
         Python's sqlite3 module with the default isolation_level wraps DML in implicit
@@ -288,13 +288,17 @@ def _run_migration_v4_to_v5(conn: sqlite3.Connection) -> None:
             if col not in col_names:
                 conn.execute(f"ALTER TABLE symbols ADD COLUMN {col} {col_type}")
 
-        # Step 2: Drop the old FTS table and its triggers using individual execute() calls.
+        # Step 2: Drop the old FTS5 table and its triggers.
+        # FTS5 virtual tables cannot be altered (no ALTER VIRTUAL TABLE support in SQLite),
+        # so adding the 'signature' column requires a full DROP + CREATE cycle. Each DDL
+        # uses conn.execute() individually — the batch alternative would issue an implicit
+        # COMMIT, breaking the surrounding BEGIN IMMEDIATE transaction.
         conn.execute("DROP TRIGGER IF EXISTS symbols_ai")
         conn.execute("DROP TRIGGER IF EXISTS symbols_ad")
         conn.execute("DROP TRIGGER IF EXISTS symbols_au")
         conn.execute("DROP TABLE IF EXISTS symbols_fts")
 
-        # Step 3: Recreate symbols_fts with (name, docstring, signature).
+        # Step 3: Recreate symbols_fts with the new column set (name, docstring, signature).
         conn.execute("""
             CREATE VIRTUAL TABLE symbols_fts USING fts5(
                 name,
@@ -305,8 +309,9 @@ def _run_migration_v4_to_v5(conn: sqlite3.Connection) -> None:
             )
         """)
 
-        # Step 4: Recreate the 3 sync triggers for the new FTS column set.
-        # Each trigger is a separate execute() call for the same atomicity reason as above.
+        # Step 4: Recreate the 3 sync triggers (INSERT/DELETE/UPDATE) for the new column set.
+        # Individual execute() calls for the same reason as step 2: the batch alternative
+        # commits implicitly, breaking the surrounding BEGIN IMMEDIATE transaction.
         conn.execute("""
             CREATE TRIGGER symbols_ai AFTER INSERT ON symbols BEGIN
                 INSERT INTO symbols_fts(rowid, name, docstring, signature)
@@ -328,16 +333,19 @@ def _run_migration_v4_to_v5(conn: sqlite3.Connection) -> None:
             END
         """)
 
-        # Step 5: Repopulate FTS from the content table (includes pre-migration rows).
-        # signature will be NULL for pre-migration rows — FTS handles NULL gracefully.
+        # Step 5: Repopulate FTS from the symbols content table.
+        # Pre-migration rows have signature=NULL — FTS5 treats NULL as an empty token
+        # list for that column, so existing symbols are still searchable by name/docstring.
         conn.execute("""
             INSERT INTO symbols_fts(rowid, name, docstring, signature)
             SELECT id, name, docstring, signature FROM symbols
         """)
 
-        # Step 6: Parity check — FTS row count must equal symbols row count.
-        # A mismatch means FTS was only partially repopulated, which silently breaks search.
-        # We detect it here and raise so the ROLLBACK in the except block takes effect.
+        # Step 6: Parity check — abort and roll back if FTS wasn't fully populated.
+        # A partial repopulation (e.g. interrupted INSERT) silently drops search hits:
+        # FTS would return results but miss any symbol whose row was never inserted.
+        # Failing here ensures the ROLLBACK restores the old FTS rather than leaving
+        # the index in a silently degraded state.
         fts_count = conn.execute("SELECT COUNT(*) FROM symbols_fts").fetchone()[0]
         if fts_count != symbol_count:
             raise RuntimeError(
@@ -349,8 +357,11 @@ def _run_migration_v4_to_v5(conn: sqlite3.Connection) -> None:
             fts_count,
         )
 
-        # Step 7: Bump schema_version to '5'.
-        # This is the LAST step before commit so a failure anywhere above rolls back.
+        # Step 7: Bump schema_version to '5' as the very last step before commit.
+        # Placing this last ensures the version is only advanced when all structural
+        # changes have succeeded — a process crash between step 6 and here is safe
+        # because the ROLLBACK in the except block reverts everything, leaving the DB
+        # at v4 so this migration reruns cleanly on the next connect().
         conn.execute("UPDATE metadata SET value = '5' WHERE key = 'schema_version'")
         conn.execute("COMMIT")
 
@@ -505,9 +516,7 @@ def upsert_file(
         conn.execute("DELETE FROM symbols WHERE file_id = ?", (file_id,))
         conn.execute("DELETE FROM comments WHERE file_id = ?", (file_id,))
 
-        # 4. Insert symbols — includes Phase 4 fields (schema v5).
-        # decorators is JSON-encoded on write: list[str] → TEXT. NULL when not set.
-        # is_exported is stored as INTEGER (1/True, 0/False, NULL).
+        # 4. Insert symbols — includes Phase 4 enrichment fields (schema v5).
         conn.executemany(
             """
             INSERT INTO symbols (
@@ -524,14 +533,16 @@ def upsert_file(
                     sym["start_line"],
                     sym["end_line"],
                     sym.get("docstring"),
-                    # Phase 4 fields — use .get() so old Symbol dicts without these keys work.
+                    # Phase 4 fields — .get() so Symbol dicts without these keys remain valid
+                    # (e.g. callers that bypass extract_node_fields or pre-Phase-4 test fixtures).
                     sym.get("signature"),
-                    # Encode decorators as JSON; empty list → '[]', None → NULL.
+                    # decorators is a list; JSON-encode it for TEXT storage. Preserves order and
+                    # round-trips cleanly via json.loads() in the read path (engine.context).
                     json.dumps(sym.get("decorators"))
                     if sym.get("decorators") is not None
                     else "[]",
-                    # Convert bool to int for SQLite (True→1, False→0, None→NULL).
-                    # Cast via (1 if x else 0) avoids the mypy bool|None → int issue.
+                    # SQLite has no native bool type; 1/0/NULL maps to True/False/unknown.
+                    # The (1 if x else 0) form avoids mypy's complaint about assigning bool to int.
                     (1 if sym["is_exported"] else 0)
                     if sym.get("is_exported") is not None
                     else None,
