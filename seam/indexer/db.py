@@ -47,6 +47,16 @@ def connect(db_path: Path, *, check_same_thread: bool = True) -> sqlite3.Connect
     All callers (init_db, watcher, server, status) go through here so no
     connection can accidentally run without FK enforcement.
 
+    Auto-migration: if the DB has an existing schema (metadata table present)
+    but is older than the current version, pending guarded migrations are run.
+    This prevents "no such column: signature" errors when a user upgrades Seam
+    and opens a pre-v5 index via `seam start`, `seam query`, `seam context`, etc.
+    without re-running `seam init`.
+
+    Fresh-DB guard: a brand-new empty file (no metadata table) is NOT migrated
+    here — init_db handles fresh DBs. The guard checks for metadata table
+    existence before reading schema_version.
+
     Args:
         db_path: Path to the SQLite file.
         check_same_thread: Pass False for connections shared across threads
@@ -56,7 +66,82 @@ def connect(db_path: Path, *, check_same_thread: bool = True) -> sqlite3.Connect
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
+
+    # Auto-migrate: run pending guarded migrations on an already-initialized DB.
+    # Guard: only attempt when the metadata table exists (i.e. this is not a fresh
+    # empty file). A fresh empty file has no metadata table yet and must go through
+    # init_db() which runs the full schema creation + migrations in the right order.
+    _run_pending_migrations_if_needed(conn)
+
     return conn
+
+
+def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
+    """Run any pending guarded migrations on an already-initialized DB.
+
+    WHY: connect() is called by all read-path entry points (seam start, seam query,
+    seam context, seam status, the watcher, etc.). Before this function existed,
+    a user with a pre-v5 DB who ran any of those commands WITHOUT re-running
+    `seam init` would get OperationalError: no such column: signature because the
+    new engine SELECTs include Phase 4 columns.
+
+    Guard: only run when:
+      1. The metadata table EXISTS (i.e. this is an initialized DB, not a fresh
+         empty file with no schema yet).
+      2. schema_version < current version (5).
+
+    Fresh-DB safety: a brand-new empty file (no metadata table yet) is left alone —
+    init_db() will create the schema and run all migrations in the correct order.
+
+    These migrations are idempotent + version-guarded, so running them here is safe
+    even if init_db() has already applied them (they become no-ops at version >= N).
+
+    NOTE: The v1→v2, v2→v3, and v3→v4 migrations also need the schema script output
+    (clusters table) to exist before they can run. For the connect() path on a v4 DB
+    we only need to run v4→v5 (the only missing migration for a Phase 4 upgrade).
+    The prior migrations already ran when the user first ran `seam init` at their
+    respective versions, so the schema is already at v4 for a v4 DB.
+    """
+    try:
+        # Guard 1: check if the metadata table exists at all.
+        # SQLite stores table names in sqlite_master; this is a single cheap query.
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        if "metadata" not in tables:
+            # Fresh empty file — no migrations to run (init_db handles this path).
+            return
+
+        # Guard 2: read current schema_version.
+        row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
+        version = int(row["value"]) if row else 0
+
+        if version >= 5:
+            return  # Already up to date — no-op.
+
+        # Version is < 5: run pending migrations in order.
+        # v1→v2 and v2→v3 and v3→v4 are no-ops if already applied (their own guards check).
+        # We run all four in order to handle the case of a v1/v2/v3 DB that was never
+        # migrated by a prior Seam version.
+        if version < 2:
+            _run_migration_v1_to_v2(conn)
+        if version < 3:
+            _run_migration_v2_to_v3(conn)
+        if version < 4:
+            _run_migration_v3_to_v4(conn)
+        # v4→v5: the Phase 4 migration (adds enrichment columns + FTS rebuild).
+        _run_migration_v4_to_v5(conn)
+
+    except Exception as exc:  # noqa: BLE001
+        # Do NOT raise here — failing to auto-migrate should not crash a read-only
+        # command. Log at WARNING so the operator can diagnose, then continue.
+        # The OperationalError would surface on the first query anyway if the schema
+        # is truly broken, giving a clear diagnostic message.
+        logger.warning(
+            "connect(): auto-migration attempt failed (%s). Run 'seam init' to rebuild the index.",
+            exc,
+        )
 
 
 def _run_migration_v1_to_v2(conn: sqlite3.Connection) -> None:
@@ -146,7 +231,21 @@ def _run_migration_v4_to_v5(conn: sqlite3.Connection) -> None:
       4. Recreate the 3 sync triggers (symbols_ai, symbols_ad, symbols_au) for the new
          FTS column set.
       5. Repopulate FTS from the symbols content table (INSERT INTO symbols_fts).
-      6. Bump schema_version to '5'.
+      6. Parity check: assert count(symbols_fts) == count(symbols) after repopulation.
+      7. Bump schema_version to '5'.
+
+    ATOMICITY: all structural changes (ALTERs, DROP, CREATE, INSERT) and the version bump
+    run inside a SINGLE explicit transaction using BEGIN IMMEDIATE / COMMIT / ROLLBACK.
+    We use individual conn.execute() calls throughout — NOT the conn.executescript method
+    which issues an implicit COMMIT before running, breaking transaction atomicity.
+
+    WHY explicit BEGIN IMMEDIATE:
+        Python's sqlite3 module with the default isolation_level wraps DML in implicit
+        transactions, but DDL statements (DROP TABLE, CREATE TABLE) cause implicit commits
+        of the current Python-managed transaction. To make DDL transactional we must issue
+        an explicit BEGIN before any DDL and ROLLBACK on failure. This guarantees that if
+        the process dies or raises mid-migration, the DROP TABLE is rolled back and the
+        DB is left at v4 with the old FTS intact — not in a half-migrated state.
 
     Guarded: runs only when the stored version is < 5.
     Idempotent: each ALTER TABLE is guarded by a PRAGMA table_info check; DROP IF EXISTS
@@ -154,38 +253,46 @@ def _run_migration_v4_to_v5(conn: sqlite3.Connection) -> None:
 
     Raises RuntimeError on any failure so the caller knows the DB is in a bad state.
     """
+    row = conn.execute("SELECT value FROM metadata WHERE key = 'schema_version'").fetchone()
+    version = int(row["value"]) if row else 0
+
+    if version >= 5:
+        return  # Already at v5 or newer — skip migration entirely.
+
+    # Capture symbol count BEFORE starting the transaction for observability log.
+    symbol_count = conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
+    logger.info(
+        "Starting v%d->v5 migration — rebuilding FTS5 for %d symbols "
+        "(adding signature column). DO NOT interrupt.",
+        version,
+        symbol_count,
+    )
+
+    # Start an explicit transaction BEFORE any DDL (DROP/CREATE TABLE/triggers).
+    # Python sqlite3's implicit transaction management commits pending state on DDL;
+    # an explicit BEGIN makes the DDL itself transactional so ROLLBACK reverts it.
+    conn.execute("BEGIN IMMEDIATE")
     try:
-        row = conn.execute("SELECT value FROM metadata WHERE key = 'schema_version'").fetchone()
-        version = int(row["value"]) if row else 0
-
-        if version >= 5:
-            return  # Already at v5 or newer — skip migration entirely.
-
         # Step 1: Add the 5 new columns if they don't already exist.
-        # Each ALTER is individually guarded so repeated calls (e.g. interrupted migration)
-        # don't fail on "duplicate column name".
+        # Each ALTER is individually guarded so repeated calls don't fail on "duplicate column name".
         col_names = {r["name"] for r in conn.execute("PRAGMA table_info(symbols)").fetchall()}
 
         new_cols = [
-            ("signature",      "TEXT"),
-            ("decorators",     "TEXT"),  # JSON-encoded list of strings
-            ("is_exported",    "INTEGER"),  # 0/1/NULL — SQLite stores bool as integer
-            ("visibility",     "TEXT"),
+            ("signature", "TEXT"),
+            ("decorators", "TEXT"),  # JSON-encoded list of strings
+            ("is_exported", "INTEGER"),  # 0/1/NULL — SQLite stores bool as integer
+            ("visibility", "TEXT"),
             ("qualified_name", "TEXT"),
         ]
         for col, col_type in new_cols:
             if col not in col_names:
                 conn.execute(f"ALTER TABLE symbols ADD COLUMN {col} {col_type}")
 
-        # Step 2: Drop the old FTS table and its triggers.
-        # WHY drop-and-recreate: FTS5 virtual tables do not support ALTER TABLE.
-        # Dropping is safe — we repopulate from the symbols content table in step 5.
-        conn.executescript("""
-            DROP TRIGGER IF EXISTS symbols_ai;
-            DROP TRIGGER IF EXISTS symbols_ad;
-            DROP TRIGGER IF EXISTS symbols_au;
-            DROP TABLE IF EXISTS symbols_fts;
-        """)
+        # Step 2: Drop the old FTS table and its triggers using individual execute() calls.
+        conn.execute("DROP TRIGGER IF EXISTS symbols_ai")
+        conn.execute("DROP TRIGGER IF EXISTS symbols_ad")
+        conn.execute("DROP TRIGGER IF EXISTS symbols_au")
+        conn.execute("DROP TABLE IF EXISTS symbols_fts")
 
         # Step 3: Recreate symbols_fts with (name, docstring, signature).
         conn.execute("""
@@ -199,23 +306,26 @@ def _run_migration_v4_to_v5(conn: sqlite3.Connection) -> None:
         """)
 
         # Step 4: Recreate the 3 sync triggers for the new FTS column set.
-        conn.executescript("""
+        # Each trigger is a separate execute() call for the same atomicity reason as above.
+        conn.execute("""
             CREATE TRIGGER symbols_ai AFTER INSERT ON symbols BEGIN
                 INSERT INTO symbols_fts(rowid, name, docstring, signature)
                 VALUES (new.id, new.name, new.docstring, new.signature);
-            END;
-
+            END
+        """)
+        conn.execute("""
             CREATE TRIGGER symbols_ad AFTER DELETE ON symbols BEGIN
                 INSERT INTO symbols_fts(symbols_fts, rowid, name, docstring, signature)
                 VALUES ('delete', old.id, old.name, old.docstring, old.signature);
-            END;
-
+            END
+        """)
+        conn.execute("""
             CREATE TRIGGER symbols_au AFTER UPDATE ON symbols BEGIN
                 INSERT INTO symbols_fts(symbols_fts, rowid, name, docstring, signature)
                 VALUES ('delete', old.id, old.name, old.docstring, old.signature);
                 INSERT INTO symbols_fts(rowid, name, docstring, signature)
                 VALUES (new.id, new.name, new.docstring, new.signature);
-            END;
+            END
         """)
 
         # Step 5: Repopulate FTS from the content table (includes pre-migration rows).
@@ -225,9 +335,24 @@ def _run_migration_v4_to_v5(conn: sqlite3.Connection) -> None:
             SELECT id, name, docstring, signature FROM symbols
         """)
 
-        # Step 6: Bump schema_version to '5'.
+        # Step 6: Parity check — FTS row count must equal symbols row count.
+        # A mismatch means FTS was only partially repopulated, which silently breaks search.
+        # We detect it here and raise so the ROLLBACK in the except block takes effect.
+        fts_count = conn.execute("SELECT COUNT(*) FROM symbols_fts").fetchone()[0]
+        if fts_count != symbol_count:
+            raise RuntimeError(
+                f"FTS repopulation parity mismatch: symbols={symbol_count}, "
+                f"symbols_fts={fts_count}. Run 'seam init' to rebuild the index."
+            )
+        logger.info(
+            "v4->v5 migration: FTS repopulated with %d rows (parity OK).",
+            fts_count,
+        )
+
+        # Step 7: Bump schema_version to '5'.
+        # This is the LAST step before commit so a failure anywhere above rolls back.
         conn.execute("UPDATE metadata SET value = '5' WHERE key = 'schema_version'")
-        conn.commit()
+        conn.execute("COMMIT")
 
         logger.info(
             "Migrated Seam index v%d->v5 (added Phase 4 node enrichment fields: "
@@ -236,6 +361,12 @@ def _run_migration_v4_to_v5(conn: sqlite3.Connection) -> None:
             version,
         )
     except Exception as exc:  # noqa: BLE001
+        # Roll back all structural changes (DROP, CREATE, ALTER, INSERT) so the DB
+        # is left at v4 with the old FTS intact — not in a half-migrated state.
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:  # noqa: BLE001
+            pass  # Best-effort rollback; if this fails the DB may need a full reinit.
         raise RuntimeError(
             "Seam DB migration v4->v5 failed; run 'seam init' to rebuild the index"
         ) from exc
@@ -396,10 +527,14 @@ def upsert_file(
                     # Phase 4 fields — use .get() so old Symbol dicts without these keys work.
                     sym.get("signature"),
                     # Encode decorators as JSON; empty list → '[]', None → NULL.
-                    json.dumps(sym.get("decorators")) if sym.get("decorators") is not None else "[]",
+                    json.dumps(sym.get("decorators"))
+                    if sym.get("decorators") is not None
+                    else "[]",
                     # Convert bool to int for SQLite (True→1, False→0, None→NULL).
                     # Cast via (1 if x else 0) avoids the mypy bool|None → int issue.
-                    (1 if sym["is_exported"] else 0) if sym.get("is_exported") is not None else None,
+                    (1 if sym["is_exported"] else 0)
+                    if sym.get("is_exported") is not None
+                    else None,
                     sym.get("visibility"),
                     sym.get("qualified_name"),
                 )
@@ -417,8 +552,8 @@ def upsert_file(
             """,
             [
                 (
-                    edge["source"],      # Edge field 'source' -> column source_name
-                    edge["target"],      # Edge field 'target' -> column target_name
+                    edge["source"],  # Edge field 'source' -> column source_name
+                    edge["target"],  # Edge field 'target' -> column target_name
                     edge["kind"],
                     file_id,
                     edge["line"],
@@ -430,7 +565,7 @@ def upsert_file(
 
         # 6. Insert comments (schema v3). Defaults to [] when not provided
         #    (e.g. callers that haven't been updated yet for backward compat).
-        for comment in (comments or []):
+        for comment in comments or []:
             conn.execute(
                 "INSERT INTO comments (file_id, line, marker, text) VALUES (?, ?, ?, ?)",
                 (file_id, comment["line"], comment["marker"], comment["text"]),

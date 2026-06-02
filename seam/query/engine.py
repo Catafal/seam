@@ -60,10 +60,10 @@ class ContextResult(TypedDict):
     cluster_label: str | None  # Phase 2: human-readable cluster label
     cluster_peers: list[str]  # Phase 2: other symbols in the same cluster (may be empty)
     # Phase 4: node-enrichment fields (all None for pre-v5 rows or unsupported languages)
-    signature: str | None       # declaration header, single line, truncated
-    decorators: list[str]       # verbatim decorator strings; [] when none or pre-v5
-    is_exported: bool | None    # True = public API; None = unknown/unsupported
-    visibility: str | None      # "public" | "private" | "protected" | "crate" | None
+    signature: str | None  # declaration header, single line, truncated
+    decorators: list[str]  # verbatim decorator strings; [] when none or pre-v5
+    is_exported: bool | None  # True = public API; None = unknown/unsupported
+    visibility: str | None  # "public" | "private" | "protected" | "crate" | None
     qualified_name: str | None  # "ClassName.method" or plain name; None if unknown
 
 
@@ -159,12 +159,14 @@ def _like_fallback(
     'getXuser', 'get1user', etc. — over-broadening the fallback results.
     """
     escaped = _escape_like(term)
+    # Phase 4: SELECT s.signature so rescore() Signal-6 can fire for LIKE fallback rows.
     sql = """
         SELECT
             s.name          AS symbol,
             f.path          AS file,
             s.start_line    AS line,
-            s.cluster_id    AS cluster_id
+            s.cluster_id    AS cluster_id,
+            s.signature     AS signature
         FROM symbols s
         JOIN files f ON f.id = s.file_id
         WHERE s.name LIKE ? ESCAPE '\\'
@@ -179,6 +181,8 @@ def _like_fallback(
             "snippet": "",
             "score": 0.0,
             "cluster_id": row["cluster_id"],
+            # Phase 4: include signature for rescore Signal-6 (nullable — pre-v5 rows have NULL).
+            "signature": row["signature"],
         }
         for row in rows
     ]
@@ -235,14 +239,16 @@ def _fuzzy_fallback(
     if not matches:
         return []
 
-    # Fetch full rows for all matched symbol names
+    # Fetch full rows for all matched symbol names.
+    # Phase 4: SELECT s.signature so rescore() Signal-6 can fire for fuzzy fallback rows.
     placeholders = ",".join("?" * len(matches))
     sql = f"""
         SELECT
             s.name          AS symbol,
             f.path          AS file,
             s.start_line    AS line,
-            s.cluster_id    AS cluster_id
+            s.cluster_id    AS cluster_id,
+            s.signature     AS signature
         FROM symbols s
         JOIN files f ON f.id = s.file_id
         WHERE s.name IN ({placeholders})
@@ -257,6 +263,8 @@ def _fuzzy_fallback(
             "snippet": "",
             "score": 0.0,
             "cluster_id": row["cluster_id"],
+            # Phase 4: include signature for rescore Signal-6 (nullable — pre-v5 rows have NULL).
+            "signature": row["signature"],
         }
         for row in rows
     ]
@@ -300,6 +308,9 @@ def search(conn: sqlite3.Connection, text: str, limit: int = 20) -> list[SearchR
     if match_expr:
         # Let OperationalError (genuinely malformed FTS5) propagate to caller.
         # With OR-join, this only fires on actual syntax errors, not multi-word queries.
+        # Phase 4: SELECT s.signature so that fts.rescore() Signal-6 (signature boost)
+        # can fire. Without s.signature in the row, rescore() always sees None and the
+        # boost is permanently dead code. This column is nullable — pre-v5 rows have NULL.
         sql = """
             SELECT
                 s.name          AS symbol,
@@ -307,7 +318,8 @@ def search(conn: sqlite3.Connection, text: str, limit: int = 20) -> list[SearchR
                 s.start_line    AS line,
                 snippet(symbols_fts, 0, '<b>', '</b>', '...', 8) AS snippet,
                 bm25(symbols_fts) AS score,
-                s.cluster_id    AS cluster_id
+                s.cluster_id    AS cluster_id,
+                s.signature     AS signature
             FROM symbols_fts
             JOIN symbols s ON s.id = symbols_fts.rowid
             JOIN files   f ON f.id = s.file_id
@@ -325,6 +337,8 @@ def search(conn: sqlite3.Connection, text: str, limit: int = 20) -> list[SearchR
                 # Flip bm25 sign: contract wants higher = better; raw bm25 is lower = better
                 "score": -float(row["score"]),
                 "cluster_id": row["cluster_id"],
+                # Phase 4: include signature so rescore() Signal-6 can fire.
+                "signature": row["signature"],
             }
             for row in raw_rows
         ]
@@ -448,13 +462,15 @@ def query(conn: sqlite3.Connection, concept: str, limit: int = 10) -> list[Query
     seed_map: dict[str, tuple[str, int, float]] = {}
 
     if match_expr:
+        # Phase 4: include s.signature so rescore() Signal-6 (signature boost) fires.
         seed_sql = """
             SELECT
                 s.name          AS name,
                 f.path          AS file,
                 s.start_line    AS line,
                 bm25(symbols_fts) AS score,
-                s.cluster_id    AS cluster_id
+                s.cluster_id    AS cluster_id,
+                s.signature     AS signature
             FROM symbols_fts
             JOIN symbols s ON s.id = symbols_fts.rowid
             JOIN files   f ON f.id = s.file_id
@@ -467,15 +483,19 @@ def query(conn: sqlite3.Connection, concept: str, limit: int = 10) -> list[Query
         seed_rows_raw = conn.execute(seed_sql, (match_expr, limit)).fetchall()
 
         if seed_rows_raw:
-            # Rescore to apply name/path/cluster signals
+            # Rescore to apply name/path/cluster/signature signals
             seed_dicts = [
                 {
                     "symbol": row["name"],
                     "file": row["file"],
                     "line": row["line"],
                     "snippet": "",
-                    "score": -float(row["score"]),  # negate: contract wants higher=better; raw bm25 is negative (lower=better)
+                    "score": -float(
+                        row["score"]
+                    ),  # negate: contract wants higher=better; raw bm25 is negative (lower=better)
                     "cluster_id": row["cluster_id"],
+                    # Phase 4: include signature for rescore Signal-6.
+                    "signature": row["signature"],
                 }
                 for row in seed_rows_raw
             ]
