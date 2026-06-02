@@ -5,7 +5,8 @@ Local code intelligence MCP server for AI agents. Index your codebase once; let 
 ## Status
 
 Phase 10 complete — Swift support (11 → 12 languages); Kotlin deferred (grammar maturity).
-Agentic-readiness hardening done (MCP error/not-found contract, `.seam/` gitignore, distribution → `seam-mcp`). 1465 tests. Gate green.
+Agentic-readiness hardening done (MCP error/not-found contract, `.seam/` gitignore, distribution → `seam-mcp`).
+`seam install` ships — one-command MCP wiring for Claude Code / Cursor / Codex. 1492 tests. Gate green.
 
 ## Quickstart
 
@@ -21,16 +22,25 @@ uv sync              # installs the `seam` command into .venv
 cd /path/to/your/project
 uv run seam init
 
-# Start the MCP server (stdio) + file watcher
-uv run seam start
+# Wire Seam into your agent (writes the MCP config for you)
+uv run seam install                    # Claude Code, project scope (.mcp.json)
+uv run seam install --target all --location user   # Claude + Cursor + Codex, user scope
+uv run seam install --print-config     # preview the config; write nothing
 ```
 
-Add to your Claude Code MCP config — `seam start` speaks stdio and takes the
-project path to index (no `--stdio` flag; stdio is the only transport):
+`seam install` writes an idempotent stdio MCP entry pointing at `seam start <project>`.
+It supports `--target claude|cursor|codex|all` and `--location project|user` (Codex is
+user-scope only), preserves any other servers already in the config, and is reversible
+with `seam uninstall`. Claude Code prompts once to approve a project-scoped server on
+next launch.
+
+To wire it by hand instead, add this to your Claude Code config (`.mcp.json` at the repo
+root) — `seam start` speaks stdio and takes the project path (stdio is the only transport):
 ```json
 {
   "mcpServers": {
     "seam": {
+      "type": "stdio",
       "command": "seam",
       "args": ["start", "/path/to/your/project"]
     }

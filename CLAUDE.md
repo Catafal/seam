@@ -6,7 +6,7 @@ Local code intelligence MCP server — indexes codebases with tree-sitter, store
 ## Tech Stack
 - Python 3.14+ | uv 0.9.14
 - tree-sitter 0.25.2 + tree-sitter-python 0.25.0 + tree-sitter-typescript 0.23.2 + tree-sitter-go 0.25.0 + tree-sitter-rust 0.24.2 + tree-sitter-java 0.23.5 + tree-sitter-c-sharp 0.23.5 + tree-sitter-ruby 0.23.1 + tree-sitter-c 0.24.2 + tree-sitter-cpp 0.23.4 + tree-sitter-php 0.24.1
-- mcp 1.27.2 (stdio transport) | watchdog 6.0.0 | typer 0.26.4
+- mcp 1.27.2 (stdio transport) | watchdog 6.0.0 | typer 0.26.4 | tomlkit 0.15.0 (Codex install config)
 - SQLite + FTS5 (built-in, no ORM) | pytest 9.0.3 | ruff 0.15.15 | mypy 2.1.0
 
 ## Commands
@@ -17,6 +17,8 @@ Local code intelligence MCP server — indexes codebases with tree-sitter, store
 - `uv run seam sync` — Incrementally reconcile the index (changed/added/removed files) + gated cluster recompute
 - `uv run seam start` — Start MCP server + watcher
 - `uv run seam status` — Show index stats
+- `uv run seam install` — Write the MCP config into an agent (`--target claude|cursor|codex|all`,
+  `--location project|user`, `--print-config`); `uv run seam uninstall` reverses it
 
 ## File References
 - `DISCOVERY.md` — real goal (what we're building and why)
@@ -56,7 +58,14 @@ seam/config.py               ← all settings (env vars with defaults)
                                 SEAM_PACK_PER_FILE_CAP: max neighbor entries from any single file — diversity cap (default: 3)
                                 SEAM_PACK_MAX_COMMENTS: max WHY/HACK/NOTE comments in context_pack bundle (default: 10)
                                 SEAM_IMPACT_MAX_RESULTS: per-tier entry cap for seam_impact (default: 25; 0 = unlimited) [Phase 8]
-seam/cli/main.py             ← Typer CLI (init, sync, start, status, impact, trace, changes, why, clusters, affected, pack)
+seam/installer/              ← `seam install`/`uninstall` engine (CLI-only; NO MCP tool)
+                                __init__.py: TARGETS registry {claude,cursor,codex} + resolve_seam_command()
+                                core.py: AgentTarget ABC + InstallResult + shared idempotent JSON merge
+                                jsonfile.py (LEAF, stdlib json) — Claude/Cursor; tomlfile.py (LEAF, tomlkit) — Codex
+                                claude.py/.mcp.json+type:stdio · cursor.py/.cursor/mcp.json · codex.py/~/.codex/config.toml
+seam/cli/install.py          ← `seam install`/`uninstall` Typer commands (registered onto app in main.py)
+seam/cli/main.py             ← Typer CLI (init, sync, start, status, impact, trace, changes, why, clusters,
+                                affected, pack, install, uninstall)
                                 --json / --quiet on read commands; --stdin on affected + changes
                                 sync: --json / --quiet / --force-clusters (Phase 7)
                                 --lean on impact/trace/pack + --limit on impact (Phase 8); all 3 modes route through handlers
@@ -149,15 +158,27 @@ tests/fixtures/              ← sample.py, sample.ts, sample.go, sample.rs
 - **Edges use string names** (not symbol IDs) — required for independent re-indexing
 
 ## Current Phase
-Agentic-readiness hardening complete (post-Phase-10) — 3 critical audit fixes; **no installer yet**.
+`seam install` complete (roadmap item 8) — one-command MCP wiring for Claude Code / Cursor / Codex.
+- **New `seam/installer/` package** + `seam/cli/install.py`: `seam install` / `seam uninstall`.
+  AgentTarget ABC; one target per agent. Claude → `.mcp.json` (project) / `~/.claude.json` `projects.<root>`
+  (user), entry has `type:"stdio"`. Cursor → `.cursor/mcp.json` (no `type`). Codex → `~/.codex/config.toml`
+  `[mcp_servers.seam]` (TOML via new dep `tomlkit`; user scope only).
+- **Idempotent + safe:** deep-equal → `unchanged` (no write); atomic temp+rename; `.backup` on corrupt config;
+  preserves other servers. `--target claude|cursor|codex|all`, `--location project|user`, `--print-config`, `--json`.
+- Command written = absolute resolved `seam` path (via `sys.argv[0]`) + `["start", <root>]`. CLI-only — **no new
+  MCP tool** (server stays read-only); tool count stays 10. No schema change, no migration.
+- 1492 tests passing; gate green. Plan: `.claude/tasks/seam-install.md`.
+See `progress.txt`. Next: v0.1.0 release prep — actually publish to PyPI as `seam-mcp`; add more agent targets
+(one file each) as needed. Kotlin still parked behind a robust grammar.
+
+### Prior phase
+Agentic-readiness hardening (post-Phase-10) — 3 critical audit fixes.
 - **Distribution renamed `seam` → `seam-mcp`** in pyproject (PyPI `seam` is taken by Seam Labs' SDK).
   Import package + console command stay `seam`. Not yet published; README install is from-source.
 - **MCP error/not-found contract unified** via `_finalize` (seam/server/mcp.py): app errors now
   `isError=True` (`"CODE: message"`), not-found → `{"found": false}`. See the Known Gotchas entry.
 - **`seam init` writes `.seam/.gitignore` (`*`)** so `seam_changes` stops reporting its own DB files.
-- No schema change, no migration, MCP tool count stays 10. 1465 tests passing; gate green.
-- Source of these fixes: an end-to-end agentic-readiness audit (real MCP stdio client on a fresh repo).
-See `progress.txt`. Next: roadmap item 8 (`seam install`) / v0.1.0 release prep (publish as `seam-mcp`).
+- Source: an end-to-end agentic-readiness audit (real MCP stdio client on a fresh repo).
 
 ### Prior phase
 Phase 10 complete — Swift support (11 → 12 languages). **Kotlin evaluated and deferred.**
