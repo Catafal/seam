@@ -55,6 +55,19 @@ SEAM_LLM_MODEL: str = os.getenv("SEAM_LLM_MODEL", "gpt-4o-mini")
 SEAM_CLUSTER_MIN_SIZE: int = int(os.getenv("SEAM_CLUSTER_MIN_SIZE", "2"))
 
 
+# ── Phase 3: Search / fuzzy fallback configuration ───────────────────────────
+
+# Maximum Damerau-Levenshtein edit distance for the fuzzy fallback.
+# Applied when both FTS and LIKE fallbacks return zero rows.
+# 1 = catch single-char typos (conservative); 2 = broader (may add noise).
+SEAM_FUZZY_MAX_DIST: int = int(os.getenv("SEAM_FUZZY_MAX_DIST", "1"))
+
+# Maximum candidate symbol names to evaluate in the fuzzy fallback.
+# Caps the O(n) edit-distance scan over distinct symbol names.
+# On very large codebases, raise this via env var if precision matters more.
+SEAM_FUZZY_MAX_CANDIDATES: int = int(os.getenv("SEAM_FUZZY_MAX_CANDIDATES", "500"))
+
+
 def get_db_path(project_root: Path) -> Path:
     """Resolve the database path relative to the project root."""
     return project_root / SEAM_DB_PATH
