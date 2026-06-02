@@ -34,9 +34,9 @@
 [x] 8.1 MCP server setup
 [x] 8.2 MCP tool handlers
 [x] 8.3 seam start command
-[ ] 9.1 Benchmark baseline (Bach)
-[ ] 9.2 Benchmark with Seam (Bach)
-[ ] 9.3 Benchmark report
+[x] 9.1 Benchmark baseline (grep+read proxy — live Bach session deferred, see docs/benchmark.md)
+[x] 9.2 Benchmark with Seam (MCP tool-handler outputs)
+[x] 9.3 Benchmark report (docs/benchmark.md — 88.7%/85.8% reduction, target was >=30%)
 [ ] 10.1 README.md + quickstart
 [ ] 10.2 uv.lock committed
 [ ] 10.3 Gate passes in clean env
