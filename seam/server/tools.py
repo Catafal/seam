@@ -38,6 +38,39 @@ from seam.query.pack import context_pack as run_context_pack
 
 logger = logging.getLogger(__name__)
 
+# ── Lean-output: heavy fields stripped when verbose=False ────────────────────
+
+# These 6 fields are valuable in verbose mode but inflate every record unnecessarily
+# when the agent only needs the core identity + signature.
+# Keys are ABSENT (not null) in lean mode — lean mode's whole point is fewer bytes.
+_HEAVY_FIELDS: frozenset[str] = frozenset({
+    "decorators",
+    "is_exported",
+    "visibility",
+    "qualified_name",
+    "resolved_by",
+    "best_candidate",
+})
+
+
+def _apply_verbosity(record: dict[str, Any], verbose: bool) -> dict[str, Any]:
+    """Strip heavy enrichment fields from a record when verbose=False.
+
+    Never mutates the input dict.
+
+    verbose=True  → the SAME dict object is returned unchanged (zero-copy fast path;
+                    callers build records inline and never mutate them post-call, so
+                    returning the original is safe and byte-identical to pre-Phase-8).
+    verbose=False → a NEW dict is returned without the 6 heavy keys (decorators,
+                    is_exported, visibility, qualified_name, resolved_by,
+                    best_candidate). signature and all core identity fields are kept.
+    """
+    if verbose:
+        return record
+    # Build a copy without the heavy fields; missing keys are silently skipped.
+    return {k: v for k, v in record.items() if k not in _HEAVY_FIELDS}
+
+
 # ── Limit bounds (from mcp-tools.yaml) ────────────────────────────────────────
 
 _QUERY_LIMIT_MIN = 1
@@ -135,6 +168,11 @@ def handle_seam_query(
     Returns a list of QueryResult dicts, or an error dict on bad input.
 
     Limit is clamped to [1, 50].
+
+    NOTE: no `verbose` flag here. seam_query results carry NO Phase 4/5 enrichment
+    fields (only symbol/file/line/score/callers_count/callees_count), so lean mode
+    would be a no-op — query is enrichment-free, exactly like seam_search, and both
+    are deliberately excluded from the verbose contract.
     """
     # Validate: concept must not be empty or whitespace-only
     if not concept or not concept.strip():
@@ -150,7 +188,7 @@ def handle_seam_query(
     except sqlite3.OperationalError as exc:
         return _invalid_query(f"FTS5 query syntax error: {exc}")
 
-    # Relativize file paths so consumers get portable paths
+    # Relativize file paths so consumers get portable paths.
     return [
         {
             "symbol": r["symbol"],
@@ -168,11 +206,16 @@ def handle_seam_context(
     conn: sqlite3.Connection,
     symbol: str,
     root: Path,
+    verbose: bool = True,
 ) -> dict[str, Any] | None:
     """Handler for the seam_context MCP tool.
 
     Returns a ContextResult dict for a known symbol, None for unknown symbols,
     or an error dict on blank input.
+
+    verbose=True (default): output byte-identical to pre-Phase-8.
+    verbose=False: decorators, is_exported, visibility, qualified_name are omitted.
+                   signature and all core fields are kept.
     """
     # Validate: symbol must not be empty or whitespace-only
     if not symbol or not symbol.strip():
@@ -183,7 +226,10 @@ def handle_seam_context(
     if result is None:
         return None
 
-    return {
+    # Build the full record first, then apply verbosity stripping at the edge.
+    # WHY build-then-strip: the record is always fully built in verbose mode (backward
+    # compat); in lean mode _apply_verbosity removes only the 6 heavy keys.
+    record = {
         "symbol": result["symbol"],
         "file": _relativize(result["file"], root),
         "line": result["line"],
@@ -203,6 +249,7 @@ def handle_seam_context(
         "visibility": result["visibility"],
         "qualified_name": result["qualified_name"],
     }
+    return _apply_verbosity(record, verbose)
 
 
 def handle_seam_search(
@@ -245,6 +292,33 @@ def handle_seam_search(
     ]
 
 
+def _serialize_tier_entry(entry: dict[str, Any], root: Path, verbose: bool) -> dict[str, Any]:
+    """Serialize a single TieredEntry dict from the analysis layer.
+
+    Relativizes file paths, includes Phase 5 provenance fields, and applies
+    verbosity stripping. Extracted to keep the main handler readable.
+    """
+    return _apply_verbosity({
+        "name": entry["name"],
+        "distance": entry["distance"],
+        "confidence": entry["confidence"],
+        # Phase 5: resolved_by carries import-promotion provenance.
+        # null when name-count fast-path was used (repo_root absent or "off").
+        "resolved_by": entry.get("resolved_by"),
+        "tier": entry["tier"],
+        "file": _relativize(entry["file"], root) if entry["file"] is not None else None,
+        "is_test": entry["is_test"],
+        # Phase 5: best_candidate surfaces the most-proximate declaring
+        # file for AMBIGUOUS entries (PRD story 6). Null for non-AMBIGUOUS or
+        # when proximity data was unavailable. Relativized like other file paths.
+        "best_candidate": (
+            _relativize(entry["best_candidate"], root)
+            if entry.get("best_candidate") is not None
+            else None
+        ),
+    }, verbose)
+
+
 def handle_seam_impact(
     conn: sqlite3.Connection,
     target: str,
@@ -252,6 +326,8 @@ def handle_seam_impact(
     direction: str = _IMPACT_DIRECTION_DEFAULT,
     max_depth: int = _IMPACT_DEPTH_DEFAULT,
     include_tests: bool = True,
+    verbose: bool = True,
+    limit: int = config.SEAM_IMPACT_MAX_RESULTS,
 ) -> dict[str, Any]:
     """Handler for the seam_impact MCP tool.
 
@@ -269,15 +345,29 @@ def handle_seam_impact(
         include_tests: When True (default), test-file dependents are included and tagged
                        with is_test=True. When False, test-file entries are filtered out
                        from all tiers (production-only blast radius).
+        verbose:       When True (default), output includes all Phase 4/5 enrichment fields.
+                       When False, heavy fields (resolved_by, best_candidate, etc.) are
+                       stripped from each entry — lean mode.
+        limit:         Per-tier entry cap. Default: SEAM_IMPACT_MAX_RESULTS (25).
+                       Entries arrive distance-ordered from the analysis layer (tiers group
+                       by distance), so the kept slice is always the closest/highest-risk.
+                       limit <= 0 means unlimited (all entries returned).
 
     Returns:
         A JSON-able dict with the impact result, or an error dict on bad input.
-        Top-level keys always include `found` (bool) and `target` (str).
+        Top-level keys always include `found`, `target`, and `risk_summary`.
+        risk_summary is {direction: {tier: count}} computed from the FULL pre-cap
+        result — it is always trustworthy even when entry lists are capped.
+        NOTE: "full" means before the `limit` cap, but AFTER the include_tests filter —
+        when include_tests=False, risk_summary counts the production-only blast radius
+        (test dependents are already excluded), matching the entries actually returned.
+        When any tier was capped, `truncated` is included: {direction: {tier: omitted}}.
+
         Shape for direction="upstream":
-            {"found": bool, "target": str,
+            {"found": bool, "target": str, "risk_summary": {...},
              "upstream": {"WILL_BREAK": [...], "LIKELY_AFFECTED": [...], "MAY_NEED_TESTING": [...]}}
         Shape for direction="both":
-            {"found": bool, "target": str,
+            {"found": bool, "target": str, "risk_summary": {...},
              "upstream": {...tiers...}, "downstream": {...tiers...}}
 
         Each entry in a tier list includes:
@@ -318,38 +408,61 @@ def handle_seam_impact(
         "target": raw["target"],
     }
 
-    # Relativize each TieredEntry's `file` field using the provided root.
-    # `file` is an absolute path (or None) from the analysis layer.
-    # Pass is_test through so MCP callers can see the tag.
+    # Determine whether capping is active (limit <= 0 means unlimited).
+    effective_limit = limit if limit > 0 else None
+
+    # Build risk_summary and capped tiers for each direction key present in raw.
+    # WHY compute summary first: risk_summary must reflect the FULL pre-cap result
+    # (story 15) — we count before slicing so truncation cannot hide the true total.
+    risk_summary: dict[str, dict[str, int]] = {}
+    truncated: dict[str, dict[str, int]] = {}
+
     for dir_key in ("upstream", "downstream"):
         if dir_key not in raw:
             continue
         tier_group = raw[dir_key]
-        response[dir_key] = {
-            tier: [
-                {
-                    "name": entry["name"],
-                    "distance": entry["distance"],
-                    "confidence": entry["confidence"],
-                    # Phase 5: resolved_by carries import-promotion provenance.
-                    # null when name-count fast-path was used (repo_root absent or "off").
-                    "resolved_by": entry.get("resolved_by"),
-                    "tier": entry["tier"],
-                    "file": _relativize(entry["file"], root) if entry["file"] is not None else None,
-                    "is_test": entry["is_test"],
-                    # Phase 5: best_candidate surfaces the most-proximate declaring
-                    # file for AMBIGUOUS entries (PRD story 6). Null for non-AMBIGUOUS or
-                    # when proximity data was unavailable. Relativized like other file paths.
-                    "best_candidate": (
-                        _relativize(entry["best_candidate"], root)
-                        if entry.get("best_candidate") is not None
-                        else None
-                    ),
-                }
-                for entry in entries
+
+        # ── 1. Count BEFORE capping (risk_summary denominator) ────────────────
+        dir_summary = {tier: len(entries) for tier, entries in tier_group.items()}
+        risk_summary[dir_key] = dir_summary
+
+        # ── 2. Apply per-tier cap + serialize ─────────────────────────────────
+        capped_tiers: dict[str, list[dict[str, Any]]] = {}
+        dir_truncated: dict[str, int] = {}
+
+        for tier, entries in tier_group.items():
+            # Slice keeps the closest/highest-risk entries WITHOUT a sort here. WHY it's
+            # safe: WILL_BREAK (d=1) and LIKELY_AFFECTED (d=2) each contain a single
+            # distance. MAY_NEED_TESTING spans d=3..max_depth, but the analysis layer's
+            # walk() emits entries in BFS (ascending-distance) order, so entries[:N] still
+            # keeps the closest. (Do NOT remove walk()'s ordering assuming tiers are
+            # single-distance buckets — that holds only for the first two tiers.)
+            if effective_limit is not None and len(entries) > effective_limit:
+                kept = entries[:effective_limit]
+                dir_truncated[tier] = len(entries) - effective_limit
+            else:
+                kept = entries
+                dir_truncated[tier] = 0
+
+            # Serialize each kept entry: relativize paths + apply verbose stripping.
+            capped_tiers[tier] = [
+                _serialize_tier_entry(entry, root, verbose)
+                for entry in kept
             ]
-            for tier, entries in tier_group.items()
-        }
+
+        response[dir_key] = capped_tiers
+
+        # Only include truncated for directions where something was actually dropped.
+        if any(count > 0 for count in dir_truncated.values()):
+            truncated[dir_key] = dir_truncated
+
+    # risk_summary is always present — it is the honest summary of the full blast radius.
+    response["risk_summary"] = risk_summary
+
+    # truncated is only present when at least one tier was capped in any direction.
+    # Absence signals "nothing was dropped" (omitted vs all-zero to reduce token cost).
+    if truncated:
+        response["truncated"] = truncated
 
     # Surface hidden_tests when present (include_tests=False filtered test dependents).
     # Lets MCP callers distinguish "no dependents" from "all dependents were tests and
@@ -366,6 +479,7 @@ def handle_seam_trace(
     target: str,
     root: Path,
     max_depth: int = _TRACE_DEPTH_DEFAULT,
+    verbose: bool = True,
 ) -> dict[str, Any]:
     """Handler for the seam_trace MCP tool.
 
@@ -436,9 +550,10 @@ def handle_seam_trace(
     # Convert to plain dicts for JSON-safety.
     # Phase 5: include resolved_by for provenance (null when fast-path / not available).
     # Include best_candidate (relativized) for AMBIGUOUS hops.
+    # Apply _apply_verbosity to each hop so lean mode strips resolved_by/best_candidate.
     serialized_paths = [
         [
-            _serialize_hop(hop, root)
+            _apply_verbosity(_serialize_hop(hop, root), verbose)
             for hop in path
         ]
         for path in paths
@@ -449,10 +564,10 @@ def handle_seam_trace(
         "source": clean_source,
         "target": clean_target,
         "paths": serialized_paths,
-        "callers_source": [_serialize_edge_hop(h, root) for h in callers_source],
-        "callees_source": [_serialize_edge_hop(h, root) for h in callees_source],
-        "callers_target": [_serialize_edge_hop(h, root) for h in callers_target],
-        "callees_target": [_serialize_edge_hop(h, root) for h in callees_target],
+        "callers_source": [_apply_verbosity(_serialize_edge_hop(h, root), verbose) for h in callers_source],
+        "callees_source": [_apply_verbosity(_serialize_edge_hop(h, root), verbose) for h in callees_source],
+        "callers_target": [_apply_verbosity(_serialize_edge_hop(h, root), verbose) for h in callers_target],
+        "callees_target": [_apply_verbosity(_serialize_edge_hop(h, root), verbose) for h in callees_target],
     }
 
 
@@ -702,6 +817,7 @@ def handle_seam_context_pack(
     conn: sqlite3.Connection,
     symbol: str,
     root: Path,
+    verbose: bool = True,
 ) -> dict[str, Any] | None:
     """Handler for the seam_context_pack MCP tool.
 
@@ -720,6 +836,9 @@ def handle_seam_context_pack(
         - blank/whitespace → INVALID_INPUT error dict
         - unknown symbol   → None
         - found symbol     → serialized ContextPack with paths relativized
+
+    verbose=True (default): output byte-identical to pre-Phase-8.
+    verbose=False: heavy fields stripped from target and each neighbor.
     """
     # Validate: symbol must not be empty or whitespace-only
     if not symbol or not symbol.strip():
@@ -733,9 +852,10 @@ def handle_seam_context_pack(
     if pack is None:
         return None
 
-    # Relativize file path in target (mirrors handle_seam_context)
+    # Relativize file path in target (mirrors handle_seam_context).
+    # Apply _apply_verbosity so lean mode strips heavy fields from the target record.
     target = pack["target"]
-    serialized_target = {
+    serialized_target = _apply_verbosity({
         "symbol": target["symbol"],
         "file": _relativize(target["file"], root),
         "line": target["line"],
@@ -753,14 +873,15 @@ def handle_seam_context_pack(
         "is_exported": target["is_exported"],
         "visibility": target["visibility"],
         "qualified_name": target["qualified_name"],
-    }
+    }, verbose)
 
     # Relativize file paths in enriched neighbors.
     # WHY direct key access (not .get()): NeighborRef is a TypedDict with all
     # required keys — using .get() would silently return None for a renamed field
     # instead of raising a KeyError that makes the bug visible.
+    # Apply _apply_verbosity so lean mode strips heavy fields from each neighbor.
     def _serialize_neighbor(nb: NeighborRef) -> dict[str, Any]:
-        return {
+        return _apply_verbosity({
             "name": nb["name"],
             "file": _relativize(nb["file"], root),
             "line": nb["line"],
@@ -770,7 +891,7 @@ def handle_seam_context_pack(
             "is_exported": nb["is_exported"],
             "visibility": nb["visibility"],
             "qualified_name": nb["qualified_name"],
-        }
+        }, verbose)
 
     return {
         "target": serialized_target,

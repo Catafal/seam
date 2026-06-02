@@ -652,3 +652,52 @@ stays 10). It requires an existing index (`connect()`, not `init_db()`); on a di
 `seam/cli/output.py` envelope as the read commands; `--quiet` emits `key: value` lines (one per
 field) rather than the read commands' bare single-value form, because the 8-field `SyncResult` would
 be ambiguous as bare positional values.
+
+## Phase 8 — Lean Output + `seam_impact` Summary Tier
+
+> Phase 8 shipped on branch `feat/phase8-lean-output`. **No schema change, no migration, no new
+> tools** — pure output-shaping at the serialization layer (`seam/server/tools.py`). Motivated by
+> the benchmark re-run that showed enrichment had narrowed the token win and that `seam_impact` on
+> a hub symbol cost more than reading the files.
+
+### Lever 1 — Lean output (`verbose`)
+
+A single shared helper, `_apply_verbosity(record, verbose)`, is applied at the return edge of every
+enrichment-carrying handler (`seam_context`, `seam_trace`, `seam_impact`, `seam_context_pack`),
+including the nested records (trace hops, impact tier entries, context_pack neighbors).
+
+- `verbose=True` (default) returns the **same dict object** unchanged — a zero-copy fast path that
+  keeps output byte-identical to pre-Phase-8 (the callers build records inline and never mutate
+  them, so returning the original is safe).
+- `verbose=False` returns a **new dict** without the 6 heavy keys (a single module-level
+  `_HEAVY_FIELDS` frozenset is the sole canonical list): `decorators`, `is_exported`, `visibility`,
+  `qualified_name`, `resolved_by`, `best_candidate`. `signature` + all core identity fields are kept.
+
+`seam_query` and `seam_search` are **enrichment-free** (their results carry no heavy fields), so they
+deliberately have **no** `verbose` flag — advertising a no-op flag would mislead callers. The win
+concentrates where records repeat the heavy fields: `seam_trace` ≈ −40%; `seam_context` only ≈ −1–2%
+(its heavy fields sit on the single target, not the bare-name caller/callee lists).
+
+### Lever 2 — `seam_impact` summary tier + per-tier cap
+
+`handle_seam_impact` computes `risk_summary` = `{direction: {tier: count}}` from the raw result
+**before** capping (so the histogram is trustworthy regardless of `limit`), then slices each tier to
+`limit` (default `SEAM_IMPACT_MAX_RESULTS=25`; `limit<=0` = unlimited) and records `truncated` =
+`{direction: {tier: omitted}}`. The kept slice is the closest/highest-risk: WILL_BREAK (d=1) and
+LIKELY_AFFECTED (d=2) are single-distance tiers, and MAY_NEED_TESTING (d=3..max_depth) arrives in
+the analysis layer's BFS (ascending-distance) order, so `entries[:limit]` keeps the closest. The cap
+applies **by default** — this is the one place a default-output change is justified, because the
+prior default (~30k tokens for `init_db`, worse than grep) was actively harmful. `risk_summary`
+keeps totals honest, `truncated` signals the omission, and `limit=0` restores the full set.
+`risk_summary` counts the post-`include_tests`-filter, pre-cap set (production-only when
+`include_tests=False`), matching the entries actually returned.
+
+### CLI parity — all three impact modes through one handler
+
+`seam impact`'s `--json`, `--quiet`, and default **Rich** modes all route through
+`handle_seam_impact` (previously Rich called `impact()` directly and silently ignored `--limit` /
+`--lean` — a confirmed parity bug). A shared `_IMPACT_META_KEYS` frozenset is skipped by every
+result iterator (quiet output, the total-entry count, Rich rendering) so the new `risk_summary` /
+`truncated` dicts are never mistaken for direction groups (the count path would otherwise call
+`len()` on an `int`). Rich mode prints a per-direction truncation footer; quiet mode writes a
+truncation signal to **stderr** so `stdout` stays a pure bare-name list for pipelines.

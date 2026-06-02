@@ -1,6 +1,25 @@
 # Seam — Progress Tracker
 # Format: [x] = done, [>] = in progress, [ ] = not started
 # Update this EVERY session. It is the first thing the agent reads.
+#
+# 2026-06-02: Phase 8 — Lean output + seam_impact summary tier complete
+#   (branch feat/phase8-lean-output, issue #33, PR #34). Implemented via a Sonnet-agent
+#   WORKFLOW (2 sequential TDD impl agents → parallel /review + /backend-taste).
+#   #1 Lean output: verbose flag (default True) on seam_context/trace/impact/context_pack;
+#      shared _apply_verbosity helper strips 6 heavy fields (decorators/is_exported/visibility/
+#      qualified_name/resolved_by/best_candidate), keeps signature+core. CLI --lean on
+#      impact/trace/pack. seam_query+seam_search enrichment-free → NO verbose flag.
+#   #2 Impact summary: risk_summary {dir:{tier:count}} (full pre-cap), per-tier cap
+#      SEAM_IMPACT_MAX_RESULTS=25 (config), truncated {dir:{tier:omitted}}, limit param (0=unlimited).
+#      Cap applies by default → fixes hub-symbol blast (init_db 30k→4.5k tokens).
+#   Review STOP (both reviewers): Rich CLI impact ignored --limit/--lean (called impact() directly).
+#      Fixed: all 3 modes route through handle_seam_impact; _IMPACT_META_KEYS guards every iterator;
+#      Rich truncation footer; quiet stderr signal. Also removed no-op verbose from seam_query;
+#      corrected 3 misleading comments/docstrings (byte-identity, tier-distance, _apply_verbosity).
+#   Benchmark re-run: 83.4%/77.6% → 91.8%/88.7% (Seam output 51k→26k tokens; row #2 -1.3%→+85.0%).
+#   No schema change, no migration, no new deps, no new tool (count stays 10). 1 new config knob.
+#   Test count: 1107 (1031 baseline + 74 Phase 8 net, incl. review-fix tests). Gate green.
+# Next: roadmap item 8 (`seam install`) / v0.1.0 release prep.
 
 # ── Phase 0: Foundation ────────────────────────────
 [x] 1.1 Repository structure created

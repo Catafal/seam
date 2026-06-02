@@ -4,7 +4,7 @@ Local code intelligence MCP server for AI agents. Index your codebase once; let 
 
 ## Status
 
-Phase 7 complete — one-shot `seam sync` (incremental reconcile + gated cluster recompute) shipped. 1031 tests. Gate green.
+Phase 8 complete — lean output (`verbose`/`--lean`) + `seam_impact` summary tier shipped; benchmark reduction recovered to 91.8%/88.7%. 1107 tests. Gate green.
 
 ## Quickstart
 
@@ -75,6 +75,23 @@ Five new nullable fields are now extracted at parse time and returned by `seam_c
 **Schema v5:** the `symbols` table gained five nullable columns (see `docs/database/schema.sql`). The `connect()` function auto-runs the v4→v5 migration on first open so existing indexes don't break. Field values are `null` until the next full `seam init` re-index — migration adds the columns but cannot backfill parse-time data.
 
 **New config knob:** `SEAM_MAX_SIGNATURE_LEN` (default `300`) — hard cap on stored signature length. Signatures longer than this are truncated with `...`. Useful when pathological function headers would dominate FTS results or make MCP responses painful to read.
+
+### Phase 8 — Lean Output + `seam_impact` Summary Tier
+
+Two levers to control how many tokens a read tool returns — driven by the benchmark, which showed enrichment-rich output had narrowed the win and that `seam_impact` on a hub symbol cost *more* than reading the files.
+
+**Lean output (`verbose=false` / `--lean`).** The enrichment-carrying tools (`seam_context`, `seam_trace`, `seam_impact`, `seam_context_pack`) accept `verbose` (default `true` = unchanged). With `verbose=false`, the six heavy fields (`decorators`, `is_exported`, `visibility`, `qualified_name`, `resolved_by`, `best_candidate`) are **omitted**; `signature` + core identity are always kept. The win is largest where records repeat — `seam_trace` drops ~40%. (`seam_query`/`seam_search` carry no enrichment, so they have no `verbose` flag.)
+
+**`seam_impact` summary tier.** `seam_impact` now returns:
+
+| Field | Meaning |
+|-------|---------|
+| `risk_summary` | `{direction: {tier: count}}` over the **full** blast radius — the size of the impact in a few bytes, always present. |
+| (capped entries) | each tier holds the closest ≤ `SEAM_IMPACT_MAX_RESULTS` (default 25) entries. |
+| `truncated` | `{direction: {tier: omitted}}` when the cap dropped entries. |
+| `limit` param | per-tier cap; `limit=0` returns the full transitive set. |
+
+The cap applies **by default**, turning a hub symbol's wall-of-entries into a histogram + the highest-risk few: in the benchmark, `init_db` impact went from ~30k tokens (a net loss vs. grep) to ~4.5k (an 85% win). `seam impact` honors `--limit` / `--lean` in **all** output modes (JSON, quiet, and the default Rich table, which shows a truncation footer). **No schema change; MCP tool count stays 10.**
 
 ### Phase 7 — One-Shot `seam sync`
 

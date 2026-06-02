@@ -53,9 +53,11 @@ seam/config.py               ← all settings (env vars with defaults)
                                 SEAM_PACK_NEIGHBOR_LIMIT: max enriched callers and max enriched callees in context_pack (default: 10)
                                 SEAM_PACK_PER_FILE_CAP: max neighbor entries from any single file — diversity cap (default: 3)
                                 SEAM_PACK_MAX_COMMENTS: max WHY/HACK/NOTE comments in context_pack bundle (default: 10)
+                                SEAM_IMPACT_MAX_RESULTS: per-tier entry cap for seam_impact (default: 25; 0 = unlimited) [Phase 8]
 seam/cli/main.py             ← Typer CLI (init, sync, start, status, impact, trace, changes, why, clusters, affected, pack)
                                 --json / --quiet on read commands; --stdin on affected + changes
                                 sync: --json / --quiet / --force-clusters (Phase 7)
+                                --lean on impact/trace/pack + --limit on impact (Phase 8); all 3 modes route through handlers
 seam/indexer/sync.py         ← LEAF: Phase 7 reconcile engine — sync(conn, root, *, recompute_clusters,
                                 force_clusters, naming_mode, llm_api_key, llm_model, min_size) → SyncResult
                                 mtime pre-filter → SHA-1 confirm; existsSync-guarded delete; FULL cluster
@@ -128,6 +130,24 @@ tests/fixtures/              ← sample.py, sample.ts, sample.go, sample.rs
 - **Edges use string names** (not symbol IDs) — required for independent re-indexing
 
 ## Current Phase
+Phase 8 complete — lean output (`verbose`) + `seam_impact` summary tier shipped.
+- **Lean output (#1):** `verbose: bool = True` on the enrichment-carrying handlers
+  (seam_context, seam_trace, seam_impact, seam_context_pack). `verbose=False` strips the 6 heavy
+  fields (decorators, is_exported, visibility, qualified_name, resolved_by, best_candidate) via
+  the shared `_apply_verbosity` helper in tools.py — keeps signature + core fields. seam_search
+  AND seam_query are enrichment-free → NO verbose flag (would be a no-op). CLI: `--lean` on
+  impact/trace/pack (query/context have no CLI command — MCP-only).
+- **Impact summary (#2):** seam_impact returns `risk_summary` {direction: {tier: count}} over the
+  FULL pre-cap (post-include_tests) set, caps each tier at `SEAM_IMPACT_MAX_RESULTS` (default 25),
+  reports `truncated` {direction: {tier: omitted}}, and accepts `limit` (0 = unlimited). The cap
+  applies BY DEFAULT — this fixes the hub-symbol 30k-token blast (init_db: 30k → 4.5k tokens).
+- All 3 CLI impact modes (--json/--quiet/Rich) route through `handle_seam_impact` so --lean/--limit
+  apply uniformly; Rich shows a truncation footer, quiet signals truncation on stderr.
+- No schema change, no migration, MCP tool count stays 10. Benchmark: 83.4%/77.6% → 91.8%/88.7%.
+- 1107 tests passing; gate green.
+See `progress.txt` for session history. Next: roadmap item 8 (`seam install`) / v0.1.0 release prep.
+
+### Prior phase
 Phase 7 complete — one-shot `seam sync` with gated cluster recompute shipped.
 - New leaf module `seam/indexer/sync.py`: `sync(conn, root, *, …) → SyncResult`.
 - Filesystem reconcile (NOT git): mtime pre-filter → SHA-1 confirm; re-index only changed/added
@@ -150,7 +170,7 @@ See `progress.txt` for session history. Next: roadmap item 8 (`seam install`) / 
 - `seam_query` — FTS5 + 1-hop graph expansion (Phase 0); OR-join + rescore since Phase 3
 - `seam_context` — symbol 360-degree view, enriched with cluster_id/label/peers (Phase 2) + signature/decorators/is_exported/visibility/qualified_name (Phase 4)
 - `seam_search` — full-text FTS5 search (Phase 0); OR-join + rescore + fuzzy fallback since Phase 3; signature is FTS-searchable (Phase 4)
-- `seam_impact` — blast-radius analysis by risk tier (Phase 1); each entry now carries `resolved_by` (provenance) and `best_candidate` (proximity pick on AMBIGUOUS) since Phase 5
+- `seam_impact` — blast-radius analysis by risk tier (Phase 1); each entry now carries `resolved_by` (provenance) and `best_candidate` (proximity pick on AMBIGUOUS) since Phase 5; Phase 8 adds `risk_summary` (full per-tier counts), a per-tier `limit` cap (default 25, 0=unlimited), and `truncated`
 - `seam_trace` — shortest call/dependency path (Phase 1); each hop now carries `resolved_by` and `best_candidate` since Phase 5
 - `seam_changes` — git diff → changed symbols → risk level (Phase 1); --stdin on CLI
 - `seam_why` — semantic comments WHY/HACK/NOTE/TODO/FIXME (Phase 1b)
@@ -159,6 +179,8 @@ See `progress.txt` for session history. Next: roadmap item 8 (`seam install`) / 
 - `seam_context_pack` — enriched context bundle: target + NeighborRef callers/callees + WHY + cluster peers + truncated counts (Phase 6)
 
 All ten tools return the five Phase 4 enrichment fields where available: `signature`, `decorators`, `is_exported`, `visibility`, `qualified_name`. Fields are `null` (not absent) for pre-v5 rows or unsupported scenarios — callers treat `null` as "unknown".
+
+**Phase 8 lean output:** `seam_context`, `seam_trace`, `seam_impact`, `seam_context_pack` accept `verbose: bool = True`. With `verbose=False` the 6 heavy fields (decorators, is_exported, visibility, qualified_name, resolved_by, best_candidate) are **absent** (not null) — `signature` + core fields are always kept. `verbose=True` is byte-identical to pre-Phase-8 (EXCEPT `seam_impact`, which always adds `risk_summary`/`truncated` and caps by default). `seam_query` and `seam_search` carry no enrichment → no `verbose` flag.
 
 `seam_impact` and `seam_trace` additionally return `resolved_by` and `best_candidate` on each entry/hop since Phase 5. Both are `null` for pre-v6 rows or when resolution context is unavailable (same null-contract as Phase 4 fields).
 

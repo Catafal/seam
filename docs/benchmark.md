@@ -1,8 +1,11 @@
 # Seam Benchmark
 
 > IMPLEMENTATION_PLAN steps 9.1–9.3. Reproduce with `python benchmarks/run_benchmark.py`
-> after `seam init`. Last run: 2026-06-02, against this repo at commit `7415d32`
-> (72 files · 927 symbols · 3262 edges · 89 clusters).
+> after `seam init`. Last run: 2026-06-02, against this repo at the **Phase 8** branch
+> (104 files · 1757 symbols · 5836 edges · 123 clusters) — Phase 8 (lean output + the
+> `seam_impact` summary tier) recovered the reduction to **91.8% / 88.7%**, see
+> *Change since the last run* below.
+> Prior runs: `6690bb1` (Phase 7) 83.4%/77.6%; `7415d32` (72 files) 88.7%/85.8%.
 
 > **See also:** [`competitive-benchmark.md`](competitive-benchmark.md) — head-to-head vs.
 > gitnexus, CodeGraph, and graphify on a real external codebase (Bach), with a scorecard
@@ -42,41 +45,67 @@ live-session study remains the recommended follow-up (see *Threats to validity*)
 
 | # | Question | Tool | Baseline (whole-file) | Baseline (windowed) | Seam | Reduction vs whole | vs windowed |
 |---|----------|------|----------------------:|--------------------:|-----:|-------------------:|------------:|
-| 1 | Who calls `upsert_file`? | `seam_context` | 21,169 | 3,986 | 1,438 | 93.2% | 63.9% |
-| 2 | Blast radius of changing `init_db`? | `seam_impact` | 15,266 | 5,138 | 10,932 | 28.4% | **−112.8%** |
-| 3 | Where is FTS5 search implemented? | `seam_search` | 14,443 | 17,886 | 160 | 98.9% | 99.1% |
-| 4 | What are the functional areas / modules? | `seam_clusters` | 78,454 | 90,407 | 2,132 | 97.3% | 97.6% |
-| 5 | How does `init` reach `upsert_file`? | `seam_trace` | 23,632 | 7,998 | 2,652 | 88.8% | 66.8% |
-| 6 | Understand `extract_edges` (callers/callees) | `seam_context` | 13,285 | 7,412 | 1,548 | 88.3% | 79.1% |
-| | **TOTAL** | | **166,249** | **132,827** | **18,862** | **88.7%** | **85.8%** |
+| 1 | Who calls `upsert_file`? | `seam_context` | 39,371 | 6,115 | 4,765 | 87.9% | 22.1% |
+| 2 | Blast radius of changing `init_db`? | `seam_impact` | 30,568 | 8,905 | 4,575 | **85.0%** | **48.6%** |
+| 3 | Where is FTS5 search implemented? | `seam_search` | 34,681 | 46,968 | 1,055 | 97.0% | 97.8% |
+| 4 | What are the functional areas / modules? | `seam_clusters` | 148,017 | 144,048 | 3,072 | 97.9% | 97.9% |
+| 5 | How does `init` reach `upsert_file`? | `seam_trace` | 44,585 | 16,247 | 10,847 | 75.7% | 33.2% |
+| 6 | Understand `extract_edges` (callers/callees) | `seam_context` | 17,202 | 7,369 | 1,618 | 90.6% | 78.0% |
+| | **TOTAL** | | **314,424** | **229,652** | **25,932** | **91.8%** | **88.7%** |
 
-*Estimated tokens (chars ÷ 4). Window = ±25 lines. Source scope: `seam/`.*
+*Estimated tokens (chars ÷ 4). Window = ±25 lines. Source scope: `seam/`. Run at the Phase 8
+default settings (`seam_impact` summary + per-tier cap of 25; verbose output otherwise).*
 
 ## Verdict
 
-**Target met by a wide margin: 88.7% reduction vs. the realistic whole-file baseline,
-85.8% vs. the conservative windowed baseline** — both far above the 30% goal. Five of six
-queries land between 64% and 99% reduction.
+**Target met by a wide margin: 91.8% reduction vs. the realistic whole-file baseline,
+88.7% vs. the conservative windowed baseline** — both far above the 30% goal, and now *above*
+the original pre-enrichment numbers (88.7% / 85.8% at `7415d32`). Every one of the six queries
+is a win, none below 22%.
 
-The headline wins are the queries grep is *worst* at: "what are the functional areas?"
-(`seam_clusters`, 97%) and "where is X implemented?" (`seam_search`, 99%) — questions where
-the grep-and-read approach forces an agent to ingest large swaths of the tree, while Seam
-returns a compact ranked answer.
+The headline wins remain the queries grep is *worst* at — `seam_clusters` (97.9%) and
+`seam_search` (97.0–97.8%) — but the story of this run is **row #2**: the former loss is now an
+85% win (see below).
 
-## The honest outlier (row #2)
+## Change since the last run (`6690bb1` → Phase 8)
 
-`seam_impact` on `init_db` returns **more** tokens than the windowed grep (−112.8%). This is
-real and worth stating plainly: `init_db` is a high-fanout symbol, so its full tiered
-blast-radius JSON is large (~10.9k est. tokens). Two caveats keep this fair to *both* sides:
+The reduction **recovered** from 83.4%/77.6% to **91.8%/88.7%** — Seam's total output more than
+halved (51,004 → 25,932 est. tokens) with no loss of capability. Phase 8 shipped the two levers
+the previous run's analysis identified:
 
-- It is **not apples-to-apples**: a ±25-line grep window around `init_db` matches does **not
-  answer** "what breaks if I change this" — it only shows where the string appears. Seam's
-  output is the transitive, risk-tiered dependency set, which grep cannot produce at any size.
-- It still beats the realistic whole-file baseline (28.4%), and an agent can cap `max_depth`
-  to trade completeness for size.
+- **`seam_impact` summary tier + per-tier cap (the dominant win).** `seam_impact` now returns a
+  `risk_summary` histogram (per-tier counts over the *full* blast radius) plus the closest ≤25
+  entries per tier, with a `truncated` count and a `limit=0` escape hatch for the full set. This
+  alone took row #2 (`init_db`) from ~30k tokens to **4,575** — a −1.3% loss flipped to a **+85.0%
+  win** — because the agent learns the blast-radius *size* (230 WILL_BREAK, 133 LIKELY_AFFECTED …)
+  in a few bytes instead of ingesting every transitive entry.
+- **Lean output (`verbose=false` / `--lean`).** Omits the heavy Phase 4/5 enrichment fields
+  (`decorators`, `is_exported`, `visibility`, `qualified_name`, `resolved_by`, `best_candidate`),
+  keeping `signature` + core identity. Its win is concentrated where records *repeat* those
+  fields: `seam_trace` drops **−40%** (8,689 → 5,182 tokens for the `init`→`upsert_file` path),
+  and `seam_impact`/`seam_context_pack` entries shrink similarly. For `seam_context` the effect is
+  small (−1–2%) because the heavy fields sit only on the single target record — the
+  callers/callees are bare names. The default benchmark above runs *verbose*; an agent that opts
+  into `--lean` trims the trace/impact rows further.
 
-The takeaway: Seam's largest wins are in *discovery/search* queries; for deep *impact* queries
-on hub symbols the win narrows because the honest answer is genuinely large.
+## Where to improve (updated after Phase 8)
+
+Phase 8 shipped levers **#1 (lean output)** and **#2 (impact summary tier)** — the two the
+previous run flagged. What remains:
+
+1. ~~Lean output / field projection~~ — **done (Phase 8).** `verbose=false` / `--lean` on the
+   enrichment-carrying tools. Biggest effect on `seam_trace` (−40%).
+2. ~~`seam_impact` summary tier~~ — **done (Phase 8).** `risk_summary` + per-tier cap +
+   `truncated` + `limit`. Row #2 went from −1.3% to +85.0%.
+3. **De-duplicate repeated enrichment in large results.** `seam_trace` is now the weakest row
+   (75.7% / 33.2%): each hop still repeats the target symbol's `signature`/`qualified_name`. A
+   normalized shape (one symbol table + references by id) would shrink it further — at the cost
+   of a little client-side assembly. The next lever if trace size matters.
+4. **Measure with real tokens, and run the live A/B.** chars÷4 is fine for ratios but not
+   absolute counts; an optional `tiktoken` path (dev-only, keeps the zero-dep runtime) would
+   sharpen the numbers. The gold standard — two real agent sessions on an external repo read off
+   provider token meters — is still the recommended follow-up and would *favor* Seam (it
+   captures the repeated whole-file re-reads this static proxy omits).
 
 ## Threats to validity
 

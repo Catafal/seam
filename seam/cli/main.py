@@ -55,7 +55,6 @@ from seam.analysis.impact import (
     TIER_LIKELY_AFFECTED,
     TIER_MAY_NEED_TESTING,
     TIER_WILL_BREAK,
-    impact,
 )
 from seam.cli.output import check_mutual_exclusion, emit_json, emit_json_error, print_quiet
 from seam.indexer.cluster_index import get_llm_naming_summary, index_clusters
@@ -83,6 +82,15 @@ app = typer.Typer(
 )
 
 console = Console()
+
+# Top-level keys in a handle_seam_impact response that are NOT direction groups.
+# Every consumer that iterates the impact result to find tier groups (quiet output,
+# the total-entry count, Rich rendering) MUST skip these — otherwise risk_summary /
+# truncated (which are {direction: {tier: int}} dicts) get treated as direction
+# groups and, in the count path, len() is called on an int → TypeError.
+_IMPACT_META_KEYS: frozenset[str] = frozenset(
+    {"found", "target", "hidden_tests", "risk_summary", "truncated"}
+)
 
 
 def _watcher_is_alive(pid_file: Path) -> int | None:
@@ -456,6 +464,23 @@ def impact_cmd(
         "--production-only",
         help="Filter out test-file dependents; show only production blast radius.",
     ),
+    lean: bool = typer.Option(
+        False,
+        "--lean",
+        help=(
+            "Omit heavy enrichment fields (resolved_by, best_candidate) from every tier entry. "
+            "signature and core fields are always kept. Identical to verbose=false in MCP."
+        ),
+    ),
+    limit: int = typer.Option(
+        config.SEAM_IMPACT_MAX_RESULTS,
+        "--limit",
+        help=(
+            "Per-tier entry cap. Default: SEAM_IMPACT_MAX_RESULTS (25). "
+            "Set to 0 for unlimited — returns the full transitive blast radius. "
+            "Identical to the limit parameter in the MCP tool."
+        ),
+    ),
     json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
     quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
 ) -> None:
@@ -509,31 +534,26 @@ def impact_cmd(
     # include_tests=False when --production-only is set; True (default) otherwise.
     include_tests = not production_only
 
+    # --lean sets verbose=False; output becomes byte-identical to the MCP tool
+    # called with verbose=False — heavy fields absent from every tier entry.
+    verbose = not lean
+
     try:
-        # WHY: reuse handle_seam_impact (MCP handler) for --json so that CLI --json
-        # output is byte-identical to the MCP tool response (Article #37 parity).
-        # For the Rich path we still call impact() directly to preserve behavior.
-        if json_ or quiet:
-            result = handle_seam_impact(
-                conn,
-                target=symbol,
-                root=project_root,
-                direction=direction,
-                max_depth=depth,
-                include_tests=include_tests,
-            )
-        else:
-            # WHY: pass repo_root so Rich mode uses the same Phase 5 import-promotion
-            # as --json mode. Without this, the same symbol shows AMBIGUOUS in Rich
-            # but EXTRACTED [via import] in --json — a confusing parity gap.
-            result = impact(
-                conn,
-                target=symbol,
-                direction=direction,
-                max_depth=depth,
-                include_tests=include_tests,
-                repo_root=project_root,
-            )
+        # WHY: ALL three modes (--json, --quiet, Rich) route through handle_seam_impact
+        # so the --limit cap, --lean strip, risk_summary, and truncated counts apply
+        # uniformly. The Rich path previously called impact() directly and so silently
+        # ignored --limit and --lean (a confirmed parity bug). One handler = one source
+        # of truth; Rich now renders the same capped result --json returns.
+        result = handle_seam_impact(
+            conn,
+            target=symbol,
+            root=project_root,
+            direction=direction,
+            max_depth=depth,
+            include_tests=include_tests,
+            verbose=verbose,
+            limit=limit,
+        )
     finally:
         conn.close()
 
@@ -545,11 +565,23 @@ def impact_cmd(
     # ── Quiet mode — print one name per dependent entry ───────────────────────
     if quiet:
         for dir_key, tier_group in result.items():
-            if dir_key in ("found", "target", "hidden_tests") or not isinstance(tier_group, dict):
+            # Skip metadata keys (risk_summary/truncated are dicts too — without this
+            # guard they'd be walked as direction groups and emit garbage).
+            if dir_key in _IMPACT_META_KEYS or not isinstance(tier_group, dict):
                 continue
             for entries in tier_group.values():
                 for entry in entries:
                     print_quiet(entry, field="name")
+        # Signal truncation on stderr so stdout stays a pure bare-name list
+        # (a `seam impact X --quiet | wc -l` pipeline must not see this line).
+        truncated = result.get("truncated")
+        if truncated:
+            total_omitted = sum(n for tiers in truncated.values() for n in tiers.values())
+            if total_omitted > 0:
+                sys.stderr.write(
+                    f"# {total_omitted} more entr(ies) truncated by --limit; "
+                    "use --limit 0 for the full set\n"
+                )
         return
 
     # ── Rich (default) mode — existing rendering, unchanged ──────────────────
@@ -563,10 +595,12 @@ def impact_cmd(
         return
 
     # Check if any results exist across all directions and tiers.
+    # Skip metadata keys: risk_summary/truncated are {tier: int} dicts, so without
+    # the guard `len(entries)` would be called on an int and raise TypeError.
     total = sum(
         len(entries)
         for key, tier_group in result.items()
-        if isinstance(tier_group, dict) and key not in ("found", "target")
+        if isinstance(tier_group, dict) and key not in _IMPACT_META_KEYS
         for entries in tier_group.values()
     )
 
@@ -595,9 +629,10 @@ def impact_cmd(
         TIER_MAY_NEED_TESTING: "[dim]MAY NEED TESTING[/dim]  (d=3+)",
     }
 
-    # Iterate only direction keys (skip metadata keys like "found" and "target").
+    # Iterate only direction keys (skip metadata keys: found/target/hidden_tests
+    # and the Phase 8 risk_summary/truncated dicts).
     for direction_key, tier_group in result.items():
-        if direction_key in ("found", "target") or not isinstance(tier_group, dict):
+        if direction_key in _IMPACT_META_KEYS or not isinstance(tier_group, dict):
             continue
         console.print(
             f"\n[bold cyan]Impact ({direction_key})[/bold cyan] of [bold]{symbol}[/bold]:"
@@ -622,15 +657,27 @@ def impact_cmd(
                 test_marker = " [dim][test][/dim]" if entry.get("is_test") else ""
                 # Phase 5: surface the proximity best_candidate on AMBIGUOUS entries
                 # (story 6) so a human sees the likeliest declaration for a homonym.
+                # best_candidate is ALREADY relativized by handle_seam_impact — do not
+                # re-relativize (that would mangle the already-relative path). Absent in
+                # --lean mode, so use .get().
                 best = entry.get("best_candidate")
-                best_marker = (
-                    f" [dim](best: {os.path.relpath(best, project_root)})[/dim]" if best else ""
-                )
+                best_marker = f" [dim](best: {best})[/dim]" if best else ""
                 console.print(
                     f"    [bold]{entry['name']}[/bold]  "
                     f"[{confidence_color}]{entry['confidence']}[/{confidence_color}]  "
                     f"[dim]d={entry['distance']}[/dim]{test_marker}{best_marker}"
                 )
+
+        # Per-direction truncation footer: when --limit capped this direction's tiers,
+        # tell the user how many entries were omitted and how to see them all. Without
+        # this the capped Rich output looks complete (the silent-cap parity bug).
+        dir_truncated = result.get("truncated", {}).get(direction_key, {})
+        omitted = sum(dir_truncated.values())
+        if omitted > 0:
+            console.print(
+                f"\n  [dim]… {omitted} more entr(ies) truncated by --limit "
+                f"(showing {limit} per tier; use --limit 0 for the full blast radius).[/dim]"
+            )
 
     # Footer: when production dependents were shown but tests were also hidden,
     # note the hidden count so the blast radius is not silently under-reported.
@@ -649,6 +696,14 @@ def trace_cmd(
     depth: int = typer.Option(10, "--depth", help="Max hop depth (1-10)"),
     path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+    lean: bool = typer.Option(
+        False,
+        "--lean",
+        help=(
+            "Omit heavy enrichment fields (resolved_by, best_candidate) from every hop. "
+            "Identical to verbose=false in MCP."
+        ),
+    ),
     json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
     quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
 ) -> None:
@@ -690,11 +745,16 @@ def trace_cmd(
     # Clamp depth to [1, 10]
     safe_depth = max(1, min(10, depth))
 
+    # --lean sets verbose=False; output becomes byte-identical to the MCP tool
+    # called with verbose=False — heavy fields absent from every hop.
+    verbose = not lean
+
     try:
         # WHY: reuse handle_seam_trace for --json/--quiet to ensure MCP/CLI parity.
         if json_ or quiet:
             result = handle_seam_trace(
-                conn, source=source, target=target, root=project_root, max_depth=safe_depth
+                conn, source=source, target=target, root=project_root,
+                max_depth=safe_depth, verbose=verbose,
             )
         else:
             # Thread project_root as repo_root for Phase 5 import-promotion so
@@ -1512,6 +1572,14 @@ def pack_cmd(
     symbol: str = typer.Argument(..., help="Symbol name to build context pack for."),
     path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+    lean: bool = typer.Option(
+        False,
+        "--lean",
+        help=(
+            "Omit heavy enrichment fields (decorators, is_exported, visibility, qualified_name) "
+            "from target and all neighbors. Identical to verbose=false in MCP."
+        ),
+    ),
     json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
     quiet: bool = typer.Option(
         False,
@@ -1528,6 +1596,7 @@ def pack_cmd(
     Examples:
       seam pack my_func
       seam pack my_func --json
+      seam pack my_func --lean --json
       seam pack my_func --quiet
     """
     try:
@@ -1553,10 +1622,14 @@ def pack_cmd(
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
+    # --lean sets verbose=False; output becomes byte-identical to the MCP tool
+    # called with verbose=False — heavy fields absent from target and all neighbors.
+    verbose = not lean
+
     try:
         # WHY: always route through handle_seam_context_pack so MCP and CLI
         # produce the identical bundle (same paths, same caps, same truncation).
-        result = handle_seam_context_pack(conn, symbol, project_root)
+        result = handle_seam_context_pack(conn, symbol, project_root, verbose=verbose)
     finally:
         conn.close()
 
