@@ -96,6 +96,26 @@ SEAM_FUZZY_MAX_CANDIDATES: int = int(os.getenv("SEAM_FUZZY_MAX_CANDIDATES", "500
 SEAM_MAX_SIGNATURE_LEN: int = int(os.getenv("SEAM_MAX_SIGNATURE_LEN", "300"))
 
 
+# ── Phase 5: Import Resolution configuration ─────────────────────────────────
+
+# Master switch for builtin filtering. When "off", count==0 names always resolve
+# to INFERRED 'unresolved' regardless of whether they are known builtins.
+SEAM_BUILTIN_FILTERING: str = os.getenv("SEAM_BUILTIN_FILTERING", "on")
+
+# Master switch for import-resolution promotion (step A). When "off", import
+# mappings are not extracted at index time and not used for promotion at read time.
+# The name-count rule (existing behavior) is used exclusively.
+SEAM_IMPORT_RESOLUTION: str = os.getenv("SEAM_IMPORT_RESOLUTION", "on")
+
+# Cap on candidate declaring files evaluated per import-resolution lookup (step A).
+# Prevents runaway DB queries on pathologically ambiguous indexes.
+SEAM_MAX_IMPORT_CANDIDATES: int = int(os.getenv("SEAM_MAX_IMPORT_CANDIDATES", "25"))
+
+# Cap on collision candidates ranked by file-path proximity (step D).
+# Prevents O(n) proximity computation on large symbol tables.
+SEAM_PROXIMITY_MAX_CANDIDATES: int = int(os.getenv("SEAM_PROXIMITY_MAX_CANDIDATES", "25"))
+
+
 def get_db_path(project_root: Path) -> Path:
     """Resolve the database path relative to the project root."""
     return project_root / SEAM_DB_PATH

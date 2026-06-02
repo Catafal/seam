@@ -180,7 +180,7 @@ class TestFinding1StaleIndexAutoMigrate:
             conn.close()
 
     def test_connect_on_v4_db_bumps_schema_version(self, tmp_path: Path) -> None:
-        """connect() on v4 DB auto-migrates → schema_version becomes '5'."""
+        """connect() on v4 DB auto-migrates → schema_version becomes >= '5'."""
         db_path = tmp_path / "v4b.db"
         _make_v4_db(db_path)
 
@@ -188,8 +188,9 @@ class TestFinding1StaleIndexAutoMigrate:
         try:
             row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
             assert row is not None
-            assert row["value"] == "5", (
-                f"Expected schema_version=5 after auto-migrate, got {row['value']!r}"
+            # Phase 5 bumped to v6; any value >= 5 is acceptable after migration.
+            assert int(row["value"]) >= 5, (
+                f"Expected schema_version >= 5 after auto-migrate, got {row['value']!r}"
             )
         finally:
             conn.close()
@@ -210,7 +211,7 @@ class TestFinding1StaleIndexAutoMigrate:
         conn.close()  # no crash = pass
 
     def test_connect_on_v5_db_is_idempotent(self, tmp_path: Path) -> None:
-        """connect() on a fully-migrated v5 DB runs migrations as no-ops."""
+        """connect() on a fully-migrated DB runs migrations as no-ops (>= v5 / v6)."""
         db_path = tmp_path / "v5.db"
         conn_init = init_db(db_path)
         conn_init.close()
@@ -219,7 +220,8 @@ class TestFinding1StaleIndexAutoMigrate:
         conn = connect(db_path)
         try:
             row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
-            assert row["value"] == "5"
+            # Phase 5 bumped to v6; any value >= 5 is correct.
+            assert int(row["value"]) >= 5
         finally:
             conn.close()
 

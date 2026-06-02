@@ -4,7 +4,7 @@ Local code intelligence MCP server for AI agents. Index your codebase once; let 
 
 ## Status
 
-Phase 4 complete — node-field enrichment shipped. 741 tests. Gate green.
+Phase 5 complete — import resolution and confidence promotion shipped. 939 tests. Gate green.
 
 ## Quickstart
 
@@ -245,6 +245,38 @@ git diff --name-only | seam affected --stdin --quiet | xargs pytest
 Stable error codes: `NO_INDEX`, `INVALID_INPUT`, `INVALID_QUERY`, `NOT_A_GIT_REPO`, `DB_ERROR`.
 Errors are written to **stdout** (not stderr) so agents parsing stdout always get a parseable envelope.
 The human Rich output is unchanged when no flag is passed; `--json` and `--quiet` are mutually exclusive.
+
+### Phase 5 — Import Resolution & Confidence Promotion
+
+The confidence tier on every edge now explains itself, and import statements are used to fix false ambiguity.
+
+**The homonym problem (and its fix).** When two files each define `parse()`, every call to `parse()` anywhere in the repo was previously reported as AMBIGUOUS — even when the calling file contained `from app.json import parse`, making the binding unambiguous. Phase 5 reads those import statements and, when a same-file import resolves to exactly one indexed file that declares the target, promotes the edge to EXTRACTED. The call stops being a false alarm.
+
+**`resolved_by` provenance.** Every resolved edge now reports *how* its tier was decided:
+
+| `resolved_by` | Meaning |
+|---------------|---------|
+| `import` | Promoted via a resolved same-file import (the homonym fix) |
+| `name-unique` | Target name appears exactly once in the full index |
+| `name-collision` | Target name shared by >1 symbol (homonym, no import to resolve) |
+| `builtin` | Target name is a known language builtin/stdlib (count==0 guard — user-defined names are never suppressed) |
+| `unresolved` | Target not in index, not a known builtin |
+
+`null` means the edge was resolved against a pre-v6 index or without language/import context.
+
+**Builtin filtering.** Calls to `len()`, `print()`, `console.log`, `make()`, or `Vec::new` are now tagged `resolved_by: builtin` (INFERRED) rather than appearing as mysteriously unresolved external dependencies. The builtin check fires **only when nothing in the repo declares that name** (count==0), so a user who writes their own `def get()` keeps a normal resolution — the builtin set never shadows real repo symbols.
+
+**Proximity tie-break for residual AMBIGUOUS.** When a collision can't be resolved by import (no import, star import, third-party source), the edge stays AMBIGUOUS but reports a `best_candidate` — the file path of the declaring symbol that shares the most directory ancestry with the referencing file. This gives agents and developers a most-likely target without manufacturing false certainty.
+
+**Schema v6.** A new `import_mappings` table stores per-file import bindings extracted at index time. `connect()` auto-migrates v5→v6 on first open (additive, fresh-DB-safe). Mappings are NOT backfilled by the migration — run `seam init` to populate them and enable full Phase 5 resolution on an existing index. Until then, resolution falls back to the name-count rule silently.
+
+**New config knobs:**
+- `SEAM_IMPORT_RESOLUTION` (`"on"` default) — master switch for import-promotion step A.
+- `SEAM_BUILTIN_FILTERING` (`"on"` default) — master switch for builtin tagging step C.
+- `SEAM_MAX_IMPORT_CANDIDATES` (default `25`) — cap on candidate declaring files evaluated per import lookup.
+- `SEAM_PROXIMITY_MAX_CANDIDATES` (default `25`) — cap on collision candidates ranked by proximity.
+
+`seam_impact` and `seam_trace` output now include `resolved_by` and `best_candidate` on each entry/hop. Both fields are `null` for pre-v6 indexes or when resolution context is unavailable — same null-contract as the Phase 4 enrichment fields.
 
 ## Known Limitations (Phase 1b candidates)
 

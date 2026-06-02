@@ -114,6 +114,10 @@ def _collect_test_dependents(
     if depth <= 0:
         return [], 0
 
+    # WHY no repo_root: affected() doesn't read confidence values for its output — it only
+    # checks is_test on entry["file"]. Import-promotion would change confidence tiers but not
+    # the test-file set. Omitting repo_root keeps this call side-effect-free and consistent
+    # with the documented contract that affected-tests traversal is confidence-agnostic.
     result = impact(conn, target=symbol_name, direction="upstream", max_depth=depth)
 
     if not result.get("found"):

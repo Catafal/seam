@@ -45,6 +45,10 @@ seam/config.py               ← all settings (env vars with defaults)
                                 SEAM_FUZZY_MAX_DIST: max Damerau-Levenshtein distance for fuzzy fallback (default: 1)
                                 SEAM_FUZZY_MAX_CANDIDATES: max symbol names evaluated in fuzzy scan (default: 500)
                                 SEAM_MAX_SIGNATURE_LEN: max signature length in chars before truncation (default: 300)
+                                SEAM_BUILTIN_FILTERING: "on" | "off" — tag count==0 names as builtin (default: on)
+                                SEAM_IMPORT_RESOLUTION: "on" | "off" — import-promotion step A (default: on)
+                                SEAM_MAX_IMPORT_CANDIDATES: cap on declaring files per import lookup (default: 25)
+                                SEAM_PROXIMITY_MAX_CANDIDATES: cap on collision candidates for proximity ranking (default: 25)
 seam/cli/main.py             ← Typer CLI (init, start, status, impact, trace, changes, why, clusters, affected)
                                 --json / --quiet on read commands; --stdin on affected + changes
 seam/cli/output.py           ← LEAF: agent-output contract — success/error JSON envelope, quiet renderer
@@ -66,6 +70,15 @@ seam/indexer/graph.py        ← Python/TS dispatchers; re-exports types from gr
 seam/indexer/signatures.py   ← LEAF: Phase 4 enrichment — extract_node_fields(node, language, ...) → NodeFields
                                 per-language: signature, decorators, is_exported, visibility, qualified_name
                                 for Python / TypeScript / JavaScript / Go / Rust; never raises
+seam/analysis/imports.py     ← LEAF: extract_import_mappings + resolve_import_source + compute_path_proximity
+                                per-language import extraction for Python/TS/JS/Go/Rust; never raises
+                                maps import source strings to candidate declaring-file paths (5-lang extension order)
+seam/analysis/builtins.py    ← LEAF: is_builtin(name, language) → bool over static per-language frozensets
+                                covers Python/TS/JS/Go/Rust; conservative vocabulary (common builtins only)
+seam/analysis/confidence.py  ← whole-index confidence resolver (Phase 5 extended)
+                                resolve_edge() → Resolution{confidence, resolved_by, best_candidate}
+                                load_import_mappings(conn, file_path) → list[ImportMapping]
+                                resolve() kept as backward-compat thin shim
 seam/indexer/pipeline.py     ← shared parse→extract→upsert path (CLI + watcher)
 seam/indexer/cluster_index.py← clustering orchestration bridge (Phase 2)
                                 index_clusters(conn, ...) → int; called by seam init only
@@ -100,23 +113,35 @@ tests/fixtures/              ← sample.py, sample.ts, sample.go, sample.rs
 - **Edges use string names** (not symbol IDs) — required for independent re-indexing
 
 ## Current Phase
-Phase 4 complete — node-field enrichment shipped (signature, decorators, is_exported, visibility,
-qualified_name on every indexed symbol; signature added to FTS5 index; schema v5 with auto-migrate
-on connect; 741 tests passing; gate green).
+Phase 5 complete — import resolution and confidence promotion shipped.
+- Import-promotion (step A): when a same-file import binds a target name to exactly one indexed
+  declaring file, the edge is promoted to EXTRACTED with `resolved_by: import` — the core homonym fix.
+- Provenance (`resolved_by`): every resolved edge now reports how its tier was decided.
+  Stable vocabulary: `import` | `name-unique` | `name-collision` | `builtin` | `unresolved`.
+- Builtin/stdlib filtering (step C): count==0 names that are known language builtins are tagged
+  `resolved_by: builtin` (INFERRED) instead of `unresolved`. Guard: the builtin check fires ONLY at
+  count==0, so a user `def get()` is never silently filtered as the builtin `get`.
+- Proximity tie-break (step D): residual AMBIGUOUS edges (collision, no import to resolve) report a
+  `best_candidate` — the most file-path-proximate declaring file — so agents have a most-likely target.
+- Schema v6: new `import_mappings` table stores per-file import bindings; `connect()` auto-migrates
+  v5→v6 on open (additive, fresh-DB-safe, no backfill — run `seam init` to populate).
+- 939 tests passing; gate green.
 See `progress.txt` for session history. Next: benchmarking / v0.1.0 release prep.
 
 ## MCP Tools
 - `seam_query` — FTS5 + 1-hop graph expansion (Phase 0); OR-join + rescore since Phase 3
 - `seam_context` — symbol 360-degree view, enriched with cluster_id/label/peers (Phase 2) + signature/decorators/is_exported/visibility/qualified_name (Phase 4)
 - `seam_search` — full-text FTS5 search (Phase 0); OR-join + rescore + fuzzy fallback since Phase 3; signature is FTS-searchable (Phase 4)
-- `seam_impact` — blast-radius analysis by risk tier (Phase 1)
-- `seam_trace` — shortest call/dependency path (Phase 1)
+- `seam_impact` — blast-radius analysis by risk tier (Phase 1); each entry now carries `resolved_by` (provenance) and `best_candidate` (proximity pick on AMBIGUOUS) since Phase 5
+- `seam_trace` — shortest call/dependency path (Phase 1); each hop now carries `resolved_by` and `best_candidate` since Phase 5
 - `seam_changes` — git diff → changed symbols → risk level (Phase 1); --stdin on CLI
 - `seam_why` — semantic comments WHY/HACK/NOTE/TODO/FIXME (Phase 1b)
 - `seam_clusters` — list functional areas or drill into one cluster (Phase 2)
 - `seam_affected` — changed files → impacted test files via reverse-dependency traversal (Phase 3)
 
 All nine tools (seam_context, seam_search, seam_query) return the five Phase 4 enrichment fields where available: `signature`, `decorators`, `is_exported`, `visibility`, `qualified_name`. Fields are `null` (not absent) for pre-v5 rows or unsupported scenarios — callers treat `null` as "unknown".
+
+`seam_impact` and `seam_trace` additionally return `resolved_by` and `best_candidate` on each entry/hop since Phase 5. Both are `null` for pre-v6 rows or when resolution context is unavailable (same null-contract as Phase 4 fields).
 
 ## Known Gotchas
 - **Clusters recomputed only on full `seam init`**: the file watcher does NOT recompute
@@ -154,6 +179,22 @@ All nine tools (seam_context, seam_search, seam_query) return the five Phase 4 e
 - **Signature is FTS-searchable**: since Phase 4 the `symbols_fts` virtual table indexes
   `(name, docstring, signature)`. Type-shaped queries like `"conn sqlite3 Connection"` now
   match on parameter types and return annotations, not just symbol names.
+- **`import_mappings` NOT backfilled by v5→v6 migration**: the v5→v6 migration (auto-run on
+  `connect()`) creates the `import_mappings` table but does NOT populate it. `resolved_by`
+  and import-promotion stay name-count-only until the next full `seam init`. Run `seam init`
+  to enable Phase 5 resolution on an existing index.
+- **Import promotion is read-time and requires `repo_root`**: `seam_changes` and `seam_affected`
+  DELIBERATELY do not use import promotion — `changes.py` keeps name-count risk verdicts
+  byte-stable across schema upgrades; `affected.py` does not read confidence at all.
+  Import promotion applies only to `seam_impact`, `seam_trace`, and `seam_context`.
+- **Go module-qualified imports are out of scope**: paths like `github.com/org/repo/pkg` are
+  not resolved to indexed files. Go cross-package calls that use module-qualified import paths
+  remain AMBIGUOUS if the target name has multiple declarations. Same-repo-relative Go paths
+  resolve normally.
+- **On a multi-hop path, `resolved_by` reflects the FINAL hop**: path-level confidence uses
+  the weakest-hop rule (AMBIGUOUS < INFERRED < EXTRACTED). `resolved_by` on the path entry
+  reflects the provenance of the edge that produced the weakest-hop confidence, not of every
+  hop individually.
 
 ## GitNexus: Code Intelligence (MCP)
 This project is indexed. Use GitNexus MCP tools before coding on existing code.

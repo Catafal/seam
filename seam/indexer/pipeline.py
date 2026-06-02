@@ -14,7 +14,8 @@ import sqlite3
 from pathlib import Path
 
 import seam.config as config
-from seam.indexer.db import upsert_file
+from seam.analysis.imports import extract_import_mappings
+from seam.indexer.db import upsert_file, upsert_import_mappings
 from seam.indexer.graph import extract_comments, extract_edges, extract_symbols
 from seam.indexer.parser import (
     parse_go,
@@ -114,6 +115,14 @@ def index_one_file(conn: sqlite3.Connection, path: Path) -> tuple[int, int] | No
         comments = extract_comments(root, language, path)
 
         upsert_file(conn, path, language, file_hash, symbols, edges, comments)
+
+        # Phase 5: extract and store import mappings for this file.
+        # Only runs when SEAM_IMPORT_RESOLUTION is 'on' (default).
+        # extract_import_mappings never raises; failures silently return [].
+        if config.SEAM_IMPORT_RESOLUTION == "on":
+            import_mappings = extract_import_mappings(root, path, language)
+            upsert_import_mappings(conn, path, import_mappings)
+
         return len(symbols), len(edges)
 
     except Exception as exc:  # noqa: BLE001 — one bad file must not abort the run

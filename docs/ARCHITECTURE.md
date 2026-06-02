@@ -1,6 +1,6 @@
 # Architecture — Seam
 
-> Phase 0 + Phase 1 + Phase 2 (clustering) + Phase 3 (agent-first interface) + Phase 4 (node-field enrichment). See ADRs in `docs/adr/` for decision rationale.
+> Phase 0 + Phase 1 + Phase 2 (clustering) + Phase 3 (agent-first interface) + Phase 4 (node-field enrichment) + Phase 5 (import resolution & confidence promotion). See ADRs in `docs/adr/` for decision rationale.
 
 ---
 
@@ -60,13 +60,14 @@ The write path. Triggered by `seam init` (full) or the file watcher (incremental
 ### SQLite Database
 **File:** `.seam/seam.db` (per project)
 
-Main tables + FTS5 virtual table (schema v5):
+Main tables + FTS5 virtual table (schema v6):
 - `files` — indexed files with hash + mtime
 - `symbols` — functions, classes, methods; includes `cluster_id` FK (schema v4) and five Phase 4 enrichment columns: `signature`, `decorators`, `is_exported`, `visibility`, `qualified_name` (schema v5)
 - `edges` — directed relationships (import, call) with `confidence` column (schema v2)
 - `comments` — semantic comments: WHY/HACK/NOTE/TODO/FIXME markers (schema v3)
 - `clusters` — community detection results: id, label, size, naming_source (schema v4)
 - `symbols_fts` — FTS5 virtual table covering `symbols.name + docstring + signature` (signature added in schema v5)
+- `import_mappings` — per-file import bindings (`local_name`, `exported_name`, `source_module`, `is_default`, `is_namespace`, `is_wildcard`, `line`); populated by pipeline + watcher per file; NOT backfilled by migration (schema v6)
 
 See `docs/database/schema.sql` for full DDL.
 
@@ -78,7 +79,7 @@ Runs as a background thread/process alongside the MCP server. Uses watchdog's `O
 ### MCP Server
 **Files:** `seam/server/mcp.py`, `seam/server/tools.py`
 
-Stdio transport (no HTTP, no ports). The Python MCP SDK handles protocol framing. Nine tools exposed (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3). Tool handlers in `tools.py` validate inputs and delegate to `query/engine.py`, `query/clusters.py`, or `analysis/`. Since Phase 4, `seam_context`, `seam_search`, and `seam_query` pass through the five enrichment fields from the engine layer unchanged.
+Stdio transport (no HTTP, no ports). The Python MCP SDK handles protocol framing. Nine tools exposed (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3). Tool handlers in `tools.py` validate inputs and delegate to `query/engine.py`, `query/clusters.py`, or `analysis/`. Since Phase 4, `seam_context`, `seam_search`, and `seam_query` pass through the five enrichment fields from the engine layer unchanged. Since Phase 5, `seam_impact` and `seam_trace` additionally return `resolved_by` (provenance) and `best_candidate` (proximity pick on AMBIGUOUS entries) on each hop/entry.
 
 ### Query Engine
 **File:** `seam/query/engine.py`
@@ -420,3 +421,99 @@ than name-exact (+80) and name-prefix (+40) so signature-only matches rank below
 Signatures longer than this are truncated with `...`. Callers can detect truncation by checking
 for a trailing `...`. The default captures the full header of all but pathological multi-annotated
 functions; the cap prevents FTS index bloat and unwieldy MCP responses.
+
+---
+
+## Phase 5 — Import Resolution & Confidence Promotion
+
+> Phase 5 shipped on branch `feat/phase5-import-resolution`. Schema migrated v5 → v6.
+> No new MCP tool — `seam_impact` and `seam_trace` output gained `resolved_by` + `best_candidate`.
+
+### Why Read-Time
+
+Seam's existing confidence model stores a per-edge `confidence` column written at index time, but
+treats that stored value as a non-authoritative hint. The authoritative tier is recomputed against
+the live whole-index name-count map on every query (see `seam/analysis/confidence.py`). Phase 5
+extends this same model: import mappings are stored at index time, but the promotion decision is
+made at read time. This keeps the watcher's per-file re-index correct without back-fill or
+write-amplification — after the watcher re-indexes an edited file's import mappings, the next
+query resolves against fresh state automatically.
+
+### Resolution Order (`resolve_edge`)
+
+`seam/analysis/confidence.py:resolve_edge()` applies a four-step ordered rule:
+
+```
+1. Import promotion (step A):
+   If SEAM_IMPORT_RESOLUTION="on" AND a same-file import maps target_name to
+   exactly one indexed declaring file → EXTRACTED, resolved_by: import.
+
+2. Name-count rule:
+   count == 1 → EXTRACTED, resolved_by: name-unique.
+   count >  1 → AMBIGUOUS, resolved_by: name-collision
+                + proximity best_candidate (step D, bounded by SEAM_PROXIMITY_MAX_CANDIDATES).
+
+3. Builtin check (fires ONLY at count == 0):
+   If SEAM_BUILTIN_FILTERING="on" AND is_builtin(name, language)
+   → INFERRED, resolved_by: builtin.
+   (Structural guarantee: a user-declared name with count >= 1 can never reach step 3.)
+
+4. Fallback:
+   count == 0, not a builtin → INFERRED, resolved_by: unresolved.
+```
+
+Step 3's `count==0` guard is load-bearing — it enforces that a user-defined symbol is never
+silently treated as a builtin, regardless of what the builtin vocabulary contains.
+
+### New Leaf Modules
+
+**`seam/analysis/imports.py`** — the import-resolution engine. Three public functions:
+
+- `extract_import_mappings(root, filepath, language) -> list[ImportMapping]` — parse a file's
+  AST and return all import bindings as typed records. Per-language dispatch covers Python (all
+  `import`/`from ... import` forms, relative imports, aliases), TypeScript/JavaScript (named,
+  default, namespace, aliased imports), Go (grouped and single `import` declarations), and Rust
+  (`use` declarations including scoped lists, wildcards, and aliases). Never raises — returns
+  `[]` on any failure.
+- `resolve_import_source(source_module, referencing_file, repo_root, language) -> list[str]` —
+  map an import source string to existing file paths using per-language extension resolution
+  order (Python: `.py`/`/__init__.py`; Rust: `.rs`/`/mod.rs`; TS: `.ts`/`.tsx`/`.d.ts`/`.js`;
+  JS: `.js`/`.mjs`/`.cjs`/`/index.js`; Go: package directory). Relative sources resolve from
+  the referencing file's directory. Third-party and unresolvable sources return `[]`.
+- `compute_path_proximity(referencing_file, candidate_file) -> int` — shared directory segment
+  count between two files' parent directories. Pure, no I/O. Used for step D tie-break.
+
+**`seam/analysis/builtins.py`** — curated builtin vocabulary. Single public function:
+
+- `is_builtin(name, language) -> bool` — over static per-language `frozenset`s covering Python,
+  TypeScript, JavaScript, Go, and Rust. Conservative scope: well-known builtins/prelude/globals
+  only — not an exhaustive stdlib mirror. Language-scoped: a Python builtin name does not
+  affect Go or Rust edges.
+
+### `import_mappings` Table (Schema v6)
+
+Populated by `pipeline.py` in the same file-processing pass that writes symbols and edges.
+The watcher refreshes mappings per-file using the same delete-then-insert pattern as
+`upsert_file` — incremental edits stay fresh without a full re-index.
+
+The table is NOT backfilled by the v5→v6 migration. On an existing index, `connect()` adds the
+table (additive, fresh-DB-safe) but rows are empty until `seam init` runs. Until then, every
+`resolve_edge()` call silently falls back to the name-count rule (step 2 above), which is
+identical to pre-Phase-5 behavior. This mirrors the Phase 4 backfill caveat.
+
+### Schema v6 Migration
+
+`db.py:_run_migration_v5_to_v6()` — additive, guarded:
+1. `CREATE TABLE IF NOT EXISTS import_mappings (...)` with two indexes (`file_id`, `local_name`).
+2. Bumps `metadata.schema_version` to `'6'`.
+
+No column additions to existing tables — purely additive. Fresh DBs are seeded at v6 directly.
+
+### Config Knobs (Phase 5)
+
+| Knob | Default | Purpose |
+|------|---------|---------|
+| `SEAM_IMPORT_RESOLUTION` | `"on"` | Master switch for step A import promotion |
+| `SEAM_BUILTIN_FILTERING` | `"on"` | Master switch for step C builtin tagging |
+| `SEAM_MAX_IMPORT_CANDIDATES` | `25` | Cap on candidate declaring files per import lookup |
+| `SEAM_PROXIMITY_MAX_CANDIDATES` | `25` | Cap on collision candidates for step D proximity ranking |

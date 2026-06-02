@@ -6,7 +6,8 @@ All operations use explicit connections (no connection pool) — caller controls
 Key design decisions:
 - init_db verifies FTS5 availability before running the schema script.
 - init_db runs guarded migrations: v1->v2 (edges.confidence), v2->v3 (comments table),
-  v3->v4 (clusters + cluster_id), v4->v5 (Phase 4 node enrichment fields).
+  v3->v4 (clusters + cluster_id), v4->v5 (Phase 4 node enrichment fields),
+  v5->v6 (Phase 5 import_mappings table).
 - upsert_file is a single transaction: INSERT OR REPLACE the file row,
   DELETE old symbols/edges/comments, then re-insert. Triggers handle FTS sync.
 - delete_file DELETE FROM files cascades to symbols/edges/comments via FK; FTS
@@ -16,6 +17,8 @@ Key design decisions:
 - Comment["marker"/"text"/"line"] -> comments table (schema v3 addition).
 - Phase 4 fields: symbols gain signature, decorators (JSON text), is_exported,
   visibility, qualified_name. FTS5 rebuilt to index (name, docstring, signature).
+- Phase 5 (schema v6): import_mappings table. Populated by upsert_import_mappings(),
+  cleaned up by delete_import_mappings(). Per-file delete-then-insert like upsert_file.
 """
 
 import json
@@ -26,6 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from seam.analysis.imports import ImportMapping
     from seam.indexer.graph import Comment, Edge, Symbol
 
 logger = logging.getLogger(__name__)
@@ -117,21 +121,23 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
         row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
         version = int(row["value"]) if row else 0
 
-        if version >= 5:
+        if version >= 6:
             return  # Already up to date — no-op.
 
-        # Version is < 5: run pending migrations in order.
-        # v1→v2 and v2→v3 and v3→v4 are no-ops if already applied (their own guards check).
-        # We run all four in order to handle the case of a v1/v2/v3 DB that was never
-        # migrated by a prior Seam version.
+        # Version is < 6: run pending migrations in order.
+        # Each migration is guarded by its own version check — safe to call
+        # when already at or above that version (they become no-ops).
         if version < 2:
             _run_migration_v1_to_v2(conn)
         if version < 3:
             _run_migration_v2_to_v3(conn)
         if version < 4:
             _run_migration_v3_to_v4(conn)
-        # v4→v5: the Phase 4 migration (adds enrichment columns + FTS rebuild).
-        _run_migration_v4_to_v5(conn)
+        # v4→v5: Phase 4 migration (adds enrichment columns + FTS rebuild).
+        if version < 5:
+            _run_migration_v4_to_v5(conn)
+        # v5→v6: Phase 5 migration (adds import_mappings table).
+        _run_migration_v5_to_v6(conn)
 
     except Exception as exc:  # noqa: BLE001
         # Do NOT raise here — failing to auto-migrate should not crash a read-only
@@ -383,6 +389,86 @@ def _run_migration_v4_to_v5(conn: sqlite3.Connection) -> None:
         ) from exc
 
 
+def _run_migration_v5_to_v6(conn: sqlite3.Connection) -> None:
+    """Guarded migration: add import_mappings table (v5 → v6).
+
+    Additive-only: creates import_mappings table and two indexes if absent.
+    Does NOT backfill existing rows — only `seam init` / watcher re-index
+    populates mappings. Until then, resolution silently falls back to the
+    name-count rule (documented gotcha, mirrors the Phase 4 backfill caveat).
+
+    Steps:
+      1. CREATE TABLE IF NOT EXISTS import_mappings (idempotent).
+      2. CREATE INDEX IF NOT EXISTS for file_id and local_name (idempotent).
+      3. Bump schema_version to '6'.
+
+    Guarded: runs only when stored version < 6.
+    Idempotent: CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS are safe
+    on repeated calls. The version guard prevents double-bumping.
+    Fresh-DB-safe: a brand-new DB seeded with schema_version='6' returns early.
+
+    Uses BEGIN IMMEDIATE / COMMIT for atomicity (consistent with v4→v5 pattern).
+    Raises RuntimeError on failure so caller knows the DB is in a bad state.
+    """
+    try:
+        row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
+        version = int(row["value"]) if row else 0
+
+        if version >= 6:
+            return  # Already at v6 or newer — no-op.
+
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # Step 1: Create import_mappings table (CREATE TABLE IF NOT EXISTS is idempotent).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS import_mappings (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    file_id       INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+                    local_name    TEXT NOT NULL,
+                    exported_name TEXT NOT NULL,
+                    source_module TEXT NOT NULL,
+                    is_default    INTEGER NOT NULL DEFAULT 0,
+                    is_namespace  INTEGER NOT NULL DEFAULT 0,
+                    is_wildcard   INTEGER NOT NULL DEFAULT 0,
+                    line          INTEGER NOT NULL
+                )
+            """)
+
+            # Step 2: Create indexes (CREATE INDEX IF NOT EXISTS is idempotent).
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_import_mappings_file_id
+                ON import_mappings(file_id)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_import_mappings_local_name
+                ON import_mappings(local_name)
+            """)
+
+            # Step 3: Bump schema_version to '6' as the last step before commit.
+            conn.execute("UPDATE metadata SET value = '6' WHERE key = 'schema_version'")
+            conn.execute("COMMIT")
+
+            logger.info(
+                "Migrated Seam index v%d->v6 (added import_mappings table). "
+                "Run 'seam init' to populate import mappings for existing files.",
+                version,
+            )
+        except Exception as exc:  # noqa: BLE001
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(
+                "Seam DB migration v5->v6 failed; run 'seam init' to rebuild the index"
+            ) from exc
+    except RuntimeError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "Seam DB migration v5->v6 failed; run 'seam init' to rebuild the index"
+        ) from exc
+
+
 def _run_migration_v2_to_v3(conn: sqlite3.Connection) -> None:
     """Guarded migration: bump schema_version from 2 to 3 (adds comments table).
 
@@ -455,6 +541,9 @@ def init_db(db_path: Path) -> sqlite3.Connection:
 
     # Run v4->v5 migration guard (adds Phase 4 node enrichment fields + FTS rebuild).
     _run_migration_v4_to_v5(conn)
+
+    # Run v5->v6 migration guard (adds import_mappings table — Phase 5).
+    _run_migration_v5_to_v6(conn)
 
     return conn
 
@@ -586,9 +675,81 @@ def upsert_file(
 def delete_file(conn: sqlite3.Connection, filepath: Path) -> None:
     """Remove a file and all its symbols, edges, and comments from the index.
 
-    Cascade (FK ON DELETE CASCADE) removes symbols, edges, and comments automatically.
-    FTS triggers fire on each symbol DELETE, keeping FTS in sync.
-    Silently succeeds if the path was never indexed.
+    Cascade (FK ON DELETE CASCADE) removes symbols, edges, comments, and
+    import_mappings automatically. FTS triggers fire on each symbol DELETE,
+    keeping FTS in sync. Silently succeeds if the path was never indexed.
     """
     with conn:
         conn.execute("DELETE FROM files WHERE path = ?", (str(filepath),))
+
+
+def upsert_import_mappings(
+    conn: sqlite3.Connection,
+    filepath: Path,
+    mappings: "list[ImportMapping]",
+) -> None:
+    """Replace all import mappings for a file (delete-then-insert, single transaction).
+
+    This mirrors the upsert_file delete-children pattern: delete old rows for this
+    file_id then insert the new set. Idempotent: safe to call repeatedly for the
+    same file.
+
+    Called by index_one_file() after upsert_file() so that the file row and its
+    file_id already exist. Silently no-ops if the file is not in the DB.
+
+    Args:
+        conn:     Open SQLite connection with write access.
+        filepath: Absolute path of the indexed source file.
+        mappings: Import mapping records extracted from the file's AST.
+    """
+    row = conn.execute("SELECT id FROM files WHERE path = ?", (str(filepath),)).fetchone()
+    if row is None:
+        # File not in index — no-op (could happen if indexing was skipped).
+        return
+
+    file_id: int = row["id"]
+    with conn:
+        # Delete existing mappings for this file (idempotent on re-index)
+        conn.execute("DELETE FROM import_mappings WHERE file_id = ?", (file_id,))
+        # Insert new mappings
+        if mappings:
+            conn.executemany(
+                """
+                INSERT INTO import_mappings
+                    (file_id, local_name, exported_name, source_module,
+                     is_default, is_namespace, is_wildcard, line)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        file_id,
+                        m["local_name"],
+                        m["exported_name"],
+                        m["source_module"],
+                        1 if m["is_default"] else 0,
+                        1 if m["is_namespace"] else 0,
+                        1 if m["is_wildcard"] else 0,
+                        m["line"],
+                    )
+                    for m in mappings
+                ],
+            )
+
+
+def delete_import_mappings(conn: sqlite3.Connection, filepath: Path) -> None:
+    """Remove all import mappings for a file from the index.
+
+    Silently succeeds if the path was never indexed or has no mappings.
+    Called by watcher on file delete to clean up stale mappings before
+    the FK cascade has a chance to handle it (belt-and-suspenders).
+
+    Args:
+        conn:     Open SQLite connection with write access.
+        filepath: Absolute path of the source file being removed.
+    """
+    row = conn.execute("SELECT id FROM files WHERE path = ?", (str(filepath),)).fetchone()
+    if row is None:
+        return
+    file_id: int = row["id"]
+    with conn:
+        conn.execute("DELETE FROM import_mappings WHERE file_id = ?", (file_id,))

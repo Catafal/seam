@@ -517,6 +517,11 @@ def _collect_impact(
     best: dict[str, AffectedSymbol] = {}
 
     for name in real_names:
+        # WHY no repo_root: seam_changes uses name-count resolution intentionally so its
+        # risk verdicts (WILL_BREAK/etc) stay byte-identical to the documented contract.
+        # Import-promotion would silently lower risk tiers for homonyms — a behavior change
+        # that would invalidate the existing risk rollup contract. Omitting repo_root
+        # preserves backward-compatible risk verdicts. (Decision — do not "fix".)
         result = impact(conn, target=name, direction="upstream", max_depth=_IMPACT_MAX_DEPTH)
         if not result.get("found"):
             continue

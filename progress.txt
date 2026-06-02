@@ -125,4 +125,34 @@
 #   Test count: 741 (gate green — ruff + mypy + pytest)
 #   Schema: v5 (guarded migration from v4; fresh DBs seeded at v5 directly)
 #   Key notes: enrichment cols NULL until full seam init; connect() auto-migrates; signature FTS-searchable
+# 2026-06-02: Phase 5 — Import resolution & confidence promotion complete (branch feat/phase5-import-resolution)
+#   New modules:
+#     seam/analysis/imports.py      — LEAF: extract_import_mappings + resolve_import_source + compute_path_proximity
+#                                     per-language import extraction for Python/TS/JS/Go/Rust; never raises
+#                                     extension-order resolution: Python[.py/__init__.py], Rust[.rs/mod.rs],
+#                                     TS[.ts/.tsx/.d.ts/.js], JS[.js/.mjs/.cjs/index.js], Go[package dir]
+#     seam/analysis/builtins.py     — LEAF: is_builtin(name, language) over static frozensets
+#                                     conservative vocabulary covering Python/TS/JS/Go/Rust
+#   Updated:
+#     seam/analysis/confidence.py   — resolve_edge() → Resolution{confidence, resolved_by, best_candidate}
+#                                     load_import_mappings(conn, file_path) → list[ImportMapping]
+#                                     resolve() kept as backward-compat thin shim
+#                                     Resolution order: import-promotion → name-count → builtin → unresolved
+#     seam/indexer/pipeline.py      — extract_import_mappings() called per file; upserts import_mappings
+#     seam/indexer/db.py            — _run_migration_v5_to_v6() (adds import_mappings table)
+#                                     connect() auto-runs pending migrations (now covers v5→v6)
+#     seam/query/engine.py          — resolve_edge() threaded through traversal; resolved_by/best_candidate
+#                                     added to impact + trace output
+#     seam/server/tools.py          — handle_seam_impact + handle_seam_trace pass through resolved_by/best_candidate
+#     seam/config.py                — SEAM_BUILTIN_FILTERING, SEAM_IMPORT_RESOLUTION,
+#                                     SEAM_MAX_IMPORT_CANDIDATES, SEAM_PROXIMITY_MAX_CANDIDATES
+#     docs/database/schema.sql      — v6: import_mappings table + two indexes
+#   Test count: 939 (gate green — ruff + mypy + pytest)
+#   Schema: v6 (guarded additive migration from v5; fresh DBs seeded at v6 directly)
+#   Key notes:
+#     - import_mappings NOT backfilled by migration — run seam init to enable Phase 5 resolution
+#     - connect() auto-migrates v5→v6 on open (additive: new table only, no column changes)
+#     - resolved_by computed at read time — always fresh after per-file watcher re-index
+#     - seam_changes + seam_affected deliberately DO NOT use import promotion (byte-stable verdicts)
+#     - Go module-qualified imports (github.com/...) out of scope — Go homonyms stay AMBIGUOUS
 # Next: benchmarking / v0.1.0 release prep
