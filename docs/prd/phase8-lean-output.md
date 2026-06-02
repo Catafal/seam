@@ -99,9 +99,14 @@ the enrichment-returning read commands; `--limit` on `seam impact`).
 ## Implementation Decisions
 
 - **`verbose: bool = True` parameter** added to the enrichment-returning MCP handlers in
-  `seam/server/tools.py`: `handle_seam_query`, `handle_seam_context`, `handle_seam_trace`,
-  `handle_seam_impact`, `handle_seam_context_pack`. `handle_seam_search` is **not** touched (it
-  returns no enrichment). The flag is registered in each tool's input schema in `seam/server/mcp.py`.
+  `seam/server/tools.py`: `handle_seam_context`, `handle_seam_trace`, `handle_seam_impact`,
+  `handle_seam_context_pack`. **Implementation correction (post-review):** `handle_seam_query` is
+  **not** touched either — like `handle_seam_search`, its results carry no Phase 4/5 enrichment
+  (only symbol/file/line/score/counts), so a `verbose` flag there would be a misleading no-op. The
+  flag is registered in each *enrichment-carrying* tool's input schema in `seam/server/mcp.py`.
+  CLI `--lean` is added to the read commands that exist AND carry enrichment: `seam impact`,
+  `seam trace`, `seam pack` (there are no `seam query` / `seam context` CLI commands — those are
+  MCP-only).
 - **A single shared stripping helper** in `seam/server/tools.py` — e.g.
   `_apply_verbosity(record: dict, verbose: bool) -> dict` — removes the heavy keys
   (`decorators`, `is_exported`, `visibility`, `qualified_name`, `resolved_by`, `best_candidate`)
