@@ -4,6 +4,10 @@
 > after `seam init`. Last run: 2026-06-02, against this repo at commit `7415d32`
 > (72 files · 927 symbols · 3262 edges · 89 clusters).
 
+> **See also:** [`competitive-benchmark.md`](competitive-benchmark.md) — head-to-head vs.
+> gitnexus, CodeGraph, and graphify on a real external codebase (Bach), with a scorecard
+> and honest per-use-case verdicts.
+
 ## The claim under test
 
 From `DISCOVERY.md`: AI agents waste tokens re-discovering codebase structure with
