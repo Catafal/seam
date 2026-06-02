@@ -4,7 +4,7 @@ Local code intelligence MCP server for AI agents. Index your codebase once; let 
 
 ## Status
 
-Phase 3 complete — agent-first interface shipped. 631 tests. Gate green.
+Phase 4 complete — node-field enrichment shipped. 741 tests. Gate green.
 
 ## Quickstart
 
@@ -57,6 +57,24 @@ Add to your Claude Code MCP config:
 - `seam_affected(changed_files, depth=5)` — given a list of changed file paths, return the impacted test files via reverse-dependency traversal. Result: `{changed_files, affected_tests, total_dependents_traversed, partial}`. Mirrors the CLI `seam affected` command.
 
 **Search improvement (affects `seam_search` and `seam_query`):** multi-term queries are now OR-joined so one off-vocabulary word cannot zero the result. Results are re-ranked with name/path/test/cluster signals. A LIKE fallback and Damerau-Levenshtein fuzzy scan run when FTS returns no rows. A query like `"parse issues board"` now reliably returns results even when `"board"` is not a token in the index.
+
+### Phase 4 — Node-Field Enrichment
+
+Five new nullable fields are now extracted at parse time and returned by `seam_context`, `seam_search`, and `seam_query`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `signature` | `string \| null` | Declaration header normalized to one line (e.g. `def parse(path: Path) -> Node \| None`). Truncated to `SEAM_MAX_SIGNATURE_LEN` chars (default 300). |
+| `decorators` | `string[]` | Verbatim decorator strings for Python (`@dataclass`) and TypeScript (`@Injectable`). Always `[]` for Go and Rust. |
+| `is_exported` | `boolean \| null` | `true` when the symbol is part of the public API (TS `export` keyword, Go uppercase, Rust `pub`, Python no-underscore prefix). `null` when language is unsupported. |
+| `visibility` | `string \| null` | `"public"`, `"private"`, `"protected"` (TS/Python), or `"crate"` (Rust). `null` when not applicable or unknown. |
+| `qualified_name` | `string \| null` | `"ClassName.method"` or plain symbol name when scope-resolved; `null` for top-level names without a resolvable outer scope. |
+
+**`signature` is FTS-searchable:** the FTS5 index now covers `(name, docstring, signature)`, so type-shaped queries like `"conn sqlite3 Connection"` match on parameter and return-type annotations — not just symbol names. The rescore pass applies a +15 signature-match signal (per matched term) that is intentionally smaller than the exact-name (+80) and prefix-name (+40) signals to avoid displacing name-match results.
+
+**Schema v5:** the `symbols` table gained five nullable columns (see `docs/database/schema.sql`). The `connect()` function auto-runs the v4→v5 migration on first open so existing indexes don't break. Field values are `null` until the next full `seam init` re-index — migration adds the columns but cannot backfill parse-time data.
+
+**New config knob:** `SEAM_MAX_SIGNATURE_LEN` (default `300`) — hard cap on stored signature length. Signatures longer than this are truncated with `...`. Useful when pathological function headers would dominate FTS results or make MCP responses painful to read.
 
 #### When to use each Phase 1 tool
 

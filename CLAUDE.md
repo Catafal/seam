@@ -44,6 +44,7 @@ seam/config.py               ← all settings (env vars with defaults)
                                 SEAM_MAX_AFFECTED_SYMBOLS: max symbols analyzed per file in affected() (default: 50)
                                 SEAM_FUZZY_MAX_DIST: max Damerau-Levenshtein distance for fuzzy fallback (default: 1)
                                 SEAM_FUZZY_MAX_CANDIDATES: max symbol names evaluated in fuzzy scan (default: 500)
+                                SEAM_MAX_SIGNATURE_LEN: max signature length in chars before truncation (default: 300)
 seam/cli/main.py             ← Typer CLI (init, start, status, impact, trace, changes, why, clusters, affected)
                                 --json / --quiet on read commands; --stdin on affected + changes
 seam/cli/output.py           ← LEAF: agent-output contract — success/error JSON envelope, quiet renderer
@@ -58,9 +59,13 @@ seam/analysis/affected.py    ← affected(conn, changed_files, *, depth, repo_ro
                                 reuses analysis.impact + analysis.testpaths.is_test_file
 seam/indexer/parser.py       ← tree-sitter parsing (Python, TypeScript, JavaScript, Go, Rust)
 seam/indexer/graph_common.py ← LEAF: shared TypedDicts (Symbol/Edge/Comment), helpers
+                                Symbol now carries: signature, decorators, is_exported, visibility, qualified_name
 seam/indexer/graph_go_rust.py← Go + Rust extractors (imports graph_common only)
 seam/indexer/graph.py        ← Python/TS dispatchers; re-exports types from graph_common;
                                 imports Go/Rust extractors from graph_go_rust
+seam/indexer/signatures.py   ← LEAF: Phase 4 enrichment — extract_node_fields(node, language, ...) → NodeFields
+                                per-language: signature, decorators, is_exported, visibility, qualified_name
+                                for Python / TypeScript / JavaScript / Go / Rust; never raises
 seam/indexer/pipeline.py     ← shared parse→extract→upsert path (CLI + watcher)
 seam/indexer/cluster_index.py← clustering orchestration bridge (Phase 2)
                                 index_clusters(conn, ...) → int; called by seam init only
@@ -70,6 +75,7 @@ seam/analysis/clustering.py  ← LEAF: pure-Python Louvain community detection (
 seam/analysis/cluster_naming.py ← LEAF: deterministic + opt-in LLM cluster labeling (Phase 2)
 seam/query/engine.py         ← query(), context(), search() — read path
                                 context() enriched with cluster_id/label/peers (Phase 2)
+                                all three return signature/decorators/is_exported/visibility/qualified_name (Phase 4)
 seam/query/clusters.py       ← cluster read queries (Phase 2): list_clusters, cluster_members,
                                 cluster_peers; guards pre-v4 indexes
 seam/server/tools.py         ← MCP tool handlers (thin adapters → engine + clusters)
@@ -94,21 +100,23 @@ tests/fixtures/              ← sample.py, sample.ts, sample.go, sample.rs
 - **Edges use string names** (not symbol IDs) — required for independent re-indexing
 
 ## Current Phase
-Phase 3 complete — agent-first interface shipped (search OR-join + rescore + fuzzy fallback,
-CLI --json/--quiet/--stdin envelope, seam affected / seam_affected).
-Schema at v4 (no migration required). 631 tests passing. Gate green.
+Phase 4 complete — node-field enrichment shipped (signature, decorators, is_exported, visibility,
+qualified_name on every indexed symbol; signature added to FTS5 index; schema v5 with auto-migrate
+on connect; 741 tests passing; gate green).
 See `progress.txt` for session history. Next: benchmarking / v0.1.0 release prep.
 
 ## MCP Tools
 - `seam_query` — FTS5 + 1-hop graph expansion (Phase 0); OR-join + rescore since Phase 3
-- `seam_context` — symbol 360-degree view, now enriched with cluster_id/label/peers (Phase 2)
-- `seam_search` — full-text FTS5 search (Phase 0); OR-join + rescore + fuzzy fallback since Phase 3
+- `seam_context` — symbol 360-degree view, enriched with cluster_id/label/peers (Phase 2) + signature/decorators/is_exported/visibility/qualified_name (Phase 4)
+- `seam_search` — full-text FTS5 search (Phase 0); OR-join + rescore + fuzzy fallback since Phase 3; signature is FTS-searchable (Phase 4)
 - `seam_impact` — blast-radius analysis by risk tier (Phase 1)
 - `seam_trace` — shortest call/dependency path (Phase 1)
 - `seam_changes` — git diff → changed symbols → risk level (Phase 1); --stdin on CLI
 - `seam_why` — semantic comments WHY/HACK/NOTE/TODO/FIXME (Phase 1b)
 - `seam_clusters` — list functional areas or drill into one cluster (Phase 2)
 - `seam_affected` — changed files → impacted test files via reverse-dependency traversal (Phase 3)
+
+All nine tools (seam_context, seam_search, seam_query) return the five Phase 4 enrichment fields where available: `signature`, `decorators`, `is_exported`, `visibility`, `qualified_name`. Fields are `null` (not absent) for pre-v5 rows or unsupported scenarios — callers treat `null` as "unknown".
 
 ## Known Gotchas
 - **Clusters recomputed only on full `seam init`**: the file watcher does NOT recompute
@@ -136,6 +144,16 @@ See `progress.txt` for session history. Next: benchmarking / v0.1.0 release prep
 - **`--json` errors go to stdout, not stderr**: unlike CodeGraph (which emits ANSI errors on
   stderr even in JSON mode), Seam's `--json` mode always writes a structured envelope to stdout
   and exits non-zero. Shell pipelines and CI steps can branch on the `ok` key reliably.
+- **Phase 4 enrichment fields are NULL until the next full `seam init` after upgrade**: the
+  v4→v5 migration (run automatically on `connect()`) adds the five columns to the schema but
+  does NOT backfill existing rows. Only a full re-index (`seam init`) populates signature,
+  decorators, is_exported, visibility, and qualified_name for existing symbols.
+- **`connect()` auto-migrates schema on open**: reads never break after a schema upgrade — the
+  migration runs inline on the first `connect()` call. However, field values stay `null` for
+  all rows that predate the re-index (see gotcha above).
+- **Signature is FTS-searchable**: since Phase 4 the `symbols_fts` virtual table indexes
+  `(name, docstring, signature)`. Type-shaped queries like `"conn sqlite3 Connection"` now
+  match on parameter types and return annotations, not just symbol names.
 
 ## GitNexus: Code Intelligence (MCP)
 This project is indexed. Use GitNexus MCP tools before coding on existing code.

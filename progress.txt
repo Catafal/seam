@@ -106,3 +106,23 @@
 #   Config defaults: SEAM_CLUSTER_NAMING=deterministic, SEAM_CLUSTER_MIN_SIZE=2
 #   Known limitation: clusters keyed on symbol name → cross-file homonyms collapse (ADR-007)
 # Next: docs sync (this session), then benchmark / v0.1.0 release prep
+# 2026-06-02: Phase 4 — Node-field enrichment complete (branch feat/phase4-node-enrichment)
+#   New modules:
+#     seam/indexer/signatures.py    — LEAF: extract_node_fields() → NodeFields
+#                                     per-language extraction for Python/TS/JS/Go/Rust
+#                                     five fields: signature, decorators, is_exported, visibility, qualified_name
+#   Updated:
+#     seam/indexer/graph_common.py  — Symbol TypedDict gains the five enrichment fields
+#     seam/indexer/graph.py         — Python/TS extractors call extract_node_fields()
+#     seam/indexer/graph_go_rust.py — Go/Rust extractors call extract_node_fields()
+#     seam/indexer/db.py            — upsert_file writes enrichment cols + _run_migration_v4_to_v5()
+#                                     connect() auto-runs pending migrations on open
+#     seam/query/engine.py          — context/search/query SELECT the five new columns + decode JSON decorators
+#     seam/query/fts.py             — rescore() Signal-6: +15/term for signature matches
+#     seam/server/tools.py          — handle_seam_context passes through the five enrichment fields
+#     seam/config.py                — SEAM_MAX_SIGNATURE_LEN (default 300)
+#     docs/database/schema.sql      — v5: five enrichment cols + FTS5 rebuilt for (name, docstring, signature)
+#   Test count: 741 (gate green — ruff + mypy + pytest)
+#   Schema: v5 (guarded migration from v4; fresh DBs seeded at v5 directly)
+#   Key notes: enrichment cols NULL until full seam init; connect() auto-migrates; signature FTS-searchable
+# Next: benchmarking / v0.1.0 release prep
