@@ -1,6 +1,6 @@
 # Architecture — Seam
 
-> Phase 0 + Phase 1 + Phase 2 (clustering). See ADRs in `docs/adr/` for decision rationale.
+> Phase 0 + Phase 1 + Phase 2 (clustering) + Phase 3 (agent-first interface) + Phase 4 (node-field enrichment). See ADRs in `docs/adr/` for decision rationale.
 
 ---
 
@@ -60,13 +60,13 @@ The write path. Triggered by `seam init` (full) or the file watcher (incremental
 ### SQLite Database
 **File:** `.seam/seam.db` (per project)
 
-Main tables + FTS5 virtual table (schema v4):
+Main tables + FTS5 virtual table (schema v5):
 - `files` — indexed files with hash + mtime
-- `symbols` — functions, classes, methods; includes `cluster_id` FK (schema v4)
+- `symbols` — functions, classes, methods; includes `cluster_id` FK (schema v4) and five Phase 4 enrichment columns: `signature`, `decorators`, `is_exported`, `visibility`, `qualified_name` (schema v5)
 - `edges` — directed relationships (import, call) with `confidence` column (schema v2)
 - `comments` — semantic comments: WHY/HACK/NOTE/TODO/FIXME markers (schema v3)
 - `clusters` — community detection results: id, label, size, naming_source (schema v4)
-- `symbols_fts` — FTS5 virtual table mirroring `symbols.name + docstring`
+- `symbols_fts` — FTS5 virtual table covering `symbols.name + docstring + signature` (signature added in schema v5)
 
 See `docs/database/schema.sql` for full DDL.
 
@@ -78,15 +78,17 @@ Runs as a background thread/process alongside the MCP server. Uses watchdog's `O
 ### MCP Server
 **Files:** `seam/server/mcp.py`, `seam/server/tools.py`
 
-Stdio transport (no HTTP, no ports). The Python MCP SDK handles protocol framing. Eight tools exposed (Phase 0 + Phase 1 + Phase 1b + Phase 2). Tool handlers in `tools.py` validate inputs and delegate to `query/engine.py`, `query/clusters.py`, or `analysis/`.
+Stdio transport (no HTTP, no ports). The Python MCP SDK handles protocol framing. Nine tools exposed (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3). Tool handlers in `tools.py` validate inputs and delegate to `query/engine.py`, `query/clusters.py`, or `analysis/`. Since Phase 4, `seam_context`, `seam_search`, and `seam_query` pass through the five enrichment fields from the engine layer unchanged.
 
 ### Query Engine
 **File:** `seam/query/engine.py`
 
 The read path. Three query types:
-- **FTS5 search** — BM25-ranked full-text search across symbol names + docstrings
+- **FTS5 search** — BM25-ranked full-text search across symbol names + docstrings + signature (signature added Phase 4)
 - **Concept query** — FTS5 match + 1-hop graph expansion (connected symbols)
 - **Context** — Direct lookup by symbol name + join to get callers/callees
+
+Since Phase 4, all three functions include the five enrichment fields in their output TypedDicts (`ContextResult`, `SearchResult`, `QueryResult`). Pre-v5 rows carry `null` for those fields — callers treat `null` as "unknown".
 
 ### Clustering (Phase 2)
 **Files:** `seam/analysis/clustering.py`, `seam/analysis/cluster_naming.py`, `seam/indexer/cluster_index.py`, `seam/query/clusters.py`
@@ -350,3 +352,71 @@ And the query engine read path now passes through the FTS fallback cascade befor
 ```
 FTS5 OR-MATCH → LIKE fallback → fuzzy scan → rescore() → results
 ```
+
+---
+
+## Phase 4 — Node-Field Enrichment
+
+> Phase 4 shipped on branch `feat/phase4-node-enrichment`. Schema migrated v4 → v5.
+> No new CLI command or MCP tool — three existing tools enriched.
+
+### Extraction Data Flow
+
+```
+seam init
+  For each source file:
+    a. parser.parse_*(path)                        → tree-sitter Node
+    b. graph.extract_symbols(node, language, path) → [Symbol]  ← calls extract_node_fields()
+       └─ signatures.extract_node_fields(node, language, qualified_name, max_sig_len)
+              → NodeFields{signature, decorators, is_exported, visibility, qualified_name}
+    c. db.upsert_file() writes the five enrichment columns alongside existing fields
+  FTS5 triggers fire on INSERT/UPDATE — 'signature' column now included in symbols_fts
+  Read path (MCP call):
+    engine.context / search / query → SELECT includes all five columns
+    tools.py passes them through to the MCP response unchanged
+```
+
+### New Leaf Module: `seam/indexer/signatures.py`
+
+A pure leaf (imports only stdlib + `tree_sitter`; does NOT import any `seam.*` module).
+Single public entry point:
+
+```python
+extract_node_fields(node, language, qualified_name=None, max_signature_len=300) -> NodeFields
+```
+
+Per-language rules:
+- **Python** — `def name(params) -> return_type` / `class Name(Bases)`; decorators from `decorated_definition` siblings; export = no leading `_`.
+- **TypeScript/JavaScript** — `function name(params): return_type` / `class Name<T> extends B`; decorators from prev-sibling walk; export = `export_statement` parent; visibility from access-modifier children.
+- **Go** — `func (recv) Name(params) result` / `type Name kind`; export = capitalized first letter; decorators always `[]`.
+- **Rust** — `pub fn name(params) -> type` / `pub struct Name`; visibility from `visibility_modifier`; `pub(crate)` → `"crate"`; decorators always `[]`.
+
+Never raises — any extraction error returns `_safe_defaults()` (all `null`/`[]`).
+
+### Schema v5 Migration
+
+**`db.py:_run_migration_v4_to_v5()`** — guarded additive migration:
+1. `ALTER TABLE symbols ADD COLUMN signature TEXT` (× 5 for all five columns)
+2. `DROP TABLE symbols_fts` — existing FTS virtual table lacks the `signature` column
+3. Recreate `symbols_fts` with `(name, docstring, signature)` columns
+4. `INSERT INTO symbols_fts(symbols_fts) VALUES ('rebuild')` — repopulate from `symbols` table
+5. Row-count parity check: aborts and rolls back if FTS row count ≠ symbols row count
+6. Bumps `metadata.schema_version` to `'5'`
+
+Wrapped in `BEGIN IMMEDIATE` so concurrent readers are not blocked mid-migration (WAL mode).
+
+**Auto-migrate on connect:** `db.connect()` calls `_apply_pending_migrations()` on every open. Pre-v5 indexes are transparently upgraded on the first `seam start` or `seam_*` call after package upgrade. Callers do not need to re-run `seam init` just to avoid breakage — field values will be `null` until they choose to re-index.
+
+### FTS5 Signature Search
+
+The `symbols_fts` virtual table now indexes three columns: `name`, `docstring`, `signature`.
+A type-shaped query like `"conn sqlite3 Connection"` now matches on parameter and return-type
+annotations. `fts.rescore()` applies a **+15 signature-match signal** per matched term — smaller
+than name-exact (+80) and name-prefix (+40) so signature-only matches rank below name matches.
+
+### Config Knob
+
+`SEAM_MAX_SIGNATURE_LEN` (env var, default `300`) — hard cap on stored signature length.
+Signatures longer than this are truncated with `...`. Callers can detect truncation by checking
+for a trailing `...`. The default captures the full header of all but pathological multi-annotated
+functions; the cap prevents FTS index bloat and unwieldy MCP responses.

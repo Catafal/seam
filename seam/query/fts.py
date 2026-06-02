@@ -22,6 +22,8 @@ rescore(rows, terms) -> list
       3. Path relevance:      +10 per term found in file path (directory/filename)
       4. Test-file dampening: -30 when query has no test-signal and file is a test file
       5. Cluster boost:       +20 when row shares the dominant seed's cluster_id
+      6. Signature boost:     +15 per term found in signature (Phase 4; additive/small
+                               to avoid displacing exact-name matches — see constant comment)
 
     Score is an UNBOUNDED relevance heuristic — document as "relevance", never as %.
 """
@@ -66,6 +68,10 @@ _BONUS_PREFIX_NAME: float = 40.0  # name STARTS WITH a query term
 _BONUS_PATH_PER_TERM: float = 10.0  # query term appears in the file path
 _PENALTY_TEST_FILE: float = -30.0  # test-file dampening on non-test queries
 _BONUS_CLUSTER_PEER: float = 20.0  # shares cluster with the strongest-score row
+# Phase 4: small additive boost when a query term appears in the signature.
+# Intentionally smaller than name/path signals so signature-only matches rank
+# below exact-name matches. Per PRD: MUST NOT regress existing signals.
+_BONUS_SIGNATURE_PER_TERM: float = 15.0
 
 # A query is considered "test-aware" if any term is one of these words,
 # in which case we suppress the test-file dampening.
@@ -252,6 +258,27 @@ def rescore(rows: list[dict[str, Any]], terms: list[str]) -> list[dict[str, Any]
             logger.debug(
                 "fts.rescore: cluster boost +%.0f for %r", _BONUS_CLUSTER_PEER, row["symbol"]
             )
+
+        # Signal 6 (Phase 4): signature boost — query term appears in the signature.
+        # Only fires when signature is non-NULL and a query term is found in it.
+        # WHY additive and small: signature matches are weaker than name matches (many
+        # functions share the same param types like 'conn' or 'str'). The 15-point cap
+        # per term keeps this below the exact-name (80) and prefix-name (40) signals so
+        # the ranking order for name-matching symbols is preserved.
+        if lower_terms:
+            raw_sig = row.get("signature")
+            if raw_sig is not None:
+                sig_lower = str(raw_sig).lower()
+                sig_bonus = sum(
+                    _BONUS_SIGNATURE_PER_TERM for t in lower_terms if t in sig_lower
+                )
+                if sig_bonus > 0:
+                    bonus += sig_bonus
+                    logger.debug(
+                        "fts.rescore: signature boost +%.0f for %r",
+                        sig_bonus,
+                        row["symbol"],
+                    )
 
         new_row["score"] = base_score + bonus
         scored.append(new_row)

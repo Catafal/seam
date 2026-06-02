@@ -34,6 +34,8 @@ from pathlib import Path
 
 from tree_sitter import Node
 
+import seam.config as config
+
 # ── Re-export shared primitives from the leaf module ──────────────────────────
 # graph_common is the leaf (no seam deps); importing from it here does not create
 # a cycle. All imports are at module top — no deferred/in-function imports.
@@ -62,6 +64,9 @@ from seam.indexer.graph_go_rust import (
     _extract_symbols_go,
     _extract_symbols_rust,
 )
+
+# signatures.py is a leaf (no seam deps) so importing it here does not create a cycle.
+from seam.indexer.signatures import extract_node_fields
 
 # Keep these names visible for `from seam.indexer.graph import ...` callers.
 __all__ = [
@@ -160,7 +165,28 @@ def _extract_symbols_python(root: Node, filepath: Path) -> list[Symbol]:
                 kind = "method" if class_name else "function"
                 qualified = f"{class_name}.{name}" if class_name else name
                 doc = _py_docstring(node)
-                symbols.append(_make_symbol(qualified, kind, file_str, node, doc))
+                # Phase 4: pass qualified name from our scope-walker so signatures.py doesn't
+                # need to re-resolve it independently — single source of qualified-name truth.
+                fields = extract_node_fields(
+                    node,
+                    "python",
+                    qualified_name=qualified,
+                    max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
+                )
+                symbols.append(
+                    _make_symbol(
+                        qualified,
+                        kind,
+                        file_str,
+                        node,
+                        doc,
+                        signature=fields["signature"],
+                        decorators=fields["decorators"],
+                        is_exported=fields["is_exported"],
+                        visibility=fields["visibility"],
+                        qualified_name=qualified,
+                    )
+                )
                 body = node.child_by_field_name("body")
                 if body:
                     for child in body.children:
@@ -174,7 +200,28 @@ def _extract_symbols_python(root: Node, filepath: Path) -> list[Symbol]:
                     kind = "method" if class_name else "function"
                     qualified = f"{class_name}.{name}" if class_name else name
                     doc = _py_docstring(definition)
-                    symbols.append(_make_symbol(qualified, kind, file_str, node, doc))
+                    # Pass the decorated_definition node (not the inner definition) so
+                    # signatures.py can traverse its children for @decorator nodes.
+                    fields = extract_node_fields(
+                        node,
+                        "python",
+                        qualified_name=qualified,
+                        max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
+                    )
+                    symbols.append(
+                        _make_symbol(
+                            qualified,
+                            kind,
+                            file_str,
+                            node,
+                            doc,
+                            signature=fields["signature"],
+                            decorators=fields["decorators"],
+                            is_exported=fields["is_exported"],
+                            visibility=fields["visibility"],
+                            qualified_name=qualified,
+                        )
+                    )
                     body = definition.child_by_field_name("body")
                     if body:
                         for child in body.children:
@@ -183,7 +230,27 @@ def _extract_symbols_python(root: Node, filepath: Path) -> list[Symbol]:
                 name = _node_name(definition)
                 if name:
                     doc = _py_docstring(definition)
-                    symbols.append(_make_symbol(name, "class", file_str, node, doc))
+                    # Pass decorated_definition node so class decorators are captured.
+                    fields = extract_node_fields(
+                        node,
+                        "python",
+                        qualified_name=name,
+                        max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
+                    )
+                    symbols.append(
+                        _make_symbol(
+                            name,
+                            "class",
+                            file_str,
+                            node,
+                            doc,
+                            signature=fields["signature"],
+                            decorators=fields["decorators"],
+                            is_exported=fields["is_exported"],
+                            visibility=fields["visibility"],
+                            qualified_name=name,
+                        )
+                    )
                     body = definition.child_by_field_name("body")
                     if body:
                         for child in body.children:
@@ -193,7 +260,26 @@ def _extract_symbols_python(root: Node, filepath: Path) -> list[Symbol]:
             name = _node_name(node)
             if name:
                 doc = _py_docstring(node)
-                symbols.append(_make_symbol(name, "class", file_str, node, doc))
+                fields = extract_node_fields(
+                    node,
+                    "python",
+                    qualified_name=name,
+                    max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
+                )
+                symbols.append(
+                    _make_symbol(
+                        name,
+                        "class",
+                        file_str,
+                        node,
+                        doc,
+                        signature=fields["signature"],
+                        decorators=fields["decorators"],
+                        is_exported=fields["is_exported"],
+                        visibility=fields["visibility"],
+                        qualified_name=name,
+                    )
+                )
                 body = node.child_by_field_name("body")
                 if body:
                     for child in body.children:
@@ -312,7 +398,26 @@ def _extract_symbols_typescript(root: Node, filepath: Path) -> list[Symbol]:
                 kind = "method" if class_name else "function"
                 qualified = f"{class_name}.{name}" if class_name else name
                 doc = _ts_jsdoc(node)
-                symbols.append(_make_symbol(qualified, kind, file_str, node, doc))
+                fields = extract_node_fields(
+                    node,
+                    "typescript",
+                    qualified_name=qualified,
+                    max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
+                )
+                symbols.append(
+                    _make_symbol(
+                        qualified,
+                        kind,
+                        file_str,
+                        node,
+                        doc,
+                        signature=fields["signature"],
+                        decorators=fields["decorators"],
+                        is_exported=fields["is_exported"],
+                        visibility=fields["visibility"],
+                        qualified_name=qualified,
+                    )
+                )
                 body = node.child_by_field_name("body")
                 if body:
                     for child in body.children:
@@ -324,14 +429,52 @@ def _extract_symbols_typescript(root: Node, filepath: Path) -> list[Symbol]:
                 name = _text(name_node)
                 qualified = f"{class_name}.{name}" if class_name else name
                 doc = _ts_jsdoc(node)
-                symbols.append(_make_symbol(qualified, "method", file_str, node, doc))
+                fields = extract_node_fields(
+                    node,
+                    "typescript",
+                    qualified_name=qualified,
+                    max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
+                )
+                symbols.append(
+                    _make_symbol(
+                        qualified,
+                        "method",
+                        file_str,
+                        node,
+                        doc,
+                        signature=fields["signature"],
+                        decorators=fields["decorators"],
+                        is_exported=fields["is_exported"],
+                        visibility=fields["visibility"],
+                        qualified_name=qualified,
+                    )
+                )
 
         elif node.type == "class_declaration":
             name_node = node.child_by_field_name("name")
             if name_node:
                 cls_name = _text(name_node)
                 doc = _ts_jsdoc(node)
-                symbols.append(_make_symbol(cls_name, "class", file_str, node, doc))
+                fields = extract_node_fields(
+                    node,
+                    "typescript",
+                    qualified_name=cls_name,
+                    max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
+                )
+                symbols.append(
+                    _make_symbol(
+                        cls_name,
+                        "class",
+                        file_str,
+                        node,
+                        doc,
+                        signature=fields["signature"],
+                        decorators=fields["decorators"],
+                        is_exported=fields["is_exported"],
+                        visibility=fields["visibility"],
+                        qualified_name=cls_name,
+                    )
+                )
                 body = node.child_by_field_name("body")
                 if body:
                     for child in body.children:
@@ -342,14 +485,52 @@ def _extract_symbols_typescript(root: Node, filepath: Path) -> list[Symbol]:
             if name_node:
                 name = _text(name_node)
                 doc = _ts_jsdoc(node)
-                symbols.append(_make_symbol(name, "interface", file_str, node, doc))
+                fields = extract_node_fields(
+                    node,
+                    "typescript",
+                    qualified_name=name,
+                    max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
+                )
+                symbols.append(
+                    _make_symbol(
+                        name,
+                        "interface",
+                        file_str,
+                        node,
+                        doc,
+                        signature=fields["signature"],
+                        decorators=fields["decorators"],
+                        is_exported=fields["is_exported"],
+                        visibility=fields["visibility"],
+                        qualified_name=name,
+                    )
+                )
 
         elif node.type == "type_alias_declaration":
             name_node = node.child_by_field_name("name")
             if name_node:
                 name = _text(name_node)
                 doc = _ts_jsdoc(node)
-                symbols.append(_make_symbol(name, "type", file_str, node, doc))
+                fields = extract_node_fields(
+                    node,
+                    "typescript",
+                    qualified_name=name,
+                    max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
+                )
+                symbols.append(
+                    _make_symbol(
+                        name,
+                        "type",
+                        file_str,
+                        node,
+                        doc,
+                        signature=fields["signature"],
+                        decorators=fields["decorators"],
+                        is_exported=fields["is_exported"],
+                        visibility=fields["visibility"],
+                        qualified_name=name,
+                    )
+                )
 
         else:
             for child in node.children:
@@ -477,11 +658,13 @@ def _extract_comments_python(root: Node, filepath: Path) -> list[Comment]:
             result = _match_marker(body)
             if result is not None:
                 marker, text = result
-                comments.append(Comment(
-                    marker=marker,
-                    text=text,
-                    line=node.start_point[0] + 1,
-                ))
+                comments.append(
+                    Comment(
+                        marker=marker,
+                        text=text,
+                        line=node.start_point[0] + 1,
+                    )
+                )
         for child in node.children:
             _walk(child)
 

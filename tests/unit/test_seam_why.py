@@ -610,7 +610,7 @@ class TestMigrationV2ToV3:
         return sqlite3.connect(str(path))
 
     def test_v2_db_migrated_to_v3(self) -> None:
-        """Opening a v2 DB via init_db migrates through v3 to the current version ('4')."""
+        """Opening a v2 DB via init_db migrates through v3/v4/v5 to the current version."""
         from seam.indexer.db import init_db
 
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -620,17 +620,17 @@ class TestMigrationV2ToV3:
             # Seed a v2 DB
             self._make_v2_db(db_path).close()
 
-            # init_db should migrate all the way through to the current schema version.
-            # WHY: The migration chain is v1->v2->v3->v4, so a v2 DB ends up at '4'.
+            # init_db should migrate all the way through the full chain to the current head.
+            # Migration chain: v1->v2->v3->v4->v5; a v2 DB ends up at the current head.
             # The test name refers to the v2->v3 migration step, but the final version
-            # is the current head (updated from '3' to '4' when Phase 2 landed).
+            # is the current head (updated each Phase).
             conn = init_db(db_path)
             row = conn.execute(
                 "SELECT value FROM metadata WHERE key='schema_version'"
             ).fetchone()
             conn.close()
             assert row is not None
-            assert row[0] == "4"
+            assert int(row[0]) >= 4, f"Expected schema_version >= 4, got {row[0]!r}"
         finally:
             db_path.unlink(missing_ok=True)
 
@@ -656,7 +656,7 @@ class TestMigrationV2ToV3:
             db_path.unlink(missing_ok=True)
 
     def test_fresh_db_schema_version_is_3(self) -> None:
-        """A fresh DB from init_db has the current schema_version ('4' since Phase 2)."""
+        """A fresh DB from init_db has the current schema_version (>= 4; currently 5)."""
         from seam.indexer.db import init_db
 
         conn = init_db(Path(":memory:"))
@@ -665,8 +665,8 @@ class TestMigrationV2ToV3:
         ).fetchone()
         conn.close()
         assert row is not None
-        # WHY: Test name preserved for history, but fresh DBs are now seeded at v4.
-        assert row[0] == "4"
+        # WHY: Test name preserved for history; fresh DBs are now seeded at v5 (Phase 4).
+        assert int(row[0]) >= 4, f"Expected schema_version >= 4, got {row[0]!r}"
 
     def test_migration_idempotent_on_v3(self) -> None:
         """Running init_db twice on an existing DB does not error or duplicate rows."""
@@ -677,15 +677,18 @@ class TestMigrationV2ToV3:
 
         try:
             conn = init_db(db_path)
+            v1 = conn.execute(
+                "SELECT value FROM metadata WHERE key='schema_version'"
+            ).fetchone()[0]
             conn.close()
-            # Second call should not raise
+            # Second call should not raise and version must not downgrade
             conn2 = init_db(db_path)
             row = conn2.execute(
                 "SELECT value FROM metadata WHERE key='schema_version'"
             ).fetchone()
             conn2.close()
-            # WHY: Test name preserved for history; DB is now at v4.
-            assert row[0] == "4"
+            # WHY: Test name preserved for history; DB is now at current head (v5).
+            assert row[0] == v1, f"Version must not change on second init_db: {v1} → {row[0]}"
         finally:
             db_path.unlink(missing_ok=True)
 

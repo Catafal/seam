@@ -24,6 +24,7 @@ Phase 3 changes (Slice 1):
   the propagation path must remain so callers can still map it to INVALID_QUERY.
 """
 
+import json
 import logging
 import sqlite3
 from typing import TypedDict
@@ -58,6 +59,13 @@ class ContextResult(TypedDict):
     cluster_id: int | None  # Phase 2: cluster this symbol belongs to (None if not clustered)
     cluster_label: str | None  # Phase 2: human-readable cluster label
     cluster_peers: list[str]  # Phase 2: other symbols in the same cluster (may be empty)
+    # Phase 4 enrichment fields. All None for pre-v5 rows (no migration yet) or
+    # unsupported languages — callers should treat None as "unknown", not as absent.
+    signature: str | None
+    decorators: list[str]       # [] when none extracted or for pre-v5 rows
+    is_exported: bool | None
+    visibility: str | None
+    qualified_name: str | None
 
 
 class SearchResult(TypedDict):
@@ -152,12 +160,14 @@ def _like_fallback(
     'getXuser', 'get1user', etc. — over-broadening the fallback results.
     """
     escaped = _escape_like(term)
+    # Phase 4: SELECT s.signature so rescore() Signal-6 can fire for LIKE fallback rows.
     sql = """
         SELECT
             s.name          AS symbol,
             f.path          AS file,
             s.start_line    AS line,
-            s.cluster_id    AS cluster_id
+            s.cluster_id    AS cluster_id,
+            s.signature     AS signature
         FROM symbols s
         JOIN files f ON f.id = s.file_id
         WHERE s.name LIKE ? ESCAPE '\\'
@@ -172,6 +182,8 @@ def _like_fallback(
             "snippet": "",
             "score": 0.0,
             "cluster_id": row["cluster_id"],
+            # Phase 4: include signature for rescore Signal-6 (nullable — pre-v5 rows have NULL).
+            "signature": row["signature"],
         }
         for row in rows
     ]
@@ -228,14 +240,16 @@ def _fuzzy_fallback(
     if not matches:
         return []
 
-    # Fetch full rows for all matched symbol names
+    # Fetch full rows for all matched symbol names.
+    # Phase 4: SELECT s.signature so rescore() Signal-6 can fire for fuzzy fallback rows.
     placeholders = ",".join("?" * len(matches))
     sql = f"""
         SELECT
             s.name          AS symbol,
             f.path          AS file,
             s.start_line    AS line,
-            s.cluster_id    AS cluster_id
+            s.cluster_id    AS cluster_id,
+            s.signature     AS signature
         FROM symbols s
         JOIN files f ON f.id = s.file_id
         WHERE s.name IN ({placeholders})
@@ -250,6 +264,8 @@ def _fuzzy_fallback(
             "snippet": "",
             "score": 0.0,
             "cluster_id": row["cluster_id"],
+            # Phase 4: include signature for rescore Signal-6 (nullable — pre-v5 rows have NULL).
+            "signature": row["signature"],
         }
         for row in rows
     ]
@@ -293,6 +309,9 @@ def search(conn: sqlite3.Connection, text: str, limit: int = 20) -> list[SearchR
     if match_expr:
         # Let OperationalError (genuinely malformed FTS5) propagate to caller.
         # With OR-join, this only fires on actual syntax errors, not multi-word queries.
+        # Phase 4: SELECT s.signature so that fts.rescore() Signal-6 (signature boost)
+        # can fire. Without s.signature in the row, rescore() always sees None and the
+        # boost is permanently dead code. This column is nullable — pre-v5 rows have NULL.
         sql = """
             SELECT
                 s.name          AS symbol,
@@ -300,7 +319,8 @@ def search(conn: sqlite3.Connection, text: str, limit: int = 20) -> list[SearchR
                 s.start_line    AS line,
                 snippet(symbols_fts, 0, '<b>', '</b>', '...', 8) AS snippet,
                 bm25(symbols_fts) AS score,
-                s.cluster_id    AS cluster_id
+                s.cluster_id    AS cluster_id,
+                s.signature     AS signature
             FROM symbols_fts
             JOIN symbols s ON s.id = symbols_fts.rowid
             JOIN files   f ON f.id = s.file_id
@@ -318,6 +338,8 @@ def search(conn: sqlite3.Connection, text: str, limit: int = 20) -> list[SearchR
                 # Flip bm25 sign: contract wants higher = better; raw bm25 is lower = better
                 "score": -float(row["score"]),
                 "cluster_id": row["cluster_id"],
+                # Phase 4: include signature so rescore() Signal-6 can fire.
+                "signature": row["signature"],
             }
             for row in raw_rows
         ]
@@ -441,13 +463,15 @@ def query(conn: sqlite3.Connection, concept: str, limit: int = 10) -> list[Query
     seed_map: dict[str, tuple[str, int, float]] = {}
 
     if match_expr:
+        # Phase 4: include s.signature so rescore() Signal-6 (signature boost) fires.
         seed_sql = """
             SELECT
                 s.name          AS name,
                 f.path          AS file,
                 s.start_line    AS line,
                 bm25(symbols_fts) AS score,
-                s.cluster_id    AS cluster_id
+                s.cluster_id    AS cluster_id,
+                s.signature     AS signature
             FROM symbols_fts
             JOIN symbols s ON s.id = symbols_fts.rowid
             JOIN files   f ON f.id = s.file_id
@@ -460,15 +484,19 @@ def query(conn: sqlite3.Connection, concept: str, limit: int = 10) -> list[Query
         seed_rows_raw = conn.execute(seed_sql, (match_expr, limit)).fetchall()
 
         if seed_rows_raw:
-            # Rescore to apply name/path/cluster signals
+            # Rescore to apply name/path/cluster/signature signals
             seed_dicts = [
                 {
                     "symbol": row["name"],
                     "file": row["file"],
                     "line": row["line"],
                     "snippet": "",
-                    "score": -float(row["score"]),  # negate: contract wants higher=better; raw bm25 is negative (lower=better)
+                    "score": -float(
+                        row["score"]
+                    ),  # negate: contract wants higher=better; raw bm25 is negative (lower=better)
                     "cluster_id": row["cluster_id"],
+                    # Phase 4: include signature for rescore Signal-6.
+                    "signature": row["signature"],
                 }
                 for row in seed_rows_raw
             ]
@@ -563,11 +591,13 @@ def context(conn: sqlite3.Connection, symbol_name: str) -> ContextResult | None:
     """
     # Single atomic query: fetch the first matching symbol and the total count of
     # same-name symbols via a window function. Avoids the count/fetch race of two
-    # separate queries and removes the now-dead double-None check.
+    # separate queries and removes the now-dead double-None check. Pre-v5 rows return
+    # NULL for the Phase 4 enrichment columns — the read path handles that below.
     row = conn.execute(
         """
         SELECT s.name, f.path AS file, s.start_line, s.end_line, s.kind, s.docstring,
-               COUNT(*) OVER () AS dup_count
+               COUNT(*) OVER () AS dup_count,
+               s.signature, s.decorators, s.is_exported, s.visibility, s.qualified_name
         FROM symbols s
         JOIN files f ON s.file_id = f.id
         WHERE s.name = ?
@@ -598,6 +628,25 @@ def context(conn: sqlite3.Connection, symbol_name: str) -> ContextResult | None:
     else:
         c_id, c_label, c_peers = None, None, []
 
+    # decorators is stored as JSON TEXT (see upsert_file). Decode it back to list here.
+    # Pre-v5 rows have NULL (column didn't exist yet) → treat as empty list.
+    raw_decorators = row["decorators"]
+    if raw_decorators is None:
+        decoded_decorators: list[str] = []
+    else:
+        try:
+            decoded_decorators = json.loads(raw_decorators)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            # Corrupted JSON (should never happen) → degrade gracefully, don't crash.
+            decoded_decorators = []
+
+    # is_exported is stored as 0/1/NULL — SQLite has no native bool type.
+    raw_is_exported = row["is_exported"]
+    if raw_is_exported is None:
+        is_exported: bool | None = None
+    else:
+        is_exported = bool(raw_is_exported)
+
     return ContextResult(
         symbol=row["name"],
         file=row["file"],
@@ -611,4 +660,10 @@ def context(conn: sqlite3.Connection, symbol_name: str) -> ContextResult | None:
         cluster_id=c_id,
         cluster_label=c_label,
         cluster_peers=c_peers,
+        # Phase 4 enrichment fields
+        signature=row["signature"],
+        decorators=decoded_decorators,
+        is_exported=is_exported,
+        visibility=row["visibility"],
+        qualified_name=row["qualified_name"],
     )

@@ -24,6 +24,8 @@ from pathlib import Path
 
 from tree_sitter import Node
 
+import seam.config as config
+
 # All shared types, constants, and helpers from the leaf module.
 from seam.indexer.graph_common import (
     Comment,
@@ -38,6 +40,9 @@ from seam.indexer.graph_common import (
     _rust_impl_type_name,
     _text,
 )
+
+# signatures.py is a leaf (no seam deps) so importing it here does not create a cycle.
+from seam.indexer.signatures import extract_node_fields
 
 # ── Doc-comment adjacency helpers ──────────────────────────────────────────────
 
@@ -143,7 +148,23 @@ def _extract_symbols_go(root: Node, filepath: Path) -> list[Symbol]:
             name = _node_name(node)
             if name:
                 doc = _go_doc_comment(node)
-                symbols.append(_make_symbol(name, "function", file_str, node, doc))
+                fields = extract_node_fields(
+                    node, "go", qualified_name=name, max_signature_len=config.SEAM_MAX_SIGNATURE_LEN
+                )
+                symbols.append(
+                    _make_symbol(
+                        name,
+                        "function",
+                        file_str,
+                        node,
+                        doc,
+                        signature=fields["signature"],
+                        decorators=fields["decorators"],
+                        is_exported=fields["is_exported"],
+                        visibility=fields["visibility"],
+                        qualified_name=name,
+                    )
+                )
 
         elif node.type == "method_declaration":
             method_name = _node_name(node)
@@ -151,11 +172,49 @@ def _extract_symbols_go(root: Node, filepath: Path) -> list[Symbol]:
             if method_name and recv_name:
                 qualified = f"{recv_name}.{method_name}"
                 doc = _go_doc_comment(node)
-                symbols.append(_make_symbol(qualified, "method", file_str, node, doc))
+                fields = extract_node_fields(
+                    node,
+                    "go",
+                    qualified_name=qualified,
+                    max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
+                )
+                symbols.append(
+                    _make_symbol(
+                        qualified,
+                        "method",
+                        file_str,
+                        node,
+                        doc,
+                        signature=fields["signature"],
+                        decorators=fields["decorators"],
+                        is_exported=fields["is_exported"],
+                        visibility=fields["visibility"],
+                        qualified_name=qualified,
+                    )
+                )
             elif method_name:
                 # Receiver parse failed — emit as plain function to avoid silent drop.
                 doc = _go_doc_comment(node)
-                symbols.append(_make_symbol(method_name, "function", file_str, node, doc))
+                fields = extract_node_fields(
+                    node,
+                    "go",
+                    qualified_name=method_name,
+                    max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
+                )
+                symbols.append(
+                    _make_symbol(
+                        method_name,
+                        "function",
+                        file_str,
+                        node,
+                        doc,
+                        signature=fields["signature"],
+                        decorators=fields["decorators"],
+                        is_exported=fields["is_exported"],
+                        visibility=fields["visibility"],
+                        qualified_name=method_name,
+                    )
+                )
 
         elif node.type == "type_declaration":
             for child in node.named_children:
@@ -164,8 +223,28 @@ def _extract_symbols_go(root: Node, filepath: Path) -> list[Symbol]:
                 elif child.type == "type_alias":
                     name_node = child.child_by_field_name("name")
                     if name_node:
+                        type_name = _text(name_node)
                         doc = _go_doc_comment(node)
-                        symbols.append(_make_symbol(_text(name_node), "type", file_str, node, doc))
+                        fields = extract_node_fields(
+                            node,
+                            "go",
+                            qualified_name=type_name,
+                            max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
+                        )
+                        symbols.append(
+                            _make_symbol(
+                                type_name,
+                                "type",
+                                file_str,
+                                node,
+                                doc,
+                                signature=fields["signature"],
+                                decorators=fields["decorators"],
+                                is_exported=fields["is_exported"],
+                                visibility=fields["visibility"],
+                                qualified_name=type_name,
+                            )
+                        )
 
         else:
             for child in node.children:
@@ -177,10 +256,13 @@ def _extract_symbols_go(root: Node, filepath: Path) -> list[Symbol]:
     return symbols
 
 
-def _handle_go_type_spec(type_spec: Node, decl_node: Node, file_str: str, symbols: list[Symbol]) -> None:
+def _handle_go_type_spec(
+    type_spec: Node, decl_node: Node, file_str: str, symbols: list[Symbol]
+) -> None:
     """Classify a Go type_spec node and append the appropriate symbol.
 
     The doc-comment lives above the parent type_declaration (decl_node).
+    Phase 4: extract enrichment fields from the parent type_declaration node.
     """
     name_node = type_spec.child_by_field_name("name")
     if name_node is None:
@@ -190,14 +272,33 @@ def _handle_go_type_spec(type_spec: Node, decl_node: Node, file_str: str, symbol
     type_node = type_spec.child_by_field_name("type")
     doc = _go_doc_comment(decl_node)
 
+    fields = extract_node_fields(
+        decl_node, "go", qualified_name=name, max_signature_len=config.SEAM_MAX_SIGNATURE_LEN
+    )
+
     if type_node is None:
-        symbols.append(_make_symbol(name, "type", file_str, decl_node, doc))
+        kind = "type"
     elif type_node.type == "struct_type":
-        symbols.append(_make_symbol(name, "class", file_str, decl_node, doc))
+        kind = "class"
     elif type_node.type == "interface_type":
-        symbols.append(_make_symbol(name, "interface", file_str, decl_node, doc))
+        kind = "interface"
     else:
-        symbols.append(_make_symbol(name, "type", file_str, decl_node, doc))
+        kind = "type"
+
+    symbols.append(
+        _make_symbol(
+            name,
+            kind,
+            file_str,
+            decl_node,
+            doc,
+            signature=fields["signature"],
+            decorators=fields["decorators"],
+            is_exported=fields["is_exported"],
+            visibility=fields["visibility"],
+            qualified_name=name,
+        )
+    )
 
 
 def _extract_edges_go(root: Node, filepath: Path) -> list[Edge]:
@@ -224,14 +325,16 @@ def _extract_edges_go(root: Node, filepath: Path) -> list[Edge]:
             if func_child and func_child.type == "identifier":
                 source = _find_enclosing_function(node, "go")
                 if source is not None:
-                    edges.append(Edge(
-                        source=source,
-                        target=_text(func_child),
-                        kind="call",
-                        file=file_str,
-                        line=node.start_point[0] + 1,
-                        confidence="INFERRED",
-                    ))
+                    edges.append(
+                        Edge(
+                            source=source,
+                            target=_text(func_child),
+                            kind="call",
+                            file=file_str,
+                            line=node.start_point[0] + 1,
+                            confidence="INFERRED",
+                        )
+                    )
 
         for child in node.children:
             _walk(child)
@@ -255,8 +358,7 @@ def _handle_go_import(decl_node: Node, file_str: str, file_stem: str, edges: lis
         if path_node is None:
             return
         content_node = next(
-            (c for c in path_node.named_children
-             if c.type == "interpreted_string_literal_content"),
+            (c for c in path_node.named_children if c.type == "interpreted_string_literal_content"),
             None,
         )
         if content_node is None:
@@ -264,14 +366,16 @@ def _handle_go_import(decl_node: Node, file_str: str, file_stem: str, edges: lis
         path_str = _text(content_node)
         target = path_str.split("/")[-1] if path_str else ""
         if target:
-            edges.append(Edge(
-                source=file_stem,
-                target=target,
-                kind="import",
-                file=file_str,
-                line=line,
-                confidence="INFERRED",
-            ))
+            edges.append(
+                Edge(
+                    source=file_stem,
+                    target=target,
+                    kind="import",
+                    file=file_str,
+                    line=line,
+                    confidence="INFERRED",
+                )
+            )
 
     for child in decl_node.children:
         if child.type == "import_spec":
@@ -347,10 +451,48 @@ def _extract_symbols_rust(root: Node, filepath: Path) -> list[Symbol]:
             if name:
                 doc = _rust_doc_comment(node)
                 if impl_type is not None:
-                    # Inside impl or trait block → method qualified as 'Type.name'.
-                    symbols.append(_make_symbol(f"{impl_type}.{name}", "method", file_str, node, doc))
+                    qualified = f"{impl_type}.{name}"
+                    fields = extract_node_fields(
+                        node,
+                        "rust",
+                        qualified_name=qualified,
+                        max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
+                    )
+                    symbols.append(
+                        _make_symbol(
+                            qualified,
+                            "method",
+                            file_str,
+                            node,
+                            doc,
+                            signature=fields["signature"],
+                            decorators=fields["decorators"],
+                            is_exported=fields["is_exported"],
+                            visibility=fields["visibility"],
+                            qualified_name=qualified,
+                        )
+                    )
                 else:
-                    symbols.append(_make_symbol(name, "function", file_str, node, doc))
+                    fields = extract_node_fields(
+                        node,
+                        "rust",
+                        qualified_name=name,
+                        max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
+                    )
+                    symbols.append(
+                        _make_symbol(
+                            name,
+                            "function",
+                            file_str,
+                            node,
+                            doc,
+                            signature=fields["signature"],
+                            decorators=fields["decorators"],
+                            is_exported=fields["is_exported"],
+                            visibility=fields["visibility"],
+                            qualified_name=name,
+                        )
+                    )
 
         elif node.type == "function_signature_item":
             # Signature-only trait method (no body): fn foo(&self);
@@ -359,7 +501,27 @@ def _extract_symbols_rust(root: Node, filepath: Path) -> list[Symbol]:
                 name = _node_name(node)
                 if name:
                     doc = _rust_doc_comment(node)
-                    symbols.append(_make_symbol(f"{impl_type}.{name}", "method", file_str, node, doc))
+                    qualified = f"{impl_type}.{name}"
+                    fields = extract_node_fields(
+                        node,
+                        "rust",
+                        qualified_name=qualified,
+                        max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
+                    )
+                    symbols.append(
+                        _make_symbol(
+                            qualified,
+                            "method",
+                            file_str,
+                            node,
+                            doc,
+                            signature=fields["signature"],
+                            decorators=fields["decorators"],
+                            is_exported=fields["is_exported"],
+                            visibility=fields["visibility"],
+                            qualified_name=qualified,
+                        )
+                    )
 
         elif node.type == "impl_item":
             type_name = _rust_impl_type_name(node)
@@ -371,14 +533,54 @@ def _extract_symbols_rust(root: Node, filepath: Path) -> list[Symbol]:
         elif node.type == "struct_item":
             name_node = node.child_by_field_name("name")
             if name_node:
+                struct_name = _text(name_node)
                 doc = _rust_doc_comment(node)
-                symbols.append(_make_symbol(_text(name_node), "class", file_str, node, doc))
+                fields = extract_node_fields(
+                    node,
+                    "rust",
+                    qualified_name=struct_name,
+                    max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
+                )
+                symbols.append(
+                    _make_symbol(
+                        struct_name,
+                        "class",
+                        file_str,
+                        node,
+                        doc,
+                        signature=fields["signature"],
+                        decorators=fields["decorators"],
+                        is_exported=fields["is_exported"],
+                        visibility=fields["visibility"],
+                        qualified_name=struct_name,
+                    )
+                )
 
         elif node.type == "enum_item":
             name_node = node.child_by_field_name("name")
             if name_node:
+                enum_name = _text(name_node)
                 doc = _rust_doc_comment(node)
-                symbols.append(_make_symbol(_text(name_node), "type", file_str, node, doc))
+                fields = extract_node_fields(
+                    node,
+                    "rust",
+                    qualified_name=enum_name,
+                    max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
+                )
+                symbols.append(
+                    _make_symbol(
+                        enum_name,
+                        "type",
+                        file_str,
+                        node,
+                        doc,
+                        signature=fields["signature"],
+                        decorators=fields["decorators"],
+                        is_exported=fields["is_exported"],
+                        visibility=fields["visibility"],
+                        qualified_name=enum_name,
+                    )
+                )
 
         elif node.type == "trait_item":
             # Emit the trait itself as an interface.
@@ -386,7 +588,26 @@ def _extract_symbols_rust(root: Node, filepath: Path) -> list[Symbol]:
             if name_node:
                 trait_name = _text(name_node)
                 doc = _rust_doc_comment(node)
-                symbols.append(_make_symbol(trait_name, "interface", file_str, node, doc))
+                fields = extract_node_fields(
+                    node,
+                    "rust",
+                    qualified_name=trait_name,
+                    max_signature_len=config.SEAM_MAX_SIGNATURE_LEN,
+                )
+                symbols.append(
+                    _make_symbol(
+                        trait_name,
+                        "interface",
+                        file_str,
+                        node,
+                        doc,
+                        signature=fields["signature"],
+                        decorators=fields["decorators"],
+                        is_exported=fields["is_exported"],
+                        visibility=fields["visibility"],
+                        qualified_name=trait_name,
+                    )
+                )
                 # FIX 5: recurse into the trait body and emit each function_item
                 # as a method qualified by the trait name (handles both signature-only
                 # and default-with-body methods).
@@ -438,14 +659,16 @@ def _extract_edges_rust(root: Node, filepath: Path) -> list[Edge]:
             if func_child and func_child.type == "identifier":
                 source = _find_enclosing_function(node, "rust")
                 if source is not None:
-                    edges.append(Edge(
-                        source=source,
-                        target=_text(func_child),
-                        kind="call",
-                        file=file_str,
-                        line=node.start_point[0] + 1,
-                        confidence="INFERRED",
-                    ))
+                    edges.append(
+                        Edge(
+                            source=source,
+                            target=_text(func_child),
+                            kind="call",
+                            file=file_str,
+                            line=node.start_point[0] + 1,
+                            confidence="INFERRED",
+                        )
+                    )
 
         for child in node.children:
             _walk(child)
@@ -477,14 +700,16 @@ def _handle_rust_use(use_node: Node, file_str: str, file_stem: str, edges: list[
         return
 
     def _emit(target: str) -> None:
-        edges.append(Edge(
-            source=file_stem,
-            target=target,
-            kind="import",
-            file=file_str,
-            line=line,
-            confidence="INFERRED",
-        ))
+        edges.append(
+            Edge(
+                source=file_stem,
+                target=target,
+                kind="import",
+                file=file_str,
+                line=line,
+                confidence="INFERRED",
+            )
+        )
 
     def _collect(node: Node) -> None:
         """Recursively collect final-segment identifiers from use tree nodes."""

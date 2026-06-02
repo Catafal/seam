@@ -87,6 +87,15 @@ SEAM_FUZZY_MAX_DIST: int = int(os.getenv("SEAM_FUZZY_MAX_DIST", "1"))
 SEAM_FUZZY_MAX_CANDIDATES: int = int(os.getenv("SEAM_FUZZY_MAX_CANDIDATES", "500"))
 
 
+# ── Phase 4: Node-field enrichment configuration ─────────────────────────────
+
+# Hard cap on stored signature length. Without a cap, a function with many type-annotated
+# parameters can produce a 500+ character signature that dominates the FTS index and makes
+# MCP responses painful to read. 300 chars captures the full header of all but pathological
+# cases; truncation appends '...' so consumers can detect incomplete signatures.
+SEAM_MAX_SIGNATURE_LEN: int = int(os.getenv("SEAM_MAX_SIGNATURE_LEN", "300"))
+
+
 def get_db_path(project_root: Path) -> Path:
     """Resolve the database path relative to the project root."""
     return project_root / SEAM_DB_PATH

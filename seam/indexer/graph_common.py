@@ -64,6 +64,14 @@ class Symbol(TypedDict):
     start_line: int
     end_line: int
     docstring: str | None
+    # Phase 4 — Node-field enrichment. All nullable: None means "not yet extracted"
+    # (e.g. pre-v5 rows) rather than "has no value". Callers must not treat None as
+    # equivalent to empty string or False.
+    signature: str | None       # declaration header, single line, truncated at SEAM_MAX_SIGNATURE_LEN
+    decorators: list[str]       # verbatim decorator text (Python/TS only); [] for Go/Rust
+    is_exported: bool | None    # export status; None when language has no uniform export concept
+    visibility: str | None      # "public"|"private"|"protected"|"crate"; Python uses heuristic
+    qualified_name: str | None  # "ClassName.method" for methods; None for anonymous/top-level unknown
 
 
 class Edge(TypedDict):
@@ -114,8 +122,18 @@ def _make_symbol(
     file: str,
     node: Node,
     docstring: str | None,
+    signature: str | None = None,
+    decorators: list[str] | None = None,
+    is_exported: bool | None = None,
+    visibility: str | None = None,
+    qualified_name: str | None = None,
 ) -> Symbol:
-    """Construct a Symbol TypedDict from a tree-sitter node."""
+    """Construct a Symbol TypedDict from a tree-sitter node.
+
+    Phase 4 enrichment fields default to None/[] so callers that don't yet call
+    extract_node_fields continue to work without changes — backward-compatible extension
+    rather than requiring every call site to be updated simultaneously.
+    """
     return Symbol(
         name=name,
         kind=kind,
@@ -123,6 +141,11 @@ def _make_symbol(
         start_line=node.start_point[0] + 1,  # tree-sitter rows are 0-based
         end_line=node.end_point[0] + 1,
         docstring=docstring,
+        signature=signature,
+        decorators=decorators if decorators is not None else [],
+        is_exported=is_exported,
+        visibility=visibility,
+        qualified_name=qualified_name,
     )
 
 

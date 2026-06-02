@@ -35,13 +35,37 @@ tools:
           description: Start line of the symbol definition
         score:
           type: number
-          description: BM25 relevance score (higher = more relevant)
+          description: BM25 relevance score (higher = more relevant; includes Phase 4 signature-match boost)
         callers_count:
           type: integer
           description: Number of known callers in the index
         callees_count:
           type: integer
           description: Number of known callees in the index
+        signature:
+          type: string
+          nullable: true
+          description: |
+            Phase 4. Declaration header normalized to one line; truncated to
+            SEAM_MAX_SIGNATURE_LEN (default 300). null for pre-v5 rows.
+        decorators:
+          type: array
+          items: string
+          description: |
+            Phase 4. Verbatim decorator strings (Python/TS). Always [] for Go/Rust
+            and for pre-v5 rows.
+        is_exported:
+          type: boolean
+          nullable: true
+          description: Phase 4. See seam_context for full semantics. null for pre-v5 rows.
+        visibility:
+          type: string
+          nullable: true
+          description: Phase 4. See seam_context for full semantics. null for pre-v5 rows.
+        qualified_name:
+          type: string
+          nullable: true
+          description: Phase 4. Scope-resolved name. null for pre-v5 rows.
       empty_ok: true
       empty_message: "No results for '{concept}'"
     errors:
@@ -108,6 +132,42 @@ tools:
           description: |
             Phase 2. Names of other symbols in the same cluster (excluding this symbol).
             Empty list when unclustered or when the cluster has only one member.
+        signature:
+          type: string
+          nullable: true
+          description: |
+            Phase 4. Declaration header normalized to a single line (e.g.
+            "def parse(path: Path) -> Node | None"). Truncated to SEAM_MAX_SIGNATURE_LEN
+            chars (default 300) with trailing "..." when truncated. null for pre-v5 rows
+            or when the parser could not extract a header.
+        decorators:
+          type: array
+          items: string
+          description: |
+            Phase 4. Verbatim decorator strings for Python (@dataclass) and TypeScript
+            (@Injectable). Always [] for Go and Rust. Empty [] for pre-v5 rows.
+        is_exported:
+          type: boolean
+          nullable: true
+          description: |
+            Phase 4. true when the symbol is part of the public API: TypeScript export
+            keyword, Go capitalized name, Rust pub/pub(crate), Python no-underscore
+            prefix heuristic. null when the language is unsupported or detection failed.
+            null for pre-v5 rows.
+        visibility:
+          type: string
+          nullable: true
+          description: |
+            Phase 4. "public" | "private" | "protected" (TS access modifier or Python
+            underscore prefix) | "crate" (Rust pub(crate)). null when not applicable,
+            unknown, or for pre-v5 rows. Treat null as "unknown", not as "private".
+        qualified_name:
+          type: string
+          nullable: true
+          description: |
+            Phase 4. Scope-resolved name: "ClassName.method" for methods or plain name
+            for top-level symbols. null when the outer scope could not be determined or
+            for pre-v5 rows.
     errors:
       - code: INVALID_INPUT
         condition: symbol is empty string or whitespace-only
@@ -143,7 +203,32 @@ tools:
           description: Highlighted excerpt from the matching content (FTS5 highlight())
         score:
           type: number
-          description: BM25 rank score
+          description: BM25 rank score (includes Phase 4 signature-match boost of +15/term)
+        signature:
+          type: string
+          nullable: true
+          description: |
+            Phase 4. Declaration header normalized to one line; truncated to
+            SEAM_MAX_SIGNATURE_LEN (default 300). null for pre-v5 rows. Signature
+            text is FTS-searchable — type-shaped queries match on param/return types.
+        decorators:
+          type: array
+          items: string
+          description: |
+            Phase 4. Verbatim decorator strings (Python/TS). Always [] for Go/Rust
+            and for pre-v5 rows.
+        is_exported:
+          type: boolean
+          nullable: true
+          description: Phase 4. See seam_context for full semantics. null for pre-v5 rows.
+        visibility:
+          type: string
+          nullable: true
+          description: Phase 4. See seam_context for full semantics. null for pre-v5 rows.
+        qualified_name:
+          type: string
+          nullable: true
+          description: Phase 4. Scope-resolved name. null for pre-v5 rows.
       empty_ok: true
       empty_message: "No results for '{text}'"
     errors:
