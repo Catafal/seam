@@ -76,6 +76,47 @@ class SearchResult(TypedDict):
     score: float
 
 
+# ── Shared Phase 4 enrichment decoder ────────────────────────────────────────
+
+
+def decode_enrichment_fields(row: sqlite3.Row) -> tuple[list[str], bool | None]:
+    """Decode the Phase 4 SQLite enrichment columns from a DB row.
+
+    Returns (decorators, is_exported) ready for use in ContextResult or NeighborRef.
+
+    WHY extracted: context() and pack._enrich_neighbors both need to decode the
+    same two SQLite-encoded fields. Keeping the logic in one place ensures they
+    always agree on null-contract semantics and avoids drift over time.
+
+    Rules:
+      decorators:  NULL     → []   (pre-v5 row or nothing extracted)
+                   JSON TEXT → decoded list (corrupted JSON → [] gracefully)
+      is_exported: NULL     → None  (pre-v5 row or extraction unavailable)
+                   0        → False
+                   1        → True
+    """
+    raw_dec = row["decorators"]
+    raw_exp = row["is_exported"]
+
+    # Decode decorators: stored as JSON TEXT; pre-v5 rows have NULL.
+    if raw_dec is None:
+        decorators: list[str] = []
+    else:
+        try:
+            decorators = json.loads(raw_dec)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            # Corrupted JSON — degrade gracefully, never crash the read path.
+            decorators = []
+
+    # Decode is_exported: SQLite has no native bool; stored as 0/1/NULL.
+    if raw_exp is None:
+        is_exported: bool | None = None
+    else:
+        is_exported = bool(raw_exp)
+
+    return decorators, is_exported
+
+
 # ── Damerau-Levenshtein edit distance (pure-Python, bounded) ─────────────────
 
 
@@ -628,24 +669,9 @@ def context(conn: sqlite3.Connection, symbol_name: str) -> ContextResult | None:
     else:
         c_id, c_label, c_peers = None, None, []
 
-    # decorators is stored as JSON TEXT (see upsert_file). Decode it back to list here.
-    # Pre-v5 rows have NULL (column didn't exist yet) → treat as empty list.
-    raw_decorators = row["decorators"]
-    if raw_decorators is None:
-        decoded_decorators: list[str] = []
-    else:
-        try:
-            decoded_decorators = json.loads(raw_decorators)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            # Corrupted JSON (should never happen) → degrade gracefully, don't crash.
-            decoded_decorators = []
-
-    # is_exported is stored as 0/1/NULL — SQLite has no native bool type.
-    raw_is_exported = row["is_exported"]
-    if raw_is_exported is None:
-        is_exported: bool | None = None
-    else:
-        is_exported = bool(raw_is_exported)
+    # Decode Phase 4 enrichment columns via shared helper — single source of truth
+    # for the 0/1/NULL→bool and JSON TEXT→list[str] decode that pack.py also needs.
+    decoded_decorators, is_exported = decode_enrichment_fields(row)
 
     return ContextResult(
         symbol=row["name"],

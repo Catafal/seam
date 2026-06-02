@@ -351,3 +351,50 @@ class TestContext:
         assert result is not None
         assert result["callers"] == []
         assert result["callees"] == []
+
+
+# ── decode_enrichment_fields: shared helper (Fix G) ────────────────────────────
+
+
+class TestDecodeEnrichmentFields:
+    """decode_enrichment_fields(row) returns (decorators, is_exported) correctly.
+
+    This helper is extracted from context() so pack._enrich_neighbors can reuse
+    the same decode logic without reimplementing it. Both callers must agree on
+    null/0/1 → bool | None and JSON TEXT → list[str] semantics.
+
+    Rows are passed as dicts (sqlite3.Row supports __getitem__ the same way).
+    """
+
+    def test_null_decorators_returns_empty_list(self) -> None:
+        """None decorators (pre-v5 or absent) decode to empty list."""
+        from seam.query.engine import decode_enrichment_fields
+
+        decs, is_exp = decode_enrichment_fields({"decorators": None, "is_exported": None})  # type: ignore[arg-type]
+        assert decs == []
+        assert is_exp is None
+
+    def test_json_decorators_decoded_to_list(self) -> None:
+        """JSON TEXT decorators are decoded back to list."""
+        import json
+
+        from seam.query.engine import decode_enrichment_fields
+
+        row = {"decorators": json.dumps(["@property", "@classmethod"]), "is_exported": 1}
+        decs, is_exp = decode_enrichment_fields(row)  # type: ignore[arg-type]
+        assert decs == ["@property", "@classmethod"]
+        assert is_exp is True
+
+    def test_zero_is_exported_returns_false(self) -> None:
+        """is_exported=0 (SQLite integer) decodes to False."""
+        from seam.query.engine import decode_enrichment_fields
+
+        _, is_exp = decode_enrichment_fields({"decorators": None, "is_exported": 0})  # type: ignore[arg-type]
+        assert is_exp is False
+
+    def test_corrupt_json_decorators_degrades_to_empty(self) -> None:
+        """Corrupted JSON in decorators column degrades to empty list, never raises."""
+        from seam.query.engine import decode_enrichment_fields
+
+        decs, is_exp = decode_enrichment_fields({"decorators": "NOT_VALID_JSON{{{", "is_exported": None})  # type: ignore[arg-type]
+        assert decs == []

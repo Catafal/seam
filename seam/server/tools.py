@@ -33,6 +33,8 @@ from seam.query import engine
 from seam.query.clusters import cluster_members as query_cluster_members
 from seam.query.clusters import list_clusters as query_list_clusters
 from seam.query.comments import why as comments_why
+from seam.query.pack import ContextPack, NeighborRef
+from seam.query.pack import context_pack as run_context_pack
 
 logger = logging.getLogger(__name__)
 
@@ -693,4 +695,96 @@ def handle_seam_affected(
         "total_dependents_traversed": result["total_dependents_traversed"],
         # partial=True when a file exceeded SEAM_MAX_AFFECTED_SYMBOLS; result may be incomplete.
         "partial": result["partial"],
+    }
+
+
+def handle_seam_context_pack(
+    conn: sqlite3.Connection,
+    symbol: str,
+    root: Path,
+) -> dict[str, Any] | None:
+    """Handler for the seam_context_pack MCP tool.
+
+    Returns a fully-enriched context bundle for a symbol, or None for unknown
+    symbols, or an error dict on blank input.
+
+    The bundle contains:
+        target        — full 360-degree ContextResult (file paths relativized)
+        callers       — enriched 1-hop callers (NeighborRef, capped, paths relativized)
+        callees       — enriched 1-hop callees (NeighborRef, capped, paths relativized)
+        why           — WHY/HACK/NOTE/TODO/FIXME comments (capped)
+        cluster_peers — functional-area peers from target
+        truncated     — {callers, callees, comments} counts of dropped entries
+
+    Mirrors handle_seam_context's contract:
+        - blank/whitespace → INVALID_INPUT error dict
+        - unknown symbol   → None
+        - found symbol     → serialized ContextPack with paths relativized
+    """
+    # Validate: symbol must not be empty or whitespace-only
+    if not symbol or not symbol.strip():
+        return _invalid_input("symbol must not be empty or whitespace-only")
+
+    pack: ContextPack | None = run_context_pack(
+        conn,
+        symbol.strip(),
+    )
+
+    if pack is None:
+        return None
+
+    # Relativize file path in target (mirrors handle_seam_context)
+    target = pack["target"]
+    serialized_target = {
+        "symbol": target["symbol"],
+        "file": _relativize(target["file"], root),
+        "line": target["line"],
+        "end_line": target["end_line"],
+        "kind": target["kind"],
+        "docstring": target["docstring"],
+        "callers": target["callers"],
+        "callees": target["callees"],
+        "ambiguous": target["ambiguous"],
+        "cluster_id": target["cluster_id"],
+        "cluster_label": target["cluster_label"],
+        "cluster_peers": target["cluster_peers"],
+        "signature": target["signature"],
+        "decorators": target["decorators"],
+        "is_exported": target["is_exported"],
+        "visibility": target["visibility"],
+        "qualified_name": target["qualified_name"],
+    }
+
+    # Relativize file paths in enriched neighbors.
+    # WHY direct key access (not .get()): NeighborRef is a TypedDict with all
+    # required keys — using .get() would silently return None for a renamed field
+    # instead of raising a KeyError that makes the bug visible.
+    def _serialize_neighbor(nb: NeighborRef) -> dict[str, Any]:
+        return {
+            "name": nb["name"],
+            "file": _relativize(nb["file"], root),
+            "line": nb["line"],
+            "kind": nb["kind"],
+            "signature": nb["signature"],
+            "decorators": nb["decorators"],
+            "is_exported": nb["is_exported"],
+            "visibility": nb["visibility"],
+            "qualified_name": nb["qualified_name"],
+        }
+
+    return {
+        "target": serialized_target,
+        "callers": [_serialize_neighbor(nb) for nb in pack["callers"]],
+        "callees": [_serialize_neighbor(nb) for nb in pack["callees"]],
+        "why": [
+            {
+                "file": _relativize(hit["file"], root),
+                "line": hit["line"],
+                "marker": hit["marker"],
+                "text": hit["text"],
+            }
+            for hit in pack["why"]
+        ],
+        "cluster_peers": pack["cluster_peers"],
+        "truncated": pack["truncated"],
     }
