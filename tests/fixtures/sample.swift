@@ -12,6 +12,10 @@ func greet(name: String) -> String {
     return msg
 }
 
+/**
+ Build a greeting message for the given name.
+ Block doc-comment used to verify docstring capture.
+ */
 func buildMessage(_ name: String) -> String {
     return "Hello, \(name)!"
 }

@@ -169,6 +169,21 @@ class TestSwiftSymbols:
         assert sym["docstring"] is not None
         assert "Greet a user" in sym["docstring"]
 
+    def test_func_with_block_doc_comment_has_docstring(self) -> None:
+        """buildMessage() preceded by a /** */ block doc comment → docstring captured.
+
+        Regression: the /// path worked but /** */ (a 'multiline_comment' node, not
+        'comment') was dropped — violating PRD user-story 9.
+        """
+        root = _get_swift_root()
+        symbols = extract_symbols(root, "swift", SAMPLE_SWIFT)
+        sym = _sym(symbols, "buildMessage")
+        assert sym is not None
+        assert sym["docstring"] is not None, "/** */ block doc-comment was not captured"
+        assert "Build a greeting message" in sym["docstring"]
+        # Block-comment '*' decorations must be stripped.
+        assert "*" not in sym["docstring"]
+
     def test_class_doc_comment_captured(self) -> None:
         """UserRepo class preceded by /// doc → docstring captured."""
         root = _get_swift_root()
@@ -487,7 +502,9 @@ class TestSwiftSignatures:
         assert class_syms, "UserRepo not found"
         # The @objc one
         has_objc = any("@objc" in (s.get("decorators") or []) for s in class_syms)
-        assert has_objc, f"@objc decorator not found on UserRepo. Decorators: {[s.get('decorators') for s in class_syms]}"
+        assert has_objc, (
+            f"@objc decorator not found on UserRepo. Decorators: {[s.get('decorators') for s in class_syms]}"
+        )
 
     def test_available_attribute_on_method(self) -> None:
         """@available(iOS 13.0, *) on func save → decorators contains it."""

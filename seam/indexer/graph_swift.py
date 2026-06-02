@@ -55,20 +55,52 @@ logger = logging.getLogger(__name__)
 # ── Doc-comment adjacency helper ───────────────────────────────────────────────
 
 
-def _swift_doc_comment(decl_node: Node) -> str | None:
-    """Capture Swift doc-comment: contiguous /// or /** */ comment lines above a decl.
+def _clean_swift_block_doc(raw: str) -> str | None:
+    """Strip /** */ delimiters + per-line leading '*' from a Swift block doc-comment.
 
-    Swift uses a single 'comment' node type for both // and ///. Only '///' prefix
-    lines qualify as doc-comments. Walk prev_sibling collecting comment nodes
-    where the text starts with '///' and rows are adjacent (no blank line gap).
+    WHY a dedicated cleaner: tree-sitter-swift emits a whole /** ... */ block as ONE
+    'multiline_comment' node (unlike /// which is many 'comment' nodes), so it needs
+    line-by-line de-decoration rather than the prefix-strip used for ///.
+    """
+    inner = raw
+    if inner.startswith("/**"):
+        inner = inner[3:]
+    if inner.endswith("*/"):
+        inner = inner[:-2]
+    cleaned = [
+        stripped for line in inner.splitlines() if (stripped := line.strip().lstrip("*").strip())
+    ]
+    text = "\n".join(cleaned).strip()
+    return text or None
+
+
+def _swift_doc_comment(decl_node: Node) -> str | None:
+    """Capture Swift doc-comment: a /** */ block OR contiguous /// lines above a decl.
+
+    tree-sitter-swift uses TWO node types: 'comment' for // and /// (one node per line),
+    and 'multiline_comment' for /* */ and /** */ (one node per block). Only '///' lines
+    and '/**' blocks qualify as doc-comments (per PRD user-story 9); plain // and /* */
+    do not. The /** */ block is checked first since it is a single prev_sibling node.
 
     Adjacency rule: comment end_point[0] + 1 == next_node start_point[0].
     Swift comment nodes do NOT include trailing newline in text (same as Go),
-    so end_point[0] is the SAME row as the comment text. Therefore a blank-line
-    gap means: end_point[0] + 1 != next_start_point[0].
+    so end_point[0] is the comment's last visible row. A blank-line gap therefore
+    means end_point[0] + 1 != next_start_point[0] and breaks attachment.
     """
-    lines: list[str] = []
     current = decl_node.prev_sibling
+
+    # /** ... */ block doc-comment — a single 'multiline_comment' node. Checked before
+    # the /// loop because it is one node, not a run of sibling 'comment' lines. A plain
+    # /* */ block (single star) is NOT a doc-comment, so require the '/**' prefix.
+    if current is not None and current.type == "multiline_comment":
+        raw = _text(current)
+        if raw.startswith("/**"):
+            next_node = current.next_sibling
+            if next_node is None or current.end_point[0] + 1 == next_node.start_point[0]:
+                return _clean_swift_block_doc(raw)
+        return None
+
+    lines: list[str] = []
 
     while current is not None and current.type == "comment":
         raw = _text(current)
@@ -201,12 +233,14 @@ def _swift_signature(node: Node) -> str | None:
     protocol_function_declaration.
     """
     try:
-        body_stop_types = frozenset({
-            "function_body",
-            "class_body",
-            "enum_class_body",
-            "protocol_body",
-        })
+        body_stop_types = frozenset(
+            {
+                "function_body",
+                "class_body",
+                "enum_class_body",
+                "protocol_body",
+            }
+        )
         parts: list[str] = []
         for child in node.children:
             if child.type in body_stop_types:
@@ -262,9 +296,7 @@ def _extract_symbols_swift(root: Node, filepath: Path) -> list[Symbol]:
     try:
         _walk_top_level(root, file_str, symbols)
     except Exception as exc:  # noqa: BLE001
-        logger.debug(
-            "_extract_symbols_swift: unhandled exception for %s: %r", filepath, exc
-        )
+        logger.debug("_extract_symbols_swift: unhandled exception for %s: %r", filepath, exc)
 
     return symbols
 
@@ -596,9 +628,7 @@ def _handle_protocol_method(
             )
         )
     except Exception as exc:  # noqa: BLE001
-        logger.debug(
-            "_handle_protocol_method: failed at %r: %r", node.start_point, exc
-        )
+        logger.debug("_handle_protocol_method: failed at %r: %r", node.start_point, exc)
 
 
 # ── Swift edge extraction ──────────────────────────────────────────────────────
@@ -624,9 +654,7 @@ def _extract_edges_swift(root: Node, filepath: Path) -> list[Edge]:
     try:
         _walk_edges(root, file_str, file_stem, edges)
     except Exception as exc:  # noqa: BLE001
-        logger.debug(
-            "_extract_edges_swift: unhandled exception for %s: %r", filepath, exc
-        )
+        logger.debug("_extract_edges_swift: unhandled exception for %s: %r", filepath, exc)
 
     return edges
 
@@ -645,9 +673,7 @@ def _walk_edges(node: Node, file_str: str, file_stem: str, edges: list[Edge]) ->
         _walk_edges(child, file_str, file_stem, edges)
 
 
-def _handle_import(
-    node: Node, file_str: str, file_stem: str, edges: list[Edge]
-) -> None:
+def _handle_import(node: Node, file_str: str, file_stem: str, edges: list[Edge]) -> None:
     """Extract import edge from a Swift import_declaration node.
 
     import Foundation       → target = 'Foundation'
@@ -658,9 +684,7 @@ def _handle_import(
     for child in node.children:
         if child.type == "identifier":
             # Collect all simple_identifier children; take the LAST one.
-            segments = [
-                _text(gc) for gc in child.children if gc.type == "simple_identifier"
-            ]
+            segments = [_text(gc) for gc in child.children if gc.type == "simple_identifier"]
             if segments:
                 target = segments[-1]
                 edges.append(
@@ -728,9 +752,7 @@ def _extract_comments_swift(root: Node, filepath: Path) -> list[Comment]:
     try:
         _walk_comments(root, comments)
     except Exception as exc:  # noqa: BLE001
-        logger.debug(
-            "_extract_comments_swift: unhandled exception for %s: %r", filepath, exc
-        )
+        logger.debug("_extract_comments_swift: unhandled exception for %s: %r", filepath, exc)
 
     return comments
 
