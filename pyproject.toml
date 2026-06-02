@@ -3,7 +3,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "seam"
+# Distribution name is "seam-mcp" because the PyPI name "seam" is taken by an
+# unrelated package (Seam Labs' smart-lock API SDK). The import package and the
+# console command both stay "seam" (distribution name != import name is standard).
+name = "seam-mcp"
 version = "0.2.0"
 description = "Local code intelligence MCP server for AI agents"
 readme = "README.md"

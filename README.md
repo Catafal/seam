@@ -4,29 +4,35 @@ Local code intelligence MCP server for AI agents. Index your codebase once; let 
 
 ## Status
 
-Phase 10 complete — Swift support (11 → 12 languages); Kotlin deferred (grammar maturity). 1454 tests. Gate green.
+Phase 10 complete — Swift support (11 → 12 languages); Kotlin deferred (grammar maturity).
+Agentic-readiness hardening done (MCP error/not-found contract, `.seam/` gitignore, distribution → `seam-mcp`). 1465 tests. Gate green.
 
 ## Quickstart
 
+Not yet published to PyPI (the name `seam` there belongs to an unrelated package;
+the distribution will be `seam-mcp`). Install from source for now:
+
 ```bash
-# Install
-pip install seam  # or: uvx seam
+# Install from source
+git clone <repo-url> && cd seam
+uv sync              # installs the `seam` command into .venv
 
 # Index your project
 cd /path/to/your/project
-seam init
+uv run seam init
 
-# Start the MCP server
-seam start
+# Start the MCP server (stdio) + file watcher
+uv run seam start
 ```
 
-Add to your Claude Code MCP config:
+Add to your Claude Code MCP config — `seam start` speaks stdio and takes the
+project path to index (no `--stdio` flag; stdio is the only transport):
 ```json
 {
   "mcpServers": {
     "seam": {
       "command": "seam",
-      "args": ["start", "--stdio"]
+      "args": ["start", "/path/to/your/project"]
     }
   }
 }

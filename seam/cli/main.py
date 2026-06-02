@@ -142,6 +142,14 @@ def init(
     db_path = config.get_db_path(db_root)
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Keep the index out of git: a self-scoped .gitignore (containing "*") INSIDE
+    # .seam/ makes git ignore the whole dir (db/-shm/-wal), so `seam_changes` never
+    # reports our own artifacts as changed files — without writing anything OUTSIDE
+    # .seam/ (preserves the "Seam touches nothing beyond .seam/" guarantee).
+    seam_gitignore = db_path.parent / ".gitignore"
+    if not seam_gitignore.exists():
+        seam_gitignore.write_text("*\n", encoding="utf-8")
+
     # Collect files to index
     files = walk_project(project_root)
 

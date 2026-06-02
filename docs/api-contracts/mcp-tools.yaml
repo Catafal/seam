@@ -1,6 +1,14 @@
 # Seam MCP Tool Specifications (Phase 0)
 # These are the "API contracts" for the MCP server.
 # Implement exactly these signatures in seam/server/tools.py.
+#
+# MCP error/not-found contract (normalized in seam/server/mcp.py::_finalize):
+#   - Validation/runtime errors (the `errors:` blocks below) surface to the agent as an
+#     MCP tool error: isError=True with content text "<CODE>: <message>". (The handler
+#     returns {"error","message"}; the MCP boundary RAISES so FastMCP sets isError — a
+#     returned dict would leave isError=False, which an agent reads as success.)
+#   - "Not found" (handler null) is normalized to {"found": false} — structured, isError=False.
+#   - The CLI exposes the SAME code+message via its own envelope {"ok":false,"error":{...}}.
 
 tools:
 
