@@ -30,6 +30,45 @@ import os
 from pathlib import Path
 from typing import TypedDict
 
+# Phase 9: import the new-language stub extractors/resolvers from the companion leaf module.
+# imports_ext is a leaf (no seam deps) so importing it here does not create a cycle.
+from seam.analysis.imports_ext import (
+    _extract_c as _ext_extract_c,
+)
+from seam.analysis.imports_ext import (
+    _extract_cpp as _ext_extract_cpp,
+)
+from seam.analysis.imports_ext import (
+    _extract_csharp as _ext_extract_csharp,
+)
+from seam.analysis.imports_ext import (
+    _extract_java as _ext_extract_java,
+)
+from seam.analysis.imports_ext import (
+    _extract_php as _ext_extract_php,
+)
+from seam.analysis.imports_ext import (
+    _extract_ruby as _ext_extract_ruby,
+)
+from seam.analysis.imports_ext import (
+    _resolve_c as _ext_resolve_c,
+)
+from seam.analysis.imports_ext import (
+    _resolve_cpp as _ext_resolve_cpp,
+)
+from seam.analysis.imports_ext import (
+    _resolve_csharp as _ext_resolve_csharp,
+)
+from seam.analysis.imports_ext import (
+    _resolve_java as _ext_resolve_java,
+)
+from seam.analysis.imports_ext import (
+    _resolve_php as _ext_resolve_php,
+)
+from seam.analysis.imports_ext import (
+    _resolve_ruby as _ext_resolve_ruby,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -658,6 +697,19 @@ def extract_import_mappings(
             return _extract_go(root, filepath)
         if language == "rust":
             return _extract_rust(root, filepath)
+        # Phase 9 — new languages routed to imports_ext (stubs return [])
+        if language == "java":
+            return _ext_extract_java(root, filepath)
+        if language == "csharp":
+            return _ext_extract_csharp(root, filepath)
+        if language == "ruby":
+            return _ext_extract_ruby(root, filepath)
+        if language == "c":
+            return _ext_extract_c(root, filepath)
+        if language == "cpp":
+            return _ext_extract_cpp(root, filepath)
+        if language == "php":
+            return _ext_extract_php(root, filepath)
     except Exception:  # noqa: BLE001
         pass
     return []
@@ -703,6 +755,19 @@ def resolve_import_source(
             return _resolve_go(source_module, referencing_file, repo_root)
         if language == "rust":
             return _resolve_rust(source_module, referencing_file, repo_root)
+        # Phase 9 — new languages routed to imports_ext (stubs/out-of-scope return [])
+        if language == "java":
+            return _ext_resolve_java(source_module, referencing_file, repo_root)
+        if language == "csharp":
+            return _ext_resolve_csharp(source_module, referencing_file, repo_root)
+        if language == "ruby":
+            return _ext_resolve_ruby(source_module, referencing_file, repo_root)
+        if language == "c":
+            return _ext_resolve_c(source_module, referencing_file, repo_root)
+        if language == "cpp":
+            return _ext_resolve_cpp(source_module, referencing_file, repo_root)
+        if language == "php":
+            return _ext_resolve_php(source_module, referencing_file, repo_root)
     except Exception:  # noqa: BLE001
         pass
     return []

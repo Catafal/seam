@@ -36,6 +36,19 @@ from tree_sitter import Node
 
 import seam.config as config
 
+# ── Phase 9 extractors — top-level imports, no cycle ─────────────────────────
+# Each family module imports only graph_common (leaf), so the import chain is
+# graph.py → graph_java_csharp/graph_c_cpp/graph_ruby/graph_php → graph_common (leaf).
+# No circular dependencies.
+from seam.indexer.graph_c_cpp import (
+    _extract_comments_c,
+    _extract_comments_cpp,
+    _extract_edges_c,
+    _extract_edges_cpp,
+    _extract_symbols_c,
+    _extract_symbols_cpp,
+)
+
 # ── Re-export shared primitives from the leaf module ──────────────────────────
 # graph_common is the leaf (no seam deps); importing from it here does not create
 # a cycle. All imports are at module top — no deferred/in-function imports.
@@ -63,6 +76,24 @@ from seam.indexer.graph_go_rust import (
     _extract_edges_rust,
     _extract_symbols_go,
     _extract_symbols_rust,
+)
+from seam.indexer.graph_java_csharp import (
+    _extract_comments_csharp,
+    _extract_comments_java,
+    _extract_edges_csharp,
+    _extract_edges_java,
+    _extract_symbols_csharp,
+    _extract_symbols_java,
+)
+from seam.indexer.graph_php import (
+    _extract_comments_php,
+    _extract_edges_php,
+    _extract_symbols_php,
+)
+from seam.indexer.graph_ruby import (
+    _extract_comments_ruby,
+    _extract_edges_ruby,
+    _extract_symbols_ruby,
 )
 
 # signatures.py is a leaf (no seam deps) so importing it here does not create a cycle.
@@ -716,7 +747,8 @@ def extract_symbols(node: object, language: str, filepath: Path) -> list[Symbol]
 
     Args:
         node:     tree-sitter root node returned by parser.parse_*(path)
-        language: 'python' | 'typescript' | 'javascript' | 'go' | 'rust'
+        language: 'python' | 'typescript' | 'javascript' | 'go' | 'rust' |
+                  'java' | 'csharp' | 'ruby' | 'c' | 'cpp' | 'php'
         filepath: resolved absolute Path to the source file
 
     Returns list of Symbol TypedDicts (may be empty, never raises).
@@ -732,7 +764,29 @@ def extract_symbols(node: object, language: str, filepath: Path) -> list[Symbol]
             return _extract_symbols_go(node, filepath)
         elif language == "rust":
             return _extract_symbols_rust(node, filepath)
+        # Phase 9 — new languages (stubs return []; family agents fill logic)
+        elif language == "java":
+            return _extract_symbols_java(node, filepath)
+        elif language == "csharp":
+            return _extract_symbols_csharp(node, filepath)
+        elif language == "ruby":
+            return _extract_symbols_ruby(node, filepath)
+        elif language == "c":
+            return _extract_symbols_c(node, filepath)
+        elif language == "cpp":
+            return _extract_symbols_cpp(node, filepath)
+        elif language == "php":
+            return _extract_symbols_php(node, filepath)
     except Exception:  # noqa: BLE001
+        # WHY log: a silent except here would make a grammar-version break
+        # or a bad language string completely invisible. Logging at debug
+        # preserves the never-raise contract while surfacing the root cause.
+        logger.debug(
+            "extract_symbols: unhandled exception for language=%r file=%s",
+            language,
+            filepath,
+            exc_info=True,
+        )
         return []
     return []
 
@@ -745,7 +799,8 @@ def extract_comments(node: object, language: str, filepath: Path) -> list[Commen
 
     Args:
         node:     tree-sitter root node returned by parser.parse_*(path).
-        language: 'python' | 'typescript' | 'javascript' | 'go' | 'rust'
+        language: 'python' | 'typescript' | 'javascript' | 'go' | 'rust' |
+                  'java' | 'csharp' | 'ruby' | 'c' | 'cpp' | 'php'
         filepath: resolved absolute Path to the source file.
 
     Returns list of Comment TypedDicts (may be empty, never raises).
@@ -761,7 +816,26 @@ def extract_comments(node: object, language: str, filepath: Path) -> list[Commen
             return _extract_comments_go(node, filepath)
         elif language == "rust":
             return _extract_comments_rust(node, filepath)
+        # Phase 9 — new languages (stubs return []; family agents fill logic)
+        elif language == "java":
+            return _extract_comments_java(node, filepath)
+        elif language == "csharp":
+            return _extract_comments_csharp(node, filepath)
+        elif language == "ruby":
+            return _extract_comments_ruby(node, filepath)
+        elif language == "c":
+            return _extract_comments_c(node, filepath)
+        elif language == "cpp":
+            return _extract_comments_cpp(node, filepath)
+        elif language == "php":
+            return _extract_comments_php(node, filepath)
     except Exception:  # noqa: BLE001
+        logger.debug(
+            "extract_comments: unhandled exception for language=%r file=%s",
+            language,
+            filepath,
+            exc_info=True,
+        )
         return []
     return []
 
@@ -798,6 +872,19 @@ def extract_edges(
             raw_edges = _extract_edges_go(node, filepath)
         elif language == "rust":
             raw_edges = _extract_edges_rust(node, filepath)
+        # Phase 9 — new languages (stubs return []; family agents fill logic)
+        elif language == "java":
+            raw_edges = _extract_edges_java(node, filepath)
+        elif language == "csharp":
+            raw_edges = _extract_edges_csharp(node, filepath)
+        elif language == "ruby":
+            raw_edges = _extract_edges_ruby(node, filepath)
+        elif language == "c":
+            raw_edges = _extract_edges_c(node, filepath)
+        elif language == "cpp":
+            raw_edges = _extract_edges_cpp(node, filepath)
+        elif language == "php":
+            raw_edges = _extract_edges_php(node, filepath)
         else:
             return []
 
@@ -815,4 +902,10 @@ def extract_edges(
         return raw_edges
 
     except Exception:  # noqa: BLE001
+        logger.debug(
+            "extract_edges: unhandled exception for language=%r file=%s",
+            language,
+            filepath,
+            exc_info=True,
+        )
         return []

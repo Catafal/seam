@@ -7,7 +7,7 @@
 ## System Diagram
 
 ```
-Source files (Python, TypeScript)
+Source files (Python, TypeScript, JavaScript, Go, Rust, Java, C#, Ruby, C, C++, PHP)
         │
         ▼ tree-sitter (structural parsing)
         │
@@ -79,7 +79,7 @@ Runs as a background thread/process alongside the MCP server. Uses watchdog's `O
 ### MCP Server
 **Files:** `seam/server/mcp.py`, `seam/server/tools.py`
 
-Stdio transport (no HTTP, no ports). The Python MCP SDK handles protocol framing. Nine tools exposed (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3). Tool handlers in `tools.py` validate inputs and delegate to `query/engine.py`, `query/clusters.py`, or `analysis/`. Since Phase 4, `seam_context`, `seam_search`, and `seam_query` pass through the five enrichment fields from the engine layer unchanged. Since Phase 5, `seam_impact` and `seam_trace` additionally return `resolved_by` (provenance) and `best_candidate` (proximity pick on AMBIGUOUS entries) on each hop/entry.
+Stdio transport (no HTTP, no ports). The Python MCP SDK handles protocol framing. Ten tools exposed (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3 + Phase 6). Tool handlers in `tools.py` validate inputs and delegate to `query/engine.py`, `query/clusters.py`, or `analysis/`. Since Phase 4, `seam_context`, `seam_search`, and `seam_query` pass through the five enrichment fields from the engine layer unchanged. Since Phase 5, `seam_impact` and `seam_trace` additionally return `resolved_by` (provenance) and `best_candidate` (proximity pick on AMBIGUOUS entries) on each hop/entry.
 
 ### Query Engine
 **File:** `seam/query/engine.py`
@@ -386,13 +386,19 @@ Single public entry point:
 extract_node_fields(node, language, qualified_name=None, max_signature_len=300) -> NodeFields
 ```
 
-Per-language rules:
+Per-language rules (original 5 — `seam/indexer/signatures.py`; Phase 9 additions — `seam/indexer/signatures_ext.py`):
 - **Python** — `def name(params) -> return_type` / `class Name(Bases)`; decorators from `decorated_definition` siblings; export = no leading `_`.
 - **TypeScript/JavaScript** — `function name(params): return_type` / `class Name<T> extends B`; decorators from prev-sibling walk; export = `export_statement` parent; visibility from access-modifier children.
 - **Go** — `func (recv) Name(params) result` / `type Name kind`; export = capitalized first letter; decorators always `[]`.
 - **Rust** — `pub fn name(params) -> type` / `pub struct Name`; visibility from `visibility_modifier`; `pub(crate)` → `"crate"`; decorators always `[]`.
+- **Java** (Phase 9) — full declaration header; decorators = Java annotations from `modifiers` node (`@Service`, `@Override`); export/visibility from `public`/`private`/`protected` modifier.
+- **C#** (Phase 9) — full declaration header; decorators = C# attribute lists (`[Serializable]`); export/visibility from access modifier (`public`/`private`/`protected`/`internal`).
+- **Ruby** (Phase 9) — `def name(params)` / `class Name`; decorators always `[]`; visibility = `null` (dynamic DSL); is_exported = `null`.
+- **C** (Phase 9) — return type + declarator; decorators always `[]`; `static` storage class → `visibility="private"`, `is_exported=false`; otherwise `is_exported=true`.
+- **C++** (Phase 9) — return type + declarator; decorators always `[]`; visibility = `null` (MVP — access specifiers not threaded to individual symbols); is_exported = `null`.
+- **PHP** (Phase 9) — full declaration header; decorators = PHP attribute lists (`#[Route(...)]`); export/visibility from `public`/`private`/`protected` modifier.
 
-Never raises — any extraction error returns `_safe_defaults()` (all `null`/`[]`).
+Never raises — any extraction error returns safe defaults (all `null`/`[]`).
 
 ### Schema v5 Migration
 

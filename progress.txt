@@ -19,6 +19,45 @@
 #   Benchmark re-run: 83.4%/77.6% → 91.8%/88.7% (Seam output 51k→26k tokens; row #2 -1.3%→+85.0%).
 #   No schema change, no migration, no new deps, no new tool (count stays 10). 1 new config knob.
 #   Test count: 1107 (1031 baseline + 74 Phase 8 net, incl. review-fix tests). Gate green.
+# 2026-06-02: Phase 9 — Language expansion (5 → 11 languages) complete
+#   (branch feat/phase9-language-expansion). Implemented via a scaffold + 3 parallel TDD
+#   agents (Java/C# | C/C++ | Ruby/PHP), 6 review fixes + file-split (graph_ruby.py /
+#   graph_php.py split from an oversized graph_ruby_php.py), and observability pass.
+#   New grammar packages (6): tree-sitter-java 0.23.5, tree-sitter-c-sharp 0.23.5,
+#     tree-sitter-ruby 0.23.1, tree-sitter-c 0.24.2, tree-sitter-cpp 0.23.4, tree-sitter-php 0.24.1
+#   New extractor modules (4):
+#     seam/indexer/graph_java_csharp.py — Java + C# symbol/edge/comment extractors
+#       Java: class/interface/enum/record/method; annotations from modifiers
+#       C#: class/struct/record/interface/enum/delegate/method; attributes; namespace traversed not emitted
+#     seam/indexer/graph_c_cpp.py       — C + C++ symbol/edge/comment extractors
+#       C: function/struct/union/enum/typedef; static→visibility=private
+#       C++: class/struct/union/enum/function/method (Class.method); _dedup_cpp_symbols for in-class+out-of-line
+#     seam/indexer/graph_ruby.py        — Ruby symbol/edge/comment extractors
+#       class/module→class; def inside class→method; def self.x→method(Class.x); top-level def→function
+#     seam/indexer/graph_php.py         — PHP symbol/edge/comment extractors
+#       class/interface/trait/enum/function/method; grouped-use descent; enum method recursion
+#   New leaf modules (2):
+#     seam/indexer/signatures_ext.py   — Phase 4 enrichment for the 6 new langs (NodeFields re-declared;
+#       drift test asserts key-parity with signatures.py:NodeFields)
+#     seam/analysis/imports_ext.py     — Phase 5 import-mapping extraction for the 6 new langs
+#       (_ImportMapping re-declared; drift test asserts key-parity with imports.py:_ImportMapping)
+#       resolution returns [] for Java/C#/PHP qualified paths (classpath out of scope)
+#   Builtins extended: seam/analysis/builtins.py gained 6 conservative per-language frozensets
+#   Parser extended: seam/indexer/parser.py gained parse_java/parse_csharp/parse_ruby/parse_c/
+#     parse_cpp/parse_php (PHP: language_php() factory); _dispatch_parser routes new language strings
+#   Config: SEAM_LANGUAGE_MAP extended (.java, .cs, .rb, .c, .h, .cpp/.cc/.cxx/.c++, .hpp/.hh/.hxx, .php)
+#     .h → c (deliberate MVP; see ADR-008 limitation a)
+#   Docs: docs/adr/008-language-expansion.md created; ADR-005 updated with Phase 9 pointer;
+#     CLAUDE.md, README.md, docs/ARCHITECTURE.md updated; code-comments WHY pass on new modules
+#   MVP limitations (all documented in ADR-008 and CLAUDE.md Known Gotchas):
+#     a) .h → C (not C++) — use .hpp/.hh/.hxx for C++ headers
+#     b) nested classes have flat qualified names (Inner, not Outer.Inner) — matches Go/Rust precedent
+#     c) C++ pure-virtual declarations (=0) NOT extracted (parse as field_declaration, not function_definition)
+#     d) C function-pointer typedefs (typedef int(*Cb)(int)) NOT extracted
+#     e) Java/C#/PHP import resolution returns [] (classpath/NuGet/Composer out of scope)
+#     f) C/C++ system #include <...> resolution returns [] (no repo file found)
+#   No schema change, no migration, MCP tool count stays 10, no new config knobs.
+#   Test count: 1395 (1107 baseline + 288 Phase 9 net, incl. review-fix tests). Gate green.
 # Next: roadmap item 8 (`seam install`) / v0.1.0 release prep.
 
 # ── Phase 0: Foundation ────────────────────────────

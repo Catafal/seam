@@ -26,6 +26,17 @@ from typing import Any, TypedDict
 
 from tree_sitter import Node
 
+# Phase 9: import the new-language stub extractors from the companion leaf module.
+# signatures_ext is a leaf (no seam deps) so importing it here does not create a cycle.
+from seam.indexer.signatures_ext import (
+    _extract_c,
+    _extract_cpp,
+    _extract_csharp,
+    _extract_java,
+    _extract_php,
+    _extract_ruby,
+)
+
 logger = logging.getLogger(__name__)
 
 # Fallback when callers omit max_signature_len (e.g. unit tests calling extract_node_fields
@@ -592,6 +603,19 @@ def extract_node_fields(
             return _extract_go(node, qualified_name, max_signature_len)
         elif language == "rust":
             return _extract_rust(node, qualified_name, max_signature_len)
+        # Phase 9 — new languages routed to signatures_ext (stubs return safe defaults)
+        elif language == "java":
+            return _extract_java(node, qualified_name, max_signature_len)
+        elif language == "csharp":
+            return _extract_csharp(node, qualified_name, max_signature_len)
+        elif language == "ruby":
+            return _extract_ruby(node, qualified_name, max_signature_len)
+        elif language == "c":
+            return _extract_c(node, qualified_name, max_signature_len)
+        elif language == "cpp":
+            return _extract_cpp(node, qualified_name, max_signature_len)
+        elif language == "php":
+            return _extract_php(node, qualified_name, max_signature_len)
         else:
             # Unsupported language — safe defaults, not an error; callers may index
             # languages not yet wired to an extractor.
