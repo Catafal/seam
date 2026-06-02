@@ -39,7 +39,23 @@ seam/config.py               ← all settings (env vars with defaults)
                                 SEAM_LLM_API_KEY: optional, required for llm naming
                                 SEAM_LLM_MODEL: default "gpt-4o-mini"
                                 SEAM_CLUSTER_MIN_SIZE: min community size (default: 2)
-seam/cli/main.py             ← Typer CLI (init, start, status, impact, trace, changes, why, clusters)
+                                SEAM_AFFECTED_DEPTH: max upstream hops for affected traversal (default: 5)
+                                SEAM_MAX_AFFECTED_FILES: max changed files per seam_affected call (default: 200)
+                                SEAM_MAX_AFFECTED_SYMBOLS: max symbols analyzed per file in affected() (default: 50)
+                                SEAM_FUZZY_MAX_DIST: max Damerau-Levenshtein distance for fuzzy fallback (default: 1)
+                                SEAM_FUZZY_MAX_CANDIDATES: max symbol names evaluated in fuzzy scan (default: 500)
+seam/cli/main.py             ← Typer CLI (init, start, status, impact, trace, changes, why, clusters, affected)
+                                --json / --quiet on read commands; --stdin on affected + changes
+seam/cli/output.py           ← LEAF: agent-output contract — success/error JSON envelope, quiet renderer
+                                {"ok":true,"data":...} / {"ok":false,"error":{"code","message"}}
+                                error codes: NO_INDEX INVALID_INPUT INVALID_QUERY NOT_A_GIT_REPO DB_ERROR
+seam/query/fts.py            ← LEAF: FTS5 query construction + multi-signal rescoring (Phase 3)
+                                build_match_query(text) → OR-joined prefix MATCH expression
+                                rescore(rows, terms) → reranked rows (name/path/test/cluster signals)
+                                extract_terms(text) → plain token list (single source of tokenisation)
+seam/analysis/affected.py    ← affected(conn, changed_files, *, depth, repo_root) → AffectedResult
+                                changed files → owning symbols → upstream impact → impacted test files
+                                reuses analysis.impact + analysis.testpaths.is_test_file
 seam/indexer/parser.py       ← tree-sitter parsing (Python, TypeScript, JavaScript, Go, Rust)
 seam/indexer/graph_common.py ← LEAF: shared TypedDicts (Symbol/Edge/Comment), helpers
 seam/indexer/graph_go_rust.py← Go + Rust extractors (imports graph_common only)
@@ -78,19 +94,21 @@ tests/fixtures/              ← sample.py, sample.ts, sample.go, sample.rs
 - **Edges use string names** (not symbol IDs) — required for independent re-indexing
 
 ## Current Phase
-Phase 2 complete — graph community detection (clustering) shipped.
-Schema at v4. 517 tests passing. Gate green.
+Phase 3 complete — agent-first interface shipped (search OR-join + rescore + fuzzy fallback,
+CLI --json/--quiet/--stdin envelope, seam affected / seam_affected).
+Schema at v4 (no migration required). 631 tests passing. Gate green.
 See `progress.txt` for session history. Next: benchmarking / v0.1.0 release prep.
 
 ## MCP Tools
-- `seam_query` — FTS5 + 1-hop graph expansion (Phase 0)
+- `seam_query` — FTS5 + 1-hop graph expansion (Phase 0); OR-join + rescore since Phase 3
 - `seam_context` — symbol 360-degree view, now enriched with cluster_id/label/peers (Phase 2)
-- `seam_search` — full-text FTS5 search (Phase 0)
+- `seam_search` — full-text FTS5 search (Phase 0); OR-join + rescore + fuzzy fallback since Phase 3
 - `seam_impact` — blast-radius analysis by risk tier (Phase 1)
 - `seam_trace` — shortest call/dependency path (Phase 1)
-- `seam_changes` — git diff → changed symbols → risk level (Phase 1)
+- `seam_changes` — git diff → changed symbols → risk level (Phase 1); --stdin on CLI
 - `seam_why` — semantic comments WHY/HACK/NOTE/TODO/FIXME (Phase 1b)
 - `seam_clusters` — list functional areas or drill into one cluster (Phase 2)
+- `seam_affected` — changed files → impacted test files via reverse-dependency traversal (Phase 3)
 
 ## Known Gotchas
 - **Clusters recomputed only on full `seam init`**: the file watcher does NOT recompute
@@ -103,6 +121,21 @@ See `progress.txt` for session history. Next: benchmarking / v0.1.0 release prep
   persisted as clusters by default. Set to 1 to retain every symbol in its own cluster.
 - **LLM naming is index-time only**: the MCP server read path is always 100% local.
   `SEAM_CLUSTER_NAMING=llm` only affects the `seam init` post-pass.
+- **Search uses OR-join since Phase 3**: multi-term queries like `"parse issues board"` are
+  built as `"parse"* OR "issues"* OR "board"*` so one non-matching word cannot zero the result.
+  Results are re-ranked with name/path/test/cluster signals. If FTS returns zero rows a LIKE
+  fallback runs, then a Damerau-Levenshtein fuzzy scan (up to SEAM_FUZZY_MAX_DIST=1 edit
+  distance, capped at SEAM_FUZZY_MAX_CANDIDATES=500 symbols). A genuinely empty result from
+  all three tiers still surfaces as an empty list — distinct from INVALID_QUERY.
+- **`seam affected` uses the same edge graph as `seam impact`**: symbols not yet in the index
+  (e.g. brand-new files before the next `seam init`) contribute zero dependents silently.
+  Run `seam init` to refresh the index before running `seam affected` on new files.
+- **`seam affected` depth cap**: traversal stops at SEAM_AFFECTED_DEPTH (default 5) hops.
+  Raise via env var for deeper graphs. When a file has more symbols than SEAM_MAX_AFFECTED_SYMBOLS
+  (default 50) the result carries `partial=true` — the affected set may be incomplete.
+- **`--json` errors go to stdout, not stderr**: unlike CodeGraph (which emits ANSI errors on
+  stderr even in JSON mode), Seam's `--json` mode always writes a structured envelope to stdout
+  and exits non-zero. Shell pipelines and CI steps can branch on the `ok` key reliably.
 
 ## GitNexus: Code Intelligence (MCP)
 This project is indexed. Use GitNexus MCP tools before coding on existing code.

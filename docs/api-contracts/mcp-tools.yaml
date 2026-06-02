@@ -461,6 +461,69 @@ tools:
       empty_message: "No clusters found — run 'seam init' to compute clusters"
     errors: []
 
+  seam_affected:
+    status: IMPLEMENTED
+    phase: 3
+    description: |
+      Find which test files are impacted by a set of changed source files.
+
+      Given a list of changed file paths, traverses the reverse-dependency graph
+      (upstream impact) to find all test files that depend on symbols in those files.
+      Reuses the same traversal engine as seam_impact(direction="upstream") — no
+      duplicate blast-radius logic.
+
+      A changed file that is itself a test file is always included in affected_tests
+      directly (you edited the test, you should run it).
+      Files not in the index are silently skipped — they have no graph dependents.
+
+      Typical agent workflow:
+        1. git diff --name-only             → list of changed files
+        2. seam_affected(changed_files)     → impacted test files
+        3. pytest <affected_tests>          → run only what matters
+
+      Returns INVALID_INPUT when changed_files is empty or exceeds SEAM_MAX_AFFECTED_FILES.
+    input:
+      changed_files:
+        type: array
+        items: string
+        required: true
+        description: |
+          List of file paths (absolute, or relative to the project root).
+          Must not be empty. Maximum length: SEAM_MAX_AFFECTED_FILES (default 200).
+          Paths not present in the index are silently skipped (no error).
+      depth:
+        type: integer
+        required: false
+        default: 5
+        description: |
+          Maximum upstream traversal depth (hops) from each changed symbol.
+          Default: SEAM_AFFECTED_DEPTH env var (default 5).
+          Higher values find more distant test dependents but increase runtime on
+          large graphs. depth=0 returns only directly-changed test files (no traversal).
+    output:
+      type: object
+      description: |
+        changed_files:
+          (list[str]) — relativized paths of the input changed files (relative to project root).
+        affected_tests:
+          (list[str]) — sorted unique test-file paths (relative to project root) that must be
+                        re-run. Empty list when no test dependents are found.
+        total_dependents_traversed:
+          (int) — total number of dependent entries examined across all symbols in all changed
+                  files. Informational; may double-count when the same dependent is reachable
+                  from multiple changed symbols.
+        partial:
+          (bool) — True when the per-file symbol cap (SEAM_MAX_AFFECTED_SYMBOLS, default 50)
+                   was hit for at least one file. When true, the affected set may be incomplete.
+                   Raise SEAM_MAX_AFFECTED_SYMBOLS via env var to analyze more symbols per file.
+      empty_ok: true
+      empty_message: "No affected test files found for the given changed files"
+    errors:
+      - code: INVALID_INPUT
+        condition: changed_files is empty
+      - code: INVALID_INPUT
+        condition: len(changed_files) exceeds SEAM_MAX_AFFECTED_FILES (default 200)
+
   seam_why:
     status: IMPLEMENTED
     phase: 1b
