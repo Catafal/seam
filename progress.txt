@@ -177,3 +177,28 @@
 #     tests/integration/test_pack_homonym.py— 9 integration tests (per-file cap, diversity, ambiguous target)
 #   Test count: 975 (939 baseline + 36 Phase 6, incl. review-fix tests) (gate green — ruff + mypy + pytest)
 #   No schema change, no migration, no new deps
+# 2026-06-02: Phase 7 — One-Shot `seam sync` complete (branch feat/phase7-seam-sync, issue #31, PR #32)
+#   New module:
+#     seam/indexer/sync.py          — LEAF: sync(conn, root, *, recompute_clusters, force_clusters,
+#                                     naming_mode, llm_api_key, llm_model, min_size) → SyncResult
+#                                     filesystem reconcile: mtime pre-filter → SHA-1 confirm
+#                                     reuses walk_project + index_one_file + sha1 + delete_file + index_clusters
+#                                     delete is existsSync-guarded (roadmap §6.1) — only remove if file truly gone
+#                                     FULL cluster recompute gated on graph_changed (or force_clusters)
+#                                     SyncResult: added, modified, removed, unchanged, skipped, graph_changed,
+#                                       clusters_recomputed, cluster_count (None=skipped / -1=failed / ≥0=ok)
+#   Updated:
+#     seam/cli/main.py              — `seam sync [path]` command (--json / --quiet / --force-clusters)
+#                                     routes through sync.py:sync(); NO MCP tool (CLI-only, server read-only)
+#                                     cluster-failure (-1) surfaced as "failed" + warning (mirrors seam init)
+#     CLAUDE.md / README.md / docs/ARCHITECTURE.md — Phase 7 documented; stale-clusters gotcha updated
+#   Test files:
+#     tests/unit/test_sync.py                  — reconcile + gating + cluster-failure (S13) + delete-safety (S14)
+#     tests/integration/test_sync_cli.py       — CLI envelope, NO_INDEX, mutual-excl, cluster-failure (SC11)
+#     tests/integration/test_sync_clusters.py  — end-to-end cluster freshness + gating + --force-clusters
+#   Review: /review + /backend-taste converged on the index_clusters -1 sentinel (surfaced as healthy) —
+#     fixed: clusters_recomputed=(count>=0) + CLI "failed" warning; added existsSync delete guard;
+#     narrowed CLI except to sqlite3.Error→DB_ERROR (documented catch-all fallback preserves --json envelope)
+#   Test count: 1031 (975 baseline + 56 Phase 7, incl. 6 review-fix tests) (gate green — ruff + mypy + pytest)
+#   No schema change, no migration, no new deps, no new config knobs (reuses SEAM_CLUSTER_*)
+# Next: roadmap item 8 (`seam install`) / v0.1.0 release prep

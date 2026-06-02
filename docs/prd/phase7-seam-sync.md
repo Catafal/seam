@@ -51,7 +51,9 @@ honest fix for the case where the *live watcher* already indexed my edits into t
 
 The command surfaces the reconcile outcome three ways, consistent with the rest of the CLI:
 - **default** — a Rich summary table (added / modified / removed / unchanged / skipped / clusters);
-- **`--quiet` / `-q`** — bare values, one per line, for hook use;
+- **`--quiet` / `-q`** — terse `key: value` lines (one per `SyncResult` field) for hook use. (The
+  read commands' bare single-value `--quiet` form would be ambiguous for the 8-field result, so sync
+  labels each line; the hook usage redirects output to `/dev/null` regardless.)
 - **`--json`** — the `{ok:true, data:{…}}` structured envelope for CI / agents to branch on.
 
 `seam sync` is a **maintenance command** (like `init` / `start` / `status`): CLI-only, **no new
@@ -186,7 +188,7 @@ Modules under test (the three emphasized areas):
 2. **CLI command + envelope** (`tests/integration/test_sync_cli.py`):
    - `seam sync` after editing a fixture file updates the DB and prints the summary; `--json`
      returns a valid `{ok:true,data:{added,modified,removed,unchanged,skipped,graph_changed,
-     clusters_recomputed,cluster_count}}` envelope; `--quiet` prints bare values; exit 0 on success.
+     clusters_recomputed,cluster_count}}` envelope; `--quiet` prints `key: value` lines; exit 0 on success.
    - `seam sync` on a directory with no index → `NO_INDEX` envelope (`--json`) / red message, exit 1.
    - `--json` + `--quiet` together → `INVALID_INPUT` (reuses `check_mutual_exclusion`).
    - Prior art: `tests/integration/test_pack_parity.py`, the `seam status --json/--quiet` tests, the
