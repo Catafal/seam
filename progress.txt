@@ -260,3 +260,29 @@
 #   Test count: 1031 (975 baseline + 56 Phase 7, incl. 6 review-fix tests) (gate green — ruff + mypy + pytest)
 #   No schema change, no migration, no new deps, no new config knobs (reuses SEAM_CLUSTER_*)
 # Next: roadmap item 8 (`seam install`) / v0.1.0 release prep
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 10 — Swift support (11 → 12 languages); Kotlin deferred         [#37]
+# ─────────────────────────────────────────────────────────────────────────────
+#   Approach: same pipeline as Phase 9 — /to-prd → single TDD Sonnet agent (one
+#     language = no inter-agent contention) → /review + /backend-taste → fix → /doc → PR+merge.
+#   Grammar evidence (the go/no-go step): probed BOTH Swift + Kotlin against ts 0.25.2.
+#     Swift  (tree-sitter-swift 0.7.3)  — clean, has_error=False on idiomatic code → ADD.
+#     Kotlin (tree-sitter-kotlin 1.1.0) — ERROR nodes on interfaces/objects/ctor-classes;
+#       recovered ~1 of 6 symbols on a realistic file → DEFERRED (would silently drop code).
+#       No tree-sitter-kotlin-ng on PyPI. See ADR-009.
+#   New:
+#     seam/indexer/graph_swift.py   — symbol/edge/comment extractors (mirrors graph_go_rust.py)
+#                                     class/struct/actor/extension→class, enum→type, protocol→interface
+#                                     methods→Type.method; bare-identifier calls only; /// + /** */ docstrings
+#     tests/fixtures/sample.swift, tests/unit/test_swift.py (58 tests)
+#     docs/adr/009-swift-support.md — Swift added + explicit Kotlin deferral with evidence
+#   Updated: config.py (.swift), parser.py (parse_swift via language()), pipeline._dispatch_parser,
+#     graph.py (3 dispatch branches), graph_common._find_enclosing_function (Swift branch),
+#     signatures_ext.py (_extract_swift), imports_ext.py (_extract_swift/_resolve_swift→[]),
+#     builtins.py (_SWIFT_BUILTINS, trimmed to stay <1000 lines)
+#   Review (/review + /backend-taste): cross-cutting = 0 findings; correctness = 1 — /** */ block
+#     doc-comments dropped (only 'comment'///walked, not 'multiline_comment'). Fixed + regression test.
+#   Test count: 1454 (1395 Phase-9 baseline + 58 Swift + 1 review-fix regression). Gate green.
+#   No schema change, no migration, MCP tool count stays 10.
+# Next: roadmap item 8 (`seam install`) / v0.1.0 release prep. (Kotlin: revisit on robust grammar.)
