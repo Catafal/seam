@@ -282,6 +282,43 @@ def _arrow_function_name(arrow_node: Node) -> str | None:
 # ── Enclosing-scope resolver ───────────────────────────────────────────────────
 
 
+def _c_cpp_function_name_from_def(func_def: Node) -> str | None:
+    """Extract the function name from a C or C++ function_definition node.
+
+    C/C++ function_definition has NO 'name' field directly — the name is nested:
+        function_definition → declarator (function_declarator) → declarator (identifier
+        | field_identifier | qualified_identifier).
+
+    Returns:
+      - Plain name (str) for free functions and in-class method declarations.
+      - 'Class.method' qualified name for out-of-line definitions (Class::method).
+      - None if the name cannot be resolved.
+
+    WHY this helper is in graph_common (leaf): _find_enclosing_function needs it to
+    resolve enclosing scope names for C/C++ call edges. Putting it in graph_c_cpp
+    would create a cycle (graph_c_cpp → graph_common → graph_c_cpp). Keeping it here
+    (alongside the other language helpers like _go_recv_type_name) preserves the leaf.
+    """
+    try:
+        declarator = func_def.child_by_field_name("declarator")
+        if declarator is None or declarator.type != "function_declarator":
+            return None
+        inner = declarator.child_by_field_name("declarator")
+        if inner is None:
+            return None
+        if inner.type in ("identifier", "field_identifier"):
+            return _text(inner)
+        if inner.type == "qualified_identifier":
+            # Out-of-line C++ method: Class::method → 'Class.method'
+            scope = inner.child_by_field_name("scope")
+            name_node = inner.child_by_field_name("name")
+            if scope and name_node:
+                return f"{_text(scope)}.{_text(name_node)}"
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def _find_enclosing_function(node: Node, language: str) -> str | None:
     """Walk up the parent chain to find the nearest enclosing function/method name.
 
@@ -289,33 +326,67 @@ def _find_enclosing_function(node: Node, language: str) -> str | None:
     when no enclosing function exists (e.g. top-level module code). None causes the
     caller to drop the edge — only named scopes produce edge sources.
 
-    Language-specific behaviour:
-      Python:
-        - function_definition nodes; class qualification via class_definition parent.
-      TypeScript/JavaScript:
-        - Named function_declaration / method_definition ALWAYS wins over arrow functions.
-        - The innermost const-assigned arrow_function sets a fallback name only.
-        - If neither is found, returns None (edge dropped).
-      Go:
-        - function_declaration and method_declaration nodes.
-        - method_declaration builds a 'Recv.Name' qualified name using _go_recv_type_name.
-        - If the method node has no 'name' field (malformed AST), the node is skipped
-          rather than falling back to the full source text — which would produce a
-          nonsensical multi-line edge source.
-      Rust:
-        - function_item nodes.
-        - function_item inside impl_item builds a 'Type.fn' qualified name using
-          _rust_impl_type_name.
+    Supports all 11 Seam languages: python, typescript, javascript, go, rust,
+    java, csharp, ruby, c, cpp, php. Per-language function/method node types and
+    class-context types are defined in the body below.
+
+    WHY in this leaf module: both graph.py and the family modules (graph_go_rust,
+    graph_java_csharp, graph_c_cpp, graph_ruby_php) call this for call-edge source
+    resolution. Keeping it here avoids circular imports between family modules.
     """
     func_types_py = {"function_definition"}
     func_types_ts = {"function_declaration", "method_definition", "arrow_function"}
     func_types_go = {"function_declaration", "method_declaration"}
     func_types_rust = {"function_item"}
+    # Phase 9 function/method node types per language
+    func_types_java = {"method_declaration", "constructor_declaration"}
+    func_types_csharp = {
+        "method_declaration",
+        "constructor_declaration",
+        "local_function_statement",
+    }
+    func_types_ruby = {"method", "singleton_method"}
+    func_types_c = {"function_definition"}
+    func_types_cpp = {"function_definition"}
+    func_types_php = {"method_declaration", "function_definition"}
+
+    # Phase 9 class-context node types for qualified 'Class.method' names
+    class_types_java = {
+        "class_declaration",
+        "interface_declaration",
+        "enum_declaration",
+        "record_declaration",
+    }
+    class_types_csharp = {
+        "class_declaration",
+        "struct_declaration",
+        "record_declaration",
+        "interface_declaration",
+    }
+    class_types_ruby = {"class", "module"}
+    class_types_cpp = {"class_specifier", "struct_specifier"}
+    class_types_php = {
+        "class_declaration",
+        "interface_declaration",
+        "trait_declaration",
+    }
 
     if language == "go":
         func_types = func_types_go
     elif language == "rust":
         func_types = func_types_rust
+    elif language == "java":
+        func_types = func_types_java
+    elif language == "csharp":
+        func_types = func_types_csharp
+    elif language == "ruby":
+        func_types = func_types_ruby
+    elif language == "c":
+        func_types = func_types_c
+    elif language == "cpp":
+        func_types = func_types_cpp
+    elif language == "php":
+        func_types = func_types_php
     else:
         func_types = func_types_py if language == "python" else func_types_ts
 
@@ -360,17 +431,55 @@ def _find_enclosing_function(node: Node, language: str) -> str | None:
                             return f"{type_name}.{func_name}"
                 return func_name
 
+            # C/C++ function_definition: name lives in declarator chain, not a 'name' field.
+            # function_definition → function_declarator ('declarator' field) →
+            #   identifier or field_identifier or qualified_identifier ('declarator' field).
+            if language in ("c", "cpp") and current.type == "function_definition":
+                c_func_name = _c_cpp_function_name_from_def(current)
+                if c_func_name is None:
+                    current = current.parent
+                    continue
+                # C++ out-of-line method (e.g. 'Circle.area') is already qualified
+                if "." in c_func_name:
+                    return c_func_name
+                # C++ in-class: check for enclosing class_specifier/struct_specifier
+                if language == "cpp":
+                    parent = current.parent
+                    while parent is not None:
+                        if parent.type in class_types_cpp:
+                            cls_name_node = parent.child_by_field_name("name")
+                            if cls_name_node is not None:
+                                return f"{_text(cls_name_node)}.{c_func_name}"
+                        parent = parent.parent
+                return c_func_name
+
             # Named scope (function_declaration, method_definition, function_definition).
             name_node = current.child_by_field_name("name")
             if name_node is None:
                 current = current.parent
                 continue
             func_name = _text(name_node)
-            class_types = (
-                {"class_definition"}
-                if language == "python"
-                else {"class_declaration", "class_body"}
-            )
+
+            # Determine the set of class-context types for this language.
+            if language == "python":
+                class_types: set[str] = {"class_definition"}
+            elif language == "java":
+                class_types = class_types_java
+            elif language == "csharp":
+                class_types = class_types_csharp
+            elif language == "ruby":
+                class_types = class_types_ruby
+            elif language == "cpp":
+                class_types = class_types_cpp
+            elif language == "php":
+                class_types = class_types_php
+            elif language == "c":
+                # C has no classes — never qualify
+                class_types = set()
+            else:
+                # TypeScript/JavaScript
+                class_types = {"class_declaration", "class_body"}
+
             parent = current.parent
             while parent is not None:
                 if parent.type in class_types:

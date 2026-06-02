@@ -18,9 +18,15 @@ from seam.analysis.imports import extract_import_mappings
 from seam.indexer.db import upsert_file, upsert_import_mappings
 from seam.indexer.graph import extract_comments, extract_edges, extract_symbols
 from seam.indexer.parser import (
+    parse_c,
+    parse_cpp,
+    parse_csharp,
     parse_go,
+    parse_java,
     parse_javascript,
+    parse_php,
     parse_python,
+    parse_ruby,
     parse_rust,
     parse_typescript,
 )
@@ -62,6 +68,19 @@ def _dispatch_parser(path: Path, language: str):  # type: ignore[return]
         return parse_go(path)
     if language == "rust":
         return parse_rust(path)
+    # Phase 9 — new languages
+    if language == "java":
+        return parse_java(path)
+    if language == "csharp":
+        return parse_csharp(path)
+    if language == "ruby":
+        return parse_ruby(path)
+    if language == "c":
+        return parse_c(path)
+    if language == "cpp":
+        return parse_cpp(path)
+    if language == "php":
+        return parse_php(path)
     return None
 
 

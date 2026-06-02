@@ -12,21 +12,36 @@ Guards applied before parsing:
 
 from pathlib import Path
 
+import tree_sitter_c as tsc
+import tree_sitter_c_sharp as tscsharp
+import tree_sitter_cpp as tscpp
 import tree_sitter_go as tsgo
+import tree_sitter_java as tsjava
+import tree_sitter_php as tsphp
 import tree_sitter_python as tspython
+import tree_sitter_ruby as tsruby
 import tree_sitter_rust as tsrust
 import tree_sitter_typescript as tstypescript
 from tree_sitter import Language, Node, Parser
 
 import seam.config as config
 
-# Build Language objects once at module level (cheap singletons)
+# Build Language objects once at module level (cheap singletons).
+# Phase 9: six new grammars added alongside the original five.
 _PY_LANG = Language(tspython.language())
 _TS_LANG = Language(tstypescript.language_typescript())
 # TSX grammar is a superset of JS+JSX — used for .js/.mjs/.cjs (no separate JS dep)
 _TSX_LANG = Language(tstypescript.language_tsx())
 _GO_LANG = Language(tsgo.language())
 _RUST_LANG = Language(tsrust.language())
+# Phase 9 grammars
+_JAVA_LANG = Language(tsjava.language())
+_CSHARP_LANG = Language(tscsharp.language())
+_RUBY_LANG = Language(tsruby.language())
+_C_LANG = Language(tsc.language())
+_CPP_LANG = Language(tscpp.language())
+# PHP: language_php() (not language()) to handle the <?php open tag correctly.
+_PHP_LANG = Language(tsphp.language_php())
 
 
 def _parse(path: Path, language: Language) -> Node | None:
@@ -113,3 +128,62 @@ def parse_rust(path: Path) -> Node | None:
     Malformed Rust still returns a (possibly partial) tree with ERROR nodes.
     """
     return _parse(path, _RUST_LANG)
+
+
+# ── Phase 9 parsers ────────────────────────────────────────────────────────────
+
+
+def parse_java(path: Path) -> Node | None:
+    """Parse a Java source file (.java).
+
+    Returns tree-sitter root Node, or None for binary/oversized/unreadable files.
+    Malformed Java still returns a (possibly partial) tree with ERROR nodes.
+    """
+    return _parse(path, _JAVA_LANG)
+
+
+def parse_csharp(path: Path) -> Node | None:
+    """Parse a C# source file (.cs).
+
+    Returns tree-sitter root Node, or None for binary/oversized/unreadable files.
+    Malformed C# still returns a (possibly partial) tree with ERROR nodes.
+    """
+    return _parse(path, _CSHARP_LANG)
+
+
+def parse_ruby(path: Path) -> Node | None:
+    """Parse a Ruby source file (.rb).
+
+    Returns tree-sitter root Node, or None for binary/oversized/unreadable files.
+    Malformed Ruby still returns a (possibly partial) tree with ERROR nodes.
+    """
+    return _parse(path, _RUBY_LANG)
+
+
+def parse_c(path: Path) -> Node | None:
+    """Parse a C source file (.c / .h).
+
+    Returns tree-sitter root Node, or None for binary/oversized/unreadable files.
+    Both .c and .h files use the same C grammar — .h→C is a deliberate MVP decision.
+    Malformed C still returns a (possibly partial) tree with ERROR nodes.
+    """
+    return _parse(path, _C_LANG)
+
+
+def parse_cpp(path: Path) -> Node | None:
+    """Parse a C++ source file (.cpp / .cc / .cxx / .hpp / .hh / .hxx / .c++).
+
+    Returns tree-sitter root Node, or None for binary/oversized/unreadable files.
+    Malformed C++ still returns a (possibly partial) tree with ERROR nodes.
+    """
+    return _parse(path, _CPP_LANG)
+
+
+def parse_php(path: Path) -> Node | None:
+    """Parse a PHP source file (.php).
+
+    Uses language_php() (not language()) which handles the <?php open tag.
+    Returns tree-sitter root Node, or None for binary/oversized/unreadable files.
+    Malformed PHP still returns a (possibly partial) tree with ERROR nodes.
+    """
+    return _parse(path, _PHP_LANG)

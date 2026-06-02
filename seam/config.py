@@ -20,7 +20,9 @@ SEAM_MAX_FILE_BYTES: int = int(os.getenv("SEAM_MAX_FILE_BYTES", str(1024 * 1024)
 # and ChangeReport.partial is set to True. Raise via env var on large codebases.
 SEAM_MAX_IMPACT_SYMBOLS: int = int(os.getenv("SEAM_MAX_IMPACT_SYMBOLS", "50"))
 
-# File extensions to index, mapped to language identifier
+# File extensions to index, mapped to language identifier.
+# Phase 9: added Java, C#, Ruby, C/H, C++, and PHP extensions.
+# NOTE: .h maps to C (not C++) — deliberate MVP decision; see ADR-009.
 SEAM_LANGUAGE_MAP: dict[str, str] = {
     ".py": "python",
     ".ts": "typescript",
@@ -30,6 +32,25 @@ SEAM_LANGUAGE_MAP: dict[str, str] = {
     ".cjs": "javascript",
     ".go": "go",
     ".rs": "rust",
+    # Phase 9 — Java
+    ".java": "java",
+    # Phase 9 — C# (csharp to avoid keyword collision)
+    ".cs": "csharp",
+    # Phase 9 — Ruby
+    ".rb": "ruby",
+    # Phase 9 — C (header .h → C; MVP decision)
+    ".c": "c",
+    ".h": "c",
+    # Phase 9 — C++ (all common variants)
+    ".cpp": "cpp",
+    ".cc": "cpp",
+    ".cxx": "cpp",
+    ".c++": "cpp",
+    ".hpp": "cpp",
+    ".hh": "cpp",
+    ".hxx": "cpp",
+    # Phase 9 — PHP
+    ".php": "php",
 }
 
 
