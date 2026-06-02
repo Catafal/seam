@@ -178,8 +178,14 @@ def sync(
                     modified += 1
 
     # ── Step 4: Delete tracked files no longer on disk ────────────────────────
+    # Double-check the file is ACTUALLY gone before deleting (CodeGraph's
+    # existsSync guard, roadmap §6.1). A tracked path can be absent from the
+    # walk set for benign reasons — a transient FS/permission hiccup, a
+    # wrong-directory sync, or a --db-dir pointed at another project's index.
+    # Trusting the walk set alone would let any of those silently wipe the
+    # entire index. We only remove a file once it genuinely no longer exists.
     for abs_str in tracked:
-        if abs_str not in current_set:
+        if abs_str not in current_set and not Path(abs_str).exists():
             logger.debug("sync: REMOVED %s", abs_str)
             delete_file(conn, Path(abs_str))
             removed += 1
@@ -203,7 +209,13 @@ def sync(
             llm_model=llm_model,
             min_size=min_size,
         )
-        clusters_recomputed = True
+        # index_clusters returns -1 on failure (it never raises). "Recomputed"
+        # must mean "clusters were successfully refreshed" — a failed pass leaves
+        # them stale, so do NOT claim success. The -1 sentinel is preserved in
+        # cluster_count so callers can tell "ran but failed" (-1) apart from
+        # "did not run" (None), and the CLI surfaces it as a visible failure
+        # (mirroring `seam init`'s clustering_failed guard).
+        clusters_recomputed = cluster_count >= 0
 
     logger.info(
         "sync: added=%d modified=%d removed=%d unchanged=%d skipped=%d "

@@ -13,9 +13,13 @@ Test groups:
     S10 — Unreadable file counted in skipped, sync completes normally
     S11 — graph_changed reflects (added + modified + removed) > 0
     S12 — recompute_clusters=False suppresses cluster recompute even with changes
+    S13 — Cluster recompute failure (index_clusters returns -1): not reported as success
+    S14 — Delete safety: a tracked file still present on disk is NOT removed (exists check)
 """
 
 from pathlib import Path
+
+import pytest
 
 from seam.indexer.db import init_db, upsert_file
 from seam.indexer.graph import Edge, Symbol  # noqa: F401 — used for TypedDict construction
@@ -565,3 +569,95 @@ class TestRecomputeClustersFalse:
         assert result["graph_changed"] is True
         assert result["clusters_recomputed"] is False
         assert result["cluster_count"] is None
+
+
+# ── S13: Cluster recompute failure (index_clusters returns -1) ────────────────
+
+
+class TestClusterRecomputeFailure:
+    """index_clusters returns -1 on failure (never raises); sync must NOT report
+    that as a healthy recompute. Otherwise an agent branching on the result sees a
+    green sync with cluster_count=-1 while clusters are actually stale/broken —
+    mirrors the guard `seam init` already applies (total_clusters < 0 → failed).
+    """
+
+    def test_cluster_failure_not_reported_as_recomputed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        conn = _make_db(tmp_path)
+        (tmp_path / "new.py").write_text("def x(): pass\n")
+
+        # Force the cluster pass to fail (its documented -1 error sentinel).
+        monkeypatch.setattr("seam.indexer.sync.index_clusters", lambda *a, **k: -1)
+
+        result = _sync_with_defaults(conn, tmp_path)
+        conn.close()
+
+        # The reconcile itself succeeded (file added)...
+        assert result["added"] == 1
+        assert result["graph_changed"] is True
+        # ...but clustering FAILED — it must not look successfully recomputed.
+        assert result["clusters_recomputed"] is False
+        # cluster_count preserves the -1 sentinel so callers can detect failure
+        # (distinct from None = "not run").
+        assert result["cluster_count"] == -1
+
+    def test_cluster_success_still_reports_recomputed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A successful recompute (>= 0) still reports clusters_recomputed=True."""
+        conn = _make_db(tmp_path)
+        (tmp_path / "new.py").write_text("def x(): pass\n")
+
+        monkeypatch.setattr("seam.indexer.sync.index_clusters", lambda *a, **k: 3)
+
+        result = _sync_with_defaults(conn, tmp_path)
+        conn.close()
+
+        assert result["clusters_recomputed"] is True
+        assert result["cluster_count"] == 3
+
+
+# ── S14: Delete safety — exists() double-check ────────────────────────────────
+
+
+class TestDeleteSafetyExistsCheck:
+    """A tracked file that walk_project did NOT return but that still EXISTS on disk
+    must NOT be deleted. This is CodeGraph's `existsSync` double-check (roadmap §6.1):
+    it prevents a transient walk hiccup, a wrong-directory sync, or a --db-dir
+    mismatch from silently wiping the entire index.
+    """
+
+    def test_tracked_file_still_on_disk_not_removed(self, tmp_path: Path) -> None:
+        # Seed a tracked file that lives OUTSIDE the sync root but still exists.
+        # walk_project(root) will not return it, yet it is a real file on disk —
+        # so the reconcile must keep it, not delete it.
+        outside = tmp_path.parent / f"{tmp_path.name}_outside.py"
+        outside.write_text("def outside(): pass\n")
+        conn = _make_db(tmp_path)
+        upsert_file(conn, outside, "python", "cafe1234", [_sym("outside", str(outside))], [])
+
+        root = tmp_path  # walk_project(root) does NOT include `outside`
+        result = _sync_with_defaults(conn, root)
+
+        # File still exists on disk → must be kept, not removed.
+        row = conn.execute("SELECT name FROM symbols WHERE name = 'outside'").fetchone()
+        conn.close()
+        outside.unlink()
+
+        assert result["removed"] == 0, "A tracked file still on disk must not be deleted"
+        assert row is not None, "Symbol from the still-existing file must remain indexed"
+
+    def test_genuinely_deleted_file_still_removed(self, tmp_path: Path) -> None:
+        """The exists() guard must NOT block legitimate deletes: a tracked file that
+        is genuinely gone from disk is still removed."""
+        conn = _make_db(tmp_path)
+        src = tmp_path / "gone.py"
+        src.write_text("def gone(): pass\n")
+        upsert_file(conn, src, "python", "abc123", [_sym("gone", str(src))], [])
+        src.unlink()  # genuinely deleted
+
+        result = _sync_with_defaults(conn, tmp_path)
+        conn.close()
+
+        assert result["removed"] == 1

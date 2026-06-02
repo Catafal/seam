@@ -1769,7 +1769,19 @@ def sync_cmd(
             llm_model=config.SEAM_LLM_MODEL,
             min_size=config.SEAM_CLUSTER_MIN_SIZE,
         )
+    except sqlite3.Error as exc:
+        # A genuine database-layer failure (lock, corruption, disk full mid-write).
+        if json_:
+            emit_json_error("DB_ERROR", f"Sync failed: {exc}")
+        console.print(f"[red]Sync failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
     except Exception as exc:  # noqa: BLE001
+        # Catch-all so an unexpected error (e.g. an OSError walking the tree) still
+        # produces a structured envelope instead of a raw traceback — the --json
+        # contract must never be broken. DB_ERROR is the closest data-layer bucket
+        # in the documented code set (NO_INDEX/INVALID_INPUT/INVALID_QUERY/
+        # NOT_A_GIT_REPO/DB_ERROR); we do not invent a new code. The message keeps
+        # the real error visible for diagnosis.
         if json_:
             emit_json_error("DB_ERROR", f"Sync failed: {exc}")
         console.print(f"[red]Sync failed:[/red] {exc}")
@@ -1797,11 +1809,17 @@ def sync_cmd(
         return
 
     # ── Rich (default) mode — summary table ───────────────────────────────────
-    cluster_display = (
-        str(result["cluster_count"])
-        if result["cluster_count"] is not None
-        else "skipped"
-    )
+    # cluster_count: None = recompute skipped (gate false); -1 = recompute RAN but
+    # FAILED (index_clusters' error sentinel); >= 0 = success. Mirror `seam init`'s
+    # display so a failed recompute reads as "failed", never a misleading "-1".
+    cluster_count = result["cluster_count"]
+    clustering_failed = cluster_count is not None and cluster_count < 0
+    if cluster_count is None:
+        cluster_display = "skipped"
+    elif clustering_failed:
+        cluster_display = "failed"
+    else:
+        cluster_display = str(cluster_count)
 
     table = Table(title="seam sync — complete", show_header=False, box=None)
     table.add_column("key", style="bold cyan", width=20)
@@ -1814,6 +1832,16 @@ def sync_cmd(
     table.add_row("skipped", str(result["skipped"]))
     table.add_row("clusters", cluster_display)
     console.print(table)
+
+    # Visible failure warning when the gated cluster recompute failed — without
+    # this the operator sees only "clusters: failed" in the table and might miss
+    # that the index's clusters are now stale. Mirrors `seam init`'s guard.
+    if clustering_failed:
+        console.print(
+            "[yellow]clusters: recompute failed[/yellow] "
+            "[dim](clusters may be stale — run 'seam init' to rebuild; "
+            "set SEAM_LOG_LEVEL=DEBUG to see the error)[/dim]"
+        )
 
     if result["skipped"] > 0:
         console.print(

@@ -11,12 +11,14 @@ Test groups:
     SC8 — seam sync --json on a valid but empty repo → success with all zeros
     SC9 — seam sync on a non-existent directory → exits 1 with error
     SC10 — seam sync --json data keys are the exact SyncResult shape
+    SC11 — cluster recompute failure (index_clusters -1) surfaced, not hidden
 """
 
 import json
 import time
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 import seam.config as seam_config
@@ -323,3 +325,42 @@ class TestSyncResultDataTypes:
 
         # No changes to the already-indexed project → cluster_count is None
         assert data["cluster_count"] is None
+
+
+# ── SC11: Cluster recompute failure is surfaced, not hidden ───────────────────
+
+
+class TestClusterFailureSurfaced:
+    """When the gated cluster recompute fails (index_clusters returns its -1
+    sentinel), the CLI must not present a healthy-looking result: --json carries
+    cluster_count=-1 + clusters_recomputed=false, and the default table shows
+    'failed' with a visible warning (mirrors `seam init`)."""
+
+    def test_json_surfaces_cluster_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project_root, _ = _make_indexed_project(tmp_path)
+        # Add a file so the gate opens, then force the cluster pass to fail.
+        (project_root / "extra.py").write_text("def extra(): pass\n")
+        monkeypatch.setattr("seam.indexer.sync.index_clusters", lambda *a, **k: -1)
+
+        result = runner.invoke(app, ["sync", str(project_root), "--json"])
+        # Reconcile succeeded → envelope is still ok:true, exit 0...
+        assert result.exit_code == 0
+        data = json.loads(result.output)["data"]
+        # ...but the cluster failure is visible in the data, not hidden.
+        assert data["cluster_count"] == -1
+        assert data["clusters_recomputed"] is False
+
+    def test_table_shows_failed_and_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project_root, _ = _make_indexed_project(tmp_path)
+        (project_root / "extra.py").write_text("def extra(): pass\n")
+        monkeypatch.setattr("seam.indexer.sync.index_clusters", lambda *a, **k: -1)
+
+        result = runner.invoke(app, ["sync", str(project_root)])
+        assert result.exit_code == 0
+        assert "failed" in result.output
+        # Warning text guides the operator to rebuild.
+        assert "seam init" in result.output
