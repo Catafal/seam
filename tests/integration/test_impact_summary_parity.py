@@ -11,10 +11,15 @@ Tests verify:
 
 from pathlib import Path
 
+from typer.testing import CliRunner
+
+from seam.cli.main import app
 from seam.indexer.db import init_db, upsert_file
 from seam.indexer.graph import Edge, Symbol
 from seam.server.mcp import create_server
 from seam.server.tools import handle_seam_impact
+
+runner = CliRunner()
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -276,3 +281,48 @@ class TestLimitZero:
                 f"Tier {tier!r}: risk_summary says {result['risk_summary']['upstream'][tier]} "
                 f"but got {len(entries)} entries"
             )
+
+
+# ── IMP7: Rich (default) CLI mode must honor --limit (review STOP) ─────────────
+
+
+class TestCliRichModeCap:
+    """STOP (both reviewers): the Rich (non-json/non-quiet) CLI path called impact()
+    directly, bypassing the handler, so --limit and --lean were silently ignored in
+    the default terminal output. The Rich path must apply the cap and signal truncation."""
+
+    def test_rich_mode_caps_rendered_entries(self, tmp_path: Path) -> None:
+        # 5 direct callers all in WILL_BREAK; --limit 2 must cap the rendered entries.
+        conn, root, _ = _make_db(tmp_path, n_callers=5)
+        conn.close()
+
+        result = runner.invoke(
+            app, ["impact", "hub", "--limit", "2", "--db-dir", str(root), "--path", str(root)]
+        )
+        assert result.exit_code == 0, result.output
+        shown = result.output.count("caller_")
+        assert shown == 2, f"Rich mode must render 2 capped entries, got {shown}:\n{result.output}"
+
+    def test_rich_mode_signals_truncation(self, tmp_path: Path) -> None:
+        conn, root, _ = _make_db(tmp_path, n_callers=5)
+        conn.close()
+
+        result = runner.invoke(
+            app, ["impact", "hub", "--limit", "2", "--db-dir", str(root), "--path", str(root)]
+        )
+        assert result.exit_code == 0, result.output
+        # The user must be told the list was truncated (and how to get the rest).
+        out = result.output.lower()
+        assert "more" in out or "truncat" in out, (
+            f"Rich mode must signal truncation when capped:\n{result.output}"
+        )
+
+    def test_rich_mode_limit_zero_shows_all(self, tmp_path: Path) -> None:
+        conn, root, _ = _make_db(tmp_path, n_callers=5)
+        conn.close()
+
+        result = runner.invoke(
+            app, ["impact", "hub", "--limit", "0", "--db-dir", str(root), "--path", str(root)]
+        )
+        assert result.exit_code == 0, result.output
+        assert result.output.count("caller_") == 5, "limit=0 must render all entries"

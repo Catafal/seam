@@ -56,12 +56,14 @@ _HEAVY_FIELDS: frozenset[str] = frozenset({
 def _apply_verbosity(record: dict[str, Any], verbose: bool) -> dict[str, Any]:
     """Strip heavy enrichment fields from a record when verbose=False.
 
-    Returns a new dict — never mutates the original.
+    Never mutates the input dict.
 
-    verbose=True  → record returned unchanged (backward compatible).
-    verbose=False → the 6 heavy keys (decorators, is_exported, visibility,
-                    qualified_name, resolved_by, best_candidate) are ABSENT.
-                    signature and all core identity fields are kept.
+    verbose=True  → the SAME dict object is returned unchanged (zero-copy fast path;
+                    callers build records inline and never mutate them post-call, so
+                    returning the original is safe and byte-identical to pre-Phase-8).
+    verbose=False → a NEW dict is returned without the 6 heavy keys (decorators,
+                    is_exported, visibility, qualified_name, resolved_by,
+                    best_candidate). signature and all core identity fields are kept.
     """
     if verbose:
         return record
@@ -159,7 +161,6 @@ def handle_seam_query(
     concept: str,
     root: Path,
     limit: int = _QUERY_LIMIT_DEFAULT,
-    verbose: bool = True,
 ) -> list[dict[str, Any]] | dict[str, Any]:
     """Handler for the seam_query MCP tool.
 
@@ -167,8 +168,11 @@ def handle_seam_query(
     Returns a list of QueryResult dicts, or an error dict on bad input.
 
     Limit is clamped to [1, 50].
-    verbose=True (default): output byte-identical to pre-Phase-8.
-    verbose=False: heavy enrichment fields omitted from every record.
+
+    NOTE: no `verbose` flag here. seam_query results carry NO Phase 4/5 enrichment
+    fields (only symbol/file/line/score/callers_count/callees_count), so lean mode
+    would be a no-op — query is enrichment-free, exactly like seam_search, and both
+    are deliberately excluded from the verbose contract.
     """
     # Validate: concept must not be empty or whitespace-only
     if not concept or not concept.strip():
@@ -185,17 +189,15 @@ def handle_seam_query(
         return _invalid_query(f"FTS5 query syntax error: {exc}")
 
     # Relativize file paths so consumers get portable paths.
-    # query results carry no Phase 4/5 heavy fields in their base schema,
-    # but _apply_verbosity is still called for consistency — it is a no-op here.
     return [
-        _apply_verbosity({
+        {
             "symbol": r["symbol"],
             "file": _relativize(r["file"], root),
             "line": r["line"],
             "score": r["score"],
             "callers_count": r["callers_count"],
             "callees_count": r["callees_count"],
-        }, verbose)
+        }
         for r in results
     ]
 
@@ -356,6 +358,9 @@ def handle_seam_impact(
         Top-level keys always include `found`, `target`, and `risk_summary`.
         risk_summary is {direction: {tier: count}} computed from the FULL pre-cap
         result — it is always trustworthy even when entry lists are capped.
+        NOTE: "full" means before the `limit` cap, but AFTER the include_tests filter —
+        when include_tests=False, risk_summary counts the production-only blast radius
+        (test dependents are already excluded), matching the entries actually returned.
         When any tier was capped, `truncated` is included: {direction: {tier: omitted}}.
 
         Shape for direction="upstream":
@@ -426,9 +431,12 @@ def handle_seam_impact(
         dir_truncated: dict[str, int] = {}
 
         for tier, entries in tier_group.items():
-            # Entries arrive distance-ordered from the analysis layer.
-            # All entries in a tier have the same distance (tiers ARE distance buckets),
-            # so any slice preserves the "closest/highest-risk" guarantee — no sort needed.
+            # Slice keeps the closest/highest-risk entries WITHOUT a sort here. WHY it's
+            # safe: WILL_BREAK (d=1) and LIKELY_AFFECTED (d=2) each contain a single
+            # distance. MAY_NEED_TESTING spans d=3..max_depth, but the analysis layer's
+            # walk() emits entries in BFS (ascending-distance) order, so entries[:N] still
+            # keeps the closest. (Do NOT remove walk()'s ordering assuming tiers are
+            # single-distance buckets — that holds only for the first two tiers.)
             if effective_limit is not None and len(entries) > effective_limit:
                 kept = entries[:effective_limit]
                 dir_truncated[tier] = len(entries) - effective_limit

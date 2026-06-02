@@ -274,28 +274,19 @@ class TestVerboseFalseTopLevel:
         for field in CORE_FIELDS_CONTEXT:
             assert field in result, f"Core field {field!r} missing in lean mode"
 
-    def test_query_lean_has_no_heavy_fields(self, tmp_path: Path) -> None:
-        """handle_seam_query(..., verbose=False) must not include heavy fields."""
+    def test_query_results_have_no_heavy_fields(self, tmp_path: Path) -> None:
+        """handle_seam_query is enrichment-free (no verbose flag): results never carry
+        the heavy Phase 4/5 fields, so they are always 'lean' by construction."""
         conn, root, _ = _make_db(tmp_path)
-        results = handle_seam_query(conn, "foo", root, verbose=False)
+        results = handle_seam_query(conn, "foo", root)
         conn.close()
 
         assert isinstance(results, list)
         for rec in results:
             for field in HEAVY_FIELDS:
                 assert field not in rec, (
-                    f"Heavy field {field!r} found in query result in lean mode"
+                    f"query result unexpectedly carries heavy field {field!r}"
                 )
-
-    def test_query_verbose_true_shape_unchanged(self, tmp_path: Path) -> None:
-        """handle_seam_query(..., verbose=True) returns results with same shape as before."""
-        conn, root, _ = _make_db(tmp_path)
-        results = handle_seam_query(conn, "foo", root, verbose=True)
-        conn.close()
-
-        # query results do not carry the Phase 4 heavy fields in their base schema,
-        # but verbose=True must not break existing shape.
-        assert isinstance(results, list)
 
 
 # ── LO4: stripping reaches nested structures ──────────────────────────────────

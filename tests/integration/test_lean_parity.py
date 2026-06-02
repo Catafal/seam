@@ -86,16 +86,17 @@ class TestMcpSchemaVerbose:
             f"Expected 10 tools, got {len(tool_names)}: {sorted(tool_names)}"
         )
 
-    def test_seam_query_has_verbose_param(self, tmp_path: Path) -> None:
-        """seam_query must expose 'verbose' in its input schema."""
+    def test_seam_query_has_no_verbose_param(self, tmp_path: Path) -> None:
+        """seam_query must NOT expose 'verbose' — it carries no enrichment, so lean
+        mode would be a no-op (same rationale as seam_search's exclusion)."""
         conn, root, db_path, _ = _make_db(tmp_path)
         server = create_server(conn, root)
         conn.close()
 
         tool = server._tool_manager._tools["seam_query"]
         params = tool.parameters
-        assert "verbose" in params.get("properties", {}), (
-            "seam_query schema must include 'verbose' property"
+        assert "verbose" not in params.get("properties", {}), (
+            "seam_query is enrichment-free and must not advertise a no-op 'verbose' flag"
         )
 
     def test_seam_context_has_verbose_param(self, tmp_path: Path) -> None:
@@ -301,23 +302,21 @@ class TestPackLeanParity:
                 assert field not in nb
 
 
-# ── LP6: seam query --lean parity ────────────────────────────────────────────
+# ── LP6: seam query is enrichment-free (no verbose flag) ─────────────────────
 
 
-class TestQueryLeanParity:
-    """seam query --lean produces same shape as handle_seam_query(..., verbose=False)."""
+class TestQueryEnrichmentFree:
+    """seam_query carries no Phase 4/5 heavy fields, so it has no verbose flag at all —
+    its results are always 'lean' by construction."""
 
-    def test_query_lean_verbose_false_matches_handler(self, tmp_path: Path) -> None:
-        """verbose=False handler output must not include heavy fields."""
+    def test_query_results_have_no_heavy_fields(self, tmp_path: Path) -> None:
         conn, root, db_path, _ = _make_db(tmp_path)
-        lean = handle_seam_query(conn, "foo", root, verbose=False)
-        verbose = handle_seam_query(conn, "foo", root, verbose=True)
+        results = handle_seam_query(conn, "foo", root)
         conn.close()
 
-        assert isinstance(lean, list)
-        assert isinstance(verbose, list)
-        # Both return same number of results (only fields differ)
-        assert len(lean) == len(verbose)
-        for rec in lean:
+        assert isinstance(results, list)
+        for rec in results:
             for field in HEAVY_FIELDS:
-                assert field not in rec
+                assert field not in rec, (
+                    f"query result unexpectedly carries heavy field {field!r}"
+                )

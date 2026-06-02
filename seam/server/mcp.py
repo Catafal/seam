@@ -84,17 +84,15 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
     mcp: FastMCP = FastMCP(name="seam")
 
     @mcp.tool()
-    def seam_query(concept: str, limit: int = _QUERY_LIMIT_DEFAULT, verbose: bool = True) -> Any:
+    def seam_query(concept: str, limit: int = _QUERY_LIMIT_DEFAULT) -> Any:
         """Find all code related to a concept using hybrid search (FTS5 + 1-hop graph expansion).
 
         Use this when you need to find where a concept lives across the codebase.
 
-        Set verbose=false to omit the heavy Phase 4/5 enrichment fields (decorators,
-        is_exported, visibility, qualified_name, resolved_by, best_candidate) and get a
-        compact response. signature and all core identity fields are always kept.
-        verbose=true (default) is byte-identical to the pre-Phase-8 output.
+        No `verbose` flag: query results carry no Phase 4/5 enrichment fields, so lean
+        mode would be a no-op — query is enrichment-free, like seam_search.
         """
-        return handle_seam_query(conn, concept, root, limit=limit, verbose=verbose)
+        return handle_seam_query(conn, concept, root, limit=limit)
 
     @mcp.tool()
     def seam_context(symbol: str, verbose: bool = True) -> Any:
@@ -144,8 +142,11 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         production blast radius — useful when test callers dominate the results.
 
         Set verbose=false to omit heavy enrichment fields (resolved_by, best_candidate)
-        from every tier entry and get a compact response.
-        verbose=true (default) is byte-identical to the pre-Phase-8 output.
+        from every tier entry and get a compact response. verbose=true (default) returns
+        all Phase 4/5 enrichment fields. NOTE: risk_summary, truncated, and the per-tier
+        cap are NEW in Phase 8 and apply regardless of verbose — so the impact response is
+        NOT byte-identical to pre-Phase-8 (unlike the other tools). Use limit=0 for the
+        full, uncapped transitive set.
 
         limit controls the per-tier entry cap (default: SEAM_IMPACT_MAX_RESULTS=25).
         Set limit=0 to disable the cap and receive all transitive entries.
