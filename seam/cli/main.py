@@ -56,6 +56,7 @@ from seam.analysis.impact import (
     TIER_MAY_NEED_TESTING,
     TIER_WILL_BREAK,
 )
+from seam.cli.install import install_command, uninstall_command
 from seam.cli.output import check_mutual_exclusion, emit_json, emit_json_error, print_quiet
 from seam.indexer.cluster_index import get_llm_naming_summary, index_clusters
 from seam.indexer.db import connect, init_db
@@ -82,6 +83,11 @@ app = typer.Typer(
 )
 
 console = Console()
+
+# Register `seam install` / `seam uninstall` (defined in cli/install.py to keep this
+# file from growing further — main.py is already large).
+app.command(name="install")(install_command)
+app.command(name="uninstall")(uninstall_command)
 
 # Top-level keys in a handle_seam_impact response that are NOT direction groups.
 # Every consumer that iterates the impact result to find tier groups (quiet output,

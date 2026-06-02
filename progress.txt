@@ -320,3 +320,38 @@
 #   Test count: 1465 (1454 + 11). Gate green (ruff + mypy 46 files + pytest). No schema change,
 #     no migration, MCP tool count stays 10. Plan: .claude/tasks/agentic-readiness-hardening.md.
 # Next: roadmap item 8 (`seam install` / AgentTarget) + actually publish to PyPI as `seam-mcp`.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# `seam install` (roadmap item 8) — one-command MCP wiring; Claude + Cursor + Codex
+# ─────────────────────────────────────────────────────────────────────────────
+#   Why now: the readiness audit's last gap was onboarding — users had to hand-write MCP config.
+#   Scope (user-chosen): 3 agents, 2 config formats. Verified each format from docs before coding
+#     (same discipline as the Claude probe): Claude .mcp.json needs type:"stdio"; Cursor omits type;
+#     Codex is TOML [mcp_servers.<name>] in ~/.codex/config.toml.
+#   New package seam/installer/:
+#     __init__.py  — TARGETS {claude,cursor,codex} registry + get_target + resolve_seam_command()
+#                    (resolves the ABSOLUTE seam path via sys.argv[0] — cwd/PATH-independent at agent launch)
+#     core.py      — AgentTarget ABC + InstallResult + shared idempotent JSON install/uninstall_entry
+#     jsonfile.py  — LEAF (stdlib json): load/atomic-write/get_in/set_in/delete_in — Claude + Cursor
+#     tomlfile.py  — LEAF (tomlkit): load/atomic-write/get/set/delete [mcp_servers.<name>] — Codex
+#     claude.py    — .mcp.json (project) / ~/.claude.json projects.<abs-root> (user); entry has type:stdio
+#     cursor.py    — .cursor/mcp.json (project) / ~/.cursor/mcp.json (user); no type field
+#     codex.py     — ~/.codex/config.toml [mcp_servers.seam] (user scope ONLY); tomlkit round-trip
+#   New dep: tomlkit 0.15.0 (stdlib tomllib is read-only; tomlkit preserves user comments/formatting).
+#   seam/cli/install.py — `seam install` + `seam uninstall` Typer commands (registered onto app in
+#     main.py with 2 lines — main.py is already >1000 lines so logic lives in its own module).
+#     Flags: --target claude|cursor|codex|all, --location project|user, --print-config, --json.
+#     Idempotent (deep-equal→unchanged), atomic temp+rename, .backup on corrupt config, preserves
+#     other servers. Codex+project (or any unsupported target,location): explicit single target →
+#     INVALID_INPUT; under --target all → skipped-with-reason (not an error).
+#   Review (self, /backend-taste lens): removed an unused detect() method (YAGNI); tightened
+#     _select_targets typing to list[AgentTarget]|None.
+#   New tests: tests/unit/test_installer.py (18: jsonfile/tomlfile/core/claude/cursor/codex/registry),
+#     tests/integration/test_install_cli.py (9: create/idempotent/print-config/all-user/all-project-skips-
+#     codex/no-index-warn/unknown-target/codex-project-invalid/uninstall). ALL use tmp paths + tmp HOME —
+#     never the real ~/.claude.json/~/.cursor/~/.codex.
+#   Live verify (real seam binary, fake HOME): all 3 configs written correctly; server BOOTS from the
+#     written .mcp.json command+args (10 tools, seam_search ok); re-run → unchanged; uninstall → removed.
+#   Test count: 1492 (1465 + 27). Gate green (ruff + mypy 54 files + pytest). CLI-only — NO new MCP tool;
+#     tool count stays 10. No schema change, no migration. Plan: .claude/tasks/seam-install.md.
+# Next: v0.1.0 — publish to PyPI as `seam-mcp`; add more agent targets (one file each) as needed.
