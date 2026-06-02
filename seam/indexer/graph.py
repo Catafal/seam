@@ -96,6 +96,13 @@ from seam.indexer.graph_ruby import (
     _extract_symbols_ruby,
 )
 
+# Phase 10 — Swift extractor (leaf imports graph_common only)
+from seam.indexer.graph_swift import (
+    _extract_comments_swift,
+    _extract_edges_swift,
+    _extract_symbols_swift,
+)
+
 # signatures.py is a leaf (no seam deps) so importing it here does not create a cycle.
 from seam.indexer.signatures import extract_node_fields
 
@@ -777,6 +784,9 @@ def extract_symbols(node: object, language: str, filepath: Path) -> list[Symbol]
             return _extract_symbols_cpp(node, filepath)
         elif language == "php":
             return _extract_symbols_php(node, filepath)
+        # Phase 10 — Swift
+        elif language == "swift":
+            return _extract_symbols_swift(node, filepath)
     except Exception:  # noqa: BLE001
         # WHY log: a silent except here would make a grammar-version break
         # or a bad language string completely invisible. Logging at debug
@@ -829,6 +839,9 @@ def extract_comments(node: object, language: str, filepath: Path) -> list[Commen
             return _extract_comments_cpp(node, filepath)
         elif language == "php":
             return _extract_comments_php(node, filepath)
+        # Phase 10 — Swift
+        elif language == "swift":
+            return _extract_comments_swift(node, filepath)
     except Exception:  # noqa: BLE001
         logger.debug(
             "extract_comments: unhandled exception for language=%r file=%s",
@@ -885,6 +898,9 @@ def extract_edges(
             raw_edges = _extract_edges_cpp(node, filepath)
         elif language == "php":
             raw_edges = _extract_edges_php(node, filepath)
+        # Phase 10 — Swift
+        elif language == "swift":
+            raw_edges = _extract_edges_swift(node, filepath)
         else:
             return []
 

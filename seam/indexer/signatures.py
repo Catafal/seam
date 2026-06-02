@@ -35,6 +35,7 @@ from seam.indexer.signatures_ext import (
     _extract_java,
     _extract_php,
     _extract_ruby,
+    _extract_swift,
 )
 
 logger = logging.getLogger(__name__)
@@ -616,6 +617,9 @@ def extract_node_fields(
             return _extract_cpp(node, qualified_name, max_signature_len)
         elif language == "php":
             return _extract_php(node, qualified_name, max_signature_len)
+        # Phase 10 — Swift
+        elif language == "swift":
+            return _extract_swift(node, qualified_name, max_signature_len)
         else:
             # Unsupported language — safe defaults, not an error; callers may index
             # languages not yet wired to an extractor.

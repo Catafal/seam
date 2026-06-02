@@ -650,3 +650,131 @@ def _extract_php(
         )
     except Exception:  # noqa: BLE001
         return _safe_defaults(qualified_name)
+
+
+# ── Swift ─────────────────────────────────────────────────────────────────────
+
+
+def _swift_ext_modifiers(node: Node) -> Node | None:
+    """Find the 'modifiers' child of a Swift declaration node, or None."""
+    for child in node.children:
+        if child.type == "modifiers":
+            return child
+    return None
+
+
+def _swift_ext_visibility(node: Node) -> tuple[str, bool]:
+    """Extract (visibility_str, is_exported) from a Swift declaration modifiers.
+
+    public / open  → ('public', True)
+    private / fileprivate → ('private', False)
+    internal (explicit or absent) → ('internal', False)
+    """
+    mods = _swift_ext_modifiers(node)
+    if mods is None:
+        return ("internal", False)
+    try:
+        for child in mods.children:
+            if child.type == "visibility_modifier":
+                vis_text = _text(child).strip()
+                if vis_text in ("public", "open"):
+                    return ("public", True)
+                if vis_text in ("private", "fileprivate"):
+                    return ("private", False)
+                return ("internal", False)
+    except Exception:  # noqa: BLE001
+        pass
+    return ("internal", False)
+
+
+def _swift_ext_attributes(node: Node) -> list[str]:
+    """Extract Swift @attribute decorator texts from a declaration node's modifiers.
+
+    Returns each attribute verbatim (e.g. '@objc', '@available(iOS 13.0, *)').
+    """
+    result: list[str] = []
+    mods = _swift_ext_modifiers(node)
+    if mods is None:
+        return result
+    try:
+        for child in mods.children:
+            if child.type == "attribute":
+                text = _text(child).strip()
+                if text:
+                    result.append(text)
+    except Exception:  # noqa: BLE001
+        pass
+    return result
+
+
+def _swift_ext_signature(node: Node) -> str | None:
+    """Build a one-line Swift signature from a declaration node.
+
+    Collects children before the body (function_body / class_body / enum_class_body /
+    protocol_body). Includes visibility_modifier from modifiers but skips @attributes.
+    """
+    try:
+        body_stop_types = frozenset({
+            "function_body",
+            "class_body",
+            "enum_class_body",
+            "protocol_body",
+        })
+        parts: list[str] = []
+        for child in node.children:
+            if child.type in body_stop_types:
+                break
+            if child.type == "modifiers":
+                # Include only visibility_modifier in signature text.
+                for mc in child.children:
+                    if mc.type == "visibility_modifier":
+                        vis = _text(mc).strip()
+                        if vis:
+                            parts.append(vis)
+                continue
+            text = _text(child).strip()
+            if text:
+                parts.append(text)
+        if not parts:
+            return None
+        return " ".join(" ".join(parts).split())
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _extract_swift(
+    node: Node,
+    qualified_name: str | None,
+    max_sig_len: int,
+) -> NodeFields:
+    """Extract all five enrichment fields for a Swift symbol node.
+
+    signature   : declaration header up to (but not including) the body, one line.
+    decorators  : Swift @attributes verbatim (@objc, @available(...), etc.).
+    is_exported : True when 'public' or 'open' modifier is present.
+    visibility  : 'public' (public/open) | 'private' (private/fileprivate) |
+                  'internal' (explicit internal or absent — Swift default).
+    qualified_name : passed through from the caller.
+
+    WHY internal for absent modifier: Swift's default access level is 'internal'
+    (visible within the module but not exported). Only public/open cross the module
+    boundary (is_exported=True). This mirrors the PRD spec decision.
+    """
+    try:
+        vis, is_exported = _swift_ext_visibility(node)
+        attributes = _swift_ext_attributes(node)
+
+        sig = _swift_ext_signature(node)
+        if sig is not None:
+            sig = _truncate(sig, max_sig_len)
+
+        return NodeFields(
+            signature=sig,
+            decorators=attributes,
+            is_exported=is_exported,
+            visibility=vis,
+            qualified_name=qualified_name,
+        )
+    except Exception:  # noqa: BLE001
+        return _safe_defaults(qualified_name)

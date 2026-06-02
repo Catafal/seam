@@ -894,6 +894,33 @@ _PHP_BUILTINS: frozenset[str] = frozenset(
     }
 )
 
+# ── Swift standard library types and global functions ─────────────────────────
+# Conservative vocabulary: common Swift stdlib and language built-ins only.
+# NOT exhaustive (no SwiftUI, no Foundation classes beyond primitives) — an
+# over-broad set risks shadowing real repo symbols.
+# The count==0 structural guard in confidence.py is the primary safety net.
+_SWIFT_BUILTINS: frozenset[str] = frozenset(
+    {
+        # Global functions (commonly called as bare identifiers)
+        "print", "debugPrint", "fatalError", "precondition", "preconditionFailure",
+        "assert", "assertionFailure", "min", "max", "abs", "zip", "swap",
+        # Primitive types
+        "Int", "Int8", "Int16", "Int32", "Int64",
+        "UInt", "UInt8", "UInt16", "UInt32", "UInt64",
+        "Float", "Double", "Bool", "Character", "String", "Substring",
+        # Collection types
+        "Array", "Dictionary", "Set", "Optional", "Result",
+        "Range", "ClosedRange",
+        # Special values / literals
+        "nil", "true", "false",
+        # Type-system keywords that appear as call targets
+        "Error", "AnyObject", "Any", "Void", "Never", "Self", "self", "super",
+        # Common protocols used as identifiers
+        "Comparable", "Equatable", "Hashable", "Codable", "Encodable", "Decodable",
+        "CustomStringConvertible",
+    }
+)
+
 # ── Language registry ─────────────────────────────────────────────────────────
 # Maps language identifiers (matching SEAM_LANGUAGE_MAP values) to builtin sets.
 _LANGUAGE_BUILTINS: dict[str, frozenset[str]] = {
@@ -909,6 +936,8 @@ _LANGUAGE_BUILTINS: dict[str, frozenset[str]] = {
     "c": _C_BUILTINS,
     "cpp": _CPP_BUILTINS,
     "php": _PHP_BUILTINS,
+    # Phase 10 — Swift
+    "swift": _SWIFT_BUILTINS,
 }
 
 

@@ -326,9 +326,9 @@ def _find_enclosing_function(node: Node, language: str) -> str | None:
     when no enclosing function exists (e.g. top-level module code). None causes the
     caller to drop the edge — only named scopes produce edge sources.
 
-    Supports all 11 Seam languages: python, typescript, javascript, go, rust,
-    java, csharp, ruby, c, cpp, php. Per-language function/method node types and
-    class-context types are defined in the body below.
+    Supports all 12 Seam languages: python, typescript, javascript, go, rust,
+    java, csharp, ruby, c, cpp, php, swift. Per-language function/method node types
+    and class-context types are defined in the body below.
 
     WHY in this leaf module: both graph.py and the family modules (graph_go_rust,
     graph_java_csharp, graph_c_cpp, graph_ruby_php) call this for call-edge source
@@ -349,6 +349,8 @@ def _find_enclosing_function(node: Node, language: str) -> str | None:
     func_types_c = {"function_definition"}
     func_types_cpp = {"function_definition"}
     func_types_php = {"method_declaration", "function_definition"}
+    # Phase 10 Swift: function_declaration is the sole function/method node type.
+    func_types_swift = {"function_declaration", "protocol_function_declaration"}
 
     # Phase 9 class-context node types for qualified 'Class.method' names
     class_types_java = {
@@ -370,6 +372,9 @@ def _find_enclosing_function(node: Node, language: str) -> str | None:
         "interface_declaration",
         "trait_declaration",
     }
+    # Phase 10 Swift: class_declaration covers class/struct/actor/extension;
+    # protocol_declaration covers protocol methods.
+    class_types_swift = {"class_declaration", "protocol_declaration"}
 
     if language == "go":
         func_types = func_types_go
@@ -387,6 +392,8 @@ def _find_enclosing_function(node: Node, language: str) -> str | None:
         func_types = func_types_cpp
     elif language == "php":
         func_types = func_types_php
+    elif language == "swift":
+        func_types = func_types_swift
     else:
         func_types = func_types_py if language == "python" else func_types_ts
 
@@ -453,6 +460,59 @@ def _find_enclosing_function(node: Node, language: str) -> str | None:
                         parent = parent.parent
                 return c_func_name
 
+            # Swift function_declaration has no 'name' field — name is a simple_identifier child.
+            # Also handle protocol_function_declaration the same way.
+            if language == "swift" and current.type in (
+                "function_declaration",
+                "protocol_function_declaration",
+            ):
+                swift_func_name: str | None = None
+                for sc in current.children:
+                    if sc.type == "simple_identifier":
+                        swift_func_name = _text(sc)
+                        break
+                if swift_func_name is None:
+                    current = current.parent
+                    continue
+                func_name = swift_func_name
+                # Walk up for enclosing class_declaration or protocol_declaration
+                parent = current.parent
+                while parent is not None:
+                    if parent.type in class_types_swift:
+                        # Swift class_declaration has type_identifier child (not 'name' field)
+                        # extension also uses type_identifier inside user_type
+                        cls_name: str | None = None
+                        kw_seen = False
+                        for pc in parent.children:
+                            if pc.type in ("class", "struct", "actor", "extension", "enum"):
+                                kw_seen = True
+                                continue
+                            if kw_seen and pc.type == "type_identifier":
+                                cls_name = _text(pc)
+                                break
+                            if kw_seen and pc.type == "user_type":
+                                # extension node: name in user_type → type_identifier
+                                for uc in pc.children:
+                                    if uc.type == "type_identifier":
+                                        cls_name = _text(uc)
+                                        break
+                                if cls_name:
+                                    break
+                            if kw_seen and pc.type in ("class_body", "protocol_body"):
+                                break
+                        if cls_name:
+                            return f"{cls_name}.{func_name}"
+                        # Protocol declaration: name is type_identifier directly
+                        if parent.type == "protocol_declaration":
+                            for pc in parent.children:
+                                if pc.type == "type_identifier":
+                                    cls_name = _text(pc)
+                                    break
+                            if cls_name:
+                                return f"{cls_name}.{func_name}"
+                    parent = parent.parent
+                return func_name
+
             # Named scope (function_declaration, method_definition, function_definition).
             name_node = current.child_by_field_name("name")
             if name_node is None:
@@ -473,6 +533,8 @@ def _find_enclosing_function(node: Node, language: str) -> str | None:
                 class_types = class_types_cpp
             elif language == "php":
                 class_types = class_types_php
+            elif language == "swift":
+                class_types = class_types_swift
             elif language == "c":
                 # C has no classes — never qualify
                 class_types = set()

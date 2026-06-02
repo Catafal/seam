@@ -30,8 +30,9 @@ import os
 from pathlib import Path
 from typing import TypedDict
 
-# Phase 9: import the new-language stub extractors/resolvers from the companion leaf module.
+# Phase 9+10: import the new-language stub extractors/resolvers from the companion leaf module.
 # imports_ext is a leaf (no seam deps) so importing it here does not create a cycle.
+# Each import is a separate from-block — sorted alphabetically per ruff-isort (_ext prefix).
 from seam.analysis.imports_ext import (
     _extract_c as _ext_extract_c,
 )
@@ -51,6 +52,9 @@ from seam.analysis.imports_ext import (
     _extract_ruby as _ext_extract_ruby,
 )
 from seam.analysis.imports_ext import (
+    _extract_swift as _ext_extract_swift,
+)
+from seam.analysis.imports_ext import (
     _resolve_c as _ext_resolve_c,
 )
 from seam.analysis.imports_ext import (
@@ -67,6 +71,9 @@ from seam.analysis.imports_ext import (
 )
 from seam.analysis.imports_ext import (
     _resolve_ruby as _ext_resolve_ruby,
+)
+from seam.analysis.imports_ext import (
+    _resolve_swift as _ext_resolve_swift,
 )
 
 logger = logging.getLogger(__name__)
@@ -710,6 +717,9 @@ def extract_import_mappings(
             return _ext_extract_cpp(root, filepath)
         if language == "php":
             return _ext_extract_php(root, filepath)
+        # Phase 10 — Swift
+        if language == "swift":
+            return _ext_extract_swift(root, filepath)
     except Exception:  # noqa: BLE001
         pass
     return []
@@ -768,6 +778,9 @@ def resolve_import_source(
             return _ext_resolve_cpp(source_module, referencing_file, repo_root)
         if language == "php":
             return _ext_resolve_php(source_module, referencing_file, repo_root)
+        # Phase 10 — Swift
+        if language == "swift":
+            return _ext_resolve_swift(source_module, referencing_file, repo_root)
     except Exception:  # noqa: BLE001
         pass
     return []
