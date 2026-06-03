@@ -37,7 +37,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from seam.indexer.db import connect
-from seam.server.graph_api import build_constellation, build_neighborhood, top_hub_symbols
+from seam.server.graph_api import (
+    build_constellation,
+    build_neighborhood,
+    list_structure,
+    top_hub_symbols,
+)
 from seam.server.tools import (
     handle_seam_changes,
     handle_seam_clusters,
@@ -304,6 +309,22 @@ class HubsResponse(BaseModel):
     symbols: list[HubSymbol]
 
 
+class StructureSymbol(BaseModel):
+    """One symbol row for the structure map (flat — the SPA builds the tree)."""
+
+    path: str
+    name: str
+    kind: str
+    line: int
+    qualified_name: str | None
+
+
+class StructureResponse(BaseModel):
+    """Response for GET /api/structure."""
+
+    symbols: list[StructureSymbol]
+
+
 class ErrorResponse(BaseModel):
     """Standard error body for 4xx/5xx responses."""
 
@@ -432,6 +453,14 @@ def _fetch_all_symbol_definitions(
             "decorators": decorators,
         })
     return result
+
+
+def _relativize_path(abs_path: str, root: Path) -> str:
+    """Return abs_path relative to root; fall back to abs_path if not under root."""
+    try:
+        return str(Path(abs_path).relative_to(root))
+    except ValueError:
+        return abs_path
 
 
 def _fetch_languages(conn: sqlite3.Connection) -> list[str]:
@@ -829,6 +858,33 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
         finally:
             conn.close()
         return HubsResponse(symbols=[HubSymbol(**h) for h in hubs])
+
+    # ── Route: GET /api/structure ─────────────────────────────────────────────
+
+    @app.get("/api/structure", response_model=StructureResponse, tags=["graph"])
+    def get_structure() -> StructureResponse:
+        """Return every symbol with its file path — source for the structure treemap.
+
+        Reuses graph_api.list_structure; paths are relativized to the project root.
+        The SPA builds the folder → file → class → method tree from this flat list.
+        """
+        conn = _get_conn(db_path)
+        try:
+            rows = list_structure(conn)
+        finally:
+            conn.close()
+
+        symbols = [
+            StructureSymbol(
+                path=_relativize_path(r["path"], root),
+                name=r["name"],
+                kind=r["kind"],
+                line=r["line"],
+                qualified_name=r["qualified_name"],
+            )
+            for r in rows
+        ]
+        return StructureResponse(symbols=symbols)
 
     # ── Static SPA mount ─────────────────────────────────────────────────────
     # Mount the built SPA at '/'. This must come AFTER all /api/* routes so FastAPI

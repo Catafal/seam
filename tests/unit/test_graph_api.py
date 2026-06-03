@@ -459,3 +459,33 @@ def test_top_hub_symbols_empty_db_safe(tmp_db: tuple[sqlite3.Connection, Path]) 
     from seam.server.graph_api import top_hub_symbols
 
     assert top_hub_symbols(conn) == []
+
+
+# ── list_structure (treemap source) ─────────────────────────────────────────────
+
+
+def test_list_structure_returns_path_and_nesting(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """Every symbol is returned with its file path, kind, line, qualified_name."""
+    from seam.server.graph_api import list_structure
+
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    upsert_file(conn, Path(a), "python", "h1", [
+        _sym("Widget", a, kind="class"),
+        _sym("render", a, kind="method"),
+    ], [])
+
+    rows = list_structure(conn)
+    names = {r["name"] for r in rows}
+    assert {"Widget", "render"} <= names
+    for r in rows:
+        assert set(r.keys()) == {"path", "name", "kind", "line", "qualified_name"}
+        assert r["path"] == a
+
+
+def test_list_structure_empty_db_safe(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """Empty index returns [] and never raises."""
+    conn, _ = tmp_db
+    from seam.server.graph_api import list_structure
+
+    assert list_structure(conn) == []

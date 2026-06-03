@@ -21,7 +21,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { DetailPanel } from "./components/DetailPanel";
 import { ChangesDrawer } from "./components/ChangesDrawer";
-import { ConstellationCanvas } from "./components/ConstellationCanvas";
+import { TreemapCanvas } from "./components/TreemapCanvas";
 import { useStatus, useSearch, useClusters, useHubs } from "./api/hooks";
 import type { ClusterItem, SearchResultItem, HubSymbol } from "./api/schema-types";
 import { clusterColor } from "./lib/clusterColor";
@@ -243,7 +243,7 @@ const LANDING_AREAS = 12;
 interface LandingPageProps {
   /** Center the graph on a symbol name (used by both hub chips and area chips). */
   onSelect: (name: string) => void;
-  /** Switch to the whole-repo Overview (constellation) view. */
+  /** Switch to the whole-repo Overview (structure treemap) view. */
   onOpenOverview: () => void;
 }
 
@@ -402,7 +402,7 @@ function HeaderToggle({
 
 /**
  * App root: assembles the header, search, mode toggle, and the main area.
- * The main area is the ConstellationCanvas (overview), the GraphCanvas
+ * The main area is the TreemapCanvas (structure overview), the GraphCanvas
  * (neighborhood with a center), or the LandingPage (no center yet).
  */
 function App() {
@@ -428,10 +428,10 @@ function App() {
     setSelectedSymbol(name);
   }, []);
 
-  // Clicking a cluster region in overview drills into its representative symbol.
-  const handleSelectCluster = useCallback(
-    (representative: string) => {
-      setCenterSymbol(representative);
+  // Opening a symbol from the Overview treemap centers the graph on it.
+  const handleOpenFromOverview = useCallback(
+    (name: string) => {
+      setCenterSymbol(name);
       setMode("neighborhood");
     },
     [setCenterSymbol],
@@ -522,7 +522,7 @@ function App() {
         {/* Left: overview / graph canvas / landing page */}
         <div className="flex-1 overflow-hidden relative">
           {mode === "overview" ? (
-            <ConstellationCanvas onSelectCluster={handleSelectCluster} />
+            <TreemapCanvas onSelectSymbol={handleOpenFromOverview} />
           ) : showGraph ? (
             <GraphCanvas
               center={centerSymbol!}

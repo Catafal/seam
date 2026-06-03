@@ -18,15 +18,7 @@ import {
 } from "../lib/edgeFilter";
 import { impactTierMap } from "../lib/impactOverlay";
 import { tracePathHighlight, edgeKey } from "../lib/tracePath";
-import {
-  buildConstellationGraph,
-  clusterDiameter,
-} from "../lib/constellationLayout";
-import type {
-  ImpactResponse,
-  TraceResponse,
-  ConstellationResponse,
-} from "../api/schema-types";
+import type { ImpactResponse, TraceResponse } from "../api/schema-types";
 
 // ── riskTier ──────────────────────────────────────────────────────────────────
 
@@ -156,37 +148,86 @@ describe("tracePathHighlight", () => {
   });
 });
 
-// ── constellationLayout ─────────────────────────────────────────────────────────
+// ── buildTree ─────────────────────────────────────────────────────────────────
 
-describe("constellationLayout", () => {
-  it("clusterDiameter scales within bounds", () => {
-    expect(clusterDiameter(0, 100)).toBe(60); // min
-    expect(clusterDiameter(100, 100)).toBe(160); // max
-    const mid = clusterDiameter(25, 100);
-    expect(mid).toBeGreaterThan(60);
-    expect(mid).toBeLessThan(160);
+import { buildTree } from "../lib/buildTree";
+import { squarify, type Rect } from "../lib/treemapLayout";
+import type { StructureSymbol } from "../api/schema-types";
+
+describe("buildTree", () => {
+  const symbols: StructureSymbol[] = [
+    { path: "seam/indexer/db.py", name: "init_db", kind: "function", line: 1, qualified_name: "init_db" },
+    { path: "seam/indexer/db.py", name: "upsert_file", kind: "function", line: 9, qualified_name: "upsert_file" },
+    { path: "seam/analysis/clustering.py", name: "Louvain", kind: "class", line: 1, qualified_name: "Louvain" },
+    { path: "seam/analysis/clustering.py", name: "detect", kind: "method", line: 5, qualified_name: "Louvain.detect" },
+  ];
+
+  it("nests folders → files → symbols", () => {
+    const root = buildTree(symbols);
+    const seam = root.children.find((c) => c.name === "seam")!;
+    expect(seam.nodeKind).toBe("dir");
+    const indexer = seam.children.find((c) => c.name === "indexer")!;
+    const db = indexer.children.find((c) => c.name === "db.py")!;
+    expect(db.nodeKind).toBe("file");
+    expect(db.children.map((c) => c.name).sort()).toEqual(["init_db", "upsert_file"]);
   });
 
-  it("builds one node per cluster and one edge per link with weight label", () => {
-    const data: ConstellationResponse = {
-      clusters: [
-        { cluster_id: 1, label: "A", size: 10 },
-        { cluster_id: 2, label: "B", size: 4 },
-      ],
-      links: [{ source: 1, target: 2, weight: 3 }],
-    };
-    const { nodes, edges } = buildConstellationGraph(data);
-    expect(nodes).toHaveLength(2);
-    expect(nodes[0].data.cluster_id).toBe(1);
-    expect(edges).toHaveLength(1);
-    expect(edges[0].source).toBe("1");
-    expect(edges[0].target).toBe("2");
-    expect(edges[0].label).toBe("3");
+  it("nests methods under their class", () => {
+    const root = buildTree(symbols);
+    const clustering = root.children[0].children
+      .find((c) => c.name === "analysis")!
+      .children.find((c) => c.name === "clustering.py")!;
+    const louvain = clustering.children.find((c) => c.name === "Louvain")!;
+    expect(louvain.nodeKind).toBe("class");
+    expect(louvain.children.map((c) => c.name)).toEqual(["detect"]);
   });
 
-  it("returns empty graph for empty clusters", () => {
-    const { nodes, edges } = buildConstellationGraph({ clusters: [], links: [] });
-    expect(nodes).toEqual([]);
-    expect(edges).toEqual([]);
+  it("rolls up counts (total symbols beneath)", () => {
+    const root = buildTree(symbols);
+    expect(root.count).toBe(4);
+  });
+
+  it("returns an empty root for no symbols", () => {
+    const root = buildTree([]);
+    expect(root.children).toEqual([]);
+    expect(root.count).toBe(0);
+  });
+});
+
+// ── squarify (treemap layout) ───────────────────────────────────────────────────
+
+describe("squarify", () => {
+  const rect: Rect = { x: 0, y: 0, w: 100, h: 100 };
+
+  it("places every positive item within bounds", () => {
+    const placed = squarify(
+      [{ value: 6, node: "a" }, { value: 3, node: "b" }, { value: 1, node: "c" }],
+      rect,
+    );
+    expect(placed).toHaveLength(3);
+    for (const p of placed) {
+      expect(p.rect.x).toBeGreaterThanOrEqual(-0.01);
+      expect(p.rect.y).toBeGreaterThanOrEqual(-0.01);
+      expect(p.rect.x + p.rect.w).toBeLessThanOrEqual(100.01);
+      expect(p.rect.y + p.rect.h).toBeLessThanOrEqual(100.01);
+    }
+  });
+
+  it("total placed area approximates the container area", () => {
+    const placed = squarify([{ value: 5, node: "a" }, { value: 5, node: "b" }], rect);
+    const area = placed.reduce((s, p) => s + p.rect.w * p.rect.h, 0);
+    expect(area).toBeGreaterThan(9900);
+  });
+
+  it("larger value → larger area", () => {
+    const placed = squarify([{ value: 9, node: "big" }, { value: 1, node: "small" }], rect);
+    const big = placed.find((p) => p.node === "big")!;
+    const small = placed.find((p) => p.node === "small")!;
+    expect(big.rect.w * big.rect.h).toBeGreaterThan(small.rect.w * small.rect.h);
+  });
+
+  it("drops zero/negative values and handles empty", () => {
+    expect(squarify([{ value: 0, node: "z" }], rect)).toEqual([]);
+    expect(squarify([], rect)).toEqual([]);
   });
 });

@@ -22,7 +22,6 @@ import {
   useImpact,
   useTrace,
   useChanges,
-  useConstellation,
 } from "../api/hooks";
 import type {
   StatusResponse,
@@ -33,7 +32,6 @@ import type {
   ImpactResponse,
   TraceResponse,
   ChangesResponse,
-  ConstellationResponse,
 } from "../api/schema-types";
 
 // ── Test utilities ─────────────────────────────────────────────────────────────
@@ -311,11 +309,6 @@ const CHANGES_FIXTURE: ChangesResponse = {
   partial: false,
 };
 
-const CONSTELLATION_FIXTURE: ConstellationResponse = {
-  clusters: [{ cluster_id: 1, label: "parser", size: 12 }],
-  links: [{ source: 1, target: 2, weight: 3 }],
-};
-
 // ── useImpact ─────────────────────────────────────────────────────────────────
 
 describe("useImpact", () => {
@@ -388,29 +381,6 @@ describe("useChanges", () => {
   it("does NOT fetch when enabled=false (drawer closed)", () => {
     vi.stubGlobal("fetch", vi.fn());
     renderHook(() => useChanges("working", false), { wrapper: makeWrapper() });
-    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
-  });
-});
-
-// ── useConstellation ──────────────────────────────────────────────────────────
-
-describe("useConstellation", () => {
-  it("fetches /api/constellation when enabled", async () => {
-    mockFetch(CONSTELLATION_FIXTURE);
-    const { result } = renderHook(() => useConstellation(true), {
-      wrapper: makeWrapper(),
-    });
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    expect(result.current.data).toEqual(CONSTELLATION_FIXTURE);
-    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
-      "/api/constellation",
-      expect.any(Object),
-    );
-  });
-
-  it("does NOT fetch when enabled=false (neighborhood mode)", () => {
-    vi.stubGlobal("fetch", vi.fn());
-    renderHook(() => useConstellation(false), { wrapper: makeWrapper() });
     expect(vi.mocked(fetch)).not.toHaveBeenCalled();
   });
 });

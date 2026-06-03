@@ -26,10 +26,15 @@ import type {
   ImpactResponse,
   TraceResponse,
   ChangesResponse,
-  ConstellationResponse,
   HubSymbol,
+  StructureSymbol,
 } from "./schema-types";
-import type { SearchResponse, ClustersResponse, HubsResponse } from "./schema-types";
+import type {
+  SearchResponse,
+  ClustersResponse,
+  HubsResponse,
+  StructureResponse,
+} from "./schema-types";
 
 /** Impact blast-radius direction (matches the API Literal). */
 export type ImpactDirection = "both" | "upstream" | "downstream";
@@ -206,22 +211,6 @@ export function useChanges(scope: ChangesScope = "working", enabled: boolean = t
   });
 }
 
-// ── useConstellation ──────────────────────────────────────────────────────────
-
-/**
- * Fetch the whole-repo cluster overview from GET /api/constellation.
- * Disabled when `enabled` is false (only fetch in overview mode).
- *
- * @returns data — the full ConstellationResponse { clusters, links }
- */
-export function useConstellation(enabled: boolean = true) {
-  return useQuery<ConstellationResponse>({
-    queryKey: ["constellation"],
-    queryFn: () => apiFetch<ConstellationResponse>("/api/constellation"),
-    enabled,
-  });
-}
-
 // ── useHubs ─────────────────────────────────────────────────────────────────
 
 /**
@@ -236,5 +225,24 @@ export function useHubs(limit: number = 8) {
       const resp = await apiFetch<HubsResponse>("/api/hubs", { params: { limit } });
       return resp.symbols;
     },
+  });
+}
+
+// ── useStructure ──────────────────────────────────────────────────────────────
+
+/**
+ * Fetch the flat symbol+path list from GET /api/structure (treemap source).
+ * Disabled when `enabled` is false (only fetch in Overview/structure mode).
+ *
+ * @returns data — the flat symbols array (the SPA builds the tree from it)
+ */
+export function useStructure(enabled: boolean = true) {
+  return useQuery<StructureSymbol[]>({
+    queryKey: ["structure"],
+    queryFn: async () => {
+      const resp = await apiFetch<StructureResponse>("/api/structure");
+      return resp.symbols;
+    },
+    enabled,
   });
 }

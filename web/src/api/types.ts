@@ -239,6 +239,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/structure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Structure
+         * @description Return every symbol with its file path — source for the structure treemap.
+         *
+         *     Reuses graph_api.list_structure; paths are relativized to the project root.
+         *     The SPA builds the folder → file → class → method tree from this flat list.
+         */
+        get: operations["get_structure_api_structure_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -549,6 +572,30 @@ export interface components {
             last_indexed: string | null;
             /** Languages */
             languages: string[];
+        };
+        /**
+         * StructureResponse
+         * @description Response for GET /api/structure.
+         */
+        StructureResponse: {
+            /** Symbols */
+            symbols: components["schemas"]["StructureSymbol"][];
+        };
+        /**
+         * StructureSymbol
+         * @description One symbol row for the structure map (flat — the SPA builds the tree).
+         */
+        StructureSymbol: {
+            /** Path */
+            path: string;
+            /** Name */
+            name: string;
+            /** Kind */
+            kind: string;
+            /** Line */
+            line: number;
+            /** Qualified Name */
+            qualified_name: string | null;
         };
         /**
          * SymbolDefinition
@@ -968,6 +1015,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_structure_api_structure_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructureResponse"];
                 };
             };
         };

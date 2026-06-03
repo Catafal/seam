@@ -389,3 +389,42 @@ def top_hub_symbols(conn: sqlite3.Connection, limit: int = 8) -> list[dict[str, 
         return []
 
     return [{"name": r["name"], "kind": r["kind"], "degree": r["degree"]} for r in rows]
+
+
+def list_structure(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Return every symbol with its file path + nesting info, for the structure map.
+
+    Flat by design: the frontend builds the folder → file → class → method tree and
+    the treemap from this list (one cheap query here; all hierarchy logic client-side).
+
+    Returns [{path, name, kind, line, qualified_name}] (absolute path — the web route
+    relativizes it). Ordered by path then symbol id for stable tree construction.
+    Empty list on any DB error. NEVER raises.
+    """
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                f.path          AS path,
+                s.name          AS name,
+                s.kind          AS kind,
+                s.start_line    AS line,
+                s.qualified_name AS qualified_name
+            FROM symbols s
+            JOIN files f ON f.id = s.file_id
+            ORDER BY f.path, s.id
+            """
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+
+    return [
+        {
+            "path": r["path"],
+            "name": r["name"],
+            "kind": r["kind"],
+            "line": r["line"],
+            "qualified_name": r["qualified_name"],
+        }
+        for r in rows
+    ]

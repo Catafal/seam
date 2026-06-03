@@ -487,6 +487,29 @@ def test_hubs_no_index(no_index_client: TestClient) -> None:
     assert resp.json()["detail"]["code"] == "NO_INDEX"
 
 
+# ── T12: GET /api/structure ───────────────────────────────────────────────────
+
+
+def test_structure_happy_path(client: TestClient) -> None:
+    """Structure returns symbols with relativized paths."""
+    resp = client.get("/api/structure")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert isinstance(data["symbols"], list)
+    names = [s["name"] for s in data["symbols"]]
+    assert "authenticate_user" in names
+    for s in data["symbols"]:
+        assert set(s.keys()) == {"path", "name", "kind", "line", "qualified_name"}
+        assert not s["path"].startswith("/")  # relativized
+
+
+def test_structure_no_index(no_index_client: TestClient) -> None:
+    """Structure returns 503 NO_INDEX when no index present."""
+    resp = no_index_client.get("/api/structure")
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "NO_INDEX"
+
+
 # ── T6: GET /api/clusters ─────────────────────────────────────────────────────
 
 
