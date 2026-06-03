@@ -195,6 +195,7 @@ function decorateNodes(
   nodes: SymbolRFNode[],
   tierMap: Map<string, string>,
   impactActive: boolean,
+  impactTarget: string,
   traceActive: boolean,
   tracePathNames: Set<string>,
 ): SymbolRFNode[] {
@@ -204,7 +205,8 @@ function decorateNodes(
     if (traceActive) {
       dimmed = !tracePathNames.has(n.id);
     } else if (impactActive && tierMap.size > 0) {
-      dimmed = !tierMap.has(n.id) && !n.data.isCenter;
+      // Never dim the impact subject itself (it's the question, not an answer).
+      dimmed = !tierMap.has(n.id) && n.id !== impactTarget;
     }
     return { ...n, data: { ...n.data, impactTier: tier, dimmed } };
   });
@@ -295,11 +297,15 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
   const [expandTarget, setExpandTarget] = useState<string | null>(null);
   const [filter, setFilter] = useState<EdgeFilterState>(defaultEdgeFilter());
   const [impactActive, setImpactActive] = useState(false);
+  // The node the user last clicked — impact analyses THIS (falls back to center),
+  // so "click a node → Impact" shows that node's blast radius, not the center's.
+  const [selectedNode, setSelectedNode] = useState<string | null>(null);
+  const impactTarget = selectedNode ?? center;
 
   const { data: centerData, isLoading } = useNeighborhood(center);
   const { data: expandData } = useNeighborhood(expandTarget ?? "");
-  // Impact is opt-in (toggle) and analyses the CENTER symbol — the canvas subject.
-  const { data: impactData } = useImpact(center, "both", impactActive);
+  // Impact is opt-in (toggle); it analyses the selected node, else the center.
+  const { data: impactData } = useImpact(impactTarget, "both", impactActive);
   // Trace runs whenever App supplies a target (second search box).
   const { data: traceData } = useTrace(center, traceTarget ?? null);
 
@@ -311,6 +317,7 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
     if (!centerData) return;
     setExpandTarget(null);
     setImpactActive(false);
+    setSelectedNode(null);
     const { nodes: rfNodes, edges: rfEdges } = buildRFGraph(centerData);
     setNodes(rfNodes);
     setEdges(rfEdges);
@@ -341,6 +348,7 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
       nodes,
       tierMap,
       impactActive,
+      impactTarget,
       traceHL.active,
       traceHL.nodeNames,
     );
@@ -348,7 +356,7 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
     const baseIds = new Set(nodes.map((n) => n.id));
     const offCanvasNames = [...tierMap.keys()].filter((name) => !baseIds.has(name));
     return [...decorated, ...buildOffCanvasNodes(offCanvasNames, tierMap, nodes)];
-  }, [nodes, tierMap, impactActive, traceHL]);
+  }, [nodes, tierMap, impactActive, impactTarget, traceHL]);
 
   const displayEdges = useMemo(
     () => decorateEdges(edges, filter, traceHL.active, traceHL.edgeKeys),
@@ -359,7 +367,10 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
 
   // ── Handlers ──────────────────────────────────────────────────────────────
   const handleNodeClick: NodeMouseHandler<SymbolRFNode> = useCallback(
-    (_evt, node) => onSelectSymbol?.(node.id),
+    (_evt, node) => {
+      setSelectedNode(node.id);
+      onSelectSymbol?.(node.id);
+    },
     [onSelectSymbol],
   );
   const handleNodeDoubleClick: NodeMouseHandler<SymbolRFNode> = useCallback(
@@ -414,10 +425,10 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
                   ? "bg-red-500/20 border-red-500/60 text-red-300"
                   : "bg-zinc-900/90 border-zinc-700 text-zinc-300 hover:border-zinc-500"
               }`}
-              title="Show blast radius for the center symbol"
+              title={`Show blast radius for ${impactTarget}`}
             >
               {impactActive ? <X className="w-3.5 h-3.5" /> : <Zap className="w-3.5 h-3.5" />}
-              {impactActive ? "Clear impact" : "Impact"}
+              {impactActive ? "Clear impact" : `Impact: ${impactTarget}`}
             </button>
             {impactActive && impactData && (
               <ImpactSummary summary={impactData.risk_summary} />
