@@ -27,8 +27,9 @@ import type {
   TraceResponse,
   ChangesResponse,
   ConstellationResponse,
+  HubSymbol,
 } from "./schema-types";
-import type { SearchResponse, ClustersResponse } from "./schema-types";
+import type { SearchResponse, ClustersResponse, HubsResponse } from "./schema-types";
 
 /** Impact blast-radius direction (matches the API Literal). */
 export type ImpactDirection = "both" | "upstream" | "downstream";
@@ -218,5 +219,22 @@ export function useConstellation(enabled: boolean = true) {
     queryKey: ["constellation"],
     queryFn: () => apiFetch<ConstellationResponse>("/api/constellation"),
     enabled,
+  });
+}
+
+// ── useHubs ─────────────────────────────────────────────────────────────────
+
+/**
+ * Fetch the most-connected 'hub' symbols from GET /api/hubs — landing entry points.
+ *
+ * @returns data — the flat symbols array (not the wrapper object)
+ */
+export function useHubs(limit: number = 8) {
+  return useQuery<HubSymbol[]>({
+    queryKey: ["hubs", limit],
+    queryFn: async () => {
+      const resp = await apiFetch<HubsResponse>("/api/hubs", { params: { limit } });
+      return resp.symbols;
+    },
   });
 }

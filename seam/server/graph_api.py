@@ -347,3 +347,45 @@ def build_constellation(conn: sqlite3.Connection) -> dict[str, Any]:
     ]
 
     return {"clusters": clusters, "links": links}
+
+
+def top_hub_symbols(conn: sqlite3.Connection, limit: int = 8) -> list[dict[str, Any]]:
+    """Return the most-connected (highest-degree) symbols — the repo's hubs.
+
+    These are the natural entry points for a landing page: the symbols everything
+    else touches. Degree = number of edges where the symbol is the source OR the
+    target (name-keyed, matching the edges table).
+
+    Only names that are actually DEFINED in the symbols table are returned, so
+    builtins/stdlib (e.g. `print`, `len`) that appear only as edge targets are
+    excluded — they have no row in `symbols`.
+
+    Returns [{name, kind, degree}] sorted by degree desc, then name. Empty list
+    on any DB error or empty index. NEVER raises.
+    """
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                d.name AS name,
+                d.degree AS degree,
+                (SELECT s.kind FROM symbols s WHERE s.name = d.name ORDER BY s.id LIMIT 1) AS kind
+            FROM (
+                SELECT name, COUNT(*) AS degree
+                FROM (
+                    SELECT source_name AS name FROM edges
+                    UNION ALL
+                    SELECT target_name AS name FROM edges
+                )
+                GROUP BY name
+            ) d
+            WHERE EXISTS (SELECT 1 FROM symbols s WHERE s.name = d.name)
+            ORDER BY d.degree DESC, d.name
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+
+    return [{"name": r["name"], "kind": r["kind"], "degree": r["degree"]} for r in rows]

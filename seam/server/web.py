@@ -37,7 +37,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from seam.indexer.db import connect
-from seam.server.graph_api import build_constellation, build_neighborhood
+from seam.server.graph_api import build_constellation, build_neighborhood, top_hub_symbols
 from seam.server.tools import (
     handle_seam_changes,
     handle_seam_clusters,
@@ -288,6 +288,20 @@ class ConstellationResponse(BaseModel):
 
     clusters: list[ConstellationCluster]
     links: list[ConstellationLink]
+
+
+class HubSymbol(BaseModel):
+    """A highest-degree 'hub' symbol — a landing-page entry point."""
+
+    name: str
+    kind: str | None
+    degree: int
+
+
+class HubsResponse(BaseModel):
+    """Response for GET /api/hubs."""
+
+    symbols: list[HubSymbol]
 
 
 class ErrorResponse(BaseModel):
@@ -798,6 +812,23 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
             clusters=[ConstellationCluster(**c) for c in data["clusters"]],
             links=[ConstellationLink(**link) for link in data["links"]],
         )
+
+    # ── Route: GET /api/hubs ──────────────────────────────────────────────────
+
+    @app.get("/api/hubs", response_model=HubsResponse, tags=["graph"])
+    def get_hubs(
+        limit: int = Query(8, ge=1, le=50, description="How many hub symbols to return"),
+    ) -> HubsResponse:
+        """Return the most-connected symbols — landing-page entry points.
+
+        Reuses graph_api.top_hub_symbols (degree-ranked, defined-only).
+        """
+        conn = _get_conn(db_path)
+        try:
+            hubs = top_hub_symbols(conn, limit=limit)
+        finally:
+            conn.close()
+        return HubsResponse(symbols=[HubSymbol(**h) for h in hubs])
 
     # ── Static SPA mount ─────────────────────────────────────────────────────
     # Mount the built SPA at '/'. This must come AFTER all /api/* routes so FastAPI

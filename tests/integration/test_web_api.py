@@ -464,6 +464,29 @@ def test_constellation_no_index(no_index_client: TestClient) -> None:
     assert resp.json()["detail"]["code"] == "NO_INDEX"
 
 
+# ── T11: GET /api/hubs ────────────────────────────────────────────────────────
+
+
+def test_hubs_happy_path(client: TestClient) -> None:
+    """Hubs returns degree-ranked symbols; authenticate_user (calls check) is present."""
+    resp = client.get("/api/hubs", params={"limit": 5})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert isinstance(data["symbols"], list)
+    names = [s["name"] for s in data["symbols"]]
+    # both authenticate_user and check have an edge between them → both are hubs
+    assert "authenticate_user" in names or "check" in names
+    for s in data["symbols"]:
+        assert set(s.keys()) == {"name", "kind", "degree"}
+
+
+def test_hubs_no_index(no_index_client: TestClient) -> None:
+    """Hubs returns 503 NO_INDEX when no index present."""
+    resp = no_index_client.get("/api/hubs")
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "NO_INDEX"
+
+
 # ── T6: GET /api/clusters ─────────────────────────────────────────────────────
 
 

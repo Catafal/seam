@@ -35,3 +35,5 @@ export type ChangesResponse = components["schemas"]["ChangesResponse"];
 export type ConstellationCluster = components["schemas"]["ConstellationCluster"];
 export type ConstellationLink = components["schemas"]["ConstellationLink"];
 export type ConstellationResponse = components["schemas"]["ConstellationResponse"];
+export type HubSymbol = components["schemas"]["HubSymbol"];
+export type HubsResponse = components["schemas"]["HubsResponse"];

@@ -22,8 +22,8 @@ import { GraphCanvas } from "./components/GraphCanvas";
 import { DetailPanel } from "./components/DetailPanel";
 import { ChangesDrawer } from "./components/ChangesDrawer";
 import { ConstellationCanvas } from "./components/ConstellationCanvas";
-import { useStatus, useSearch, useClusters } from "./api/hooks";
-import type { ClusterItem, SearchResultItem } from "./api/schema-types";
+import { useStatus, useSearch, useClusters, useHubs } from "./api/hooks";
+import type { ClusterItem, SearchResultItem, HubSymbol } from "./api/schema-types";
 import { clusterColor } from "./lib/clusterColor";
 import { GitBranch, Orbit, Network, Route } from "lucide-react";
 
@@ -236,93 +236,132 @@ function SearchBox({ onSelect, placeholder = "Search symbols…" }: SearchBoxPro
 
 // ── LandingPage ───────────────────────────────────────────────────────────────
 
+/** How many curated entry points to show on the landing (the rest live in Overview). */
+const LANDING_HUBS = 10;
+const LANDING_AREAS = 12;
+
 interface LandingPageProps {
-  onSelectCluster: (name: string) => void;
+  /** Center the graph on a symbol name (used by both hub chips and area chips). */
+  onSelect: (name: string) => void;
+  /** Switch to the whole-repo Overview (constellation) view. */
+  onOpenOverview: () => void;
 }
 
 /**
  * Landing empty-state shown when no center symbol is set.
- * Lists clusters as clickable entry points into the graph.
+ *
+ * WHY this replaced the old flat 498-cluster wall: dumping every cluster as a
+ * grid (named after files like `unit/test_impact`) was unreadable and confusing.
+ * Instead we lead SEARCH-FIRST with a SMALL curated set of entry points — the
+ * repo's hub symbols (highest-degree) and its largest functional areas — and
+ * send the full map to the Overview tab. Mirrors how graphify/gitnexus orient a
+ * user (graph/search first), not a giant list.
  */
-function LandingPage({ onSelectCluster }: LandingPageProps) {
-  const { data: clusters, isLoading, isError } = useClusters();
+function LandingPage({ onSelect, onOpenOverview }: LandingPageProps) {
+  const { data: hubs, isLoading: hubsLoading } = useHubs(LANDING_HUBS);
+  const { data: clusters, isError } = useClusters();
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center w-full h-full">
-        <span className="text-zinc-600 text-sm animate-pulse">Loading clusters…</span>
-      </div>
-    );
-  }
+  // Largest functional areas: sort clusters by size desc, take the top N.
+  // The rest are reachable via the Overview map (no more endless scroll).
+  const topAreas = (clusters ?? [])
+    .slice()
+    .sort((a, b) => b.size - a.size)
+    .slice(0, LANDING_AREAS);
 
-  if (isError || !clusters || clusters.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center w-full h-full gap-3">
-        <p className="text-zinc-500 text-sm">Search for a symbol above to explore the graph.</p>
-        <p className="text-zinc-600 text-xs">
-          No clusters indexed yet — run{" "}
-          <code className="text-zinc-400">seam init</code> to build the index.
-        </p>
-      </div>
-    );
-  }
+  const nothingIndexed =
+    !hubsLoading && (hubs?.length ?? 0) === 0 && (clusters?.length ?? 0) === 0;
 
   return (
-    // Own scroll container: the cluster grid can be hundreds of cards tall, and
-    // the parent main area is overflow-hidden — without overflow-y-auto here the
-    // grid spills off-screen with no way to reach the lower cards.
     <div className="w-full h-full overflow-y-auto">
-      <div className="flex flex-col items-center gap-6 p-8 min-h-full">
-        <p className="text-zinc-400 text-sm">
-          Search a symbol above, or explore a functional area:
-        </p>
-        <div
-          className="grid gap-3 w-full max-w-3xl"
-          style={{
-            gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
-          }}
-        >
-        {clusters.map((c: ClusterItem) => {
-          const colour = clusterColor(c.cluster_id);
-          return (
-            <button
-              key={c.cluster_id}
-              // Center on a representative MEMBER symbol — a cluster is not a symbol,
-              // so centering on its label/id would open an empty graph. Fall back to
-              // label/id only if the backend gave no representative (degenerate cluster).
-              onClick={() =>
-                onSelectCluster(
-                  c.representative ?? c.label ?? String(c.cluster_id),
-                )
-              }
-              className="
-                flex items-center gap-2.5 px-3 py-2.5
-                bg-zinc-900 border border-zinc-700 rounded-md
-                hover:border-zinc-500 hover:bg-zinc-800
-                transition-colors cursor-pointer text-left
-              "
-              aria-label={`Explore cluster ${c.label ?? c.cluster_id}`}
-            >
-              {/* Colour dot — same colour as SymbolNode stripe for visual consistency */}
-              {colour && (
-                <div
-                  className="w-2 h-2 rounded-full shrink-0"
-                  style={{ backgroundColor: colour }}
-                  aria-hidden="true"
-                />
-              )}
-              <div className="flex flex-col min-w-0">
-                <span className="text-xs font-semibold text-zinc-200 truncate">
-                  {c.label ?? `cluster-${c.cluster_id}`}
-                </span>
-                <span className="text-[10px] text-zinc-500">
-                  {c.size} symbols
-                </span>
-              </div>
-            </button>
-          );
-        })}
+      <div className="flex flex-col items-center justify-center gap-8 p-8 min-h-full max-w-3xl mx-auto">
+        {/* Hero tagline — the header search box sits directly above this */}
+        <div className="text-center space-y-1">
+          <h2 className="text-lg font-semibold text-zinc-100">Explore the codebase</h2>
+          <p className="text-zinc-500 text-sm">
+            Search a symbol above, jump to a key symbol, or browse a functional area.
+          </p>
         </div>
+
+        {nothingIndexed && (
+          <p className="text-zinc-600 text-xs text-center">
+            Nothing indexed yet — run <code className="text-zinc-400">seam init</code> to build the index.
+          </p>
+        )}
+
+        {/* Key symbols — highest-degree hubs (the things everything touches) */}
+        {(hubs?.length ?? 0) > 0 && (
+          <section className="w-full">
+            <h3 className="text-[10px] font-semibold uppercase tracking-widest text-zinc-600 mb-2">
+              Key symbols
+            </h3>
+            <div className="flex flex-wrap gap-2">
+              {hubs!.map((h: HubSymbol) => (
+                <button
+                  key={h.name}
+                  onClick={() => onSelect(h.name)}
+                  className="group flex items-center gap-2 px-3 py-1.5 bg-zinc-900 border border-zinc-700 rounded-full hover:border-sky-500/60 hover:bg-zinc-800 transition-colors"
+                  title={`${h.kind ?? "symbol"} · ${h.degree} connections`}
+                >
+                  <span className="text-xs font-semibold text-zinc-100">{h.name}</span>
+                  <span className="text-[10px] text-zinc-500 font-mono group-hover:text-sky-400">
+                    {h.degree}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* Largest areas — top clusters by size; full map lives in Overview */}
+        {(isError || topAreas.length > 0) && (
+          <section className="w-full">
+            <div className="flex items-baseline justify-between mb-2">
+              <h3 className="text-[10px] font-semibold uppercase tracking-widest text-zinc-600">
+                Largest areas
+              </h3>
+              <button
+                onClick={onOpenOverview}
+                className="text-[10px] text-sky-400/80 hover:text-sky-300 transition-colors"
+              >
+                open Overview for the full map →
+              </button>
+            </div>
+            <div
+              className="grid gap-2"
+              style={{ gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))" }}
+            >
+              {topAreas.map((c: ClusterItem) => {
+                const colour = clusterColor(c.cluster_id);
+                return (
+                  <button
+                    key={c.cluster_id}
+                    // Center on a representative MEMBER symbol — a cluster is not a
+                    // symbol, so centering on its label/id opens an empty graph.
+                    onClick={() =>
+                      onSelect(c.representative ?? c.label ?? String(c.cluster_id))
+                    }
+                    className="flex items-center gap-2.5 px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-md hover:border-zinc-500 hover:bg-zinc-800 transition-colors text-left"
+                    aria-label={`Explore area ${c.label ?? c.cluster_id}`}
+                  >
+                    {colour && (
+                      <div
+                        className="w-2 h-2 rounded-full shrink-0"
+                        style={{ backgroundColor: colour }}
+                        aria-hidden="true"
+                      />
+                    )}
+                    <div className="flex flex-col min-w-0">
+                      <span className="text-xs font-semibold text-zinc-200 truncate">
+                        {c.label ?? `cluster-${c.cluster_id}`}
+                      </span>
+                      <span className="text-[10px] text-zinc-500">{c.size} symbols</span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        )}
       </div>
     </div>
   );
@@ -491,7 +530,10 @@ function App() {
               traceTarget={traceTarget}
             />
           ) : (
-            <LandingPage onSelectCluster={setCenterSymbol} />
+            <LandingPage
+              onSelect={setCenterSymbol}
+              onOpenOverview={() => setMode("overview")}
+            />
           )}
         </div>
 

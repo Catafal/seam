@@ -217,6 +217,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/hubs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Hubs
+         * @description Return the most-connected symbols — landing-page entry points.
+         *
+         *     Reuses graph_api.top_hub_symbols (degree-ranked, defined-only).
+         */
+        get: operations["get_hubs_api_hubs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -392,6 +414,26 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * HubSymbol
+         * @description A highest-degree 'hub' symbol — a landing-page entry point.
+         */
+        HubSymbol: {
+            /** Name */
+            name: string;
+            /** Kind */
+            kind: string | null;
+            /** Degree */
+            degree: number;
+        };
+        /**
+         * HubsResponse
+         * @description Response for GET /api/hubs.
+         */
+        HubsResponse: {
+            /** Symbols */
+            symbols: components["schemas"]["HubSymbol"][];
         };
         /**
          * ImpactEntry
@@ -894,6 +936,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConstellationResponse"];
+                };
+            };
+        };
+    };
+    get_hubs_api_hubs_get: {
+        parameters: {
+            query?: {
+                /** @description How many hub symbols to return */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HubsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

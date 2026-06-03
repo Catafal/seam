@@ -407,3 +407,55 @@ def test_constellation_empty_db_safe(tmp_db: tuple[sqlite3.Connection, Path]) ->
     conn, _ = tmp_db
     result = build_constellation(conn)
     assert result == {"clusters": [], "links": []}
+
+
+# ── top_hub_symbols (landing entry points) ──────────────────────────────────────
+
+
+def test_top_hub_symbols_ranks_by_degree(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """The most-connected defined symbol ranks first; degree counts both directions."""
+    from seam.server.graph_api import top_hub_symbols
+
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    # hub is called by x and y, and calls z → degree 3. leaf only appears once.
+    upsert_file(conn, Path(a), "python", "h1", [
+        _sym("hub", a), _sym("x", a), _sym("y", a), _sym("z", a), _sym("leaf", a),
+    ], [
+        _edge("x", "hub", a),
+        _edge("y", "hub", a),
+        _edge("hub", "z", a),
+        _edge("z", "leaf", a),
+    ])
+
+    hubs = top_hub_symbols(conn, limit=10)
+    names = [h["name"] for h in hubs]
+    assert names[0] == "hub"  # degree 3, highest
+    assert hubs[0]["degree"] == 3
+    assert hubs[0]["kind"] == "function"
+
+
+def test_top_hub_symbols_excludes_undefined_names(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """Edge targets with no row in symbols (e.g. builtins) are excluded."""
+    from seam.server.graph_api import top_hub_symbols
+
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    # `caller` calls `print` 3× — print is NOT defined in symbols → must be excluded.
+    upsert_file(conn, Path(a), "python", "h1", [_sym("caller", a)], [
+        _edge("caller", "print", a),
+        _edge("caller", "print", a),
+        _edge("caller", "print", a),
+    ])
+
+    names = [h["name"] for h in top_hub_symbols(conn, limit=10)]
+    assert "print" not in names
+    assert "caller" in names
+
+
+def test_top_hub_symbols_empty_db_safe(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """Empty index returns [] and never raises."""
+    conn, _ = tmp_db
+    from seam.server.graph_api import top_hub_symbols
+
+    assert top_hub_symbols(conn) == []

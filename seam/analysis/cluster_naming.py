@@ -53,17 +53,43 @@ MemberInfo = dict[str, Any]
 # ── deterministic_label ───────────────────────────────────────────────────────
 
 
+def _dominant_dir(members: list[MemberInfo]) -> str | None:
+    """Most common immediate-parent DIRECTORY NAME among member files.
+
+    WHY the dir name, not 'dir/filename': the filename is the noisy part — it
+    produces labels like 'unit/test_query_engine' or 'assets/index-Bb07j4Ym'
+    (a build bundle). The directory alone ('query', 'indexer', 'cli', 'analysis')
+    reads as a functional area. Ties broken alphabetically. None when no member
+    has a parent directory (e.g. a repo-root file).
+    """
+    dirs: list[str] = []
+    for m in members:
+        file_path = m.get("file", "")
+        if file_path:
+            parts = Path(file_path).parts
+            if len(parts) >= 2:
+                dirs.append(parts[-2])
+    if not dirs:
+        return None
+    counts = Counter(dirs)
+    return min(counts.keys(), key=lambda k: (-counts[k], k))
+
+
 def deterministic_label(members: list[MemberInfo]) -> str:
     """Derive a human-readable cluster label from its members.
 
-    Label format: "<dominant_path> — <highest_degree_symbol>"
-    Example: "seam/analysis — traversal.walk"
+    Label format: "<dominant_dir> — <highest_degree_symbol>"
+    Example: "analysis — resolve_edge"  (NOT "analysis/confidence — resolve_edge")
+
+    The anchor is the highest-degree symbol — the hub that best "names" the
+    community. The directory adds locality WITHOUT the filename noise that made
+    old labels look like file paths (the user-reported confusion). When a file
+    has no parent dir, the label is just the anchor symbol.
 
     Algorithm:
-        1. Find the dominant directory: the most common immediate-parent dir
-           among all member file paths (ties broken alphabetically).
-        2. Find the highest-degree symbol (ties broken by name alphabetically).
-        3. Combine as "dir — symbol".
+        1. Anchor = highest-degree symbol (ties broken by name alphabetically).
+        2. Dir = most common immediate-parent directory name (ties alphabetical).
+        3. Combine as "dir — anchor" (or just "anchor" when no dir is available).
 
     Args:
         members: List of MemberInfo dicts with 'name', 'file', 'degree' keys.
@@ -74,50 +100,16 @@ def deterministic_label(members: list[MemberInfo]) -> str:
     if not members:
         return "<unnamed>"
 
-    if len(members) == 1:
-        # Single-member cluster: just use the symbol name and its file's stem
-        m = members[0]
-        file_stem = Path(m["file"]).stem if m.get("file") else ""
-        name = m.get("name", "<unknown>")
-        if file_stem and file_stem != name:
-            return f"{file_stem} — {name}"
-        return name
-
-    # ── Step 1: dominant directory ────────────────────────────────────────────
-    # Use the last two path components (parent dir + file stem) for readability.
-    # WHY: Full absolute paths would be noisy; just 'dir/stem' is informative.
-    path_components: list[str] = []
-    for m in members:
-        file_path = m.get("file", "")
-        if file_path:
-            p = Path(file_path)
-            parts = p.parts
-            # Take up to 2 components: parent dir + filename (no extension)
-            if len(parts) >= 2:
-                path_components.append(f"{parts[-2]}/{p.stem}")
-            else:
-                path_components.append(p.stem)
-
-    # Count occurrences and pick the most common (alphabetical tie-break)
-    if path_components:
-        counts = Counter(path_components)
-        # Sort by (-count, component) for deterministic tie-breaking
-        dominant_path = min(
-            counts.keys(),
-            key=lambda k: (-counts[k], k),
-        )
-    else:
-        dominant_path = "<unknown>"
-
-    # ── Step 2: highest-degree symbol ────────────────────────────────────────
-    # Sort by (-degree, name) for deterministic tie-breaking
-    top_symbol = min(
+    # Anchor: highest-degree symbol (ties broken by name) — the community's hub.
+    anchor = min(
         members,
         key=lambda m: (-m.get("degree", 0), m.get("name", "")),
-    )
-    top_name = top_symbol.get("name", "<unknown>")
+    ).get("name", "<unknown>")
 
-    return f"{dominant_path} — {top_name}"
+    dir_name = _dominant_dir(members)
+    if dir_name and dir_name != anchor:
+        return f"{dir_name} — {anchor}"
+    return anchor
 
 
 # ── label_cluster ─────────────────────────────────────────────────────────────
