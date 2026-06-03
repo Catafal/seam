@@ -388,3 +388,30 @@
 #   Test count: 1504 (1492 + 12). Gate green (ruff + mypy 55 files + pytest). MCP tool count stays 10.
 #     Plan: .claude/tasks/cli-query-context-search.md.
 # Next: v0.1.0 — publish to PyPI as `seam-mcp` (CLI: `pip install seam-mcp`; agents: `[server]` extra).
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Frontend Explorer — Tasks F5+F6: DetailPanel, ClusterLegend, build wiring
+# ─────────────────────────────────────────────────────────────────────────────
+#   TDD: wrote failing tests in web/src/__tests__/DetailPanel.test.tsx (21 tests)
+#     confirmed failures (import error — components didn't exist), then implemented.
+#   New frontend components:
+#     web/src/components/DetailPanel.tsx  — right-side detail panel driven by useSymbol():
+#       renders name (heading), all definitions (file:line each — homonym support),
+#       signature + docstring from first def, WHY/HACK/NOTE comment rows with kind badges,
+#       callers/callees counts, cluster label + colour stripe, and the ClusterLegend at the
+#       bottom (via useClusters — TanStack Query caches it from the landing page call).
+#     web/src/components/ClusterLegend.tsx — standalone colour-swatch legend:
+#       maps all cluster_ids → label + colour via clusterColor() (same hash as SymbolNode
+#       stripe and LandingPage dots — NO duplication). Empty list renders gracefully.
+#   App.tsx updated: replaced the F4 "detail panel coming in F5" placeholder toast with
+#     the real <DetailPanel selectedSymbol={selectedSymbol} />, shown when canvas is active.
+#   Makefile: added `build-web:` target (cd web && npm ci && npm run build).
+#     .PHONY updated to include build-web.
+#   README.md: added `## Seam Explorer` section (seam serve quickstart, feature list)
+#     and `## Development` now documents `make build-web`. Release ritual documented:
+#     make build-web → uv build → uv publish.
+#   Frontend tests: 58 passing (37 baseline + 21 new DetailPanel+ClusterLegend tests).
+#   npm run typecheck: clean. npm run build: succeeds (seam/_web/ ~530 kB bundle).
+#   Python gate: unchanged (1538+ passed — no Python files modified).
+#   Plan: .claude/tasks/seam-explorer-frontend.md (tasks F5+F6 complete).
+# Next: v0.1.0 — make build-web → uv build → uv publish (release ritual now documented).

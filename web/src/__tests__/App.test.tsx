@@ -1,0 +1,39 @@
+// Task F1 scaffold test: verify the App renders the 'Seam Explorer' header.
+// This is the TDD anchor for the scaffold — failing before App.tsx exists,
+// passing after. Subsequent tasks add their own test files.
+import { render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import App from "../App";
+
+// Isolate each test with a fresh QueryClient to avoid cross-test cache contamination.
+function renderWithQuery(ui: React.ReactElement) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 0 } },
+  });
+  return render(
+    <QueryClientProvider client={client}>{ui}</QueryClientProvider>,
+  );
+}
+
+describe("App scaffold", () => {
+  it("renders the Seam Explorer heading", () => {
+    renderWithQuery(<App />);
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+      "Seam Explorer",
+    );
+  });
+
+  it("renders the search box", () => {
+    renderWithQuery(<App />);
+    // F3: the old placeholder is replaced by a real search input
+    expect(screen.getByRole("combobox", { name: /search symbols/i })).toBeInTheDocument();
+  });
+
+  it("renders the landing cluster area by default (no symbol selected)", () => {
+    renderWithQuery(<App />);
+    // Landing page is shown while no center symbol is set.
+    // With no fetch mocked, useClusters is loading — the loading state is shown.
+    // This confirms App renders the landing path (not GraphCanvas) on initial load.
+    expect(screen.getByText(/loading clusters/i)).toBeInTheDocument();
+  });
+});

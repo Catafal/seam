@@ -415,12 +415,46 @@ The confidence tier on every edge now explains itself, and import statements are
 - **Impact includes test callers:** `seam_impact` and `seam_changes` include test functions in `WILL_BREAK` / `LIKELY_AFFECTED` tiers, which can be noisy. Test-file filtering is a future enhancement.
 - **Large-diff cap:** `seam_changes` caps impact analysis at 50 changed symbols on very large diffs (deterministic — first 50 in list order). A warning is logged at `DEBUG` level when the cap is hit.
 
+## Seam Explorer — Local Visual Graph UI
+
+`seam serve` (optional `[web]` extra) starts a local browser-based explorer for your Seam index.
+
+```bash
+uv sync --extra web         # add FastAPI (the MCP server is a separate [server] extra)
+seam init                   # index your project first
+seam serve                  # opens http://127.0.0.1:7420 in your browser
+seam serve --no-open        # start server without opening a browser tab
+seam serve --port 8000      # use a different port
+```
+
+The explorer is a React + TypeScript SPA (Vite / React Flow) served by FastAPI. It is strictly read-only and binds to `127.0.0.1` only — nothing leaves the machine. Features:
+
+- **Command-palette search** — debounced live search across all symbol names, docstrings, and signatures
+- **Neighborhood card-canvas** — depth-1 caller/callee graph around any symbol, rendered with dagre layout; EXTRACTED/AMBIGUOUS/INFERRED edges styled as solid/dashed/dotted lines
+- **Lazy expand** — double-click any card to merge its neighborhood into the canvas
+- **Detail panel** — click a node to see all definitions (file:line), signature, docstring, WHY/HACK/NOTE comments, callers/callees counts, and cluster membership
+- **Cluster legend** — colour key mapping all cluster labels to their swatches
+- **Landing cluster grid** — entry points into the graph by functional area when no symbol is selected
+
+### Release ritual
+
+The SPA is built to `seam/_web/` and force-included in the wheel as a package artifact. The release steps are:
+
+```bash
+make build-web    # cd web && npm ci && npm run build → seam/_web/
+uv build          # build the wheel (seam/_web/ is included via hatch artifacts)
+uv publish        # publish to PyPI
+```
+
+`seam/_web/` is gitignored (build artifact). Node.js is a **build-time** dependency only — not required to run `seam serve`.
+
 ## Development
 
 ```bash
 uv sync --dev   # install deps
 make gate       # run lint + typecheck + tests (must be green before every commit)
 make fmt        # format + fix lint (not part of gate)
+make build-web  # build the frontend SPA into seam/_web/ (requires Node.js)
 ```
 
 See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for build status and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for system design.

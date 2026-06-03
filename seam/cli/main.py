@@ -59,6 +59,7 @@ from seam.analysis.impact import (
 from seam.cli.install import install_command, uninstall_command
 from seam.cli.output import check_mutual_exclusion, emit_json, emit_json_error, print_quiet
 from seam.cli.read import context_command, query_command, search_command
+from seam.cli.serve import serve_command
 from seam.indexer.cluster_index import get_llm_naming_summary, index_clusters
 from seam.indexer.db import connect, init_db
 from seam.indexer.pipeline import index_one_file, walk_project
@@ -96,6 +97,8 @@ app.command(name="uninstall")(uninstall_command)
 app.command(name="query")(query_command)
 app.command(name="search")(search_command)
 app.command(name="context")(context_command)
+# serve starts the local Seam Explorer (FastAPI + uvicorn) — requires [web] extra.
+app.command(name="serve")(serve_command)
 
 # Top-level keys in a handle_seam_impact response that are NOT direction groups.
 # Every consumer that iterates the impact result to find tier groups (quiet output,

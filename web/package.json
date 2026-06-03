@@ -1,0 +1,39 @@
+{
+  "name": "seam-explorer",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Seam Explorer — local visual graph explorer for code intelligence",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "gen:types": "openapi-typescript http://127.0.0.1:7420/openapi.json -o src/api/types.ts"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.80.6",
+    "@xyflow/react": "^12.6.4",
+    "dagre": "^0.8.5",
+    "lucide-react": "^0.511.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.3.0",
+    "@types/dagre": "^0.7.52",
+    "@types/react": "^19.1.6",
+    "@types/react-dom": "^19.1.5",
+    "@vitejs/plugin-react": "^4.5.2",
+    "autoprefixer": "^10.4.21",
+    "jsdom": "^26.1.0",
+    "openapi-typescript": "^7.8.0",
+    "postcss": "^8.5.4",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5",
+    "vitest": "^3.2.2"
+  }
+}
