@@ -153,8 +153,14 @@ seam/server/tools.py         ← MCP tool handlers (thin adapters → engine + c
 seam/server/graph_api.py     ← LEAF: build_neighborhood(conn, name, direction) → dict (Phase B1)
                                 depth-1 neighbors from edges table; homonym-collapse (name-keyed nodes);
                                 node enrichment: kind, signature, visibility, is_exported, cluster, definition_count
+                                build_constellation(conn) → {clusters, links} (Explorer Phase 2): cluster
+                                  list + weighted inter-cluster links; homonym-safe name→cluster map; never raises
 seam/server/web.py           ← FastAPI app factory: create_web_app(db_path, root) → FastAPI (Phase B2)
-                                /api/status · /api/search · /api/graph/neighborhood · /api/symbol/{name} · /api/clusters
+                                v1: /api/status · /api/search · /api/graph/neighborhood · /api/symbol/{name} · /api/clusters
+                                Explorer Phase 2 (all reuse handle_seam_* verbatim — zero query dup):
+                                  /api/impact (handle_seam_impact, verbose=False) · /api/trace (handle_seam_trace,
+                                  paths only) · /api/changes (handle_seam_changes; NOT_A_GIT_REPO→400) ·
+                                  /api/constellation (graph_api.build_constellation)
                                 Pydantic models = TS codegen source; static SPA at seam/_web/ (build hint if absent)
                                 127.0.0.1-only enforced by CLI; requires [web] extra (lazy import pattern)
 seam/watcher/daemon.py       ← watchdog daemon (debounced re-index)

@@ -415,3 +415,36 @@
 #   Python gate: unchanged (1538+ passed — no Python files modified).
 #   Plan: .claude/tasks/seam-explorer-frontend.md (tasks F5+F6 complete).
 # Next: v0.1.0 — make build-web → uv build → uv publish (release ritual now documented).
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Seam Explorer — Phase 2: impact / trace / changes / constellation + polish
+# ─────────────────────────────────────────────────────────────────────────────
+#   Branch: feat/explorer-phase2 (one PR, inline build, second-search-box trace).
+#   Plan: .claude/tasks/seam-explorer-phase2.md.
+#
+#   BACKEND (4 HTTP routes over existing handlers — ZERO query-logic dup):
+#     GET /api/impact        — handle_seam_impact (verbose=False → lean entries)
+#     GET /api/trace         — handle_seam_trace (paths only)
+#     GET /api/changes       — handle_seam_changes (NOT_A_GIT_REPO → 400)
+#     GET /api/constellation — NEW pure leaf graph_api.build_constellation():
+#       clusters + weighted inter-cluster links; homonym-safe name→cluster map;
+#       never raises; pre-v4/empty → {clusters:[],links:[]}.
+#     Pydantic models added to web.py (TS codegen source). 19 new py tests.
+#     No schema change, no migration, MCP tool count stays 10.
+#
+#   FRONTEND (web/): all overlays derive from the base graph via useMemo —
+#     toggling an overlay off restores the original view byte-for-byte.
+#     F1 hooks: useImpact/useTrace/useChanges/useConstellation (opt-in enabled).
+#     F2 polish: SymbolNode exported badge + visibility chip + tier ring; Legend
+#       (confidence/clusters/risk); FilterBar (kind + confidence toggles).
+#     F3 impact overlay: paint blast radius by tier, dim rest, off-canvas cards,
+#       risk-summary chip. F4 trace: second "Trace to…" box → bold shortest path.
+#     F5 ChangesDrawer: changed symbols + risk badge + NOT_A_GIT_REPO notice.
+#     F6 ConstellationCanvas: Overview⇄Neighborhood toggle; region click drills in.
+#     Pure helpers (riskTier/edgeFilter/impactOverlay/tracePath/constellationLayout)
+#       unit-tested in isolation.
+#
+#   GATES: python 1558 passed, ruff + mypy clean. web 92 passed, tsc clean,
+#     production build OK (seam/_web ~551 kB). Live smoke (4853-symbol index):
+#     impact/trace/constellation/changes/SPA all return correct data.
+# Next: /review + manual QA, then merge feat/explorer-phase2.
