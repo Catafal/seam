@@ -27,7 +27,20 @@ import pytest
 
 from seam.indexer.db import init_db, upsert_file
 from seam.indexer.graph import Edge, Symbol
-from seam.server.graph_api import build_neighborhood
+from seam.server.graph_api import build_constellation, build_neighborhood
+
+
+def _seed_cluster(conn: sqlite3.Connection, label: str, members: list[str]) -> int:
+    """Insert a cluster row and assign `members` (by name) to it. Returns cluster id."""
+    cur = conn.execute(
+        "INSERT INTO clusters (label, size, naming_source) VALUES (?, ?, 'deterministic')",
+        (label, len(members)),
+    )
+    cid = cur.lastrowid
+    for name in members:
+        conn.execute("UPDATE symbols SET cluster_id = ? WHERE name = ?", (cid, name))
+    conn.commit()
+    return int(cid)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -335,3 +348,62 @@ def test_no_raise_on_empty_db(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
     assert result["center"] == "anything"
     assert result["nodes"] == []
     assert result["edges"] == []
+
+
+# ── Constellation (Task B4) ────────────────────────────────────────────────────
+
+
+def test_constellation_cross_cluster_link(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """A cross-cluster edge produces one link with the right weight."""
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    # alpha (cluster A) calls beta (cluster B) twice (two edges).
+    upsert_file(conn, Path(a), "python", "h1", [_sym("alpha", a), _sym("beta", a)], [
+        _edge("alpha", "beta", a),
+        _edge("alpha", "beta", a, kind="import"),
+    ])
+    ca = _seed_cluster(conn, "A", ["alpha"])
+    cb = _seed_cluster(conn, "B", ["beta"])
+
+    result = build_constellation(conn)
+
+    cluster_ids = {c["cluster_id"] for c in result["clusters"]}
+    assert {ca, cb} <= cluster_ids
+    links = result["links"]
+    assert len(links) == 1
+    assert links[0]["source"] == ca
+    assert links[0]["target"] == cb
+    assert links[0]["weight"] == 2
+
+
+def test_constellation_intra_cluster_no_link(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """An edge between two members of the SAME cluster produces no link."""
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    upsert_file(conn, Path(a), "python", "h1", [_sym("x", a), _sym("y", a)], [
+        _edge("x", "y", a),
+    ])
+    _seed_cluster(conn, "A", ["x", "y"])
+
+    result = build_constellation(conn)
+    assert result["links"] == []
+
+
+def test_constellation_unclustered_edge_ignored(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """Edges touching an unclustered (cluster_id NULL) symbol contribute no link."""
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    upsert_file(conn, Path(a), "python", "h1", [_sym("p", a), _sym("q", a)], [
+        _edge("p", "q", a),
+    ])
+    _seed_cluster(conn, "A", ["p"])  # q stays unclustered
+
+    result = build_constellation(conn)
+    assert result["links"] == []
+
+
+def test_constellation_empty_db_safe(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """Empty (no clusters) DB returns a safe empty envelope, never raises."""
+    conn, _ = tmp_db
+    result = build_constellation(conn)
+    assert result == {"clusters": [], "links": []}
