@@ -105,4 +105,36 @@ describe("SymbolNode", () => {
     renderSymbolNode(BASE_DATA); // definition_count: 1
     expect(screen.queryByText(/×\d/)).not.toBeInTheDocument();
   });
+
+  // ── Phase 2: enrichment + overlay cues ───────────────────────────────────
+
+  it("renders an exported badge when is_exported is true", () => {
+    const { container } = renderSymbolNode({ ...BASE_DATA, is_exported: true });
+    expect(
+      container.querySelector("[data-testid='exported-badge']"),
+    ).toBeInTheDocument();
+  });
+
+  it("does NOT render an exported badge when is_exported is false/null", () => {
+    const { container } = renderSymbolNode({ ...BASE_DATA, is_exported: false });
+    expect(
+      container.querySelector("[data-testid='exported-badge']"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders a visibility chip for private symbols", () => {
+    renderSymbolNode({ ...BASE_DATA, visibility: "private" });
+    expect(screen.getByLabelText("visibility: private")).toBeInTheDocument();
+  });
+
+  it("shows the impact tier label when impactTier is set", () => {
+    renderSymbolNode({ ...BASE_DATA, impactTier: "WILL_BREAK" });
+    expect(screen.getByText(/Will break/)).toBeInTheDocument();
+  });
+
+  it("applies a tier ring (inline boxShadow) when impactTier is set", () => {
+    const { container } = renderSymbolNode({ ...BASE_DATA, impactTier: "WILL_BREAK" });
+    const root = container.firstChild as HTMLElement;
+    expect(root.style.boxShadow).not.toBe("");
+  });
 });

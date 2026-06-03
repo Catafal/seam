@@ -23,3 +23,15 @@ export type WhyComment = components["schemas"]["WhyComment"];
 export type SymbolResponse = components["schemas"]["SymbolResponse"];
 export type ClusterItem = components["schemas"]["ClusterItem"];
 export type ClustersResponse = components["schemas"]["ClustersResponse"];
+
+// ── Phase 2 additions ──────────────────────────────────────────────────────────
+export type ImpactEntry = components["schemas"]["ImpactEntry"];
+export type ImpactResponse = components["schemas"]["ImpactResponse"];
+export type TraceHop = components["schemas"]["TraceHop"];
+export type TraceResponse = components["schemas"]["TraceResponse"];
+export type ChangedSymbol = components["schemas"]["ChangedSymbol"];
+export type AffectedEntry = components["schemas"]["AffectedEntry"];
+export type ChangesResponse = components["schemas"]["ChangesResponse"];
+export type ConstellationCluster = components["schemas"]["ConstellationCluster"];
+export type ConstellationLink = components["schemas"]["ConstellationLink"];
+export type ConstellationResponse = components["schemas"]["ConstellationResponse"];
