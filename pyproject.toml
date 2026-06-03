@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 # unrelated package (Seam Labs' smart-lock API SDK). The import package and the
 # console command both stay "seam" (distribution name != import name is standard).
 name = "seam-mcp"
-version = "0.2.0"
+version = "0.1.0"
 description = "Local code intelligence MCP server for AI agents"
 readme = "README.md"
 license = { text = "MIT" }
