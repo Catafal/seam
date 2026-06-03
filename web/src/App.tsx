@@ -268,16 +268,20 @@ function LandingPage({ onSelectCluster }: LandingPageProps) {
   }
 
   return (
-    <div className="flex flex-col items-center justify-center w-full h-full gap-6 p-8">
-      <p className="text-zinc-400 text-sm">
-        Search a symbol above, or explore a functional area:
-      </p>
-      <div
-        className="grid gap-3 w-full max-w-3xl"
-        style={{
-          gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
-        }}
-      >
+    // Own scroll container: the cluster grid can be hundreds of cards tall, and
+    // the parent main area is overflow-hidden — without overflow-y-auto here the
+    // grid spills off-screen with no way to reach the lower cards.
+    <div className="w-full h-full overflow-y-auto">
+      <div className="flex flex-col items-center gap-6 p-8 min-h-full">
+        <p className="text-zinc-400 text-sm">
+          Search a symbol above, or explore a functional area:
+        </p>
+        <div
+          className="grid gap-3 w-full max-w-3xl"
+          style={{
+            gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
+          }}
+        >
         {clusters.map((c: ClusterItem) => {
           const colour = clusterColor(c.cluster_id);
           return (
@@ -318,6 +322,7 @@ function LandingPage({ onSelectCluster }: LandingPageProps) {
             </button>
           );
         })}
+        </div>
       </div>
     </div>
   );
