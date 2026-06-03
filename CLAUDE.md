@@ -6,7 +6,7 @@ Local code intelligence MCP server — indexes codebases with tree-sitter, store
 ## Tech Stack
 - Python 3.14+ | uv 0.9.14
 - tree-sitter 0.25.2 + tree-sitter-python 0.25.0 + tree-sitter-typescript 0.23.2 + tree-sitter-go 0.25.0 + tree-sitter-rust 0.24.2 + tree-sitter-java 0.23.5 + tree-sitter-c-sharp 0.23.5 + tree-sitter-ruby 0.23.1 + tree-sitter-c 0.24.2 + tree-sitter-cpp 0.23.4 + tree-sitter-php 0.24.1
-- mcp 1.27.2 (stdio transport) | watchdog 6.0.0 | typer 0.26.4 | tomlkit 0.15.0 (Codex install config)
+- mcp 1.27.2 (stdio transport — OPTIONAL `server` extra, not a core dep) | watchdog 6.0.0 | typer 0.26.4 | tomlkit 0.15.0 (Codex install config)
 - SQLite + FTS5 (built-in, no ORM) | pytest 9.0.3 | ruff 0.15.15 | mypy 2.1.0
 
 ## Commands
@@ -17,8 +17,11 @@ Local code intelligence MCP server — indexes codebases with tree-sitter, store
 - `uv run seam sync` — Incrementally reconcile the index (changed/added/removed files) + gated cluster recompute
 - `uv run seam start` — Start MCP server + watcher
 - `uv run seam status` — Show index stats
+- `uv run seam search <text>` / `seam query <concept>` / `seam context <symbol>` — CLI-only read
+  commands (no MCP server needed); `--json`/`--quiet`, `--lean` on context
 - `uv run seam install` — Write the MCP config into an agent (`--target claude|cursor|codex|all`,
   `--location project|user`, `--print-config`); `uv run seam uninstall` reverses it
+- `uv sync` installs the CLI only; `uv sync --extra server` adds the optional MCP server (`mcp` package)
 
 ## File References
 - `DISCOVERY.md` — real goal (what we're building and why)
@@ -64,8 +67,14 @@ seam/installer/              ← `seam install`/`uninstall` engine (CLI-only; NO
                                 jsonfile.py (LEAF, stdlib json) — Claude/Cursor; tomlfile.py (LEAF, tomlkit) — Codex
                                 claude.py/.mcp.json+type:stdio · cursor.py/.cursor/mcp.json · codex.py/~/.codex/config.toml
 seam/cli/install.py          ← `seam install`/`uninstall` Typer commands (registered onto app in main.py)
+seam/cli/read.py             ← `seam query`/`search`/`context` — CLI-only read commands over the
+                                transport-agnostic tools.py handlers (query SQLite directly; NO MCP)
 seam/cli/main.py             ← Typer CLI (init, sync, start, status, impact, trace, changes, why, clusters,
-                                affected, pack, install, uninstall)
+                                affected, pack, install, uninstall, query, search, context)
+                                NOTE: `from seam.server.mcp import create_server` is LAZY (inside start())
+                                — `mcp` is an optional extra; only `seam start` needs it
+seam/indexer/db.py (schema)  ← schema loaded packaged-first: seam/_data/schema.sql (force-included in wheel)
+                                with fallback to docs/database/schema.sql (dev). Fixes installed `seam init`.
                                 --json / --quiet on read commands; --stdin on affected + changes
                                 sync: --json / --quiet / --force-clusters (Phase 7)
                                 --lean on impact/trace/pack + --limit on impact (Phase 8); all 3 modes route through handlers
@@ -158,7 +167,20 @@ tests/fixtures/              ← sample.py, sample.ts, sample.go, sample.rs
 - **Edges use string names** (not symbol IDs) — required for independent re-indexing
 
 ## Current Phase
-`seam install` complete (roadmap item 8) — one-command MCP wiring for Claude Code / Cursor / Codex.
+CLI-only completion + optional-MCP install profile.
+- **3 new CLI commands** — `seam query` / `search` / `context` (seam/cli/read.py) over the existing
+  transport-agnostic handlers; query SQLite directly → the FULL feature set is usable with NO MCP server.
+- **`mcp` is now an OPTIONAL extra** (`[project.optional-dependencies] server`), not a core dep. `mcp` is
+  imported lazily inside `start()`; `seam start` without it exits with an install hint. `pip install seam-mcp`
+  = CLI only; `pip install 'seam-mcp[server]'` adds the server. (`mcp` kept in the dev group for tests.)
+- **Distribution bug fixed (found via a real wheel install):** `seam init` read `docs/database/schema.sql`
+  (outside the package) → crashed on any `pip install`. Schema now force-included at `seam/_data/schema.sql`,
+  loaded packaged-first with a dev fallback. Guard test added.
+- 1504 tests passing; gate green. Plan: `.claude/tasks/cli-query-context-search.md`.
+See `progress.txt`. Next: v0.1.0 — publish to PyPI as `seam-mcp`.
+
+### Prior phase
+`seam install` (roadmap item 8) — one-command MCP wiring for Claude Code / Cursor / Codex.
 - **New `seam/installer/` package** + `seam/cli/install.py`: `seam install` / `seam uninstall`.
   AgentTarget ABC; one target per agent. Claude → `.mcp.json` (project) / `~/.claude.json` `projects.<root>`
   (user), entry has `type:"stdio"`. Cursor → `.cursor/mcp.json` (no `type`). Codex → `~/.codex/config.toml`

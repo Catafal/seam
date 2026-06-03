@@ -355,3 +355,36 @@
 #   Test count: 1492 (1465 + 27). Gate green (ruff + mypy 54 files + pytest). CLI-only — NO new MCP tool;
 #     tool count stays 10. No schema change, no migration. Plan: .claude/tasks/seam-install.md.
 # Next: v0.1.0 — publish to PyPI as `seam-mcp`; add more agent targets (one file each) as needed.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI-only completion + optional-MCP install profile
+# ─────────────────────────────────────────────────────────────────────────────
+#   User goal: use Seam fully from the terminal without the MCP server, and an install
+#   profile that doesn't pull the mcp stack. Finding: the CLI already ran without MCP for
+#   11/13 commands (they query .seam/seam.db directly). Only query/search/context were MCP-only.
+#   New: seam/cli/read.py — `seam query` / `search` / `context` over the transport-agnostic
+#     handle_seam_query/_search/_context (tools.py is MCP-free). Flags mirror the other read
+#     commands: --json/--quiet; context has --lean (verbose=False). Registered onto app in main.py.
+#     context not-found → {found:false} success (matches the MCP _finalize + impact contract).
+#   Optional MCP:
+#     - pyproject: `mcp` moved OUT of [project] dependencies INTO [project.optional-dependencies]
+#       server=["mcp>=1.0.0"]; also added to [dependency-groups].dev so tests still exercise it.
+#       (dependency-groups don't ship to pip users → `pip install seam-mcp` is mcp-free.)
+#     - main.py: `from seam.server.mcp import create_server` is now LAZY inside start() via
+#       _load_create_server(); missing mcp → friendly install hint + exit 1 (fails fast, before
+#       spawning the watcher). mcp is imported at top level in exactly ONE module (server/mcp.py),
+#       tools.py + the whole read path are mcp-free — so the CLI imports cleanly without mcp.
+#   DISTRIBUTION BUG FIXED (surfaced by a real wheel install, not the editable dev install):
+#     seam init read docs/database/schema.sql (OUTSIDE the seam/ package) → FileNotFoundError on
+#     ANY `pip install` (docs/ isn't packaged). Fix: hatch force-include docs/database/schema.sql →
+#     seam/_data/schema.sql; db.py loads packaged-first (_PACKAGED_SCHEMA_PATH) with dev fallback
+#     (_DEV_SCHEMA_PATH). docs/ stays the single canonical source. Guard test added.
+#   New tests: tests/integration/test_cli_read.py (8), tests/integration/test_no_mcp_profile.py (2:
+#     read works w/ mcp poisoned; start exits 1), tests/unit/test_schema_packaging.py (2: schema
+#     resolves + force-include configured).
+#   Live verify (fresh venv, `uv pip install .` core-only → NO mcp): `import mcp` fails; seam init/
+#     search/query/context all WORK; seam start → install hint + exit 1. (This is what caught the
+#     schema-packaging bug — the editable dev install never would.)
+#   Test count: 1504 (1492 + 12). Gate green (ruff + mypy 55 files + pytest). MCP tool count stays 10.
+#     Plan: .claude/tasks/cli-query-context-search.md.
+# Next: v0.1.0 — publish to PyPI as `seam-mcp` (CLI: `pip install seam-mcp`; agents: `[server]` extra).
