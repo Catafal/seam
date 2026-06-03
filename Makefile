@@ -1,4 +1,4 @@
-.PHONY: gate lint typecheck test install install-dev clean
+.PHONY: gate lint typecheck test install install-dev build-web clean
 
 # Gate — must pass before every commit (no exceptions)
 gate: lint typecheck test
@@ -28,6 +28,12 @@ dev:
 fmt:
 	uv run ruff format seam/ tests/
 	uv run ruff check seam/ tests/ --fix
+
+# Build the frontend SPA and emit it to seam/_web/ (included in the wheel).
+# Run this before uv build / uv publish to ensure the latest UI ships.
+# Release ritual: make build-web → uv build → uv publish
+build-web:
+	cd web && npm ci && npm run build
 
 # Remove build artifacts
 clean:

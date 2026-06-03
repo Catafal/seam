@@ -1,0 +1,13 @@
+# Node dependencies — never commit (huge; reproducible from package-lock.json)
+node_modules/
+
+# Vite build output goes to ../seam/_web (ignored at repo root), not web/dist,
+# but ignore dist/ defensively in case of a config change.
+dist/
+
+# Generated OpenAPI snapshot — produced by `npm run gen:types`; regenerated, not source.
+openapi.json
+
+# Local env overrides
+*.local
+.env

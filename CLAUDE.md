@@ -21,6 +21,8 @@ Local code intelligence MCP server — indexes codebases with tree-sitter, store
   commands (no MCP server needed); `--json`/`--quiet`, `--lean` on context
 - `uv run seam install` — Write the MCP config into an agent (`--target claude|cursor|codex|all`,
   `--location project|user`, `--print-config`); `uv run seam uninstall` reverses it
+- `uv run seam serve` — Start the local Seam Explorer web server (FastAPI, 127.0.0.1:7420);
+  requires `[web]` extra (`pip install 'seam-mcp[web]'`); `--host`, `--port`, `--no-open`
 - `uv sync` installs the CLI only; `uv sync --extra server` adds the optional MCP server (`mcp` package)
 
 ## File References
@@ -69,8 +71,10 @@ seam/installer/              ← `seam install`/`uninstall` engine (CLI-only; NO
 seam/cli/install.py          ← `seam install`/`uninstall` Typer commands (registered onto app in main.py)
 seam/cli/read.py             ← `seam query`/`search`/`context` — CLI-only read commands over the
                                 transport-agnostic tools.py handlers (query SQLite directly; NO MCP)
+seam/cli/serve.py            ← `seam serve` — lazy-import FastAPI/uvicorn ([web] extra) + run the
+                                Seam Explorer web server on 127.0.0.1:7420; NO_INDEX guard; opens browser
 seam/cli/main.py             ← Typer CLI (init, sync, start, status, impact, trace, changes, why, clusters,
-                                affected, pack, install, uninstall, query, search, context)
+                                affected, pack, install, uninstall, query, search, context, serve)
                                 NOTE: `from seam.server.mcp import create_server` is LAZY (inside start())
                                 — `mcp` is an optional extra; only `seam start` needs it
 seam/indexer/db.py (schema)  ← schema loaded packaged-first: seam/_data/schema.sql (force-included in wheel)
@@ -146,6 +150,13 @@ seam/query/pack.py           ← LEAF: context_pack(conn, symbol_name) → Conte
                                 orchestrates context()+why() into one enriched bundle; applies caps from config
                                 ContextPack: target, callers, callees (NeighborRef), why, cluster_peers, truncated
 seam/server/tools.py         ← MCP tool handlers (thin adapters → engine + clusters + pack)
+seam/server/graph_api.py     ← LEAF: build_neighborhood(conn, name, direction) → dict (Phase B1)
+                                depth-1 neighbors from edges table; homonym-collapse (name-keyed nodes);
+                                node enrichment: kind, signature, visibility, is_exported, cluster, definition_count
+seam/server/web.py           ← FastAPI app factory: create_web_app(db_path, root) → FastAPI (Phase B2)
+                                /api/status · /api/search · /api/graph/neighborhood · /api/symbol/{name} · /api/clusters
+                                Pydantic models = TS codegen source; static SPA at seam/_web/ (build hint if absent)
+                                127.0.0.1-only enforced by CLI; requires [web] extra (lazy import pattern)
 seam/watcher/daemon.py       ← watchdog daemon (debounced re-index)
 tests/fixtures/              ← sample.py, sample.ts, sample.go, sample.rs
 ```

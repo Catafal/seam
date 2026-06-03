@@ -46,6 +46,9 @@ dependencies = [
 # MCP server support is OPTIONAL — the CLI (init/query/search/context/impact/…) runs
 # fully without it. `pip install 'seam-mcp[server]'` adds the `seam start` MCP server.
 server = ["mcp>=1.0.0"]
+# Web explorer is OPTIONAL — `pip install 'seam-mcp[web]'` adds the `seam serve` HTTP
+# server + React SPA. Starlette/Pydantic/uvicorn come in as FastAPI transitive deps.
+web = ["fastapi>=0.110"]
 
 [project.scripts]
 seam = "seam.cli.main:app"
@@ -59,6 +62,9 @@ dev = [
     # mcp here (not in core deps) so the dev/test env exercises the MCP server while
     # end-user `pip install seam-mcp` stays mcp-free; opt in with the `server` extra.
     "mcp>=1.0.0",
+    # fastapi here so integration tests (TestClient) run without needing --extra web.
+    # End-users who only want the CLI get neither mcp nor fastapi.
+    "fastapi>=0.110",
     "pytest>=8.0.0",
     "pytest-cov>=5.0.0",
     "ruff>=0.4.0",
@@ -94,6 +100,10 @@ filterwarnings = ["ignore::DeprecationWarning"]
 # ── Hatch ────────────────────────────────────────────────────────────────────
 [tool.hatch.build.targets.wheel]
 packages = ["seam"]
+# seam/_web/ is gitignored (built SPA — never committed). Without this entry hatch would
+# silently omit the directory from the wheel; listing it as an artifact overrides that and
+# ensures `seam serve` can find the built frontend when installed from PyPI.
+artifacts = ["seam/_web/**/*"]
 
 # Ship the canonical SQL schema INSIDE the package so `seam init` works from an installed
 # wheel (docs/ is not packaged). db.py reads seam/_data/schema.sql when present, else the

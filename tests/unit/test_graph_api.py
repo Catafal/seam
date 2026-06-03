@@ -1,0 +1,337 @@
+"""Unit tests for seam/server/graph_api.py — neighborhood graph builder (Task B1).
+
+TDD: Tests written BEFORE implementation. They import build_neighborhood and
+assert on the exact API contract from .claude/tasks/seam-explorer-frontend.md.
+
+Coverage:
+  T1  homonym_collapse: two symbols with the same name -> one node, definition_count=2
+  T2  depth_1_boundary: only direct neighbors returned, not transitive hops
+  T3  direction_callees: direction="callees" -> only edges where center is source
+  T4  direction_callers: direction="callers" -> only edges where center is target
+  T5  direction_both: direction="both" -> union of callers and callees
+  T6  confidence_passthrough: EXTRACTED / AMBIGUOUS / INFERRED preserved on edges
+  T7  unknown_symbol_safe_return: unknown name -> center present (if exists) else empty nodes
+  T8  truly_unknown_symbol: symbol not in DB at all -> empty nodes, empty edges
+  T9  node_shape: nodes carry all required fields (id, name, kind, signature,
+                  visibility, is_exported, cluster_id, cluster_label, definition_count)
+  T10 edge_shape: edges carry id, source, target, kind, confidence
+  T11 edge_kind: "call" and "import" edges both preserved
+  T12 no_raise_on_empty_db: empty DB returns safe dict (never raises)
+"""
+
+import sqlite3
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from seam.indexer.db import init_db, upsert_file
+from seam.indexer.graph import Edge, Symbol
+from seam.server.graph_api import build_neighborhood
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _sym(
+    name: str,
+    file: str,
+    kind: str = "function",
+    signature: str | None = None,
+    visibility: str | None = None,
+    is_exported: int | None = None,
+) -> Symbol:
+    """Build a minimal Symbol for seeding tests. is_exported is 0/1/None (SQLite int)."""
+    return Symbol(
+        name=name,
+        kind=kind,
+        file=file,
+        start_line=1,
+        end_line=2,
+        docstring=None,
+        signature=signature,
+        is_exported=is_exported,  # type: ignore[arg-type]
+        visibility=visibility,
+    )
+
+
+def _edge(
+    source: str,
+    target: str,
+    file: str,
+    kind: str = "call",
+    confidence: str = "EXTRACTED",
+) -> Edge:
+    """Build a minimal Edge for seeding tests."""
+    return Edge(source=source, target=target, kind=kind, file=file, line=1, confidence=confidence)
+
+
+@pytest.fixture()
+def tmp_db() -> tuple[sqlite3.Connection, Path]:
+    """Yield (conn, tmp_dir_path) with an initialized in-memory-backed DB."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        db_path = tmp_path / ".seam" / "seam.db"
+        db_path.parent.mkdir()
+        conn = init_db(db_path)
+
+        # Create two stub source files so upsert_file can stat them.
+        (tmp_path / "a.py").write_text("# stub\n")
+        (tmp_path / "b.py").write_text("# stub\n")
+
+        yield conn, tmp_path
+        conn.close()
+
+
+# ── T1: homonym collapse ──────────────────────────────────────────────────────
+
+
+def test_homonym_collapse(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """Two symbols with the same name share one graph node; definition_count=2."""
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    b = str(tmp / "b.py")
+
+    # Two files both define "helper"; "center" calls "helper" from file a.
+    upsert_file(conn, Path(a), "python", "h1", [_sym("center", a), _sym("helper", a)], [
+        _edge("center", "helper", a),
+    ])
+    upsert_file(conn, Path(b), "python", "h2", [_sym("helper", b)], [])
+
+    result = build_neighborhood(conn, "center", "both")
+
+    assert result["center"] == "center"
+    node_names = {n["id"] for n in result["nodes"]}
+    # "helper" appears in TWO files but must collapse to ONE node.
+    assert "helper" in node_names
+    helper_node = next(n for n in result["nodes"] if n["id"] == "helper")
+    assert helper_node["definition_count"] == 2
+
+
+# ── T2: depth-1 boundary ─────────────────────────────────────────────────────
+
+
+def test_depth_1_boundary(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """Only direct (depth-1) neighbors returned, not transitive hops."""
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    upsert_file(conn, Path(a), "python", "h1", [
+        _sym("center", a), _sym("direct", a), _sym("transitive", a),
+    ], [
+        _edge("center", "direct", a),
+        _edge("direct", "transitive", a),
+    ])
+
+    result = build_neighborhood(conn, "center", "callees")
+    node_names = {n["id"] for n in result["nodes"]}
+
+    # "direct" is depth-1 -> must be present
+    assert "direct" in node_names
+    # "transitive" is depth-2 -> must NOT be present
+    assert "transitive" not in node_names
+
+
+# ── T3: direction=callees ─────────────────────────────────────────────────────
+
+
+def test_direction_callees(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """direction='callees' -> only edges where center is source (callees)."""
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    upsert_file(conn, Path(a), "python", "h1", [
+        _sym("center", a), _sym("callee_sym", a), _sym("caller_sym", a),
+    ], [
+        _edge("center", "callee_sym", a),     # center -> callee: should be included
+        _edge("caller_sym", "center", a),     # caller -> center: should be excluded
+    ])
+
+    result = build_neighborhood(conn, "center", "callees")
+    node_names = {n["id"] for n in result["nodes"]}
+
+    assert "callee_sym" in node_names
+    assert "caller_sym" not in node_names
+
+
+# ── T4: direction=callers ─────────────────────────────────────────────────────
+
+
+def test_direction_callers(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """direction='callers' -> only edges where center is target (callers)."""
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    upsert_file(conn, Path(a), "python", "h1", [
+        _sym("center", a), _sym("callee_sym", a), _sym("caller_sym", a),
+    ], [
+        _edge("center", "callee_sym", a),    # center -> callee: should be excluded
+        _edge("caller_sym", "center", a),    # caller -> center: should be included
+    ])
+
+    result = build_neighborhood(conn, "center", "callers")
+    node_names = {n["id"] for n in result["nodes"]}
+
+    assert "caller_sym" in node_names
+    assert "callee_sym" not in node_names
+
+
+# ── T5: direction=both ────────────────────────────────────────────────────────
+
+
+def test_direction_both(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """direction='both' -> union of callers and callees."""
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    upsert_file(conn, Path(a), "python", "h1", [
+        _sym("center", a), _sym("callee_sym", a), _sym("caller_sym", a),
+    ], [
+        _edge("center", "callee_sym", a),
+        _edge("caller_sym", "center", a),
+    ])
+
+    result = build_neighborhood(conn, "center", "both")
+    node_names = {n["id"] for n in result["nodes"]}
+
+    assert "callee_sym" in node_names
+    assert "caller_sym" in node_names
+
+
+# ── T6: confidence passthrough ────────────────────────────────────────────────
+
+
+def test_confidence_passthrough(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """EXTRACTED / AMBIGUOUS / INFERRED confidences are preserved on returned edges."""
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    upsert_file(conn, Path(a), "python", "h1", [
+        _sym("center", a), _sym("nodeA", a), _sym("nodeB", a), _sym("nodeC", a),
+    ], [
+        _edge("center", "nodeA", a, confidence="EXTRACTED"),
+        _edge("center", "nodeB", a, confidence="AMBIGUOUS"),
+        _edge("center", "nodeC", a, confidence="INFERRED"),
+    ])
+
+    result = build_neighborhood(conn, "center", "callees")
+    conf_map = {e["target"]: e["confidence"] for e in result["edges"]}
+
+    assert conf_map.get("nodeA") == "EXTRACTED"
+    assert conf_map.get("nodeB") == "AMBIGUOUS"
+    assert conf_map.get("nodeC") == "INFERRED"
+
+
+# ── T7: unknown-symbol safe return (center node exists in DB) ─────────────────
+
+
+def test_unknown_symbol_no_edges(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """A symbol that exists but has no edges -> nodes=[center_node], edges=[]."""
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    upsert_file(conn, Path(a), "python", "h1", [_sym("lonely", a)], [])
+
+    result = build_neighborhood(conn, "lonely", "both")
+
+    assert result["center"] == "lonely"
+    # The center node should be present even with no edges.
+    node_names = {n["id"] for n in result["nodes"]}
+    assert "lonely" in node_names
+    assert result["edges"] == []
+
+
+# ── T8: truly unknown symbol (not in DB at all) ───────────────────────────────
+
+
+def test_truly_unknown_symbol(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """Symbol not in DB at all -> {center, nodes:[], edges:[]}. Must NOT raise."""
+    conn, tmp = tmp_db
+
+    result = build_neighborhood(conn, "ghost_symbol_xyz", "both")
+
+    assert result["center"] == "ghost_symbol_xyz"
+    assert result["nodes"] == []
+    assert result["edges"] == []
+
+
+# ── T9: node shape ────────────────────────────────────────────────────────────
+
+
+def test_node_shape(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """Each node carries all required fields per the API contract."""
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    upsert_file(conn, Path(a), "python", "h1", [
+        _sym("center", a, signature="def center() -> None"),
+        _sym("neighbor", a, kind="class", visibility="public", is_exported=1),
+    ], [
+        _edge("center", "neighbor", a),
+    ])
+
+    result = build_neighborhood(conn, "center", "both")
+    # Include center node in check
+    all_nodes = {n["id"]: n for n in result["nodes"]}
+
+    required_keys = {"id", "name", "kind", "signature", "visibility", "is_exported",
+                     "cluster_id", "cluster_label", "definition_count"}
+
+    for node in all_nodes.values():
+        missing = required_keys - set(node.keys())
+        assert not missing, f"node {node['id']!r} missing keys: {missing}"
+
+    # Spot-check values on neighbor
+    neighbor = all_nodes.get("neighbor")
+    assert neighbor is not None
+    assert neighbor["kind"] == "class"
+    assert neighbor["visibility"] == "public"
+    assert neighbor["is_exported"] is True   # 1 -> True
+    assert neighbor["definition_count"] == 1
+
+
+# ── T10: edge shape ───────────────────────────────────────────────────────────
+
+
+def test_edge_shape(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """Each edge carries: id, source, target, kind, confidence."""
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    upsert_file(conn, Path(a), "python", "h1", [
+        _sym("center", a), _sym("dep", a),
+    ], [
+        _edge("center", "dep", a, kind="call", confidence="EXTRACTED"),
+    ])
+
+    result = build_neighborhood(conn, "center", "both")
+    assert len(result["edges"]) == 1
+    edge = result["edges"][0]
+    required_keys = {"id", "source", "target", "kind", "confidence"}
+    assert set(edge.keys()) >= required_keys
+    assert edge["source"] == "center"
+    assert edge["target"] == "dep"
+    assert edge["kind"] == "call"
+    assert edge["confidence"] == "EXTRACTED"
+
+
+# ── T11: edge kind preservation ───────────────────────────────────────────────
+
+
+def test_edge_kind_import(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """'import' kind edges are preserved (not just 'call' edges)."""
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    upsert_file(conn, Path(a), "python", "h1", [
+        _sym("center", a), _sym("lib", a),
+    ], [
+        _edge("center", "lib", a, kind="import", confidence="INFERRED"),
+    ])
+
+    result = build_neighborhood(conn, "center", "both")
+    assert len(result["edges"]) == 1
+    assert result["edges"][0]["kind"] == "import"
+
+
+# ── T12: no raise on empty DB ─────────────────────────────────────────────────
+
+
+def test_no_raise_on_empty_db(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """build_neighborhood on an empty (but initialized) DB never raises."""
+    conn, _ = tmp_db
+    result = build_neighborhood(conn, "anything", "both")
+
+    assert result["center"] == "anything"
+    assert result["nodes"] == []
+    assert result["edges"] == []

@@ -1,0 +1,23 @@
+/* Tailwind base directives — processed by postcss + autoprefixer at build time */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Dark theme baseline: zinc-950 body, zinc-900 surfaces */
+@layer base {
+  html {
+    font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo,
+      Consolas, "DejaVu Sans Mono", monospace;
+  }
+
+  body {
+    @apply bg-zinc-950 text-zinc-100 antialiased;
+    margin: 0;
+    padding: 0;
+  }
+
+  /* React Flow canvas sits in a flex container that fills the viewport */
+  #root {
+    @apply flex flex-col h-screen w-screen overflow-hidden;
+  }
+}
