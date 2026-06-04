@@ -150,6 +150,16 @@ SEAM_MAX_IMPORT_CANDIDATES: int = int(os.getenv("SEAM_MAX_IMPORT_CANDIDATES", "2
 # Prevents O(n) proximity computation on large symbol tables.
 SEAM_PROXIMITY_MAX_CANDIDATES: int = int(os.getenv("SEAM_PROXIMITY_MAX_CANDIDATES", "25"))
 
+# P4 — barrel re-export following. Max hops to chase a named import through
+# barrel index.ts/re-export files before giving up. When import promotion finds
+# a candidate file that does NOT itself declare the exported name (i.e. it is a
+# barrel that re-exports from siblings), the resolver follows that file's OWN
+# import_mappings up to this many hops to find the real declarer. Bounded and
+# cached per (file, name) within a single resolution → no unbounded read cost.
+# Default 3 matches CodeGraph's barrel-chasing depth. Set to 0 to DISABLE barrel
+# following entirely (byte-identical to pre-P4 behavior).
+SEAM_BARREL_DEPTH: int = int(os.getenv("SEAM_BARREL_DEPTH", "3"))
+
 
 # ── Phase 8: Lean output + impact cap ────────────────────────────────────────
 
