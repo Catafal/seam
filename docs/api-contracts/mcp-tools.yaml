@@ -53,6 +53,13 @@ tools:
         symbol:
           type: string
           description: Symbol name (may be Class.method format)
+        uid:
+          type: string
+          description: |
+            P6c. Stable opaque handle for this exact symbol: sha1(abs_file)[:8] + ':' + line.
+            Pass it back as the `uid` argument to seam_context/seam_impact/seam_trace to pin
+            THIS homonym (the exact file+line) without a disambiguation round-trip. Computed
+            from the absolute path before relativization; no schema change, no extra DB query.
         file:
           type: string
           description: Relative path from project root
@@ -105,10 +112,20 @@ tools:
     input:
       symbol:
         type: string
-        required: true
+        required: false
         description: Exact symbol name (e.g. "UserService", "authenticate_user", "UserService.validate")
         min_length: 1
         max_length: 200
+      uid:
+        type: string
+        required: false
+        nullable: true
+        default: null
+        description: |
+          P6c. A stable handle (from a seam_search/seam_query result `uid` field) that pins
+          the EXACT (file, line) symbol — an alternative to `symbol` that bypasses homonym
+          ambiguity and saves the disambiguation round-trip. When given, `symbol` is ignored.
+          An unknown/stale uid returns null (same not-found contract as an unknown name).
     output:
       type: object
       nullable: true
@@ -239,6 +256,12 @@ tools:
       items:
         symbol:
           type: string
+        uid:
+          type: string
+          description: |
+            P6c. Stable opaque handle for this exact symbol: sha1(abs_file)[:8] + ':' + line.
+            Pass it back as the `uid` argument to seam_context/seam_impact/seam_trace to pin
+            THIS homonym without a disambiguation round-trip. See seam_query.uid.
         file:
           type: string
         line:
@@ -291,13 +314,29 @@ tools:
       Returns all symbols that depend on the target (upstream), that the target
       depends on (downstream), or both — grouped into risk tiers by distance.
       Use before editing any symbol to understand the blast radius.
+
+      P6a — class inheritance is part of the dependency graph: a subclass→base
+      'extends' edge and a class→interface 'implements' edge are traversed like
+      call/import edges, so changing a base class or interface surfaces its
+      subclasses/implementers upstream. Set SEAM_INHERITANCE_EDGES=off to omit
+      inheritance edges (byte-identical to pre-P6a).
     input:
       target:
         type: string
-        required: true
+        required: false
         description: Symbol name to analyze (e.g. "upsert_file", "UserService.validate")
         min_length: 1
         max_length: 200
+      uid:
+        type: string
+        required: false
+        nullable: true
+        default: null
+        description: |
+          P6c. A stable handle (from a seam_search/seam_query result `uid` field) that pins
+          the exact symbol and skips homonym re-disambiguation — an alternative to `target`.
+          The impact graph is name-keyed, so the uid is resolved to its symbol NAME before
+          analysis. An unknown/stale uid returns the standard found=false result (not an error).
       direction:
         type: string
         required: false
@@ -399,8 +438,9 @@ tools:
     description: |
       Trace the call/dependency path between two symbols.
       Returns the shortest path from source to target as an ordered list of hops,
-      where each hop carries the edge kind (call | import) and per-edge confidence
-      (EXTRACTED | INFERRED | AMBIGUOUS).
+      where each hop carries the edge kind (call | import | extends | implements) and
+      per-edge confidence (EXTRACTED | INFERRED | AMBIGUOUS). The extends/implements
+      kinds are class-inheritance edges added in P6a (SEAM_INHERITANCE_EDGES=on).
 
       Also returns one-hop callers and callees for both symbols so the agent can
       see the immediate neighborhood alongside the path.
@@ -414,16 +454,32 @@ tools:
     input:
       source:
         type: string
-        required: true
+        required: false
         description: Starting symbol name (e.g. "init", "parse_file")
         min_length: 1
         max_length: 200
       target:
         type: string
-        required: true
+        required: false
         description: Destination symbol name (e.g. "upsert_file", "init_db")
         min_length: 1
         max_length: 200
+      uid:
+        type: string
+        required: false
+        nullable: true
+        default: null
+        description: |
+          P6c. Stable handle (from a seam_search/seam_query `uid` field) pinning the exact
+          SOURCE symbol — an alternative to `source`. Resolved to its symbol name (the path
+          graph is name-keyed). An unknown/stale uid yields the standard found=false result.
+      target_uid:
+        type: string
+        required: false
+        nullable: true
+        default: null
+        description: |
+          P6c. As `uid`, but pins the exact TARGET symbol (alternative to `target`).
       max_depth:
         type: integer
         required: false
@@ -449,7 +505,7 @@ tools:
         Hop shape (per edge in a path):
           from_name      (str)      — source of this edge
           to_name        (str)      — target of this edge
-          kind           (str)      — 'call' | 'import'
+          kind           (str)      — 'call' | 'import' | 'extends' | 'implements'
           confidence     (str)      — EXTRACTED | INFERRED | AMBIGUOUS
                                       Resolved at read time against the whole index
                                       (EXTRACTED = to_name unique in index; AMBIGUOUS = shared name;
@@ -464,7 +520,7 @@ tools:
 
         EdgeHop shape (for callers_* / callees_* lists):
           name           (str)      — neighboring symbol name
-          kind           (str)      — 'call' | 'import'
+          kind           (str)      — 'call' | 'import' | 'extends' | 'implements'
           confidence     (str)      — EXTRACTED | INFERRED | AMBIGUOUS
           resolved_by    (str|null) — Phase 5. Same provenance vocabulary as Hop above.
                                       null for pre-v6 indexes or missing context.
@@ -864,9 +920,17 @@ tools:
 
       With no argument: returns {"entry_points": [{name, kind, file, reach}]} — the
       codebase's top execution starting points, defined as call-graph ROOTS (symbols
-      with no incoming call edge), excluding tests, ranked by downstream reach (how
-      many symbols they transitively call). On a real repo these are the CLI commands,
-      web routes, MCP handlers, and main().
+      with no incoming call edge), excluding tests. On a real repo these are the CLI
+      commands, web routes, MCP handlers, and main().
+
+      Ranking (P6b): entries are ranked by framework-aware WEIGHTED reach
+      (entry_score * reach), not raw reach, so a route/view/controller with a shallow
+      downstream reach can outrank a deep internal utility. entry_score is a small
+      multiplier (>=1.0; 1.0 = neutral baseline) computed at index time from the
+      file path pattern (views.py, routes/, controllers/, cmd/, …) and the symbol's
+      decorator text (@app.route, @router.get, @GetMapping, …). The `reach` field
+      still reports the RAW transitive call count — entry_score is a ranking signal
+      only. Set SEAM_ENTRY_SCORE=off to revert to raw-reach ranking (pre-P6b).
 
       With an entry name: returns that entry point's flow tree — a forward expansion
       over call/import edges, depth-capped (SEAM_FLOW_MAX_DEPTH) and breadth-capped
