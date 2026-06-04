@@ -22,6 +22,15 @@ Phase 3 changes (Slice 1):
 - The existing OperationalError propagation is preserved: genuinely malformed input
   still surfaces distinctly. After OR-join, most user text won't be malformed, but
   the propagation path must remain so callers can still map it to INVALID_QUERY.
+
+Semantic search (T6):
+- search() and query() support an opt-in hybrid mode when SEAM_SEMANTIC=on.
+- When enabled AND embeddings exist AND model matches: FTS5 candidates are merged
+  with semantic candidates via rrf_merge (Reciprocal Rank Fusion, k=60).
+  The merged id list is hydrated into full rows and returned.
+- When disabled or degraded (fastembed absent, model mismatch, no embeddings):
+  the existing pure-FTS5 path is used — behavior is byte-identical to pre-T6.
+- Semantic ONLY ADDS recall; it never removes a keyword hit.
 """
 
 import json
@@ -29,12 +38,18 @@ import logging
 import sqlite3
 from typing import TypedDict
 
+import seam.config as config
 from seam.config import SEAM_FUZZY_MAX_CANDIDATES, SEAM_FUZZY_MAX_DIST
 from seam.query import fts
 from seam.query.clusters import cluster_peers as _cluster_peers
 from seam.query.fts import extract_terms as _extract_terms
+from seam.query.semantic import rrf_merge, semantic_candidates
 
 logger = logging.getLogger(__name__)
+
+# Module-level flag: emit the "SEAM_SEMANTIC=on but no embeddings" warning at most once
+# per process. Without this, every search/query call would spam the same warning.
+_hybrid_warned: bool = False
 
 
 class QueryResult(TypedDict):
@@ -317,10 +332,162 @@ def _fuzzy_fallback(
 # computation must tokenise identically. A local copy would silently drift.
 
 
+# ── Hybrid search helpers ─────────────────────────────────────────────────────
+
+
+def _hydrate_symbol_rows(
+    conn: sqlite3.Connection, symbol_ids: list[int]
+) -> dict[int, dict]:
+    """Fetch symbol + file data for a list of symbol IDs.
+
+    Returns a dict mapping symbol_id → row dict with keys:
+      symbol, file, line, cluster_id, signature.
+
+    Used by the hybrid path to hydrate RRF-merged id lists into full rows.
+    WHY: After rrf_merge we have a ranked list of symbol_ids. To produce
+    SearchResult objects we need name, file, line etc. One query fetches all
+    needed columns at once rather than N per-id lookups.
+    """
+    if not symbol_ids:
+        return {}
+    placeholders = ",".join("?" * len(symbol_ids))
+    sql = f"""
+        SELECT
+            s.id            AS id,
+            s.name          AS symbol,
+            f.path          AS file,
+            s.start_line    AS line,
+            s.cluster_id    AS cluster_id,
+            s.signature     AS signature
+        FROM symbols s
+        JOIN files f ON f.id = s.file_id
+        WHERE s.id IN ({placeholders})
+    """
+    rows = conn.execute(sql, symbol_ids).fetchall()
+    return {row["id"]: dict(row) for row in rows}
+
+
+def _is_hybrid_enabled(conn: sqlite3.Connection) -> bool:
+    """Return True when the hybrid path should be used for this query.
+
+    Conditions (all must hold):
+      1. SEAM_SEMANTIC config is 'on'.
+      2. The embeddings table has at least one row for the configured model.
+
+    WHY check at query time vs. at startup: the embeddings table can be
+    populated between process starts without restarting the server. Checking
+    per-query ensures newly indexed embeddings are immediately available without
+    requiring a server restart. The check is a single COUNT(*) — negligible cost.
+    """
+    if config.SEAM_SEMANTIC != "on":
+        return False
+    count = conn.execute(
+        "SELECT COUNT(*) FROM embeddings WHERE model = ?",
+        (config.SEAM_EMBED_MODEL,),
+    ).fetchone()[0]
+    if count == 0:
+        # SEAM_SEMANTIC=on but no embeddings — warn once per process.
+        global _hybrid_warned  # noqa: PLW0603
+        if not _hybrid_warned:
+            _hybrid_warned = True
+            logger.warning(
+                "_is_hybrid_enabled: SEAM_SEMANTIC=on but no embeddings found for "
+                "model=%r. Run 'seam init --semantic' to build the embedding index.",
+                config.SEAM_EMBED_MODEL,
+            )
+        return False
+    return True
+
+
+# ── Hybrid search results helper ─────────────────────────────────────────────
+
+
+def _hybrid_search_results(
+    conn: sqlite3.Connection,
+    text: str,
+    fts_rows: list[dict],
+    fts_symbol_ids: list[int],
+    limit: int,
+) -> list[SearchResult] | None:
+    """Compute hybrid (FTS + semantic) search results via RRF.
+
+    Returns a list of SearchResult when semantic adds new candidates beyond FTS,
+    or None to signal "fall through to the FTS-only path".
+
+    WHY extracted from search(): to keep search() under 200 lines (DRIFT-2).
+    WHY returns None: a None return lets search() stay in the normal FTS path
+    when semantic adds nothing new — semantically clear vs. returning [].
+
+    Snippet contract (STOP-2):
+        FTS rows carry real BM25 snippets. When a merged result was found by FTS,
+        we preserve its snippet. Semantic-only results get snippet="" (no FTS row).
+    """
+    sem_candidates = semantic_candidates(
+        conn,
+        text,
+        model=config.SEAM_EMBED_MODEL,
+        limit=config.SEAM_SEMANTIC_LIMIT,
+    )
+    sem_ids = [sid for sid, _score in sem_candidates]
+
+    # Check if semantic added any new candidates beyond FTS.
+    fts_id_set = set(fts_symbol_ids)
+    new_sem_ids = [sid for sid in sem_ids if sid not in fts_id_set]
+
+    if not new_sem_ids:
+        return None  # No new recall — fall through to FTS rescore path.
+
+    # Build snippet + score lookup for FTS rows (preserve real BM25 snippets).
+    fts_id_to_snippet: dict[int, str] = {r["id"]: r.get("snippet", "") for r in fts_rows}
+
+    # RRF merge: combine FTS id list (BM25-ordered) and semantic id list (cosine-ordered).
+    merged_ids = rrf_merge(fts_symbol_ids, sem_ids)
+
+    # Hydrate the merged id list into full rows (batch fetch — one SQL query).
+    id_to_row = _hydrate_symbol_rows(conn, merged_ids)
+
+    # Build SearchResult list in merged-rank order. RRF score = 1/(k+rank).
+    k = config.SEAM_RRF_K
+    results: list[SearchResult] = []
+    for rank, sym_id in enumerate(merged_ids[:limit], start=1):
+        if sym_id not in id_to_row:
+            continue
+        row = id_to_row[sym_id]
+        rrf_score = 1.0 / (k + rank)
+        # Use the real FTS snippet for ids that came from FTS; "" for semantic-only.
+        snippet = fts_id_to_snippet.get(sym_id, "")
+        results.append(
+            SearchResult(
+                symbol=row["symbol"],
+                file=row["file"],
+                line=row["line"],
+                snippet=snippet,
+                score=rrf_score,
+            )
+        )
+
+    if results:
+        logger.debug(
+            "search: hybrid path returned %d results (%d FTS + %d new semantic) for %r",
+            len(results),
+            len(fts_symbol_ids),
+            len(new_sem_ids),
+            text,
+        )
+
+    return results if results else None
+
+
 # ── search ───────────────────────────────────────────────────────────────────
 
 
-def search(conn: sqlite3.Connection, text: str, limit: int = 20) -> list[SearchResult]:
+def search(
+    conn: sqlite3.Connection,
+    text: str,
+    limit: int = 20,
+    *,
+    semantic: bool = True,
+) -> list[SearchResult]:
     """Full-text search across symbol names and docstrings.
 
     Phase 3 (Slice 1) changes vs. the original:
@@ -332,6 +499,15 @@ def search(conn: sqlite3.Connection, text: str, limit: int = 20) -> list[SearchR
           1. Falls back to LIKE %term% per term.
           2. If still empty and term ≥3 chars, tries bounded Damerau-Levenshtein
              fuzzy match over distinct symbol names (capped at SEAM_FUZZY_MAX_CANDIDATES).
+
+    Semantic search (T6):
+      - When SEAM_SEMANTIC=on AND embeddings exist for the configured model:
+          1. FTS5 candidates (id list, ranked by BM25) are combined with semantic
+             candidates (id list, ranked by cosine) via rrf_merge.
+          2. The merged id list is hydrated into SearchResult rows.
+          3. Score in SearchResult is the RRF rank (1/(k+rank), higher=better).
+      - When semantic is off or unavailable: existing pure-FTS5 path is used.
+        Behavior is byte-identical to pre-T6 in this case.
 
     Result ordering: highest score first. The returned `score` is the NEGATED bm25
     value + rescore bonuses, so higher = more relevant. FTS rows carry meaningful
@@ -347,6 +523,9 @@ def search(conn: sqlite3.Connection, text: str, limit: int = 20) -> list[SearchR
     match_expr = fts.build_match_query(text)
     fts_rows: list[dict] = []
 
+    # Also collect FTS symbol IDs for the hybrid path (if needed)
+    fts_symbol_ids: list[int] = []
+
     if match_expr:
         # Let OperationalError (genuinely malformed FTS5) propagate to caller.
         # With OR-join, this only fires on actual syntax errors, not multi-word queries.
@@ -355,6 +534,7 @@ def search(conn: sqlite3.Connection, text: str, limit: int = 20) -> list[SearchR
         # boost is permanently dead code. This column is nullable — pre-v5 rows have NULL.
         sql = """
             SELECT
+                s.id            AS id,
                 s.name          AS symbol,
                 f.path          AS file,
                 s.start_line    AS line,
@@ -372,6 +552,7 @@ def search(conn: sqlite3.Connection, text: str, limit: int = 20) -> list[SearchR
         raw_rows = conn.execute(sql, (match_expr, limit)).fetchall()
         fts_rows = [
             {
+                "id": row["id"],
                 "symbol": row["symbol"],
                 "file": row["file"],
                 "line": row["line"],
@@ -384,6 +565,20 @@ def search(conn: sqlite3.Connection, text: str, limit: int = 20) -> list[SearchR
             }
             for row in raw_rows
         ]
+        # Collect FTS symbol IDs (BM25-order = best first) for RRF merge
+        fts_symbol_ids = [r["id"] for r in fts_rows]
+
+    # ── Hybrid path: merge FTS and semantic candidates ────────────────────────
+    # When SEAM_SEMANTIC=on AND embeddings exist AND semantic=True (caller opt-in):
+    # combine both recall sources. Semantic ONLY ADDS recall — FTS hits never dropped.
+    # `semantic=False` lets callers (e.g. CLI --no-semantic) bypass hybrid without
+    # mutating global config (DRIFT-1 fix).
+    if semantic and _is_hybrid_enabled(conn):
+        hybrid_results = _hybrid_search_results(
+            conn, text, fts_rows, fts_symbol_ids, limit
+        )
+        if hybrid_results is not None:
+            return hybrid_results
 
     if fts_rows:
         # Rescore and return FTS results (the common happy path)
@@ -479,13 +674,25 @@ def search(conn: sqlite3.Connection, text: str, limit: int = 20) -> list[SearchR
 # ── query ────────────────────────────────────────────────────────────────────
 
 
-def query(conn: sqlite3.Connection, concept: str, limit: int = 10) -> list[QueryResult]:
+def query(
+    conn: sqlite3.Connection,
+    concept: str,
+    limit: int = 10,
+    *,
+    semantic: bool = True,
+) -> list[QueryResult]:
     """Find symbols related to a concept (FTS5 seed + 1-hop graph expansion).
 
     Algorithm:
       1. Build MATCH expression via fts.build_match_query() (OR-join fix).
       2. FTS5 MATCH to get seed symbols (with BM25 score).
       3. Rescore seeds via fts.rescore().
+      3b. [Semantic] When SEAM_SEMANTIC=on and embeddings exist: semantic candidates are
+          injected into seed_map with score=0.5 (below FTS rescored seeds, above neighbors).
+          WHY score=0.5: FTS rescored seeds have scores in roughly [0.5, 5.0]; graph
+          neighbors have score=0.0. Placing semantic seeds at 0.5 makes them rank below
+          confident FTS matches but above pure-graph neighbors — semantically relevant but
+          not as strong as keyword-matched seeds.
       4. For each seed symbol, collect 1-hop neighbors via edges
          (both direct callees and callers — anything connected).
       5. Deduplicate; seed symbols keep their (rescored) score, neighbors get 0.
@@ -546,6 +753,32 @@ def query(conn: sqlite3.Connection, concept: str, limit: int = 10) -> list[Query
             # Build seed map: name -> (file, line, score)
             for row in rescored_seeds:
                 seed_map[row["symbol"]] = (row["file"], row["line"], row["score"])
+
+    # ── Hybrid augmentation for query(): inject semantic seeds ───────────────
+    # When SEAM_SEMANTIC=on AND embeddings exist, semantic candidates are fetched
+    # and their symbol names are added to seed_map as additional seeds (score=0.5
+    # — below FTS rescored seeds but above 1-hop graph neighbors at score=0.0).
+    # This lets semantic-only symbols appear as peers of FTS seeds, going through
+    # the same 1-hop expansion and callers/callees enrichment path.
+    if semantic and _is_hybrid_enabled(conn):
+        sem_candidates = semantic_candidates(
+            conn,
+            concept,
+            model=config.SEAM_EMBED_MODEL,
+            limit=config.SEAM_SEMANTIC_LIMIT,
+        )
+        if sem_candidates:
+            sem_ids = [sid for sid, _s in sem_candidates]
+            id_to_row = _hydrate_symbol_rows(conn, sem_ids)
+            for sym_id, _sem_score in sem_candidates:
+                if sym_id not in id_to_row:
+                    continue
+                row = id_to_row[sym_id]
+                name = row["symbol"]
+                # Add to seed_map only if not already present (FTS seeds take priority)
+                if name not in seed_map:
+                    # Score 0.5: above graph neighbors (0.0), below FTS rescored seeds.
+                    seed_map[name] = (row["file"], row["line"], 0.5)
 
     if not seed_map:
         if not match_expr:

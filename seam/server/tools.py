@@ -162,6 +162,8 @@ def handle_seam_query(
     concept: str,
     root: Path,
     limit: int = _QUERY_LIMIT_DEFAULT,
+    *,
+    semantic: bool = True,
 ) -> list[dict[str, Any]] | dict[str, Any]:
     """Handler for the seam_query MCP tool.
 
@@ -169,6 +171,9 @@ def handle_seam_query(
     Returns a list of QueryResult dicts, or an error dict on bad input.
 
     Limit is clamped to [1, 50].
+
+    semantic=True (default): use hybrid path when available.
+    semantic=False: force keyword-only FTS5 (bypasses hybrid without mutating config).
 
     NOTE: no `verbose` flag here. seam_query results carry NO Phase 4/5 enrichment
     fields (only symbol/file/line/score/callers_count/callees_count), so lean mode
@@ -185,7 +190,7 @@ def handle_seam_query(
     # Mirror seam_search: a malformed FTS5 concept maps to INVALID_QUERY rather
     # than silently returning [] (which an agent would read as "no such code").
     try:
-        results = engine.query(conn, concept.strip(), safe_limit)
+        results = engine.query(conn, concept.strip(), safe_limit, semantic=semantic)
     except sqlite3.OperationalError as exc:
         return _invalid_query(f"FTS5 query syntax error: {exc}")
 
@@ -258,6 +263,8 @@ def handle_seam_search(
     text: str,
     root: Path,
     limit: int = _SEARCH_LIMIT_DEFAULT,
+    *,
+    semantic: bool = True,
 ) -> list[dict[str, Any]] | dict[str, Any]:
     """Handler for the seam_search MCP tool.
 
@@ -266,6 +273,9 @@ def handle_seam_search(
 
     Limit is clamped to [1, 100].
     Maps sqlite3.OperationalError (FTS5 syntax error) to INVALID_QUERY.
+
+    semantic=True (default): use hybrid path when available.
+    semantic=False: force keyword-only FTS5 (bypasses hybrid without mutating config).
     """
     # Validate: text must not be empty or whitespace-only
     if not text or not text.strip():
@@ -275,7 +285,7 @@ def handle_seam_search(
     safe_limit = _clamp(limit, _SEARCH_LIMIT_MIN, _SEARCH_LIMIT_MAX)
 
     try:
-        results = engine.search(conn, text.strip(), safe_limit)
+        results = engine.search(conn, text.strip(), safe_limit, semantic=semantic)
     except sqlite3.OperationalError as exc:
         # FTS5 rejects malformed query syntax with OperationalError
         return _invalid_query(f"FTS5 query syntax error: {exc}")

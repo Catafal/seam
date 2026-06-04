@@ -86,10 +86,22 @@ def search_command(
     path: str = typer.Option(".", "--path", help="Project root (default: current directory)."),
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory."),
     limit: int = typer.Option(_SEARCH_LIMIT_DEFAULT, "--limit", help="Max results."),
+    no_semantic: bool = typer.Option(
+        False,
+        "--no-semantic",
+        help=(
+            "Force keyword-only FTS5 search, even when embeddings exist. "
+            "Useful for comparing keyword vs. hybrid results."
+        ),
+    ),
     json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
     quiet: bool = typer.Option(False, "--quiet", help="Print bare symbol names, one per line."),
 ) -> None:
-    """Full-text search over indexed symbol names, docstrings, and signatures (no MCP needed)."""
+    """Full-text search over indexed symbol names, docstrings, and signatures (no MCP needed).
+
+    By default auto-uses semantic hybrid search when embeddings exist (SEAM_SEMANTIC=on).
+    Use --no-semantic to force keyword-only FTS5, regardless of whether embeddings are present.
+    """
     try:
         check_mutual_exclusion(json_=json_, quiet=quiet)
     except ValueError as exc:
@@ -97,7 +109,12 @@ def search_command(
 
     conn, project_root = _open_index(path, db_dir, json_)
     try:
-        result = handle_seam_search(conn, text, project_root, limit=limit)
+        # --no-semantic: pass semantic=False to bypass the hybrid path without mutating
+        # global config. This is safe for both single-threaded CLI use and any future
+        # concurrent context. (DRIFT-1 fix: no more module-attribute patching.)
+        result = handle_seam_search(
+            conn, text, project_root, limit=limit, semantic=not no_semantic
+        )
     finally:
         conn.close()
 
@@ -118,6 +135,14 @@ def query_command(
     path: str = typer.Option(".", "--path", help="Project root (default: current directory)."),
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory."),
     limit: int = typer.Option(_QUERY_LIMIT_DEFAULT, "--limit", help="Max results."),
+    no_semantic: bool = typer.Option(
+        False,
+        "--no-semantic",
+        help=(
+            "Force keyword-only FTS5 search, even when embeddings exist. "
+            "Useful for comparing keyword vs. hybrid results."
+        ),
+    ),
     json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
     quiet: bool = typer.Option(False, "--quiet", help="Print bare symbol names, one per line."),
 ) -> None:
@@ -129,7 +154,9 @@ def query_command(
 
     conn, project_root = _open_index(path, db_dir, json_)
     try:
-        result = handle_seam_query(conn, concept, project_root, limit=limit)
+        result = handle_seam_query(
+            conn, concept, project_root, limit=limit, semantic=not no_semantic
+        )
     finally:
         conn.close()
 

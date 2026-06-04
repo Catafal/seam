@@ -16,6 +16,16 @@ tools:
     description: |
       Find all code related to a concept using hybrid search (FTS5 + 1-hop graph expansion).
       Use this when you need to find where a concept lives across the codebase.
+
+      Semantic hybrid (Semantic phase): when SEAM_SEMANTIC=on AND the embeddings table has
+      rows for the configured model, semantic candidates (cosine similarity via fastembed) are
+      merged with FTS5 candidates via Reciprocal Rank Fusion (RRF, k=60). The merged set then
+      flows through the existing 1-hop expansion and callers/callees enrichment pipeline.
+      Semantic symbols appear as seeds at score=0.5 (above graph neighbors at 0.0, below FTS
+      rescored seeds). When disabled or unavailable (SEAM_SEMANTIC=off, no embeddings, model
+      mismatch), behavior is byte-identical to pre-Semantic (pure FTS5 path).
+
+      No new tool is added — tool count stays 11. Pass semantic=false to force keyword-only.
     input:
       concept:
         type: string
@@ -29,6 +39,14 @@ tools:
         default: 10
         min: 1
         max: 50
+      semantic:
+        type: boolean
+        required: false
+        default: true
+        description: |
+          When true (default): use hybrid FTS5+semantic path if SEAM_SEMANTIC=on and
+          embeddings are present. When false: force keyword-only FTS5 regardless of config.
+          Useful for comparing keyword vs. hybrid results without changing env vars.
     output:
       type: array
       items:
@@ -184,6 +202,17 @@ tools:
     description: |
       Full-text search across all indexed symbol names and docstrings (FTS5 BM25).
       Use when you know a keyword but not the exact symbol name.
+
+      Semantic hybrid (Semantic phase): when SEAM_SEMANTIC=on AND the embeddings table has
+      rows for the configured model, semantic candidates (cosine similarity via fastembed) are
+      merged with FTS5 candidates via Reciprocal Rank Fusion (RRF, k=60). The merged result
+      is ranked by RRF score (1/(k+rank)). FTS snippets (BM25 highlighted excerpts) are
+      preserved for FTS hits; semantic-only hits get snippet="". Semantic ONLY ADDS recall —
+      a keyword hit is never dropped from the merged result. When disabled or unavailable
+      (SEAM_SEMANTIC=off, no embeddings, model mismatch), behavior is byte-identical to
+      pre-Semantic (pure FTS5 path, including the LIKE and fuzzy fallbacks).
+
+      No new tool is added — tool count stays 11. Pass semantic=false to force keyword-only.
     input:
       text:
         type: string
@@ -197,6 +226,14 @@ tools:
         default: 20
         min: 1
         max: 100
+      semantic:
+        type: boolean
+        required: false
+        default: true
+        description: |
+          When true (default): use hybrid FTS5+semantic path if SEAM_SEMANTIC=on and
+          embeddings are present. When false: force keyword-only FTS5 regardless of config.
+          Useful for comparing keyword vs. hybrid results without changing env vars.
     output:
       type: array
       items:

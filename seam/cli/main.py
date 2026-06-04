@@ -62,6 +62,7 @@ from seam.cli.read import context_command, query_command, search_command
 from seam.cli.serve import serve_command
 from seam.indexer.cluster_index import get_llm_naming_summary, index_clusters
 from seam.indexer.db import connect, init_db
+from seam.indexer.embedding_index import index_embeddings
 from seam.indexer.pipeline import index_one_file, walk_project
 from seam.indexer.sync import sync as sync_project
 from seam.query.clusters import cluster_members as query_cluster_members
@@ -141,12 +142,23 @@ def init(
         "--db-dir",
         help="Override DB directory (used in tests; default: same as project root)",
     ),
+    semantic: bool = typer.Option(
+        False,
+        "--semantic",
+        help=(
+            "Also embed all symbols with the local fastembed model after indexing. "
+            "Requires: pip install 'seam-mcp[semantic]' and SEAM_SEMANTIC=on. "
+            "Downloads the model on first run (~67 MB); subsequent runs use the local cache."
+        ),
+    ),
 ) -> None:
     """Index the project into .seam/seam.db.
 
     Walks the project root, skips dot-dirs and common build/cache dirs,
     selects files by extension (SEAM_LANGUAGE_MAP), skips files > SEAM_MAX_FILE_BYTES,
     and writes all symbols + edges into .seam/seam.db.
+
+    Use --semantic to also build local embeddings for hybrid (semantic + keyword) search.
     """
     start_ts = time.monotonic()
     project_root = Path(path).resolve()
@@ -176,6 +188,7 @@ def init(
     indexed_files = 0
     skipped_files = 0
     total_clusters = 0
+    total_embeddings: int | None = None  # None = not requested; 0 = skipped; >0 = count; -1 = failed
     llm_naming_summary: str | None = None
 
     with Progress(
@@ -217,6 +230,19 @@ def init(
             # Only relevant when LLM naming was requested.
             if config.SEAM_CLUSTER_NAMING == "llm" and total_clusters > 0:
                 llm_naming_summary = get_llm_naming_summary(conn)
+
+            # --semantic: embed all symbols with the local fastembed model.
+            # Returns 0 when fastembed absent (skip cleanly), -1 on error, >=0 on success.
+            # WHY after clustering: embeddings are independent of cluster assignments
+            # but clustering is the slower of the two post-passes; running embeddings
+            # last keeps the flow: index → cluster → embed.
+            if semantic:
+                progress.update(task, description="Computing symbol embeddings...")
+                total_embeddings = index_embeddings(
+                    conn,
+                    model=config.SEAM_EMBED_MODEL,
+                    batch=32,
+                )
         finally:
             conn.close()
 
@@ -224,6 +250,18 @@ def init(
     # from "genuinely zero clusters." Display a visible yellow warning in that case.
     clustering_failed = total_clusters < 0
     display_clusters = str(total_clusters) if total_clusters >= 0 else "failed"
+
+    # Embedding display: None = not requested; 0 = skipped (fastembed absent);
+    # -1 = embedding failed; >=1 = count of symbols embedded.
+    embedding_failed = total_embeddings is not None and total_embeddings < 0
+    if total_embeddings is None:
+        display_embeddings = None  # not shown in table when --semantic not requested
+    elif total_embeddings == 0:
+        display_embeddings = "skipped (fastembed not installed)"
+    elif embedding_failed:
+        display_embeddings = "failed"
+    else:
+        display_embeddings = f"{total_embeddings} symbols ({config.SEAM_EMBED_MODEL})"
 
     elapsed = time.monotonic() - start_ts
 
@@ -239,6 +277,8 @@ def init(
     table.add_row("symbols", str(total_symbols))
     table.add_row("edges", str(total_edges))
     table.add_row("clusters", display_clusters)
+    if display_embeddings is not None:
+        table.add_row("embeddings", display_embeddings)
     table.add_row("elapsed", f"{elapsed:.2f}s")
     console.print(table)
 
@@ -248,6 +288,27 @@ def init(
         console.print(
             "[yellow]clusters: failed[/yellow] "
             "[dim](run with SEAM_LOG_LEVEL=DEBUG to see the error)[/dim]"
+        )
+
+    # Visible yellow warning when embedding failed.
+    if embedding_failed and total_symbols > 0:
+        console.print(
+            "[yellow]embeddings: failed[/yellow] "
+            "[dim](run with SEAM_LOG_LEVEL=DEBUG to see the error; "
+            "run 'seam init --semantic' again to retry)[/dim]"
+        )
+
+    # Actionable install hint when --semantic was requested but fastembed is absent.
+    # total_embeddings == 0 AND symbols present AND no failure means fastembed not installed.
+    if (
+        semantic
+        and total_embeddings == 0
+        and not embedding_failed
+        and total_symbols > 0
+    ):
+        console.print(
+            "[yellow]embeddings: skipped[/yellow] — fastembed is not installed.\n"
+            "  Install it with: [bold]pip install 'seam-mcp\\[semantic]'[/bold]"
         )
 
     # Issue #8: LLM naming summary line.
@@ -321,6 +382,21 @@ def status(
         except Exception:
             cluster_count = 0
 
+        # Embedding stats (Semantic). Guard for pre-v7 indexes (no embeddings table).
+        # WHY guard: embeddings table added in v7 migration; older indexes don't have it.
+        # Query per-model counts so we can detect when stored model != configured model.
+        try:
+            embedding_rows = conn.execute(
+                "SELECT model, COUNT(*) AS cnt FROM embeddings GROUP BY model"
+            ).fetchall()
+            embedding_model_counts: dict[str, int] = {
+                row["model"]: row["cnt"] for row in embedding_rows
+            }
+            embedding_count = sum(embedding_model_counts.values())
+        except Exception:
+            embedding_count = 0
+            embedding_model_counts = {}
+
         # Most recent indexed_at across all files
         last_indexed_row = conn.execute("SELECT MAX(indexed_at) FROM files").fetchone()[0]
         last_indexed_str = (
@@ -359,6 +435,9 @@ def status(
 
     # ── JSON mode — build stats dict inline (no handler exists for status) ────
     if json_:
+        # Detect model mismatch: configured model has zero stored rows but another does.
+        configured_count = embedding_model_counts.get(config.SEAM_EMBED_MODEL, 0)
+        model_mismatch = embedding_count > 0 and configured_count == 0
         stats = {
             "files": file_count,
             "symbols": symbol_count,
@@ -367,6 +446,13 @@ def status(
             "last_indexed": last_indexed_str,
             "watcher": watcher_status,
             "freshness": freshness,
+            # Semantic search fields (always present — 0 when not yet populated)
+            "embedding_count": embedding_count,
+            "embed_model": config.SEAM_EMBED_MODEL,
+            # Per-model breakdown: {model_name: count}; empty dict when no embeddings.
+            "embedding_models": embedding_model_counts,
+            # True when stored model != configured model (embeddings stale/wrong model).
+            "embedding_model_mismatch": model_mismatch,
         }
         emit_json(stats)
         return
@@ -386,6 +472,24 @@ def status(
     table.add_row("symbols", str(symbol_count))
     table.add_row("edges", str(edge_count))
     table.add_row("clusters", str(cluster_count))
+    # Semantic embeddings row — always shown so staleness is visible.
+    # "0" means embeddings not yet built; run `seam init --semantic` to populate.
+    configured_count_rich = embedding_model_counts.get(config.SEAM_EMBED_MODEL, 0)
+    if embedding_count == 0:
+        embeddings_display = "0 (run 'seam init --semantic' to enable)"
+    elif configured_count_rich > 0:
+        embeddings_display = f"{configured_count_rich} ({config.SEAM_EMBED_MODEL})"
+    else:
+        # Embeddings exist but for a different model — show mismatch warning.
+        stored_models = ", ".join(
+            f"{m}:{c}" for m, c in embedding_model_counts.items()
+        )
+        embeddings_display = (
+            f"{embedding_count} [stored: {stored_models}] "
+            f"⚠ model mismatch (configured: {config.SEAM_EMBED_MODEL}) "
+            "— run 'seam init --semantic' to rebuild"
+        )
+    table.add_row("embeddings", embeddings_display)
     table.add_row("last indexed", last_indexed_str)
     table.add_row("watcher", watcher_status)
     table.add_row("freshness", freshness)
@@ -1929,6 +2033,15 @@ def sync_cmd(
             "(useful after the watcher already indexed your edits)."
         ),
     ),
+    semantic: bool = typer.Option(
+        False,
+        "--semantic",
+        help=(
+            "Re-embed all symbols after sync (full re-embed, not incremental). "
+            "Requires: pip install 'seam-mcp[semantic]'. "
+            "Skips cleanly when fastembed is absent."
+        ),
+    ),
     json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
     quiet: bool = typer.Option(
         False,
@@ -1949,6 +2062,7 @@ def sync_cmd(
       seam sync                       -- sync current directory
       seam sync /path/to/project      -- sync a specific project
       seam sync --force-clusters      -- recompute clusters even if nothing changed
+      seam sync --semantic            -- also re-embed symbols after reconciling
       seam sync -q >/dev/null 2>&1    -- quiet for git hook use
       seam sync --json                -- structured output for CI / agents
     """
@@ -2024,6 +2138,30 @@ def sync_cmd(
         raise typer.Exit(code=1) from exc
     finally:
         conn.close()
+
+    # --semantic: re-embed all symbols after reconciliation.
+    # WHY re-open connection: conn was closed in the finally block above.
+    # Full re-embed (not incremental) — same as init --semantic.
+    if semantic:
+        try:
+            embed_conn = connect(db_path)
+            try:
+                _embed_count = index_embeddings(
+                    embed_conn,
+                    model=config.SEAM_EMBED_MODEL,
+                    batch=32,
+                )
+            finally:
+                embed_conn.close()
+            # _embed_count: 0 = skipped (fastembed absent), -1 = failed, >=1 = success
+            if not quiet and _embed_count < 0:
+                console.print(
+                    "[yellow]embeddings: failed[/yellow] "
+                    "[dim](run with SEAM_LOG_LEVEL=DEBUG to see the error)[/dim]"
+                )
+        except Exception as exc:  # noqa: BLE001
+            if not quiet:
+                console.print(f"[yellow]embeddings: failed ({exc})[/yellow]")
 
     # ── JSON mode ─────────────────────────────────────────────────────────────
     if json_:

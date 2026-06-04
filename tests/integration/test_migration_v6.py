@@ -103,15 +103,17 @@ def _make_v5_db(db_path: Path) -> None:
 
 
 class TestFreshDbSchemaV6:
-    """M1 — Fresh DB from init_db has schema_version='6' and import_mappings table."""
+    """M1 — Fresh DB from init_db has schema_version>='6' and import_mappings table."""
 
     def test_fresh_db_schema_version_is_6(self, tmp_path: Path) -> None:
+        # Fresh DBs are born at the CURRENT schema version (7 as of semantic phase);
+        # this test verifies v6 migration ran (version >= 6 means import_mappings exists).
         db_path = tmp_path / "test.db"
         conn = init_db(db_path)
         row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
         conn.close()
         assert row is not None
-        assert int(row[0]) == 6
+        assert int(row[0]) >= 6
 
     def test_fresh_db_import_mappings_table_exists(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
@@ -147,13 +149,14 @@ class TestMigrationV5ToV6:
     """M2 — A v5 DB migrates to v6 correctly on connect()."""
 
     def test_v5_db_migrates_schema_version(self, tmp_path: Path) -> None:
+        # A v5 DB auto-migrates through v6 and v7 on connect(); >= 6 confirms v6 ran.
         db_path = tmp_path / "v5.db"
         _make_v5_db(db_path)
 
         conn = connect(db_path)
         row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
         conn.close()
-        assert int(row[0]) == 6
+        assert int(row[0]) >= 6
 
     def test_v5_db_gets_import_mappings_table(self, tmp_path: Path) -> None:
         db_path = tmp_path / "v5.db"
@@ -208,16 +211,17 @@ class TestMigrationV5ToV6:
 
 
 class TestMigrationIdempotency:
-    """M3 — Running init_db twice on a v6 DB is safe."""
+    """M3 — Running init_db twice on a v6+ DB is safe."""
 
     def test_init_db_twice_safe(self, tmp_path: Path) -> None:
+        # Schema is now at v7; >= 6 verifies the v6 migration ran and the DB is healthy.
         db_path = tmp_path / "v6.db"
         conn1 = init_db(db_path)
         conn1.close()
         conn2 = init_db(db_path)
         row = conn2.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
         conn2.close()
-        assert int(row[0]) == 6
+        assert int(row[0]) >= 6
 
 
 # ── M4: connect() auto-migrates reads ────────────────────────────────────────

@@ -1,4 +1,4 @@
-.PHONY: gate lint typecheck test install install-dev build-web clean
+.PHONY: gate lint typecheck test install install-dev build-web bench-semantic clean
 
 # Gate — must pass before every commit (no exceptions)
 gate: lint typecheck test
@@ -34,6 +34,12 @@ fmt:
 # Release ritual: make build-web → uv build → uv publish
 build-web:
 	cd web && npm ci && npm run build
+
+# Semantic recall benchmark — requires [semantic] extra + a one-time model download.
+# Prerequisites: pip install 'seam-mcp[semantic]'  &&  seam init --semantic
+# NOT part of `make gate` (needs fastembed + network for first run).
+bench-semantic:
+	uv run python benchmarks/semantic_recall.py
 
 # Remove build artifacts
 clean:

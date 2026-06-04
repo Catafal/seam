@@ -7,7 +7,7 @@ Key design decisions:
 - init_db verifies FTS5 availability before running the schema script.
 - init_db runs guarded migrations: v1->v2 (edges.confidence), v2->v3 (comments table),
   v3->v4 (clusters + cluster_id), v4->v5 (Phase 4 node enrichment fields),
-  v5->v6 (Phase 5 import_mappings table).
+  v5->v6 (Phase 5 import_mappings table), v6->v7 (semantic embeddings table).
 - upsert_file is a single transaction: INSERT OR REPLACE the file row,
   DELETE old symbols/edges/comments, then re-insert. Triggers handle FTS sync.
 - delete_file DELETE FROM files cascades to symbols/edges/comments via FK; FTS
@@ -19,6 +19,9 @@ Key design decisions:
   visibility, qualified_name. FTS5 rebuilt to index (name, docstring, signature).
 - Phase 5 (schema v6): import_mappings table. Populated by upsert_import_mappings(),
   cleaned up by delete_import_mappings(). Per-file delete-then-insert like upsert_file.
+- Semantic search (schema v7): embeddings table. Populated ONLY by `seam init --semantic`.
+  Not backfilled by migration — falls back to FTS5-only when absent. ON DELETE CASCADE
+  keeps embeddings in sync with symbol deletions automatically.
 """
 
 import json
@@ -98,7 +101,7 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
     Guard: only run when:
       1. The metadata table EXISTS (i.e. this is an initialized DB, not a fresh
          empty file with no schema yet).
-      2. schema_version < current version (5).
+      2. schema_version < current version (7).
 
     Fresh-DB safety: a brand-new empty file (no metadata table yet) is left alone —
     init_db() will create the schema and run all migrations in the correct order.
@@ -127,10 +130,10 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
         row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
         version = int(row["value"]) if row else 0
 
-        if version >= 6:
+        if version >= 7:
             return  # Already up to date — no-op.
 
-        # Version is < 6: run pending migrations in order.
+        # Version is < 7: run pending migrations in order.
         # Each migration is guarded by its own version check — safe to call
         # when already at or above that version (they become no-ops).
         if version < 2:
@@ -143,7 +146,11 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
         if version < 5:
             _run_migration_v4_to_v5(conn)
         # v5→v6: Phase 5 migration (adds import_mappings table).
-        _run_migration_v5_to_v6(conn)
+        if version < 6:
+            _run_migration_v5_to_v6(conn)
+        # v6→v7: Semantic search migration (adds embeddings table).
+        if version < 7:
+            _run_migration_v6_to_v7(conn)
 
     except Exception as exc:  # noqa: BLE001
         # Do NOT raise here — failing to auto-migrate should not crash a read-only
@@ -475,6 +482,74 @@ def _run_migration_v5_to_v6(conn: sqlite3.Connection) -> None:
         ) from exc
 
 
+def _run_migration_v6_to_v7(conn: sqlite3.Connection) -> None:
+    """Guarded migration: add embeddings table (v6 → v7).
+
+    Additive-only: creates the embeddings table if absent.
+    Does NOT backfill — the table is populated ONLY by `seam init --semantic`.
+    Until then, read paths that check for embeddings will find an empty table
+    and degrade gracefully to FTS5-only (documented gotcha).
+
+    Steps:
+      1. CREATE TABLE IF NOT EXISTS embeddings (idempotent).
+      2. Bump schema_version to '7'.
+
+    Guarded: runs only when stored version < 7.
+    Idempotent: CREATE TABLE IF NOT EXISTS is safe on repeated calls.
+                The version guard prevents double-bumping.
+    Fresh-DB-safe: a brand-new DB seeded with schema_version='7' returns early.
+
+    Uses BEGIN IMMEDIATE / COMMIT for atomicity (consistent with v5→v6 pattern).
+    Raises RuntimeError on failure so caller knows the DB is in a bad state.
+    """
+    try:
+        row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
+        version = int(row["value"]) if row else 0
+
+        if version >= 7:
+            return  # Already at v7 or newer — no-op.
+
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # Step 1: Create embeddings table (CREATE TABLE IF NOT EXISTS is idempotent).
+            # symbol_id is PRIMARY KEY (one embedding per symbol row) and a FK to
+            # symbols(id) with ON DELETE CASCADE so re-indexing a file automatically
+            # removes stale embeddings for deleted/replaced symbol rows.
+            # Vector stored as float32 bytes (numpy.array(..., dtype=np.float32).tobytes()).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS embeddings (
+                    symbol_id INTEGER PRIMARY KEY REFERENCES symbols(id) ON DELETE CASCADE,
+                    model     TEXT NOT NULL,
+                    dim       INTEGER NOT NULL,
+                    vector    BLOB NOT NULL
+                )
+            """)
+
+            # Step 2: Bump schema_version to '7' as the last step before commit.
+            conn.execute("UPDATE metadata SET value = '7' WHERE key = 'schema_version'")
+            conn.execute("COMMIT")
+
+            logger.info(
+                "Migrated Seam index v%d->v7 (added embeddings table for semantic search). "
+                "Run 'seam init --semantic' to populate embeddings.",
+                version,
+            )
+        except Exception as exc:  # noqa: BLE001
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(
+                "Seam DB migration v6->v7 failed; run 'seam init' to rebuild the index"
+            ) from exc
+    except RuntimeError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "Seam DB migration v6->v7 failed; run 'seam init' to rebuild the index"
+        ) from exc
+
+
 def _run_migration_v2_to_v3(conn: sqlite3.Connection) -> None:
     """Guarded migration: bump schema_version from 2 to 3 (adds comments table).
 
@@ -550,6 +625,9 @@ def init_db(db_path: Path) -> sqlite3.Connection:
 
     # Run v5->v6 migration guard (adds import_mappings table — Phase 5).
     _run_migration_v5_to_v6(conn)
+
+    # Run v6->v7 migration guard (adds embeddings table — semantic search foundation).
+    _run_migration_v6_to_v7(conn)
 
     return conn
 
