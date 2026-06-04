@@ -23,8 +23,23 @@ import type {
   NeighborhoodResponse,
   SymbolResponse,
   ClusterItem,
+  ImpactResponse,
+  TraceResponse,
+  ChangesResponse,
+  HubSymbol,
+  StructureSymbol,
 } from "./schema-types";
-import type { SearchResponse, ClustersResponse } from "./schema-types";
+import type {
+  SearchResponse,
+  ClustersResponse,
+  HubsResponse,
+  StructureResponse,
+} from "./schema-types";
+
+/** Impact blast-radius direction (matches the API Literal). */
+export type ImpactDirection = "both" | "upstream" | "downstream";
+/** Git-diff scope (matches the API Literal). */
+export type ChangesScope = "working" | "staged" | "branch";
 
 // ── useStatus ─────────────────────────────────────────────────────────────────
 
@@ -119,5 +134,115 @@ export function useClusters() {
       const resp = await apiFetch<ClustersResponse>("/api/clusters");
       return resp.clusters;
     },
+  });
+}
+
+// ── useImpact ───────────────────────────────────────────────────────────────────
+
+/**
+ * Fetch blast-radius analysis from GET /api/impact.
+ * Disabled when `symbol` is empty OR `enabled` is false (overlay is opt-in:
+ * we only fetch when the user explicitly asks for the impact view).
+ *
+ * @param symbol     Target symbol name
+ * @param direction  "both" | "upstream" | "downstream" (default "both")
+ * @param enabled    Caller gate — fetch only when the overlay is requested
+ * @returns data — the full ImpactResponse
+ */
+export function useImpact(
+  symbol: string | null,
+  direction: ImpactDirection = "both",
+  enabled: boolean = true,
+) {
+  return useQuery<ImpactResponse>({
+    queryKey: ["impact", symbol, direction],
+    queryFn: () =>
+      apiFetch<ImpactResponse>("/api/impact", {
+        params: { symbol: symbol!, direction },
+      }),
+    enabled: enabled && symbol !== null && symbol.trim().length > 0,
+  });
+}
+
+// ── useTrace ────────────────────────────────────────────────────────────────────
+
+/**
+ * Fetch the shortest path between two symbols from GET /api/trace.
+ * Disabled until BOTH source and target are set (a trace needs two endpoints).
+ *
+ * @returns data — the full TraceResponse { found, source, target, paths }
+ */
+export function useTrace(source: string | null, target: string | null) {
+  return useQuery<TraceResponse>({
+    queryKey: ["trace", source, target],
+    queryFn: () =>
+      apiFetch<TraceResponse>("/api/trace", {
+        params: { source: source!, target: target! },
+      }),
+    enabled:
+      source !== null &&
+      target !== null &&
+      source.trim().length > 0 &&
+      target.trim().length > 0,
+  });
+}
+
+// ── useChanges ──────────────────────────────────────────────────────────────────
+
+/**
+ * Fetch git-diff changed symbols + risk from GET /api/changes.
+ * Disabled when `enabled` is false (the drawer is opt-in to avoid a git call
+ * on every page load).
+ *
+ * @param scope    "working" | "staged" | "branch" (default "working")
+ * @param enabled  Caller gate — fetch only when the drawer is open
+ * @returns data — the full ChangesResponse
+ */
+export function useChanges(scope: ChangesScope = "working", enabled: boolean = true) {
+  return useQuery<ChangesResponse>({
+    queryKey: ["changes", scope],
+    queryFn: () =>
+      apiFetch<ChangesResponse>("/api/changes", { params: { scope } }),
+    enabled,
+    // Changes reflect the live working tree — don't serve a stale cache.
+    staleTime: 0,
+    // A non-git repo returns 400; no point retrying that.
+    retry: false,
+  });
+}
+
+// ── useHubs ─────────────────────────────────────────────────────────────────
+
+/**
+ * Fetch the most-connected 'hub' symbols from GET /api/hubs — landing entry points.
+ *
+ * @returns data — the flat symbols array (not the wrapper object)
+ */
+export function useHubs(limit: number = 60) {
+  return useQuery<HubSymbol[]>({
+    queryKey: ["hubs", limit],
+    queryFn: async () => {
+      const resp = await apiFetch<HubsResponse>("/api/hubs", { params: { limit } });
+      return resp.symbols;
+    },
+  });
+}
+
+// ── useStructure ──────────────────────────────────────────────────────────────
+
+/**
+ * Fetch the flat symbol+path list from GET /api/structure (treemap source).
+ * Disabled when `enabled` is false (only fetch in Overview/structure mode).
+ *
+ * @returns data — the flat symbols array (the SPA builds the tree from it)
+ */
+export function useStructure(enabled: boolean = true) {
+  return useQuery<StructureSymbol[]>({
+    queryKey: ["structure"],
+    queryFn: async () => {
+      const resp = await apiFetch<StructureResponse>("/api/structure");
+      return resp.symbols;
+    },
+    enabled,
   });
 }

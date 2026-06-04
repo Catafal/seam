@@ -29,11 +29,11 @@ describe("App scaffold", () => {
     expect(screen.getByRole("combobox", { name: /search symbols/i })).toBeInTheDocument();
   });
 
-  it("renders the landing cluster area by default (no symbol selected)", () => {
+  it("renders the landing hero by default (no symbol selected)", () => {
     renderWithQuery(<App />);
-    // Landing page is shown while no center symbol is set.
-    // With no fetch mocked, useClusters is loading — the loading state is shown.
-    // This confirms App renders the landing path (not GraphCanvas) on initial load.
-    expect(screen.getByText(/loading clusters/i)).toBeInTheDocument();
+    // Landing page is shown while no center symbol is set. The search-first hero
+    // renders immediately (curated sections fill in as data arrives). This confirms
+    // App renders the landing path (not GraphCanvas) on initial load.
+    expect(screen.getByText(/explore the codebase/i)).toBeInTheDocument();
   });
 });

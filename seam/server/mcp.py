@@ -1,4 +1,4 @@
-"""MCP server setup — FastMCP stdio transport, ten tools registered.
+"""MCP server setup — FastMCP stdio transport, eleven tools registered.
 
 Creates and configures the MCP server instance.
 Tool handlers in tools.py are thin adapters; this module wires them to FastMCP.
@@ -18,6 +18,7 @@ Tools registered (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3 + Phase 6):
     seam_clusters     — list clusters or members of a cluster (Phase 2)
     seam_affected     — changed files → impacted test files via reverse-dependency BFS (Phase 3)
     seam_context_pack — enriched context bundle: target + neighbors + WHY + peers (Phase 6)
+    seam_flows        — execution flows: entry points + forward call-chain expansion
 
 Design:
 - One FastMCP instance per process; connection is injected at creation time.
@@ -42,6 +43,7 @@ from seam.server.tools import (
     handle_seam_clusters,
     handle_seam_context,
     handle_seam_context_pack,
+    handle_seam_flows,
     handle_seam_impact,
     handle_seam_query,
     handle_seam_search,
@@ -88,7 +90,7 @@ def _finalize(result: Any) -> Any:
 
 
 def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
-    """Configure and return a FastMCP server with all ten Seam tools registered.
+    """Configure and return a FastMCP server with all eleven Seam tools registered.
 
     Phase 0:  seam_query, seam_context, seam_search
     Phase 1:  seam_impact, seam_trace, seam_changes
@@ -96,6 +98,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
     Phase 2:  seam_clusters
     Phase 3:  seam_affected
     Phase 6:  seam_context_pack
+    Flows:    seam_flows
 
     Args:
         conn: Open SQLite connection to the Seam index DB.
@@ -358,5 +361,32 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         seam_context). Fails (isError) with INVALID_INPUT when symbol is blank/whitespace.
         """
         return _finalize(handle_seam_context_pack(conn, symbol, root, verbose=verbose))
+
+    @mcp.tool()
+    def seam_flows(entry: str | None = None) -> Any:
+        """Discover execution flows — how the program actually runs, end to end.
+
+        With no argument: returns {"entry_points": [{name, kind, file, reach}]} —
+        the codebase's top execution starting points (call-graph roots ranked by
+        how many symbols they reach downstream). On a real repo these are the CLI
+        commands, web routes, MCP handlers, and main() — derived structurally, no AI.
+
+        With an entry name: returns that entry point's flow tree — a depth/breadth-
+        capped, cycle-safe expansion of what it calls, transitively:
+            entry, kind, file
+            steps        — nested [{name, kind, file, line, confidence, children,
+                           truncated}] following the call chain forward
+            total_steps  — number of symbols in the flow
+            truncated    — True if depth/breadth caps cut part of the tree
+
+        Use this to answer "how does feature X work?" in ONE call instead of reading
+        the entry file and chasing every callee by hand. Start with no argument to
+        see the entry points, then drill into the one you care about.
+
+        Each symbol appears once (first reach wins — cycle-safe). Step confidence
+        uses the fast name-count resolver; use seam_impact/seam_trace for import-
+        promoted confidence. Returns {found: false} when the entry name is unknown.
+        """
+        return _finalize(handle_seam_flows(conn, root, entry=entry))
 
     return mcp

@@ -277,3 +277,161 @@ def build_neighborhood(
         "nodes": nodes,
         "edges": edges,
     }
+
+
+def build_constellation(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Build the whole-repo cluster overview: clusters + inter-cluster links.
+
+    Returns:
+        {
+            "clusters": [ {cluster_id, label, size} ],   # all clusters, largest first
+            "links":    [ {source, target, weight} ],    # cross-cluster edge counts
+        }
+
+    `links` aggregates the `edges` table: every call/import whose source and target
+    symbols live in DIFFERENT clusters contributes 1 to the (source_cid → target_cid)
+    weight. Intra-cluster edges and edges touching an unclustered symbol are skipped.
+    Direction is preserved (source cluster → target cluster).
+
+    name→cluster mapping uses the lowest-id row per name (homonym-collapse, matching
+    the name-keyed edges table): a name maps to exactly one cluster.
+
+    Pre-v4 index (no clusters table) or empty index → {clusters: [], links: []}.
+    NEVER raises — any DB error degrades to a safe (possibly partial) envelope.
+    """
+    # 1. Clusters. Guard the table itself (pre-v4 indexes have no clusters table).
+    try:
+        cluster_rows = conn.execute(
+            "SELECT id, label, size FROM clusters ORDER BY size DESC, id"
+        ).fetchall()
+    except sqlite3.Error:
+        return {"clusters": [], "links": []}
+
+    clusters = [
+        {"cluster_id": r["id"], "label": r["label"], "size": r["size"]}
+        for r in cluster_rows
+    ]
+    if not clusters:
+        return {"clusters": [], "links": []}
+
+    # 2. name → cluster_id (lowest-id row per name). SQLite's bare-column rule binds
+    #    cluster_id to the MIN(id) row, so each name resolves to one cluster.
+    try:
+        name_rows = conn.execute(
+            "SELECT name, cluster_id, MIN(id) FROM symbols "
+            "WHERE cluster_id IS NOT NULL GROUP BY name"
+        ).fetchall()
+    except sqlite3.Error:
+        return {"clusters": clusters, "links": []}
+    name_to_cid: dict[str, int] = {r["name"]: r["cluster_id"] for r in name_rows}
+
+    # 3. Aggregate cross-cluster edge weights.
+    weights: dict[tuple[int, int], int] = {}
+    try:
+        edge_rows = conn.execute("SELECT source_name, target_name FROM edges").fetchall()
+    except sqlite3.Error:
+        edge_rows = []
+    for r in edge_rows:
+        src_cid = name_to_cid.get(r["source_name"])
+        tgt_cid = name_to_cid.get(r["target_name"])
+        # Skip unclustered endpoints and intra-cluster edges (no inter-cluster signal).
+        if src_cid is None or tgt_cid is None or src_cid == tgt_cid:
+            continue
+        key = (src_cid, tgt_cid)
+        weights[key] = weights.get(key, 0) + 1
+
+    # Heaviest links first (deterministic tie-break on the cluster id pair).
+    links = [
+        {"source": src, "target": tgt, "weight": weight}
+        for (src, tgt), weight in sorted(weights.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
+
+    return {"clusters": clusters, "links": links}
+
+
+def top_hub_symbols(conn: sqlite3.Connection, limit: int = 8) -> list[dict[str, Any]]:
+    """Return the most-connected (highest-degree) symbols — the repo's hubs.
+
+    These are the natural entry points for a landing page: the symbols everything
+    else touches. Degree = number of edges where the symbol is the source OR the
+    target (name-keyed, matching the edges table).
+
+    Only names that are actually DEFINED in the symbols table are returned, so
+    builtins/stdlib (e.g. `print`, `len`) that appear only as edge targets are
+    excluded — they have no row in `symbols`.
+
+    Returns [{name, kind, degree, path}] sorted by degree desc, then name. `path`
+    is a representative declaring file (lowest-id row for the name — homonym-safe);
+    the explorer uses it to bucket hubs into functional areas. Empty list on any
+    DB error or empty index. NEVER raises.
+    """
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                d.name AS name,
+                d.degree AS degree,
+                (SELECT s.kind FROM symbols s WHERE s.name = d.name ORDER BY s.id LIMIT 1) AS kind,
+                (SELECT f.path FROM symbols s JOIN files f ON f.id = s.file_id
+                 WHERE s.name = d.name ORDER BY s.id LIMIT 1) AS path
+            FROM (
+                SELECT name, COUNT(*) AS degree
+                FROM (
+                    SELECT source_name AS name FROM edges
+                    UNION ALL
+                    SELECT target_name AS name FROM edges
+                )
+                GROUP BY name
+            ) d
+            WHERE EXISTS (SELECT 1 FROM symbols s WHERE s.name = d.name)
+            ORDER BY d.degree DESC, d.name
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+
+    return [
+        {"name": r["name"], "kind": r["kind"], "degree": r["degree"], "path": r["path"]}
+        for r in rows
+    ]
+
+
+def list_structure(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Return every symbol with its file path + nesting info, for the structure map.
+
+    Flat by design: the frontend builds the folder → file → class → method tree and
+    the treemap from this list (one cheap query here; all hierarchy logic client-side).
+
+    Returns [{path, name, kind, line, qualified_name}] (absolute path — the web route
+    relativizes it). Ordered by path then symbol id for stable tree construction.
+    Empty list on any DB error. NEVER raises.
+    """
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                f.path          AS path,
+                s.name          AS name,
+                s.kind          AS kind,
+                s.start_line    AS line,
+                s.qualified_name AS qualified_name
+            FROM symbols s
+            JOIN files f ON f.id = s.file_id
+            ORDER BY f.path, s.id
+            """
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+
+    return [
+        {
+            "path": r["path"],
+            "name": r["name"],
+            "kind": r["kind"],
+            "line": r["line"],
+            "qualified_name": r["qualified_name"],
+        }
+        for r in rows
+    ]

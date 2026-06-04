@@ -170,6 +170,27 @@ SEAM_PACK_PER_FILE_CAP: int = int(os.getenv("SEAM_PACK_PER_FILE_CAP", "3"))
 # Maximum WHY/HACK/NOTE/TODO/FIXME comments in the bundle.
 SEAM_PACK_MAX_COMMENTS: int = int(os.getenv("SEAM_PACK_MAX_COMMENTS", "10"))
 
+# ── Execution flows configuration (seam_flows) ───────────────────────────────
+
+# Max entry points returned by seam_flows in list mode.
+# Entry points are call-graph roots ranked by downstream reach; the top N are
+# the program's main execution starting points (CLI commands, web routes, etc.).
+SEAM_FLOW_ENTRY_LIMIT: int = int(os.getenv("SEAM_FLOW_ENTRY_LIMIT", "20"))
+
+# Max depth (levels of callees) when expanding a single flow tree.
+# Bounds the tree on deep call chains; nodes beyond this are cut and the flow
+# is marked truncated=True.
+SEAM_FLOW_MAX_DEPTH: int = int(os.getenv("SEAM_FLOW_MAX_DEPTH", "6"))
+
+# Max children (callees) shown per node when expanding a flow tree.
+# Caps fan-out at hub symbols (a function that calls 50 helpers); excess callees
+# are dropped and the flow is marked truncated=True.
+SEAM_FLOW_MAX_BREADTH: int = int(os.getenv("SEAM_FLOW_MAX_BREADTH", "8"))
+
+# BFS depth used only to SCORE entry-point reach (how many symbols a root reaches).
+# Separate from MAX_DEPTH: scoring wants a stable ranking signal, not a full walk.
+SEAM_FLOW_REACH_DEPTH: int = int(os.getenv("SEAM_FLOW_REACH_DEPTH", "5"))
+
 
 def get_db_path(project_root: Path) -> Path:
     """Resolve the database path relative to the project root."""

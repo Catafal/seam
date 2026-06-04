@@ -125,10 +125,205 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/impact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Impact
+         * @description Blast-radius analysis for a symbol, grouped by risk tier.
+         *
+         *     Reuses handle_seam_impact verbatim. verbose=False keeps the payload lean
+         *     (only name/distance/confidence/tier/file/is_test per entry). Unknown symbol
+         *     returns found:false with empty tiers (not a 404 — same contract as the MCP tool).
+         */
+        get: operations["get_impact_api_impact_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/trace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Trace
+         * @description Shortest call/dependency path from source to target.
+         *
+         *     Reuses handle_seam_trace; only `paths` is surfaced (verbose=False strips
+         *     per-hop provenance). found:false + empty paths when unconnected.
+         */
+        get: operations["get_trace_api_trace_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/changes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Changes
+         * @description Git diff → changed symbols → risk level.
+         *
+         *     Reuses handle_seam_changes. NOT_A_GIT_REPO (non-git root) is mapped to 400
+         *     by _check_handler_error, which the SPA shows as a friendly notice.
+         */
+        get: operations["get_changes_api_changes_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/constellation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Constellation
+         * @description Whole-repo overview: cluster regions + weighted inter-cluster links.
+         *
+         *     Reuses build_constellation (graph_api). Empty/pre-v4 index → empty envelope.
+         */
+        get: operations["get_constellation_api_constellation_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/hubs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Hubs
+         * @description Return the most-connected symbols — landing-page entry points.
+         *
+         *     Reuses graph_api.top_hub_symbols (degree-ranked, defined-only). The default
+         *     is high enough (60) that the Explorer's area cards each get covered when it
+         *     buckets hubs by their declaring path.
+         */
+        get: operations["get_hubs_api_hubs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/structure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Structure
+         * @description Return every symbol with its file path — source for the structure treemap.
+         *
+         *     Reuses graph_api.list_structure; paths are relativized to the project root.
+         *     The SPA builds the folder → file → class → method tree from this flat list.
+         */
+        get: operations["get_structure_api_structure_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AffectedEntry
+         * @description A symbol impacted by the changed set (downstream of a change).
+         */
+        AffectedEntry: {
+            /** Name */
+            name: string;
+            /** File */
+            file: string | null;
+            /** Tier */
+            tier: string;
+            /** Confidence */
+            confidence: string;
+            /** Distance */
+            distance: number;
+        };
+        /**
+         * ChangedSymbol
+         * @description A symbol touched by the current diff.
+         */
+        ChangedSymbol: {
+            /** Name */
+            name: string;
+            /** File */
+            file: string | null;
+            /** Kind */
+            kind: string;
+            /** Start Line */
+            start_line: number;
+            /** End Line */
+            end_line: number;
+            /** Changed Lines */
+            changed_lines: number[];
+        };
+        /**
+         * ChangesResponse
+         * @description Response for GET /api/changes (git diff → changed symbols → risk).
+         */
+        ChangesResponse: {
+            /** Changed Symbols */
+            changed_symbols: components["schemas"]["ChangedSymbol"][];
+            /** New Files */
+            new_files: string[];
+            /** Affected */
+            affected: components["schemas"]["AffectedEntry"][];
+            /** Risk Level */
+            risk_level: string;
+            /** Ambiguous Warning */
+            ambiguous_warning: boolean;
+            /** Scope */
+            scope: string;
+            /** Base Ref */
+            base_ref: string;
+            /** Partial */
+            partial: boolean;
+        };
         /**
          * ClusterInfo
          * @description Cluster identity for a symbol.
@@ -165,6 +360,40 @@ export interface components {
         ClustersResponse: {
             /** Clusters */
             clusters: components["schemas"]["ClusterItem"][];
+        };
+        /**
+         * ConstellationCluster
+         * @description One cluster region in the whole-repo overview.
+         */
+        ConstellationCluster: {
+            /** Cluster Id */
+            cluster_id: number;
+            /** Label */
+            label: string | null;
+            /** Size */
+            size: number;
+        };
+        /**
+         * ConstellationLink
+         * @description A weighted inter-cluster link (count of cross-cluster edges).
+         */
+        ConstellationLink: {
+            /** Source */
+            source: number;
+            /** Target */
+            target: number;
+            /** Weight */
+            weight: number;
+        };
+        /**
+         * ConstellationResponse
+         * @description Response for GET /api/constellation.
+         */
+        ConstellationResponse: {
+            /** Clusters */
+            clusters: components["schemas"]["ConstellationCluster"][];
+            /** Links */
+            links: components["schemas"]["ConstellationLink"][];
         };
         /**
          * GraphEdge
@@ -210,6 +439,85 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * HubSymbol
+         * @description A highest-degree 'hub' symbol — a landing-page entry point.
+         */
+        HubSymbol: {
+            /** Name */
+            name: string;
+            /** Kind */
+            kind: string | null;
+            /** Degree */
+            degree: number;
+            /** Path */
+            path: string | null;
+        };
+        /**
+         * HubsResponse
+         * @description Response for GET /api/hubs.
+         */
+        HubsResponse: {
+            /** Symbols */
+            symbols: components["schemas"]["HubSymbol"][];
+        };
+        /**
+         * ImpactEntry
+         * @description One affected symbol in an impact (blast-radius) result.
+         *
+         *     Lean field set: the overlay only needs identity + tier + location. Heavy
+         *     provenance fields (resolved_by/best_candidate) are stripped by passing
+         *     verbose=False to handle_seam_impact, keeping the payload small.
+         */
+        ImpactEntry: {
+            /** Name */
+            name: string;
+            /** Distance */
+            distance: number;
+            /** Confidence */
+            confidence: string;
+            /** Tier */
+            tier: string;
+            /** File */
+            file: string | null;
+            /** Is Test */
+            is_test: boolean;
+        };
+        /**
+         * ImpactResponse
+         * @description Response for GET /api/impact.
+         *
+         *     risk_summary is the honest full-count per tier (computed before any cap), so
+         *     the UI can show true totals even when entry lists are capped by `limit`.
+         *     upstream/downstream are present only for the requested direction(s).
+         *     truncated is present only when a tier was capped.
+         */
+        ImpactResponse: {
+            /** Found */
+            found: boolean;
+            /** Target */
+            target: string;
+            /** Risk Summary */
+            risk_summary: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+            /** Upstream */
+            upstream?: {
+                [key: string]: components["schemas"]["ImpactEntry"][];
+            } | null;
+            /** Downstream */
+            downstream?: {
+                [key: string]: components["schemas"]["ImpactEntry"][];
+            } | null;
+            /** Truncated */
+            truncated?: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            } | null;
         };
         /**
          * NeighborhoodResponse
@@ -270,6 +578,30 @@ export interface components {
             languages: string[];
         };
         /**
+         * StructureResponse
+         * @description Response for GET /api/structure.
+         */
+        StructureResponse: {
+            /** Symbols */
+            symbols: components["schemas"]["StructureSymbol"][];
+        };
+        /**
+         * StructureSymbol
+         * @description One symbol row for the structure map (flat — the SPA builds the tree).
+         */
+        StructureSymbol: {
+            /** Path */
+            path: string;
+            /** Name */
+            name: string;
+            /** Kind */
+            kind: string;
+            /** Line */
+            line: number;
+            /** Qualified Name */
+            qualified_name: string | null;
+        };
+        /**
          * SymbolDefinition
          * @description One definition (file-level occurrence) of a symbol.
          */
@@ -309,6 +641,39 @@ export interface components {
             peers: string[];
             /** Why */
             why: components["schemas"]["WhyComment"][];
+        };
+        /**
+         * TraceHop
+         * @description One edge in a trace path.
+         */
+        TraceHop: {
+            /** From Name */
+            from_name: string;
+            /** To Name */
+            to_name: string;
+            /** Kind */
+            kind: string;
+            /** Confidence */
+            confidence: string;
+        };
+        /**
+         * TraceResponse
+         * @description Response for GET /api/trace.
+         *
+         *     Only `paths` is surfaced (the path overlay's input). The handler's
+         *     callers/callees-of-source/target lists are intentionally dropped — the
+         *     neighborhood endpoint already covers immediate neighbors. paths[0] is the
+         *     shortest path; empty list when source and target are not connected.
+         */
+        TraceResponse: {
+            /** Found */
+            found: boolean;
+            /** Source */
+            source: string;
+            /** Target */
+            target: string;
+            /** Paths */
+            paths: components["schemas"]["TraceHop"][][];
         };
         /** ValidationError */
         ValidationError: {
@@ -492,6 +857,188 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ClustersResponse"];
+                };
+            };
+        };
+    };
+    get_impact_api_impact_get: {
+        parameters: {
+            query: {
+                /** @description Target symbol to analyze */
+                symbol: string;
+                /** @description Blast-radius direction */
+                direction?: "both" | "upstream" | "downstream";
+                /** @description Max traversal hops */
+                max_depth?: number;
+                /** @description Include test-file dependents */
+                include_tests?: boolean;
+                /** @description Per-tier cap (0 = unlimited) */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImpactResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_trace_api_trace_get: {
+        parameters: {
+            query: {
+                /** @description Path start symbol */
+                source: string;
+                /** @description Path end symbol */
+                target: string;
+                /** @description Max path length in hops */
+                max_depth?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TraceResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_changes_api_changes_get: {
+        parameters: {
+            query?: {
+                /** @description Diff scope */
+                scope?: "working" | "staged" | "branch";
+                /** @description Base ref (branch scope only) */
+                base_ref?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChangesResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_constellation_api_constellation_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConstellationResponse"];
+                };
+            };
+        };
+    };
+    get_hubs_api_hubs_get: {
+        parameters: {
+            query?: {
+                /** @description How many hub symbols to return */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HubsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_structure_api_structure_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructureResponse"];
                 };
             };
         };

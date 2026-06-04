@@ -19,6 +19,8 @@ Local code intelligence MCP server — indexes codebases with tree-sitter, store
 - `uv run seam status` — Show index stats
 - `uv run seam search <text>` / `seam query <concept>` / `seam context <symbol>` — CLI-only read
   commands (no MCP server needed); `--json`/`--quiet`, `--lean` on context
+- `uv run seam flows [entry]` — execution flows: list entry points (call-graph roots ranked by
+  downstream reach), or expand one entry's forward call-chain tree; `--json`/`--quiet`
 - `uv run seam install` — Write the MCP config into an agent (`--target claude|cursor|codex|all`,
   `--location project|user`, `--print-config`); `uv run seam uninstall` reverses it
 - `uv run seam serve` — Start the local Seam Explorer web server (FastAPI, 127.0.0.1:7420);
@@ -63,6 +65,14 @@ seam/config.py               ← all settings (env vars with defaults)
                                 SEAM_PACK_PER_FILE_CAP: max neighbor entries from any single file — diversity cap (default: 3)
                                 SEAM_PACK_MAX_COMMENTS: max WHY/HACK/NOTE comments in context_pack bundle (default: 10)
                                 SEAM_IMPACT_MAX_RESULTS: per-tier entry cap for seam_impact (default: 25; 0 = unlimited) [Phase 8]
+                                SEAM_FLOW_ENTRY_LIMIT: max entry points listed by seam_flows (default: 20)
+                                SEAM_FLOW_MAX_DEPTH: max depth when expanding a flow tree (default: 6)
+                                SEAM_FLOW_MAX_BREADTH: max callees per node in a flow tree (default: 8)
+                                SEAM_FLOW_REACH_DEPTH: BFS depth used to score entry-point reach (default: 5)
+seam/analysis/processes.py   ← LEAF: execution flows (Flows) — list_entry_points (call-graph roots
+                                ranked by downstream reach, tests excluded) + build_flow (forward
+                                call-chain tree, depth/breadth-capped, cycle-safe). Reuses confidence
+                                + testpaths; name-count confidence (no import promotion). Never raises.
 seam/installer/              ← `seam install`/`uninstall` engine (CLI-only; NO MCP tool)
                                 __init__.py: TARGETS registry {claude,cursor,codex} + resolve_seam_command()
                                 core.py: AgentTarget ABC + InstallResult + shared idempotent JSON merge
@@ -153,8 +163,14 @@ seam/server/tools.py         ← MCP tool handlers (thin adapters → engine + c
 seam/server/graph_api.py     ← LEAF: build_neighborhood(conn, name, direction) → dict (Phase B1)
                                 depth-1 neighbors from edges table; homonym-collapse (name-keyed nodes);
                                 node enrichment: kind, signature, visibility, is_exported, cluster, definition_count
+                                build_constellation(conn) → {clusters, links} (Explorer Phase 2): cluster
+                                  list + weighted inter-cluster links; homonym-safe name→cluster map; never raises
 seam/server/web.py           ← FastAPI app factory: create_web_app(db_path, root) → FastAPI (Phase B2)
-                                /api/status · /api/search · /api/graph/neighborhood · /api/symbol/{name} · /api/clusters
+                                v1: /api/status · /api/search · /api/graph/neighborhood · /api/symbol/{name} · /api/clusters
+                                Explorer Phase 2 (all reuse handle_seam_* verbatim — zero query dup):
+                                  /api/impact (handle_seam_impact, verbose=False) · /api/trace (handle_seam_trace,
+                                  paths only) · /api/changes (handle_seam_changes; NOT_A_GIT_REPO→400) ·
+                                  /api/constellation (graph_api.build_constellation)
                                 Pydantic models = TS codegen source; static SPA at seam/_web/ (build hint if absent)
                                 127.0.0.1-only enforced by CLI; requires [web] extra (lazy import pattern)
 seam/watcher/daemon.py       ← watchdog daemon (debounced re-index)
@@ -284,8 +300,9 @@ See `progress.txt` for session history. Next: roadmap item 8 (`seam install`) / 
 - `seam_clusters` — list functional areas or drill into one cluster (Phase 2)
 - `seam_affected` — changed files → impacted test files via reverse-dependency traversal (Phase 3)
 - `seam_context_pack` — enriched context bundle: target + NeighborRef callers/callees + WHY + cluster peers + truncated counts (Phase 6)
+- `seam_flows` — execution flows: list entry points (call-graph roots ranked by downstream reach), or expand one entry's depth/breadth-capped, cycle-safe forward call-chain tree (Flows). No arg → `{entry_points:[{name,kind,file,reach}]}`; with `entry` → a Flow tree (or `{found:false}`). Pure-structural, no LLM.
 
-All ten tools return the five Phase 4 enrichment fields where available: `signature`, `decorators`, `is_exported`, `visibility`, `qualified_name`. Fields are `null` (not absent) for pre-v5 rows or unsupported scenarios — callers treat `null` as "unknown".
+There are **eleven MCP tools** (`seam_flows` is the newest — see Flows below). The ten enrichment-carrying tools return the five Phase 4 enrichment fields where available: `signature`, `decorators`, `is_exported`, `visibility`, `qualified_name`. Fields are `null` (not absent) for pre-v5 rows or unsupported scenarios — callers treat `null` as "unknown". (`seam_flows` is the exception: its step shape is `name/kind/file/line/confidence` and it does NOT carry the Phase 4 fields.)
 
 **Phase 8 lean output:** `seam_context`, `seam_trace`, `seam_impact`, `seam_context_pack` accept `verbose: bool = True`. With `verbose=False` the 6 heavy fields (decorators, is_exported, visibility, qualified_name, resolved_by, best_candidate) are **absent** (not null) — `signature` + core fields are always kept. `verbose=True` is byte-identical to pre-Phase-8 (EXCEPT `seam_impact`, which always adds `risk_summary`/`truncated` and caps by default). `seam_query` and `seam_search` carry no enrichment → no `verbose` flag.
 

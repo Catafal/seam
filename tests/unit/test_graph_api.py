@@ -27,7 +27,20 @@ import pytest
 
 from seam.indexer.db import init_db, upsert_file
 from seam.indexer.graph import Edge, Symbol
-from seam.server.graph_api import build_neighborhood
+from seam.server.graph_api import build_constellation, build_neighborhood
+
+
+def _seed_cluster(conn: sqlite3.Connection, label: str, members: list[str]) -> int:
+    """Insert a cluster row and assign `members` (by name) to it. Returns cluster id."""
+    cur = conn.execute(
+        "INSERT INTO clusters (label, size, naming_source) VALUES (?, ?, 'deterministic')",
+        (label, len(members)),
+    )
+    cid = cur.lastrowid
+    for name in members:
+        conn.execute("UPDATE symbols SET cluster_id = ? WHERE name = ?", (cid, name))
+    conn.commit()
+    return int(cid)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -335,3 +348,146 @@ def test_no_raise_on_empty_db(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
     assert result["center"] == "anything"
     assert result["nodes"] == []
     assert result["edges"] == []
+
+
+# ── Constellation (Task B4) ────────────────────────────────────────────────────
+
+
+def test_constellation_cross_cluster_link(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """A cross-cluster edge produces one link with the right weight."""
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    # alpha (cluster A) calls beta (cluster B) twice (two edges).
+    upsert_file(conn, Path(a), "python", "h1", [_sym("alpha", a), _sym("beta", a)], [
+        _edge("alpha", "beta", a),
+        _edge("alpha", "beta", a, kind="import"),
+    ])
+    ca = _seed_cluster(conn, "A", ["alpha"])
+    cb = _seed_cluster(conn, "B", ["beta"])
+
+    result = build_constellation(conn)
+
+    cluster_ids = {c["cluster_id"] for c in result["clusters"]}
+    assert {ca, cb} <= cluster_ids
+    links = result["links"]
+    assert len(links) == 1
+    assert links[0]["source"] == ca
+    assert links[0]["target"] == cb
+    assert links[0]["weight"] == 2
+
+
+def test_constellation_intra_cluster_no_link(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """An edge between two members of the SAME cluster produces no link."""
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    upsert_file(conn, Path(a), "python", "h1", [_sym("x", a), _sym("y", a)], [
+        _edge("x", "y", a),
+    ])
+    _seed_cluster(conn, "A", ["x", "y"])
+
+    result = build_constellation(conn)
+    assert result["links"] == []
+
+
+def test_constellation_unclustered_edge_ignored(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """Edges touching an unclustered (cluster_id NULL) symbol contribute no link."""
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    upsert_file(conn, Path(a), "python", "h1", [_sym("p", a), _sym("q", a)], [
+        _edge("p", "q", a),
+    ])
+    _seed_cluster(conn, "A", ["p"])  # q stays unclustered
+
+    result = build_constellation(conn)
+    assert result["links"] == []
+
+
+def test_constellation_empty_db_safe(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """Empty (no clusters) DB returns a safe empty envelope, never raises."""
+    conn, _ = tmp_db
+    result = build_constellation(conn)
+    assert result == {"clusters": [], "links": []}
+
+
+# ── top_hub_symbols (landing entry points) ──────────────────────────────────────
+
+
+def test_top_hub_symbols_ranks_by_degree(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """The most-connected defined symbol ranks first; degree counts both directions."""
+    from seam.server.graph_api import top_hub_symbols
+
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    # hub is called by x and y, and calls z → degree 3. leaf only appears once.
+    upsert_file(conn, Path(a), "python", "h1", [
+        _sym("hub", a), _sym("x", a), _sym("y", a), _sym("z", a), _sym("leaf", a),
+    ], [
+        _edge("x", "hub", a),
+        _edge("y", "hub", a),
+        _edge("hub", "z", a),
+        _edge("z", "leaf", a),
+    ])
+
+    hubs = top_hub_symbols(conn, limit=10)
+    names = [h["name"] for h in hubs]
+    assert names[0] == "hub"  # degree 3, highest
+    assert hubs[0]["degree"] == 3
+    assert hubs[0]["kind"] == "function"
+    # Each hub carries a representative declaring path (for area bucketing).
+    assert hubs[0]["path"] == a
+
+
+def test_top_hub_symbols_excludes_undefined_names(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """Edge targets with no row in symbols (e.g. builtins) are excluded."""
+    from seam.server.graph_api import top_hub_symbols
+
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    # `caller` calls `print` 3× — print is NOT defined in symbols → must be excluded.
+    upsert_file(conn, Path(a), "python", "h1", [_sym("caller", a)], [
+        _edge("caller", "print", a),
+        _edge("caller", "print", a),
+        _edge("caller", "print", a),
+    ])
+
+    names = [h["name"] for h in top_hub_symbols(conn, limit=10)]
+    assert "print" not in names
+    assert "caller" in names
+
+
+def test_top_hub_symbols_empty_db_safe(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """Empty index returns [] and never raises."""
+    conn, _ = tmp_db
+    from seam.server.graph_api import top_hub_symbols
+
+    assert top_hub_symbols(conn) == []
+
+
+# ── list_structure (treemap source) ─────────────────────────────────────────────
+
+
+def test_list_structure_returns_path_and_nesting(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """Every symbol is returned with its file path, kind, line, qualified_name."""
+    from seam.server.graph_api import list_structure
+
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    upsert_file(conn, Path(a), "python", "h1", [
+        _sym("Widget", a, kind="class"),
+        _sym("render", a, kind="method"),
+    ], [])
+
+    rows = list_structure(conn)
+    names = {r["name"] for r in rows}
+    assert {"Widget", "render"} <= names
+    for r in rows:
+        assert set(r.keys()) == {"path", "name", "kind", "line", "qualified_name"}
+        assert r["path"] == a
+
+
+def test_list_structure_empty_db_safe(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """Empty index returns [] and never raises."""
+    conn, _ = tmp_db
+    from seam.server.graph_api import list_structure
+
+    assert list_structure(conn) == []

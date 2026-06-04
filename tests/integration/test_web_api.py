@@ -12,6 +12,7 @@ Coverage:
   - GET /api/clusters — happy path + NO_INDEX
 """
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -61,6 +62,68 @@ def client(indexed_repo: Path) -> TestClient:
     db_path = config.get_db_path(indexed_repo)
     app = create_web_app(db_path=db_path, root=indexed_repo)
     return TestClient(app)
+
+
+def _git(args: list[str], cwd: Path) -> None:
+    """Run a git command in cwd, raising on failure (test helper)."""
+    subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        # Deterministic identity so commit works in CI without global git config.
+        env={
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+            "PATH": __import__("os").environ.get("PATH", ""),
+            "HOME": str(cwd),
+        },
+    )
+
+
+@pytest.fixture()
+def git_repo_client(tmp_path: Path) -> TestClient:
+    """Indexed repo that IS a git repo with one unstaged edit inside `check`.
+
+    Sequence: write → git init/commit → seam init (indexes the committed code) →
+    make a same-line-count working-tree edit so scope='working' diff maps to `check`.
+    """
+    auth = tmp_path / "auth.py"
+    auth.write_text(
+        "def authenticate_user(name, pw):\n"
+        '    """Verify credentials."""\n'
+        "    return check(pw)\n"
+        "\n"
+        "def check(pw):\n"
+        "    return True\n"
+    )
+    _git(["init"], tmp_path)
+    _git(["add", "auth.py"], tmp_path)
+    _git(["commit", "-m", "init"], tmp_path)
+
+    from typer.testing import CliRunner
+
+    from seam.cli.main import app as cli_app
+
+    res = CliRunner().invoke(cli_app, ["init", str(tmp_path)])
+    assert res.exit_code == 0, f"seam init failed: {res.output}"
+
+    # Unstaged edit inside check's body (line count preserved → no line drift).
+    auth.write_text(
+        "def authenticate_user(name, pw):\n"
+        '    """Verify credentials."""\n'
+        "    return check(pw)\n"
+        "\n"
+        "def check(pw):\n"
+        "    return False\n"
+    )
+
+    from seam import config
+
+    db_path = config.get_db_path(tmp_path)
+    return TestClient(create_web_app(db_path=db_path, root=tmp_path))
 
 
 @pytest.fixture()
@@ -246,6 +309,205 @@ def test_symbol_unknown_returns_404(client: TestClient) -> None:
 def test_symbol_no_index(no_index_client: TestClient) -> None:
     """Symbol endpoint returns 503 NO_INDEX when no index present."""
     resp = no_index_client.get("/api/symbol/foo")
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "NO_INDEX"
+
+
+# ── T7: GET /api/impact ───────────────────────────────────────────────────────
+
+
+def test_impact_happy_path(client: TestClient) -> None:
+    """Impact (upstream) on `check` surfaces `authenticate_user` as WILL_BREAK (d=1).
+
+    `authenticate_user` calls `check`, so a change to `check` will break its caller.
+    """
+    resp = client.get("/api/impact", params={"symbol": "check", "direction": "upstream"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["found"] is True
+    assert data["target"] == "check"
+    assert "risk_summary" in data
+    assert data["upstream"] is not None
+    will_break = [e["name"] for e in data["upstream"]["WILL_BREAK"]]
+    assert "authenticate_user" in will_break
+    # Each entry carries the lean field set (no resolved_by/best_candidate).
+    entry = data["upstream"]["WILL_BREAK"][0]
+    assert set(entry.keys()) == {"name", "distance", "confidence", "tier", "file", "is_test"}
+
+
+def test_impact_both_directions(client: TestClient) -> None:
+    """direction=both returns both upstream and downstream keys."""
+    resp = client.get("/api/impact", params={"symbol": "check", "direction": "both"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["upstream"] is not None
+    assert data["downstream"] is not None
+    assert "upstream" in data["risk_summary"]
+    assert "downstream" in data["risk_summary"]
+
+
+def test_impact_unknown_symbol(client: TestClient) -> None:
+    """Unknown target returns found:false with empty tiers (not a 404)."""
+    resp = client.get("/api/impact", params={"symbol": "xyz_nonexistent_abc"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["found"] is False
+
+
+def test_impact_invalid_direction_returns_422(client: TestClient) -> None:
+    """Out-of-set direction is rejected at the boundary (Literal → 422)."""
+    resp = client.get("/api/impact", params={"symbol": "check", "direction": "sideways"})
+    assert resp.status_code == 422
+
+
+def test_impact_no_index(no_index_client: TestClient) -> None:
+    """Impact returns 503 NO_INDEX when no index present."""
+    resp = no_index_client.get("/api/impact", params={"symbol": "check"})
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "NO_INDEX"
+
+
+# ── T8: GET /api/trace ────────────────────────────────────────────────────────
+
+
+def test_trace_happy_path(client: TestClient) -> None:
+    """trace(authenticate_user → check) finds a path (the direct call edge)."""
+    resp = client.get(
+        "/api/trace", params={"source": "authenticate_user", "target": "check"}
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["found"] is True
+    assert data["source"] == "authenticate_user"
+    assert data["target"] == "check"
+    assert len(data["paths"]) >= 1
+    hop = data["paths"][0][0]
+    assert set(hop.keys()) == {"from_name", "to_name", "kind", "confidence"}
+    assert hop["from_name"] == "authenticate_user"
+
+
+def test_trace_unconnected_returns_empty(client: TestClient) -> None:
+    """No reverse path: check does not call authenticate_user."""
+    resp = client.get(
+        "/api/trace", params={"source": "check", "target": "authenticate_user"}
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["found"] is False
+    assert data["paths"] == []
+
+
+def test_trace_blank_source_returns_400(client: TestClient) -> None:
+    """Blank source is rejected by the handler as INVALID_INPUT (400)."""
+    resp = client.get("/api/trace", params={"source": "   ", "target": "check"})
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "INVALID_INPUT"
+
+
+def test_trace_no_index(no_index_client: TestClient) -> None:
+    """Trace returns 503 NO_INDEX when no index present."""
+    resp = no_index_client.get("/api/trace", params={"source": "a", "target": "b"})
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "NO_INDEX"
+
+
+# ── T9: GET /api/changes ──────────────────────────────────────────────────────
+
+
+def test_changes_happy_path(git_repo_client: TestClient) -> None:
+    """Working-tree edit inside `check` surfaces it in changed_symbols + a risk level."""
+    resp = git_repo_client.get("/api/changes", params={"scope": "working"})
+    assert resp.status_code == 200
+    data = resp.json()
+    changed = [s["name"] for s in data["changed_symbols"]]
+    assert "check" in changed
+    assert data["risk_level"] in {"low", "medium", "high", "none", "critical"}
+    assert data["scope"] == "working"
+
+
+def test_changes_not_a_git_repo(client: TestClient) -> None:
+    """Indexed but non-git dir returns 400 NOT_A_GIT_REPO."""
+    resp = client.get("/api/changes", params={"scope": "working"})
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "NOT_A_GIT_REPO"
+
+
+def test_changes_invalid_scope_returns_422(client: TestClient) -> None:
+    """Out-of-set scope is rejected at the boundary (Literal → 422)."""
+    resp = client.get("/api/changes", params={"scope": "bogus"})
+    assert resp.status_code == 422
+
+
+def test_changes_no_index(no_index_client: TestClient) -> None:
+    """Changes returns 503 NO_INDEX when no index present."""
+    resp = no_index_client.get("/api/changes")
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "NO_INDEX"
+
+
+# ── T10: GET /api/constellation ───────────────────────────────────────────────
+
+
+def test_constellation_happy_path(client: TestClient) -> None:
+    """Constellation returns clusters + links lists (may be empty for a tiny repo)."""
+    resp = client.get("/api/constellation")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert isinstance(data["clusters"], list)
+    assert isinstance(data["links"], list)
+
+
+def test_constellation_no_index(no_index_client: TestClient) -> None:
+    """Constellation returns 503 NO_INDEX when no index present."""
+    resp = no_index_client.get("/api/constellation")
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "NO_INDEX"
+
+
+# ── T11: GET /api/hubs ────────────────────────────────────────────────────────
+
+
+def test_hubs_happy_path(client: TestClient) -> None:
+    """Hubs returns degree-ranked symbols; authenticate_user (calls check) is present."""
+    resp = client.get("/api/hubs", params={"limit": 5})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert isinstance(data["symbols"], list)
+    names = [s["name"] for s in data["symbols"]]
+    # both authenticate_user and check have an edge between them → both are hubs
+    assert "authenticate_user" in names or "check" in names
+    for s in data["symbols"]:
+        assert set(s.keys()) == {"name", "kind", "degree", "path"}
+        # path is relativized to the project root — never absolute.
+        assert s["path"] is None or not s["path"].startswith("/")
+
+
+def test_hubs_no_index(no_index_client: TestClient) -> None:
+    """Hubs returns 503 NO_INDEX when no index present."""
+    resp = no_index_client.get("/api/hubs")
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "NO_INDEX"
+
+
+# ── T12: GET /api/structure ───────────────────────────────────────────────────
+
+
+def test_structure_happy_path(client: TestClient) -> None:
+    """Structure returns symbols with relativized paths."""
+    resp = client.get("/api/structure")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert isinstance(data["symbols"], list)
+    names = [s["name"] for s in data["symbols"]]
+    assert "authenticate_user" in names
+    for s in data["symbols"]:
+        assert set(s.keys()) == {"path", "name", "kind", "line", "qualified_name"}
+        assert not s["path"].startswith("/")  # relativized
+
+
+def test_structure_no_index(no_index_client: TestClient) -> None:
+    """Structure returns 503 NO_INDEX when no index present."""
+    resp = no_index_client.get("/api/structure")
     assert resp.status_code == 503
     assert resp.json()["detail"]["code"] == "NO_INDEX"
 

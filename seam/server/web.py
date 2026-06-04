@@ -37,11 +37,19 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from seam.indexer.db import connect
-from seam.server.graph_api import build_neighborhood
+from seam.server.graph_api import (
+    build_constellation,
+    build_neighborhood,
+    list_structure,
+    top_hub_symbols,
+)
 from seam.server.tools import (
+    handle_seam_changes,
     handle_seam_clusters,
     handle_seam_context,
+    handle_seam_impact,
     handle_seam_search,
+    handle_seam_trace,
     handle_seam_why,
 )
 
@@ -173,6 +181,152 @@ class ClustersResponse(BaseModel):
     clusters: list[ClusterItem]
 
 
+class ImpactEntry(BaseModel):
+    """One affected symbol in an impact (blast-radius) result.
+
+    Lean field set: the overlay only needs identity + tier + location. Heavy
+    provenance fields (resolved_by/best_candidate) are stripped by passing
+    verbose=False to handle_seam_impact, keeping the payload small.
+    """
+
+    name: str
+    distance: int
+    confidence: str
+    tier: str
+    file: str | None
+    is_test: bool
+
+
+class ImpactResponse(BaseModel):
+    """Response for GET /api/impact.
+
+    risk_summary is the honest full-count per tier (computed before any cap), so
+    the UI can show true totals even when entry lists are capped by `limit`.
+    upstream/downstream are present only for the requested direction(s).
+    truncated is present only when a tier was capped.
+    """
+
+    found: bool
+    target: str
+    risk_summary: dict[str, dict[str, int]]
+    upstream: dict[str, list[ImpactEntry]] | None = None
+    downstream: dict[str, list[ImpactEntry]] | None = None
+    truncated: dict[str, dict[str, int]] | None = None
+
+
+class TraceHop(BaseModel):
+    """One edge in a trace path."""
+
+    from_name: str
+    to_name: str
+    kind: str
+    confidence: str
+
+
+class TraceResponse(BaseModel):
+    """Response for GET /api/trace.
+
+    Only `paths` is surfaced (the path overlay's input). The handler's
+    callers/callees-of-source/target lists are intentionally dropped — the
+    neighborhood endpoint already covers immediate neighbors. paths[0] is the
+    shortest path; empty list when source and target are not connected.
+    """
+
+    found: bool
+    source: str
+    target: str
+    paths: list[list[TraceHop]]
+
+
+class ChangedSymbol(BaseModel):
+    """A symbol touched by the current diff."""
+
+    name: str
+    file: str | None
+    kind: str
+    start_line: int
+    end_line: int
+    changed_lines: list[int]
+
+
+class AffectedEntry(BaseModel):
+    """A symbol impacted by the changed set (downstream of a change)."""
+
+    name: str
+    file: str | None
+    tier: str
+    confidence: str
+    distance: int
+
+
+class ChangesResponse(BaseModel):
+    """Response for GET /api/changes (git diff → changed symbols → risk)."""
+
+    changed_symbols: list[ChangedSymbol]
+    new_files: list[str]
+    affected: list[AffectedEntry]
+    risk_level: str
+    ambiguous_warning: bool
+    scope: str
+    base_ref: str
+    partial: bool
+
+
+class ConstellationCluster(BaseModel):
+    """One cluster region in the whole-repo overview."""
+
+    cluster_id: int
+    label: str | None
+    size: int
+
+
+class ConstellationLink(BaseModel):
+    """A weighted inter-cluster link (count of cross-cluster edges)."""
+
+    source: int
+    target: int
+    weight: int
+
+
+class ConstellationResponse(BaseModel):
+    """Response for GET /api/constellation."""
+
+    clusters: list[ConstellationCluster]
+    links: list[ConstellationLink]
+
+
+class HubSymbol(BaseModel):
+    """A highest-degree 'hub' symbol — a landing-page entry point."""
+
+    name: str
+    kind: str | None
+    degree: int
+    # Representative declaring file (relativized) — lets the UI bucket hubs by area.
+    path: str | None
+
+
+class HubsResponse(BaseModel):
+    """Response for GET /api/hubs."""
+
+    symbols: list[HubSymbol]
+
+
+class StructureSymbol(BaseModel):
+    """One symbol row for the structure map (flat — the SPA builds the tree)."""
+
+    path: str
+    name: str
+    kind: str
+    line: int
+    qualified_name: str | None
+
+
+class StructureResponse(BaseModel):
+    """Response for GET /api/structure."""
+
+    symbols: list[StructureSymbol]
+
+
 class ErrorResponse(BaseModel):
     """Standard error body for 4xx/5xx responses."""
 
@@ -301,6 +455,14 @@ def _fetch_all_symbol_definitions(
             "decorators": decorators,
         })
     return result
+
+
+def _relativize_path(abs_path: str, root: Path) -> str:
+    """Return abs_path relative to root; fall back to abs_path if not under root."""
+    try:
+        return str(Path(abs_path).relative_to(root))
+    except ValueError:
+        return abs_path
 
 
 def _fetch_languages(conn: sqlite3.Connection) -> list[str]:
@@ -547,6 +709,197 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
                 representative=representatives.get(c["id"]),
             ))
         return ClustersResponse(clusters=items)
+
+    # ── Route: GET /api/impact ────────────────────────────────────────────────
+
+    @app.get("/api/impact", response_model=ImpactResponse, tags=["graph"])
+    def get_impact(
+        symbol: str = Query(..., description="Target symbol to analyze"),
+        direction: Literal["both", "upstream", "downstream"] = Query(
+            "both", description="Blast-radius direction"
+        ),
+        max_depth: int = Query(3, ge=1, le=10, description="Max traversal hops"),
+        include_tests: bool = Query(True, description="Include test-file dependents"),
+        limit: int = Query(25, ge=0, description="Per-tier cap (0 = unlimited)"),
+    ) -> ImpactResponse:
+        """Blast-radius analysis for a symbol, grouped by risk tier.
+
+        Reuses handle_seam_impact verbatim. verbose=False keeps the payload lean
+        (only name/distance/confidence/tier/file/is_test per entry). Unknown symbol
+        returns found:false with empty tiers (not a 404 — same contract as the MCP tool).
+        """
+        conn = _get_conn(db_path)
+        try:
+            result = handle_seam_impact(
+                conn,
+                symbol,
+                root,
+                direction=direction,
+                max_depth=max_depth,
+                include_tests=include_tests,
+                verbose=False,
+                limit=limit,
+            )
+        finally:
+            conn.close()
+
+        _check_handler_error(result)
+        res = cast(dict[str, Any], result)
+
+        def _to_tiers(group: dict[str, Any]) -> dict[str, list[ImpactEntry]]:
+            return {tier: [ImpactEntry(**e) for e in entries] for tier, entries in group.items()}
+
+        return ImpactResponse(
+            found=res["found"],
+            target=res["target"],
+            risk_summary=res.get("risk_summary", {}),
+            upstream=_to_tiers(res["upstream"]) if "upstream" in res else None,
+            downstream=_to_tiers(res["downstream"]) if "downstream" in res else None,
+            truncated=res.get("truncated"),
+        )
+
+    # ── Route: GET /api/trace ─────────────────────────────────────────────────
+
+    @app.get("/api/trace", response_model=TraceResponse, tags=["graph"])
+    def get_trace(
+        source: str = Query(..., description="Path start symbol"),
+        target: str = Query(..., description="Path end symbol"),
+        max_depth: int = Query(10, ge=1, le=10, description="Max path length in hops"),
+    ) -> TraceResponse:
+        """Shortest call/dependency path from source to target.
+
+        Reuses handle_seam_trace; only `paths` is surfaced (verbose=False strips
+        per-hop provenance). found:false + empty paths when unconnected.
+        """
+        conn = _get_conn(db_path)
+        try:
+            result = handle_seam_trace(
+                conn, source, target, root, max_depth=max_depth, verbose=False
+            )
+        finally:
+            conn.close()
+
+        _check_handler_error(result)
+        res = cast(dict[str, Any], result)
+
+        return TraceResponse(
+            found=res["found"],
+            source=res["source"],
+            target=res["target"],
+            paths=[[TraceHop(**hop) for hop in path] for path in res["paths"]],
+        )
+
+    # ── Route: GET /api/changes ───────────────────────────────────────────────
+
+    @app.get("/api/changes", response_model=ChangesResponse, tags=["graph"])
+    def get_changes(
+        scope: Literal["working", "staged", "branch"] = Query(
+            "working", description="Diff scope"
+        ),
+        base_ref: str = Query("HEAD", description="Base ref (branch scope only)"),
+    ) -> ChangesResponse:
+        """Git diff → changed symbols → risk level.
+
+        Reuses handle_seam_changes. NOT_A_GIT_REPO (non-git root) is mapped to 400
+        by _check_handler_error, which the SPA shows as a friendly notice.
+        """
+        conn = _get_conn(db_path)
+        try:
+            result = handle_seam_changes(conn, root, base_ref=base_ref, scope=scope)
+        finally:
+            conn.close()
+
+        _check_handler_error(result)
+        res = cast(dict[str, Any], result)
+
+        return ChangesResponse(
+            changed_symbols=[ChangedSymbol(**s) for s in res["changed_symbols"]],
+            new_files=res["new_files"],
+            affected=[AffectedEntry(**a) for a in res["affected"]],
+            risk_level=res["risk_level"],
+            ambiguous_warning=res["ambiguous_warning"],
+            scope=res["scope"],
+            base_ref=res["base_ref"],
+            partial=res["partial"],
+        )
+
+    # ── Route: GET /api/constellation ─────────────────────────────────────────
+
+    @app.get(
+        "/api/constellation", response_model=ConstellationResponse, tags=["graph"]
+    )
+    def get_constellation() -> ConstellationResponse:
+        """Whole-repo overview: cluster regions + weighted inter-cluster links.
+
+        Reuses build_constellation (graph_api). Empty/pre-v4 index → empty envelope.
+        """
+        conn = _get_conn(db_path)
+        try:
+            data = build_constellation(conn)
+        finally:
+            conn.close()
+
+        return ConstellationResponse(
+            clusters=[ConstellationCluster(**c) for c in data["clusters"]],
+            links=[ConstellationLink(**link) for link in data["links"]],
+        )
+
+    # ── Route: GET /api/hubs ──────────────────────────────────────────────────
+
+    @app.get("/api/hubs", response_model=HubsResponse, tags=["graph"])
+    def get_hubs(
+        limit: int = Query(60, ge=1, le=200, description="How many hub symbols to return"),
+    ) -> HubsResponse:
+        """Return the most-connected symbols — landing-page entry points.
+
+        Reuses graph_api.top_hub_symbols (degree-ranked, defined-only). The default
+        is high enough (60) that the Explorer's area cards each get covered when it
+        buckets hubs by their declaring path.
+        """
+        conn = _get_conn(db_path)
+        try:
+            hubs = top_hub_symbols(conn, limit=limit)
+        finally:
+            conn.close()
+        # Relativize each hub's representative path so the UI matches it against
+        # the (already relativized) structure paths when bucketing into areas.
+        symbols = [
+            HubSymbol(
+                name=h["name"],
+                kind=h["kind"],
+                degree=h["degree"],
+                path=_relativize_path(h["path"], root) if h["path"] else None,
+            )
+            for h in hubs
+        ]
+        return HubsResponse(symbols=symbols)
+
+    # ── Route: GET /api/structure ─────────────────────────────────────────────
+
+    @app.get("/api/structure", response_model=StructureResponse, tags=["graph"])
+    def get_structure() -> StructureResponse:
+        """Return every symbol with its file path — source for the structure treemap.
+
+        Reuses graph_api.list_structure; paths are relativized to the project root.
+        The SPA builds the folder → file → class → method tree from this flat list.
+        """
+        conn = _get_conn(db_path)
+        try:
+            rows = list_structure(conn)
+        finally:
+            conn.close()
+
+        symbols = [
+            StructureSymbol(
+                path=_relativize_path(r["path"], root),
+                name=r["name"],
+                kind=r["kind"],
+                line=r["line"],
+                qualified_name=r["qualified_name"],
+            )
+            for r in rows
+        ]
+        return StructureResponse(symbols=symbols)
 
     # ── Static SPA mount ─────────────────────────────────────────────────────
     # Mount the built SPA at '/'. This must come AFTER all /api/* routes so FastAPI

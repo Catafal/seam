@@ -433,8 +433,14 @@ The explorer is a React + TypeScript SPA (Vite / React Flow) served by FastAPI. 
 - **Neighborhood card-canvas** — depth-1 caller/callee graph around any symbol, rendered with dagre layout; EXTRACTED/AMBIGUOUS/INFERRED edges styled as solid/dashed/dotted lines
 - **Lazy expand** — double-click any card to merge its neighborhood into the canvas
 - **Detail panel** — click a node to see all definitions (file:line), signature, docstring, WHY/HACK/NOTE comments, callers/callees counts, and cluster membership
-- **Cluster legend** — colour key mapping all cluster labels to their swatches
+- **Cluster legend + edge filter** — always-on key for confidence/clusters/risk tiers; toggle edge kinds (call/import) and confidence tiers to declutter
 - **Landing cluster grid** — entry points into the graph by functional area when no symbol is selected
+- **Impact overlay** — one click paints the center symbol's blast radius onto the canvas by risk tier (WILL_BREAK / LIKELY_AFFECTED / MAY_NEED_TESTING), dims the rest, and lists off-canvas dependents
+- **Trace path** — a second "Trace to…" search box highlights the shortest call/dependency path between two symbols
+- **Changes drawer** — git working-tree changed symbols with an overall risk badge; click to jump into the graph
+- **Constellation overview** — a whole-repo map of cluster regions (sized by member count, linked by coupling weight); click a region to drill into it
+
+All four analyses reuse the same engine handlers that power the CLI/MCP tools — the web server is just a third transport (no query-logic duplication, still read-only, still 127.0.0.1-only).
 
 ### Release ritual
 

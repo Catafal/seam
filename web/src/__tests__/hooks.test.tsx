@@ -19,6 +19,9 @@ import {
   useNeighborhood,
   useSymbol,
   useClusters,
+  useImpact,
+  useTrace,
+  useChanges,
 } from "../api/hooks";
 import type {
   StatusResponse,
@@ -26,6 +29,9 @@ import type {
   NeighborhoodResponse,
   SymbolResponse,
   ClustersResponse,
+  ImpactResponse,
+  TraceResponse,
+  ChangesResponse,
 } from "../api/schema-types";
 
 // ── Test utilities ─────────────────────────────────────────────────────────────
@@ -265,5 +271,116 @@ describe("useClusters", () => {
       "/api/clusters",
       expect.any(Object),
     );
+  });
+});
+
+// ── Phase 2 fixtures ─────────────────────────────────────────────────────────
+
+const IMPACT_FIXTURE: ImpactResponse = {
+  found: true,
+  target: "check",
+  risk_summary: { upstream: { WILL_BREAK: 1, LIKELY_AFFECTED: 0, MAY_NEED_TESTING: 0 } },
+  upstream: {
+    WILL_BREAK: [
+      { name: "authenticate_user", distance: 1, confidence: "EXTRACTED", tier: "WILL_BREAK", file: "auth.py", is_test: false },
+    ],
+  },
+  downstream: null,
+  truncated: null,
+};
+
+const TRACE_FIXTURE: TraceResponse = {
+  found: true,
+  source: "authenticate_user",
+  target: "check",
+  paths: [[{ from_name: "authenticate_user", to_name: "check", kind: "call", confidence: "EXTRACTED" }]],
+};
+
+const CHANGES_FIXTURE: ChangesResponse = {
+  changed_symbols: [
+    { name: "check", file: "auth.py", kind: "function", start_line: 5, end_line: 6, changed_lines: [6] },
+  ],
+  new_files: [],
+  affected: [],
+  risk_level: "low",
+  ambiguous_warning: false,
+  scope: "working",
+  base_ref: "HEAD",
+  partial: false,
+};
+
+// ── useImpact ─────────────────────────────────────────────────────────────────
+
+describe("useImpact", () => {
+  it("fetches /api/impact with symbol and direction", async () => {
+    mockFetch(IMPACT_FIXTURE);
+    const { result } = renderHook(() => useImpact("check", "both"), {
+      wrapper: makeWrapper(),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toEqual(IMPACT_FIXTURE);
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      expect.stringContaining("symbol=check"),
+      expect.any(Object),
+    );
+  });
+
+  it("does NOT fetch when symbol is null", () => {
+    vi.stubGlobal("fetch", vi.fn());
+    renderHook(() => useImpact(null, "both"), { wrapper: makeWrapper() });
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
+  it("does NOT fetch when enabled=false (overlay opt-in)", () => {
+    vi.stubGlobal("fetch", vi.fn());
+    renderHook(() => useImpact("check", "both", false), { wrapper: makeWrapper() });
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+});
+
+// ── useTrace ──────────────────────────────────────────────────────────────────
+
+describe("useTrace", () => {
+  it("fetches /api/trace with source and target", async () => {
+    mockFetch(TRACE_FIXTURE);
+    const { result } = renderHook(
+      () => useTrace("authenticate_user", "check"),
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toEqual(TRACE_FIXTURE);
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      expect.stringContaining("source=authenticate_user"),
+      expect.any(Object),
+    );
+  });
+
+  it("does NOT fetch until both endpoints are set", () => {
+    vi.stubGlobal("fetch", vi.fn());
+    renderHook(() => useTrace("authenticate_user", null), { wrapper: makeWrapper() });
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+});
+
+// ── useChanges ────────────────────────────────────────────────────────────────
+
+describe("useChanges", () => {
+  it("fetches /api/changes with the scope", async () => {
+    mockFetch(CHANGES_FIXTURE);
+    const { result } = renderHook(() => useChanges("working"), {
+      wrapper: makeWrapper(),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toEqual(CHANGES_FIXTURE);
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      expect.stringContaining("scope=working"),
+      expect.any(Object),
+    );
+  });
+
+  it("does NOT fetch when enabled=false (drawer closed)", () => {
+    vi.stubGlobal("fetch", vi.fn());
+    renderHook(() => useChanges("working", false), { wrapper: makeWrapper() });
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
   });
 });

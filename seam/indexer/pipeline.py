@@ -36,6 +36,13 @@ logger = logging.getLogger(__name__)
 
 # Directories to skip when walking the project tree.
 # Dot-dirs are skipped by default; this list catches common non-dot dirs.
+#
+# WHY build/output dirs matter: indexing compiled artifacts (e.g. a minified JS
+# bundle in seam/_web/assets/) injects thousands of garbage symbols and pollutes
+# clustering with meaningless "areas" named after the bundle file. We skip the
+# standard build/output/vendor dir names so `seam init` indexes SOURCE, not
+# generated output. (`dist`/`build`/`node_modules` were always here; `_web`,
+# `target`, `out`, `coverage`, `vendor` close the remaining common gaps.)
 SKIP_DIRS: frozenset[str] = frozenset(
     {
         ".git",
@@ -45,6 +52,11 @@ SKIP_DIRS: frozenset[str] = frozenset(
         ".seam",
         "dist",
         "build",
+        "_web",       # built SPA output (seam/_web/) — minified, not source
+        "out",        # common JS/TS build output
+        "target",     # Rust/Maven/Gradle compiled output
+        "vendor",     # Go/PHP third-party deps (not first-party source)
+        "coverage",   # coverage report output
         ".mypy_cache",
         ".ruff_cache",
         ".pytest_cache",

@@ -815,3 +815,51 @@ tools:
     errors:
       - code: INVALID_INPUT
         condition: symbol is empty string or whitespace-only
+
+  seam_flows:
+    status: IMPLEMENTED
+    phase: flows
+    description: |
+      Discover execution flows — how the program runs, end to end. Purely structural
+      (no LLM, no embeddings): derived from the call graph at read time.
+
+      With no argument: returns {"entry_points": [{name, kind, file, reach}]} — the
+      codebase's top execution starting points, defined as call-graph ROOTS (symbols
+      with no incoming call edge), excluding tests, ranked by downstream reach (how
+      many symbols they transitively call). On a real repo these are the CLI commands,
+      web routes, MCP handlers, and main().
+
+      With an entry name: returns that entry point's flow tree — a forward expansion
+      over call/import edges, depth-capped (SEAM_FLOW_MAX_DEPTH) and breadth-capped
+      (SEAM_FLOW_MAX_BREADTH), cycle-safe (each symbol appears once, first reach wins).
+
+      Per-step confidence uses the fast name-count resolver, NOT Phase-5 import
+      promotion — a flow is an overview; use seam_impact / seam_trace for promoted,
+      import-aware confidence.
+    input:
+      entry:
+        type: string
+        required: false
+        nullable: true
+        default: null
+        description: |
+          When omitted (or null): list entry points.
+          When provided: expand that entry point's flow tree.
+    output:
+      type: object
+      description: |
+        No entry → {"entry_points": [{name, kind, file (relativized), reach}]}.
+
+        With entry → a Flow object:
+          entry:       (str)  — the entry point name
+          kind:        (str)  — symbol kind, or null if undefined in the index
+          file:        (str)  — declaring file relativized to root, or null
+          steps:       (array)— nested [{name, kind, file, line, confidence, children,
+                                truncated}] following the call chain forward
+          total_steps: (int)  — number of FlowStep nodes in the tree
+          truncated:   (bool) — True if depth/breadth caps cut part of the tree
+      found_false_ok: true
+      found_false_message: "Unknown entry → {\"found\": false} (MCP boundary normalization)"
+    errors:
+      - code: INVALID_INPUT
+        condition: entry is provided but empty/whitespace-only
