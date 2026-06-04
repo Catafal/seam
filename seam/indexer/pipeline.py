@@ -57,6 +57,8 @@ SKIP_DIRS: frozenset[str] = frozenset(
         "target",     # Rust/Maven/Gradle compiled output
         "vendor",     # Go/PHP third-party deps (not first-party source)
         "coverage",   # coverage report output
+        "site",       # mkdocs default build output (bundled/minified JS — pollutes clusters)
+        "_site",      # Jekyll default build output
         ".mypy_cache",
         ".ruff_cache",
         ".pytest_cache",
@@ -171,6 +173,8 @@ def walk_project(root: Path) -> list[Path]:
     Rules:
       - Skip any directory whose name starts with '.' (hidden dirs).
       - Skip any directory in SKIP_DIRS.
+      - Skip minified bundles (name contains '.min.', e.g. foo.min.js) — they are
+        generated, not source, and inject garbage symbols that pollute clustering.
       - Collect files whose suffix is in config.SEAM_LANGUAGE_MAP.
 
     The dot/skip check uses only the parts BELOW root (root may itself sit under
@@ -184,6 +188,10 @@ def walk_project(root: Path) -> list[Path]:
             for part in item.parts[root_depth:]
         ):
             continue
-        if item.is_file() and item.suffix.lower() in config.SEAM_LANGUAGE_MAP:
+        if (
+            item.is_file()
+            and item.suffix.lower() in config.SEAM_LANGUAGE_MAP
+            and ".min." not in item.name  # skip minified bundles (foo.min.js, bundle.min.mjs)
+        ):
             files.append(item)
     return files
