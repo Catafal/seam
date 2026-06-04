@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 # unrelated package (Seam Labs' smart-lock API SDK). The import package and the
 # console command both stay "seam" (distribution name != import name is standard).
 name = "seam-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local code intelligence MCP server for AI agents"
 readme = "README.md"
 license = { text = "MIT" }
@@ -47,8 +47,9 @@ dependencies = [
 # fully without it. `pip install 'seam-mcp[server]'` adds the `seam start` MCP server.
 server = ["mcp>=1.0.0"]
 # Web explorer is OPTIONAL — `pip install 'seam-mcp[web]'` adds the `seam serve` HTTP
-# server + React SPA. Starlette/Pydantic/uvicorn come in as FastAPI transitive deps.
-web = ["fastapi>=0.110"]
+# server + React SPA. FastAPI brings Starlette + Pydantic, but NOT the ASGI server —
+# uvicorn must be listed explicitly or `seam serve` exits with "uvicorn is not installed".
+web = ["fastapi>=0.110", "uvicorn>=0.30"]
 # Semantic (embedding-based) search is OPTIONAL — `pip install 'seam-mcp[semantic]'`
 # adds local vector search via quantized ONNX on CPU (no torch, ~67MB model download).
 # Requires `seam init --semantic` to build the embeddings table before use.
@@ -114,3 +115,10 @@ artifacts = ["seam/_web/**/*"]
 # repo's docs/database/schema.sql in a dev checkout. Keeps docs/ as the single source.
 [tool.hatch.build.targets.wheel.force-include]
 "docs/database/schema.sql" = "seam/_data/schema.sql"
+
+# Sdist must ALSO ship the built SPA. `uv build` builds sdist→wheel, so a wheel built
+# from the sdist would otherwise lose seam/_web (gitignored → excluded from the sdist),
+# leaving `seam serve` with no frontend. Mirroring the wheel artifact here keeps both
+# distributions consistent. (Run `make build-web` before building a release.)
+[tool.hatch.build.targets.sdist]
+artifacts = ["seam/_web/**/*"]
