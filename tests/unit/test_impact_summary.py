@@ -20,7 +20,7 @@ from pathlib import Path
 import seam.config as config
 from seam.indexer.db import connect, init_db, upsert_file
 from seam.indexer.graph import Edge, Symbol
-from seam.server.tools import handle_seam_impact
+from seam.server.tools import _prioritize_tier_entries, handle_seam_impact
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -415,3 +415,104 @@ def test_risk_summary_same_in_lean_mode(tmp_path: Path) -> None:
         conn.close()
 
     assert result_verbose["risk_summary"] == result_lean["risk_summary"]
+
+
+# ── Production-first ordering under the cap (benchmark follow-up #1) ───────────
+
+
+def test_prioritize_tier_entries_production_first_stable() -> None:
+    """The cap pre-sort puts production (is_test=False) ahead of tests, stably.
+
+    Deterministic unit test for the real defect: in the seam index, ~52 test
+    callers crowded the 9 production callers (handle_seam_search/_query) past the
+    per-tier cap of 25. Stable production-first ordering rescues them while
+    preserving the analysis layer's order within each group.
+    """
+    entries = [
+        {"name": "t0", "is_test": True},
+        {"name": "t1", "is_test": True},
+        {"name": "p0", "is_test": False},
+        {"name": "t2", "is_test": True},
+        {"name": "p1", "is_test": False},
+    ]
+    out = [e["name"] for e in _prioritize_tier_entries(entries)]
+    # Production first, in original relative order; then tests, in original order.
+    assert out == ["p0", "p1", "t0", "t1", "t2"], out
+
+
+def _make_test_and_prod_hub_db(tmp_path: Path, n_test: int, n_prod: int) -> Path:
+    """Hub called by n_test TEST callers + n_prod PRODUCTION callers, all d=1.
+
+    TEST callers live in tests/test_svc.py (is_test=True); production callers in
+    svc.py (is_test=False). Test callers are inserted FIRST so, without
+    prioritisation, they occupy the front of the WILL_BREAK tier and a small cap
+    would drop the production callers.
+    """
+    db_path = tmp_path / ".seam" / "seam.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = init_db(db_path)
+
+    # Test file first (lower edge ids → earlier in walk order).
+    test_file = tmp_path / "tests" / "test_svc.py"
+    test_file.parent.mkdir(parents=True, exist_ok=True)
+    test_file.write_text("# tests\n")
+    test_syms = [_sym(f"test_caller_{i}", str(test_file), line=10 + i) for i in range(n_test)]
+    test_edges = [_edge(f"test_caller_{i}", "hub", str(test_file)) for i in range(n_test)]
+    upsert_file(conn, test_file, "python", "testhash", test_syms, test_edges)
+
+    # Production file with the hub definition + production callers.
+    prod_file = tmp_path / "svc.py"
+    prod_file.write_text("# svc\n")
+    prod_syms = [_sym("hub", str(prod_file), line=1)]
+    prod_syms += [_sym(f"prod_{i}", str(prod_file), line=10 + i) for i in range(n_prod)]
+    prod_edges = [_edge(f"prod_{i}", "hub", str(prod_file)) for i in range(n_prod)]
+    upsert_file(conn, prod_file, "python", "prodhash", prod_syms, prod_edges)
+
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+def test_production_callers_survive_cap_over_tests(tmp_path: Path) -> None:
+    """Under a cap, PRODUCTION callers must be kept ahead of TEST callers.
+
+    Benchmark Gap: `impact rescore` dropped handle_seam_search/_query (production)
+    because test dependents filled the per-tier cap first.
+    """
+    db_path = _make_test_and_prod_hub_db(tmp_path, n_test=8, n_prod=4)
+    conn = _connect(db_path)
+    try:
+        result = handle_seam_impact(
+            conn, "hub", ROOT, direction="upstream", include_tests=True, limit=6
+        )
+    finally:
+        conn.close()
+
+    wb = result["upstream"]["WILL_BREAK"]
+    names = {e["name"] for e in wb}
+    assert len(wb) == 6, "cap must still hold (token budget unchanged)"
+    for i in range(4):
+        assert f"prod_{i}" in names, (
+            f"production caller prod_{i} dropped by cap — should outrank tests; kept={names}"
+        )
+
+
+def test_production_entries_sort_before_tests_uncapped(tmp_path: Path) -> None:
+    """Even uncapped, production entries appear before test entries in a tier."""
+    db_path = _make_test_and_prod_hub_db(tmp_path, n_test=3, n_prod=3)
+    conn = _connect(db_path)
+    try:
+        result = handle_seam_impact(
+            conn, "hub", ROOT, direction="upstream", include_tests=True, limit=0
+        )
+    finally:
+        conn.close()
+
+    wb = result["upstream"]["WILL_BREAK"]
+    is_test_flags = [e["is_test"] for e in wb]
+    # All False (production) must come before any True (test).
+    first_test = next((idx for idx, t in enumerate(is_test_flags) if t), len(is_test_flags))
+    assert all(not t for t in is_test_flags[:first_test])
+    assert all(is_test_flags[first_test:]), (
+        f"production entries must precede test entries; got {is_test_flags}"
+    )

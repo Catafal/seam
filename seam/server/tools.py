@@ -330,6 +330,21 @@ def _serialize_tier_entry(entry: dict[str, Any], root: Path, verbose: bool) -> d
     }, verbose)
 
 
+def _prioritize_tier_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Order production (is_test=False) entries before test entries within a tier.
+
+    Stable sort: preserves the analysis layer's BFS/distance order WITHIN the
+    production and test groups (Python's sort is stable). Applied BEFORE the
+    per-tier cap so that when the cap drops entries, production callers — what an
+    agent assessing blast radius actually cares about — survive ahead of test
+    dependents. WHY this matters: in a test-heavy repo a hub symbol's tier can be
+    dominated by test callers (e.g. rescore had 52 test vs 9 production callers in
+    LIKELY_AFFECTED), pushing the production callers past the cap of 25 and out of
+    the default output entirely. Token budget is unchanged (still <= limit/tier).
+    """
+    return sorted(entries, key=lambda e: e.get("is_test", False))
+
+
 def handle_seam_impact(
     conn: sqlite3.Connection,
     target: str,
@@ -442,12 +457,14 @@ def handle_seam_impact(
         dir_truncated: dict[str, int] = {}
 
         for tier, entries in tier_group.items():
-            # Slice keeps the closest/highest-risk entries WITHOUT a sort here. WHY it's
-            # safe: WILL_BREAK (d=1) and LIKELY_AFFECTED (d=2) each contain a single
-            # distance. MAY_NEED_TESTING spans d=3..max_depth, but the analysis layer's
-            # walk() emits entries in BFS (ascending-distance) order, so entries[:N] still
-            # keeps the closest. (Do NOT remove walk()'s ordering assuming tiers are
-            # single-distance buckets — that holds only for the first two tiers.)
+            # Production-first within the tier BEFORE slicing, so the cap drops test
+            # dependents before production callers (stable — keeps the analysis layer's
+            # ascending-distance order within each group). WHY ordering still matters
+            # after this sort: WILL_BREAK (d=1) and LIKELY_AFFECTED (d=2) are single-
+            # distance; MAY_NEED_TESTING spans d=3..max_depth, and the stable sort
+            # preserves walk()'s BFS order within the production and test groups, so
+            # entries[:N] keeps the closest production entries first.
+            entries = _prioritize_tier_entries(entries)
             if effective_limit is not None and len(entries) > effective_limit:
                 kept = entries[:effective_limit]
                 dir_truncated[tier] = len(entries) - effective_limit
