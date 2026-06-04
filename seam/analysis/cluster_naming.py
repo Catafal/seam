@@ -41,6 +41,12 @@ _DEFAULT_LLM_MODEL = "gpt-4o-mini"
 # Anthropic-compatible API endpoint default (can be overridden in tests)
 _DEFAULT_LLM_ENDPOINT = "https://api.openai.com/v1/chat/completions"
 
+# Generic / non-module directory names. These read as packaging scaffolding,
+# NOT functional areas — labeling a cluster 'src' or 'lib' tells an agent nothing.
+# When the immediate parent dir is one of these, _dominant_dir walks UP the path
+# tree to the first non-generic ancestor (e.g. 'render/src/x.py' → 'render').
+GENERIC_DIRS: frozenset[str] = frozenset({"src", "lib", "app", "pkg", "main", "core", "base"})
+
 
 # ── Public types ──────────────────────────────────────────────────────────────
 
@@ -53,22 +59,49 @@ MemberInfo = dict[str, Any]
 # ── deterministic_label ───────────────────────────────────────────────────────
 
 
+def _module_dir_for_path(file_path: str) -> str | None:
+    """Highest NON-GENERIC module directory on a file's path (P2 two-level labels).
+
+    WHY two-level (vs. the old immediate-parent-only rule): a file like
+    'render/src/widget.py' used to label as 'src' — a packaging dir that names no
+    functional area. We instead walk the directory parts from the LEAF upward and
+    return the FIRST non-generic dir (the immediate parent if it isn't generic,
+    otherwise its first non-generic ancestor). This yields module-level labels
+    ('query', 'analysis', 'render') instead of leaf/scaffolding noise.
+
+    Returns None when the file has no parent dir, or when every directory on the
+    path is generic (e.g. 'src/lib/x.py').
+    """
+    parts = Path(file_path).parts
+    # Drop the filename (last part); only directory components are candidates.
+    dir_parts = parts[:-1]
+    # Walk from the immediate parent (closest to the file) upward toward the root,
+    # returning the first directory name that is NOT a generic scaffolding dir.
+    for name in reversed(dir_parts):
+        if name not in GENERIC_DIRS:
+            return name
+    return None
+
+
 def _dominant_dir(members: list[MemberInfo]) -> str | None:
-    """Most common immediate-parent DIRECTORY NAME among member files.
+    """Most common module DIRECTORY NAME among member files (P2 two-level).
 
     WHY the dir name, not 'dir/filename': the filename is the noisy part — it
     produces labels like 'unit/test_query_engine' or 'assets/index-Bb07j4Ym'
     (a build bundle). The directory alone ('query', 'indexer', 'cli', 'analysis')
     reads as a functional area. Ties broken alphabetically. None when no member
-    has a parent directory (e.g. a repo-root file).
+    has a non-generic module directory (e.g. a repo-root file or an all-generic path).
+
+    P2 change: uses _module_dir_for_path so generic scaffolding dirs (src/lib/app/…)
+    are skipped in favour of the enclosing module dir.
     """
     dirs: list[str] = []
     for m in members:
         file_path = m.get("file", "")
         if file_path:
-            parts = Path(file_path).parts
-            if len(parts) >= 2:
-                dirs.append(parts[-2])
+            module_dir = _module_dir_for_path(file_path)
+            if module_dir is not None:
+                dirs.append(module_dir)
     if not dirs:
         return None
     counts = Counter(dirs)

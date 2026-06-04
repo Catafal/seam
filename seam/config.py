@@ -81,6 +81,14 @@ SEAM_LLM_MODEL: str = os.getenv("SEAM_LLM_MODEL", "gpt-4o-mini")
 # Set to 1 to retain all singletons as their own clusters.
 SEAM_CLUSTER_MIN_SIZE: int = int(os.getenv("SEAM_CLUSTER_MIN_SIZE", "2"))
 
+# P2 — confidence-filtered Louvain. On LARGE graphs (symbol_count > this threshold),
+# only high-trust edges (EXTRACTED + import-kind INFERRED) are passed to community
+# detection, so noisy AMBIGUOUS/inferred-call edges can't merge unrelated modules.
+# Small repos are unaffected (the full edge set keeps recall on sparse graphs).
+# Special values: "off" disables the filter entirely (always pass all edges);
+# "0" forces the filter on for any non-empty graph (used by tests). Default 1000.
+SEAM_CLUSTER_CONFIDENCE_FILTER: str = os.getenv("SEAM_CLUSTER_CONFIDENCE_FILTER", "1000")
+
 
 # ── Phase 3: Affected-tests configuration ────────────────────────────────────
 

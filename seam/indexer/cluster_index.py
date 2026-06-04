@@ -30,10 +30,78 @@ Design decisions:
 import logging
 import sqlite3
 
+import seam.config as config
 from seam.analysis.cluster_naming import label_cluster
 from seam.analysis.clustering import detect_communities
 
 logger = logging.getLogger(__name__)
+
+
+def _should_filter_edges(symbol_count: int) -> bool:
+    """Decide whether to apply the P2 confidence filter for this graph size.
+
+    The filter trims noisy AMBIGUOUS/inferred-call edges before community
+    detection. It is OPT-IN by graph size to preserve small-repo behaviour:
+      - "off"            → never filter (byte-identical to pre-P2).
+      - numeric threshold → filter only when symbol_count > threshold.
+        A threshold of "0" forces the filter on for any non-empty graph
+        (used by tests and aggressive setups).
+
+    WHY size-gated: on a small/sparse graph the AMBIGUOUS edges are often the
+    only connective tissue — dropping them would shatter clusters. On a large
+    graph they are mostly homonym noise that wrongly merges unrelated modules.
+    """
+    raw = config.SEAM_CLUSTER_CONFIDENCE_FILTER
+    if raw == "off":
+        return False
+    try:
+        threshold = int(raw)
+    except (TypeError, ValueError):
+        # Misconfigured value → safest is to leave behaviour unchanged (no filter).
+        logger.warning(
+            "cluster_index: invalid SEAM_CLUSTER_CONFIDENCE_FILTER=%r — disabling filter",
+            raw,
+        )
+        return False
+    return symbol_count > threshold
+
+
+# Max nodes sampled per cluster when computing cohesion (perf bound on hub clusters).
+_COHESION_SAMPLE_CAP = 50
+
+
+def _compute_cohesion(
+    member_names: list[str],
+    adjacency: dict[str, set[str]],
+    name_to_cluster: dict[str, int],
+    cluster_id: int,
+) -> float:
+    """Internal-edge ratio for one cluster (P2 cohesion score).
+
+    cohesion = (edges whose BOTH endpoints are in this cluster)
+               / (all edges touching a sampled member)
+
+    Range [0, 1]. 1.0 = perfectly self-contained (every edge stays inside the
+    cluster); near 0 = the cluster's members mostly link OUT to other clusters
+    (a weak/noisy community). Used as a small additive search-ranking bonus.
+
+    Perf: samples at most _COHESION_SAMPLE_CAP members so a hot hub cluster does
+    not make this O(huge). Sampling is deterministic (sorted, first N) so repeated
+    runs over the same graph produce the same value.
+
+    Returns 0.0 when the sampled members touch no edges (avoids div-by-zero).
+    """
+    sample = sorted(member_names)[:_COHESION_SAMPLE_CAP]
+    internal = 0
+    total = 0
+    for name in sample:
+        for neighbor in adjacency.get(name, ()):  # undirected neighbours
+            total += 1
+            if name_to_cluster.get(neighbor) == cluster_id:
+                internal += 1
+    if total == 0:
+        return 0.0
+    return internal / total
 
 
 def index_clusters(
@@ -127,13 +195,38 @@ def _index_clusters_impl(
     all_nodes = list(name_to_file.keys())
 
     # ── Step 2: Read all edges as undirected pairs ────────────────────────────
+    # Read confidence + kind too so the P2 confidence filter (Step 2b) can drop
+    # noisy edges before community detection on large graphs. The unfiltered set
+    # is always kept for the cohesion computation (Step 8b) so cohesion reflects
+    # the REAL connectivity, not the filtered view.
     edge_rows = conn.execute(
-        "SELECT DISTINCT source_name, target_name FROM edges"
+        "SELECT DISTINCT source_name, target_name, kind, confidence FROM edges"
     ).fetchall()
     all_edges = [(row["source_name"], row["target_name"]) for row in edge_rows]
 
+    # ── Step 2b: P2 confidence filter — large graphs only ─────────────────────
+    # Pass only high-trust edges to Louvain when the graph is big enough that
+    # AMBIGUOUS homonym noise would wrongly merge unrelated modules. High-trust =
+    # EXTRACTED (resolved to one symbol) OR import-kind INFERRED (real dependency,
+    # just not name-unique). Everything else (AMBIGUOUS, inferred CALL edges) is
+    # dropped. Small repos pass the full set (see _should_filter_edges).
+    if _should_filter_edges(len(all_nodes)):
+        clustering_edges = [
+            (row["source_name"], row["target_name"])
+            for row in edge_rows
+            if row["confidence"] == "EXTRACTED"
+            or (row["confidence"] == "INFERRED" and row["kind"] == "import")
+        ]
+        logger.debug(
+            "cluster_index: confidence filter active — %d/%d edges passed to Louvain",
+            len(clustering_edges),
+            len(all_edges),
+        )
+    else:
+        clustering_edges = all_edges
+
     # ── Step 3: Detect communities (pure function) ────────────────────────────
-    community_map: dict[str, int] = detect_communities(all_nodes, all_edges)
+    community_map: dict[str, int] = detect_communities(all_nodes, clustering_edges)
 
     if not community_map:
         logger.debug("cluster_index: detect_communities returned empty map")
@@ -201,6 +294,27 @@ def _index_clusters_impl(
         )
         cluster_labels[algo_cid] = (label, naming_source)
 
+    # ── Step 7b: Compute cohesion per cluster (P2 internal-edge ratio) ─────────
+    # cohesion(cluster) = internal edges / all edges touching sampled members.
+    # Built from the FULL (unfiltered) edge graph so the score reflects real
+    # connectivity, not the filtered Louvain view. Stable DB id = position in
+    # ordered_algo_ids (1-based), matching the INSERT loop below.
+    adjacency: dict[str, set[str]] = {n: set() for n in all_nodes}
+    for src, tgt in all_edges:
+        if src in adjacency and tgt in adjacency and src != tgt:
+            adjacency[src].add(tgt)
+            adjacency[tgt].add(src)
+    # name → stable DB cluster id (only for persisted members).
+    name_to_cluster: dict[str, int] = {}
+    for db_id, algo_cid in enumerate(ordered_algo_ids, start=1):
+        for name in cluster_members[algo_cid]:
+            name_to_cluster[name] = db_id
+    cohesion_by_db_id: dict[int, float] = {}
+    for db_id, algo_cid in enumerate(ordered_algo_ids, start=1):
+        cohesion_by_db_id[db_id] = _compute_cohesion(
+            cluster_members[algo_cid], adjacency, name_to_cluster, db_id
+        )
+
     # ── Step 8: Persist in one transaction with explicit stable IDs ───────────
     # WHY single transaction: if any INSERT/UPDATE fails the rollback leaves
     # the DB in a consistent state (all cluster_id=NULL from Step 0 clear).
@@ -211,9 +325,11 @@ def _index_clusters_impl(
             label, naming_source = cluster_labels[algo_cid]
             # Insert with explicit ID so IDs are identical across re-runs.
             # Size is a placeholder (0) — updated to actual count after write-back (issue #3).
+            # cohesion (P2) is stored at insert time from the precomputed map.
             conn.execute(
-                "INSERT INTO clusters (id, label, size, naming_source) VALUES (?, ?, 0, ?)",
-                (db_id, label, naming_source),
+                "INSERT INTO clusters (id, label, size, naming_source, cohesion)"
+                " VALUES (?, ?, 0, ?, ?)",
+                (db_id, label, naming_source, cohesion_by_db_id[db_id]),
             )
             algo_to_db_id[algo_cid] = db_id
 

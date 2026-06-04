@@ -72,6 +72,11 @@ _BONUS_CLUSTER_PEER: float = 20.0  # shares cluster with the strongest-score row
 # Intentionally smaller than name/path signals so signature-only matches rank
 # below exact-name matches. Per PRD: MUST NOT regress existing signals.
 _BONUS_SIGNATURE_PER_TERM: float = 15.0
+# P2 cohesion bonus: scales a small +0.1 with the row's cluster cohesion ratio.
+# Deliberately tiny — it only nudges ordering AMONG otherwise-equal results
+# (e.g. two name-tied symbols), never overrides a name/path signal. Fires ONLY
+# when a row carries a non-NULL 'cohesion' key, so rows without it are unchanged.
+_BONUS_COHESION_MAX: float = 0.1
 
 # A query is considered "test-aware" if any term is one of these words,
 # in which case we suppress the test-file dampening.
@@ -279,6 +284,18 @@ def rescore(rows: list[dict[str, Any]], terms: list[str]) -> list[dict[str, Any]
                         sig_bonus,
                         row["symbol"],
                     )
+
+        # Signal 7 (P2): cohesion bonus — additive, tiny, opt-in.
+        # Fires ONLY when the row carries a non-NULL 'cohesion' value (in [0,1]).
+        # Rows without the key (or with NULL) get NO bonus → byte-identical to pre-P2.
+        # WHY guard on the key: search()/fallback rows do not select cohesion today,
+        # so this is dead-weight-free unless a caller explicitly supplies cohesion.
+        cohesion = row.get("cohesion")
+        if cohesion is not None:
+            try:
+                bonus += _BONUS_COHESION_MAX * float(cohesion)
+            except (TypeError, ValueError):
+                pass  # non-numeric cohesion → no bonus (defensive, never raises)
 
         new_row["score"] = base_score + bonus
         scored.append(new_row)

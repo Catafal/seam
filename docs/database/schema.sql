@@ -1,4 +1,4 @@
--- Seam SQLite Schema (v7 — Semantic search foundation)
+-- Seam SQLite Schema (v8 — P2 cluster quality: clusters.cohesion)
 -- Run via db.py:init_db() — idempotent (CREATE TABLE IF NOT EXISTS).
 -- FTS5 is required; init_db() verifies availability before proceeding.
 -- Schema v2 adds: edges.confidence (DEFAULT 'INFERRED').
@@ -8,12 +8,14 @@
 --                 FTS5 rebuilt to index (name, docstring, signature).
 -- Schema v6 adds: import_mappings table (Phase 5 import resolution).
 -- Schema v7 adds: embeddings table (semantic search via local fastembed vectors).
+-- Schema v8 adds: clusters.cohesion (P2 internal-edge ratio; small search bonus).
 -- Migration from v1: db.py:_run_migration_v1_to_v2() (guarded ALTER TABLE).
 -- Migration from v2: db.py:_run_migration_v2_to_v3() (guards schema_version bump).
 -- Migration from v3: db.py:_run_migration_v3_to_v4() (adds clusters table + cluster_id).
 -- Migration from v4: db.py:_run_migration_v4_to_v5() (adds 5 enrichment cols + FTS rebuild).
 -- Migration from v5: db.py:_run_migration_v5_to_v6() (adds import_mappings table).
 -- Migration from v6: db.py:_run_migration_v6_to_v7() (adds embeddings table).
+-- Migration from v7: db.py:_run_migration_v7_to_v8() (adds clusters.cohesion column).
 
 PRAGMA journal_mode = WAL;      -- Write-ahead logging for concurrent reads
 PRAGMA foreign_keys = ON;
@@ -126,7 +128,10 @@ CREATE TABLE IF NOT EXISTS clusters (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     label         TEXT NOT NULL,        -- Human-readable label (deterministic or LLM-generated)
     size          INTEGER NOT NULL,     -- Number of member symbols
-    naming_source TEXT NOT NULL         -- 'deterministic' | 'llm'
+    naming_source TEXT NOT NULL,        -- 'deterministic' | 'llm'
+    -- P2 (v8): internal-edge ratio in [0,1]. NULL on pre-v8 rows until re-index.
+    -- Higher = tighter, more self-contained community. Small additive search bonus.
+    cohesion      REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_clusters_id ON clusters(id);
@@ -175,9 +180,9 @@ CREATE TABLE IF NOT EXISTS metadata (
 );
 
 -- NOTE: INSERT OR IGNORE does not update existing rows. Fresh DBs are seeded at
--- the CURRENT schema version ('7') so a brand-new `seam init` is born current and
+-- the CURRENT schema version ('8') so a brand-new `seam init` is born current and
 -- does NOT trigger any migration advisory.
 -- Existing older DBs keep their stored version; db.py migrations bump them in place.
 INSERT OR IGNORE INTO metadata(key, value) VALUES
-    ('schema_version', '7'),
+    ('schema_version', '8'),
     ('seam_version',   '0.2.0');
