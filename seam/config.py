@@ -243,6 +243,20 @@ SEAM_SEMANTIC_SCAN_CAP: int = int(os.getenv("SEAM_SEMANTIC_SCAN_CAP", "20000"))
 SEAM_RRF_K: int = int(os.getenv("SEAM_RRF_K", "60"))
 
 
+# ── P5: Swift inter-class call resolution ────────────────────────────────────
+
+# Lightweight receiver-type inference for Swift call edges. When "on" (default),
+# the Swift extractor resolves two HIGH-VALUE member-call patterns to qualified
+# 'Type.method' edges at INDEX time:
+#   (1) self.method()                 → '<EnclosingType>.method'
+#   (2) ClassName().method() OR a var assigned from a class instantiation in the
+#       SAME function scope (let x = Foo(); x.bar()) → 'Foo.bar'
+# Tracking is function-scope-local (a var→class dict during the AST walk) — no
+# cross-file inference. Set to "off" to revert to bare-identifier-only call edges
+# (byte-identical to pre-P5 behavior). See ADR-009.
+SEAM_SWIFT_TYPE_INFERENCE: str = os.getenv("SEAM_SWIFT_TYPE_INFERENCE", "on")
+
+
 def get_db_path(project_root: Path) -> Path:
     """Resolve the database path relative to the project root."""
     return project_root / SEAM_DB_PATH
