@@ -216,6 +216,15 @@ SEAM_FLOW_MAX_BREADTH: int = int(os.getenv("SEAM_FLOW_MAX_BREADTH", "8"))
 # Separate from MAX_DEPTH: scoring wants a stable ranking signal, not a full walk.
 SEAM_FLOW_REACH_DEPTH: int = int(os.getenv("SEAM_FLOW_REACH_DEPTH", "5"))
 
+# P6b — framework entry-point scoring. When "on" (default), a per-symbol
+# entry_score float is computed at INDEX time from the file's path pattern
+# (e.g. views.py, routes/, controllers/) and the symbol's decorator text
+# (e.g. @app.route, @router.get). list_entry_points() then ranks by
+# entry_score * reach instead of raw reach, so a framework route (low reach)
+# can outrank a deep utility. When "off", entry_score is still stored as the
+# neutral baseline (1.0) and ranking is byte-identical to raw reach (pre-P6b).
+SEAM_ENTRY_SCORE: str = os.getenv("SEAM_ENTRY_SCORE", "on")
+
 
 # ── Semantic search configuration (opt-in, Phase Semantic) ───────────────────
 

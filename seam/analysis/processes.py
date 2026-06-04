@@ -33,6 +33,7 @@ testpaths} only. No server/cli/query imports.
 """
 
 import logging
+import re
 import sqlite3
 from collections import deque
 from pathlib import Path
@@ -44,7 +45,106 @@ from seam.analysis.testpaths import is_test_file
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["EntryPoint", "FlowStep", "Flow", "list_entry_points", "build_flow"]
+__all__ = [
+    "EntryPoint",
+    "FlowStep",
+    "Flow",
+    "list_entry_points",
+    "build_flow",
+    "compute_entry_score",
+]
+
+
+# ── P6b: framework entry-point scoring ───────────────────────────────────────
+#
+# A framework entry point (a Django view, a Flask/FastAPI route, a Go cmd/main,
+# a Rails controller) often has a SHALLOW downstream reach — it delegates to one
+# service call — yet it IS the program's true starting point. Raw-reach ranking
+# buries it under deep internal utilities. We multiply reach by a framework-aware
+# entry_score computed once at INDEX time from two cheap, language-agnostic signals:
+#   (1) the file's PATH — conventional locations of request handlers / entry points;
+#   (2) the symbol's DECORATOR text — route/handler decorators across frameworks.
+# The score is a small multiplier (>=1.0); 1.0 is the neutral baseline so a symbol
+# with no signal ranks exactly as before (byte-identical when nothing matches).
+
+# Path substrings → multiplier. Checked case-insensitively against the POSIX path.
+# Ordered roughly by specificity; the HIGHEST matching multiplier wins (max, not sum)
+# so a file under both 'app/api/' and 'routes/' is not double-counted.
+_PATH_PATTERNS: tuple[tuple[str, float], ...] = (
+    ("/pages/", 1.8),          # Next.js / SvelteKit file-system routes
+    ("/app/api/", 1.8),        # Next.js app-router API handlers
+    ("/routes/", 1.7),         # generic web routes dir
+    ("/controllers/", 1.7),    # Rails / Spring / NestJS controllers
+    ("/handlers/", 1.6),       # Go / serverless handlers
+    ("/views/", 1.6),          # Django/Flask views package
+    ("views.py", 1.7),         # Django views module
+    ("urls.py", 1.5),          # Django URL conf (entry registration)
+    ("routes.py", 1.7),        # Flask/FastAPI routes module
+    ("/endpoints/", 1.6),      # FastAPI endpoints package
+    ("/api/", 1.5),            # generic api dir
+    ("/cmd/", 1.6),            # Go command entry points
+    ("/commands/", 1.5),       # CLI command modules
+    ("/cli/", 1.4),            # CLI package
+    ("main.go", 1.6),          # Go main
+    ("main.py", 1.5),          # Python main module
+    ("main.rs", 1.5),          # Rust main
+    ("app.py", 1.4),           # Flask app entry
+    ("server.py", 1.4),        # server entry module
+    ("/resolvers/", 1.5),      # GraphQL resolvers
+    ("index.ts", 1.3),         # TS package entry / route file
+)
+
+# Decorator substrings → multiplier. Matched case-insensitively against the joined
+# decorator text. Covers the common web/CLI frameworks across Python/TS/Java/etc.
+_DECORATOR_PATTERNS: tuple[tuple[str, float], ...] = (
+    (".route", 1.8),           # @app.route (Flask), @router.route
+    ("@router.", 1.8),         # @router.get/post/... (FastAPI)
+    ("@app.", 1.7),            # @app.get/post/... (FastAPI), @app.command (Typer)
+    (".command", 1.6),         # @app.command (Typer), @cli.command (Click)
+    ("getmapping", 1.7),       # @GetMapping (Spring)
+    ("postmapping", 1.7),      # @PostMapping (Spring)
+    ("requestmapping", 1.7),   # @RequestMapping (Spring)
+    ("restcontroller", 1.7),   # @RestController (Spring)
+    ("@controller", 1.6),      # @Controller (Spring/NestJS)
+    ("@get(", 1.6),            # @Get() (NestJS)
+    ("@post(", 1.6),           # @Post() (NestJS)
+    ("@api_view", 1.6),        # @api_view (Django REST framework)
+    ("@task", 1.4),            # @task (Celery) — background entry point
+)
+
+
+def compute_entry_score(
+    file_path: str | None, decorators: list[str] | None
+) -> float:
+    """Framework-aware entry-point multiplier for one symbol (computed at index time).
+
+    Returns the MAX matching multiplier across the file-path patterns and the
+    decorator patterns, defaulting to the neutral baseline 1.0 when nothing
+    matches (so a non-entry symbol ranks exactly as raw reach would).
+
+    Pure + defensive: NEVER raises. Bad input (None / wrong type) → 1.0.
+
+    Args:
+        file_path:  Declaring file path (any OS form; matched as POSIX, lowercased).
+        decorators: Symbol decorator strings (e.g. ['@app.route("/x")']); may be None.
+    """
+    score = 1.0
+    try:
+        if isinstance(file_path, str) and file_path:
+            posix = file_path.replace("\\", "/").lower()
+            for pattern, mult in _PATH_PATTERNS:
+                if pattern in posix and mult > score:
+                    score = mult
+        if isinstance(decorators, list) and decorators:
+            text = " ".join(d for d in decorators if isinstance(d, str)).lower()
+            text = re.sub(r"\s+", "", text)  # collapse whitespace for robust substring match
+            for pattern, mult in _DECORATOR_PATTERNS:
+                if pattern in text and mult > score:
+                    score = mult
+    except Exception:  # noqa: BLE001 — scoring must never break indexing
+        logger.debug("compute_entry_score failed for %r — using baseline", file_path)
+        return 1.0
+    return score
 
 
 # ── Types ────────────────────────────────────────────────────────────────────
@@ -143,6 +243,31 @@ def _load_meta(
     return meta
 
 
+def _load_entry_scores(conn: sqlite3.Connection) -> dict[str, float]:
+    """name -> entry_score from the lowest-id defining row (homonym-collapse).
+
+    Mirrors _load_meta's lowest-id-wins rule so a name's score matches the
+    definition the rest of the read path uses. NULL (pre-P6b or un-reindexed
+    rows) → 1.0 neutral baseline, so missing scores never penalise ranking.
+
+    Returns {} when the entry_score column is absent (pre-v9 index) — callers
+    then fall back to the baseline for every name.
+    """
+    scores: dict[str, float] = {}
+    try:
+        for row in conn.execute(
+            "SELECT name, entry_score FROM symbols ORDER BY id"
+        ):
+            name = row["name"]
+            if name not in scores:  # lowest id wins
+                scores[name] = row["entry_score"] if row["entry_score"] is not None else 1.0
+    except sqlite3.Error:
+        # entry_score column absent (pre-v9) — return empty so callers use 1.0.
+        logger.debug("_load_entry_scores: column absent or DB error — baseline", exc_info=True)
+        return {}
+    return scores
+
+
 def _rel(path: str | None, repo_root: Path | None) -> str | None:
     """Relativize a path to repo_root; pass through if not under root or root is None."""
     if path is None or repo_root is None:
@@ -199,6 +324,7 @@ def list_entry_points(
     try:
         adjacency, all_targets = _load_adjacency(conn)
         meta = _load_meta(conn)
+        entry_scores = _load_entry_scores(conn)
     except sqlite3.Error:
         logger.debug("list_entry_points: DB error — returning []", exc_info=True)
         return []
@@ -211,6 +337,18 @@ def list_entry_points(
         if name not in all_targets and name in meta and not is_test_file(meta[name][1])
     ]
 
+    # P6b: rank by framework-aware weighted reach (entry_score * reach) instead of
+    # raw reach, so a low-reach route/view/controller outranks a deep utility.
+    # entry_score is pre-computed at INDEX time (one column read, no BFS re-run).
+    # SEAM_ENTRY_SCORE=off → every weight is the baseline 1.0 → byte-identical to
+    # raw-reach ranking. The 'reach' field stays the RAW reach (the multiplier is a
+    # ranking signal only — callers still see the true downstream count).
+    use_scores = config.SEAM_ENTRY_SCORE == "on"
+
+    def _weight(name: str, reach: int) -> float:
+        score = entry_scores.get(name, 1.0) if use_scores else 1.0
+        return score * reach
+
     scored = sorted(
         (
             EntryPoint(
@@ -221,7 +359,7 @@ def list_entry_points(
             )
             for name in roots
         ),
-        key=lambda e: (-e["reach"], e["name"]),
+        key=lambda e: (-_weight(e["name"], e["reach"]), e["name"]),
     )
     return scored[:limit]
 

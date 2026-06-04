@@ -325,7 +325,9 @@ class TestMigrationV7ToV8:
             ).fetchone()[0]
             conn.close()
             assert "cohesion" in cols
-            assert int(ver) == 8
+            # v7→v8 adds cohesion; later migrations bump the version further, so the
+            # stored version is the current schema version (>= 8), not exactly 8.
+            assert int(ver) >= 8
         finally:
             db_path.unlink(missing_ok=True)
 
@@ -346,7 +348,10 @@ class TestMigrationV7ToV8:
             v2 = c2.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()[0]
             cols = _clusters_cols(c2)
             c2.close()
-            assert v1 == v2 == "8"
+            # Idempotent: a second open does not change the stored version. The value
+            # is the current schema version (>= 8 after later migrations), not exactly 8.
+            assert v1 == v2
+            assert int(v1) >= 8
             assert "cohesion" in cols
         finally:
             db_path.unlink(missing_ok=True)
