@@ -36,6 +36,10 @@ seam/_web/
 # GitNexus index
 .gitnexus/
 
+# Competitor index artifacts (benchmark only — never committed)
+.codegraph/
+graphify-out/
+
 # macOS
 .DS_Store
 .AppleDouble

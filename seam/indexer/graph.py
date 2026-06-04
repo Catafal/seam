@@ -339,8 +339,13 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
       - import X     → target = 'X' (dotted_name as-is)
       - from X import Y → target = 'Y' for each name after 'import' keyword
 
-    Call heuristic (MVP — bare identifiers only):
-      - call node where function is a bare identifier → target = identifier
+    Call heuristic:
+      - call node where function is a bare identifier (`foo()`) → target = identifier
+      - call node where function is an attribute (`mod.fn()`, `self.m()`, `a.b.c()`)
+        → target = the RIGHTMOST identifier (the bare name the declared symbol is
+        stored under — the edge graph is name-keyed / homonym-collapsed). This
+        captures import-alias and method calls that bare-identifier-only matching
+        dropped (e.g. `fts.rescore(...)`).
       - source = nearest enclosing function/method (skip if none)
     """
     edges: list[Edge] = []
@@ -397,13 +402,25 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
 
         elif node.type == "call":
             func_child = node.child_by_field_name("function")
+            # Resolve the callee NAME node. Two shapes:
+            #   identifier  → bare call `foo()`            → the identifier itself
+            #   attribute   → `mod.fn()` / `self.m()` / `a.b.c()`
+            #                 → the 'attribute' field = the rightmost identifier.
+            # Attribute calls were previously dropped, hiding import-alias and
+            # method call edges (e.g. `fts.rescore(...)`) from impact/callers.
+            callee_node: Node | None = None
             if func_child and func_child.type == "identifier":
+                callee_node = func_child
+            elif func_child and func_child.type == "attribute":
+                callee_node = func_child.child_by_field_name("attribute")
+
+            if callee_node is not None and callee_node.type == "identifier":
                 source = _find_enclosing_function(node, "python")
                 if source is not None:
                     edges.append(
                         Edge(
                             source=source,
-                            target=_text(func_child),
+                            target=_text(callee_node),
                             kind="call",
                             file=file_str,
                             line=node.start_point[0] + 1,
