@@ -884,6 +884,59 @@ def context(conn: sqlite3.Connection, symbol_name: str) -> ContextResult | None:
     if row is None:
         return None
 
+    return _build_context_result(conn, row)
+
+
+def context_at(
+    conn: sqlite3.Connection, file_path: str, start_line: int
+) -> ContextResult | None:
+    """Like context(), but resolves the EXACT symbol at (file_path, start_line).
+
+    P6c: powers UID-handle resolution — a UID pins a single homonym to its exact
+    declaring file + line, so this bypasses the "first match by name" behavior of
+    context() and returns the precise symbol the agent asked for.
+
+    file_path is the ABSOLUTE path stored in the files table (the UID is derived
+    from that same absolute path at index/result time). Returns None when no symbol
+    is declared at that exact location (unknown/stale UID — same not-found contract).
+    """
+    row = conn.execute(
+        """
+        SELECT s.name, f.path AS file, s.start_line, s.end_line, s.kind, s.docstring,
+               s.signature, s.decorators, s.is_exported, s.visibility, s.qualified_name
+        FROM symbols s
+        JOIN files f ON s.file_id = f.id
+        WHERE f.path = ? AND s.start_line = ?
+        ORDER BY s.id
+        LIMIT 1
+        """,
+        (file_path, start_line),
+    ).fetchone()
+
+    if row is None:
+        return None
+
+    # ambiguous reflects whether THIS name collides elsewhere (parity with context()).
+    dup_count = conn.execute(
+        "SELECT COUNT(*) FROM symbols WHERE name = ?", (row["name"],)
+    ).fetchone()[0]
+
+    return _build_context_result(conn, row, dup_count=dup_count)
+
+
+def _build_context_result(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    dup_count: int | None = None,
+) -> ContextResult:
+    """Assemble a ContextResult from a fetched symbol row (shared by context/context_at).
+
+    dup_count: when provided, used as the same-name collision count; otherwise the
+    row's own COUNT(*) OVER () window value is used (context() supplies it inline).
+    """
+    symbol_name = row["name"]
+
     # Callers: edges where target_name = symbol_name -> source_name is the caller
     caller_rows = conn.execute(
         "SELECT source_name FROM edges WHERE target_name = ?", (symbol_name,)
@@ -893,6 +946,8 @@ def context(conn: sqlite3.Connection, symbol_name: str) -> ContextResult | None:
     callee_rows = conn.execute(
         "SELECT target_name FROM edges WHERE source_name = ?", (symbol_name,)
     ).fetchall()
+
+    effective_dup = dup_count if dup_count is not None else row["dup_count"]
 
     # Phase 2: Enrich with cluster information.
     # cluster_peers() handles pre-v4 indexes gracefully (returns None when unavailable).
@@ -915,7 +970,7 @@ def context(conn: sqlite3.Connection, symbol_name: str) -> ContextResult | None:
         docstring=row["docstring"],
         callers=[r["source_name"] for r in caller_rows],
         callees=[r["target_name"] for r in callee_rows],
-        ambiguous=row["dup_count"] > 1,  # True when name collision detected
+        ambiguous=effective_dup > 1,  # True when name collision detected
         cluster_id=c_id,
         cluster_label=c_label,
         cluster_peers=c_peers,
