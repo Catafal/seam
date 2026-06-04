@@ -317,18 +317,20 @@ tools:
       include_tests:
         type: boolean
         required: false
-        default: true
+        default: false
         description: |
-          When true (default), all dependents are returned — test-file entries included,
-          each tagged with is_test=true. The default is unchanged from pre-#10 behavior.
-          When false, dependents whose file lives in a test tree are filtered out from
-          ALL tiers (WILL_BREAK / LIKELY_AFFECTED / MAY_NEED_TESTING). Entries with
-          file=null (unresolved names) are always included regardless of this flag,
-          because their provenance is unknown (is_test=false by rule).
-          Set to false to see only the production blast radius — useful when test callers
-          dominate the results. When false, the response also carries hidden_tests (int)
-          so callers can distinguish "no dependents at all" from "all dependents were
-          test files and got filtered" — the latter is NOT safe to treat as dead code.
+          When false (DEFAULT — changed in P1), dependents whose file lives in a test tree
+          are filtered out from ALL tiers (WILL_BREAK / LIKELY_AFFECTED / MAY_NEED_TESTING),
+          so "what breaks?" answers with the PRODUCTION blast radius. This also catches
+          test-file import sources that arrive as file=null entries named after a test
+          file's stem (test files importing the target directly). The response carries
+          hidden_tests (int) so callers can distinguish "no dependents at all" from
+          "all dependents were test files and got filtered" — the latter is NOT safe to
+          treat as dead code.
+          When true, test-file dependents are included too, each tagged with is_test=true
+          (the pre-P1 behavior). To get the impacted TEST files specifically, use
+          seam_affected instead. NOTE: the analysis-layer impact() default stays True;
+          only the seam_impact tool/handler/CLI default flipped to false.
     output:
       type: object
       description: |

@@ -148,6 +148,37 @@ def _lookup_files_for_names(
     return file_map
 
 
+def _test_only_file_stems(conn: sqlite3.Connection) -> set[str]:
+    """Return file STEMS that belong exclusively to test files in the index.
+
+    WHY this exists: import edges are sourced at the importing file's STEM (e.g.
+    `test_fts` for tests/unit/test_fts.py), not at an indexed symbol. So a test file
+    that does `from seam.query.fts import rescore` shows up as an upstream dependent
+    named `test_fts` with file=None — which is_test_file(None) tags False, leaking
+    test dependents into the "production-only" blast radius (include_tests=False).
+
+    Production code that calls `fts.rescore()` imports the MODULE (`fts`), so the only
+    import edges that target a bare symbol like `rescore` come from test files — exactly
+    the entries we must hide. Mapping such a stem back to its test file lets is_test
+    tagging catch them.
+
+    Conservative by construction: a stem is returned ONLY when EVERY file with that
+    stem is a test file. If a production file shares the stem, the stem is omitted so a
+    real production dependent is never hidden (we'd rather show a stray test than hide
+    production code). Single query; result is small (one entry per file).
+    """
+    test_stems: set[str] = set()
+    prod_stems: set[str] = set()
+    try:
+        for row in conn.execute("SELECT path FROM files").fetchall():
+            stem = Path(row["path"]).stem
+            (test_stems if is_test_file(row["path"]) else prod_stems).add(stem)
+    except sqlite3.Error:
+        # Degrade gracefully: no stem refinement, behave as before (never raises).
+        return set()
+    return test_stems - prod_stems
+
+
 def _symbol_exists(conn: sqlite3.Connection, target: str) -> bool:
     """Return True if target appears as a symbol name or an edge source/target.
 
@@ -172,18 +203,26 @@ def _symbol_exists(conn: sqlite3.Connection, target: str) -> bool:
 def _build_tier_group(
     reached: list[Reached],
     file_map: dict[str, str],
+    test_stems: set[str] | None = None,
 ) -> TierGroup:
     """Convert a list of Reached symbols into a TierGroup dict.
 
     Initializes all three tier keys so callers can always index without KeyError,
     even if some tiers are empty. Each entry includes:
       - file        (str | None) — absolute path for indexed symbols; None otherwise
-      - is_test     (bool)       — True when the file is a test file (per is_test_file());
-                                   False for production files AND for file=None (unresolved
-                                   symbols are never labelled as production or test).
+      - is_test     (bool)       — True when the entry's declaring file is a test file
+                                   (per is_test_file()), OR — for a file=None import-edge
+                                   source — when its name is a test-only file stem (see
+                                   _test_only_file_stems). False for production files and
+                                   for unresolved names that are not test-file stems.
       - resolved_by (str | None) — Phase 5 provenance string from walk(); None for
                                    fast-path (name-count only) or pre-Phase-5 rows.
+
+    The `file` field contract is unchanged — only is_test tagging is refined for
+    file=None import-source entries so the production-only blast radius is genuinely
+    test-free. test_stems=None means "no refinement" (the pre-existing behavior).
     """
+    stems = test_stems or set()
     group: TierGroup = {
         TIER_WILL_BREAK: [],
         TIER_LIKELY_AFFECTED: [],
@@ -202,7 +241,10 @@ def _build_tier_group(
                 "tier": tier,
                 "file": file_path,
                 # is_test_file(None) returns False — safe default for unresolved names.
-                "is_test": is_test_file(file_path),
+                # Refinement: a file=None import-edge source whose name is a test-only
+                # file stem (e.g. `test_fts`) is a test dependent → tag it is_test so the
+                # production-only filter hides it. Does NOT touch the `file` field.
+                "is_test": is_test_file(file_path) or (file_path is None and r["name"] in stems),
                 # Phase 5: best_candidate is the highest-proximity declaring file for
                 # AMBIGUOUS entries (PRD story 6). None for non-AMBIGUOUS or unavailable.
                 "best_candidate": r.get("best_candidate"),
@@ -232,7 +274,7 @@ def _filter_tests_from_tier_group(tier_group: TierGroup) -> TierGroup:
 
 
 def _count_test_entries(tier_group: TierGroup) -> int:
-    """Count is_test=True entries across all tiers (how many --production-only hides)."""
+    """Count is_test=True entries across all tiers (how many include_tests=False hides)."""
     return sum(
         1
         for entries in tier_group.values()
@@ -329,20 +371,26 @@ def impact(
     # When include_tests=False we also count what we removed and expose it as
     # `hidden_tests`, so callers can distinguish "no dependents at all" from
     # "all dependents were tests and got filtered" — the latter is NOT safe to
-    # treat as dead code (tests would break). Without this signal --production-only
+    # treat as dead code (tests would break). Without this signal include_tests=False
     # could give a dangerous false-safe.
     result: ImpactResult = {"found": found, "target": target}
     hidden_tests = 0
 
+    # Compute test-only file stems ONLY when filtering (include_tests=False) so the
+    # is_test tag catches file=None import-edge sources from test files. Skipped when
+    # include_tests=True so seam_changes (which calls impact() with the analysis-layer
+    # default) pays zero extra cost and keeps byte-stable risk verdicts.
+    test_stems = _test_only_file_stems(conn) if not include_tests else None
+
     if direction in ("upstream", "both"):
-        tier_group = _build_tier_group(upstream_reached, file_map)
+        tier_group = _build_tier_group(upstream_reached, file_map, test_stems)
         if not include_tests:
             hidden_tests += _count_test_entries(tier_group)
             tier_group = _filter_tests_from_tier_group(tier_group)
         result["upstream"] = tier_group
 
     if direction in ("downstream", "both"):
-        tier_group = _build_tier_group(downstream_reached, file_map)
+        tier_group = _build_tier_group(downstream_reached, file_map, test_stems)
         if not include_tests:
             hidden_tests += _count_test_entries(tier_group)
             tier_group = _filter_tests_from_tier_group(tier_group)

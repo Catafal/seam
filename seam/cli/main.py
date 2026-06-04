@@ -612,10 +612,14 @@ def impact_cmd(
     depth: int = typer.Option(3, "--depth", help="Max hop depth (1-10)"),
     path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
-    production_only: bool = typer.Option(
+    include_tests: bool = typer.Option(
         False,
-        "--production-only",
-        help="Filter out test-file dependents; show only production blast radius.",
+        "--include-tests/--no-include-tests",
+        help=(
+            "Include test-file dependents. Default: off — impact shows only the "
+            "production blast radius (test callers otherwise dominate the tiers). "
+            "Mirrors the include_tests param in the MCP tool."
+        ),
     ),
     lean: bool = typer.Option(
         False,
@@ -645,8 +649,9 @@ def impact_cmd(
       MAY_NEED_TESTING (d=3+) — transitive dependents, test to be sure
 
     Each entry shows the path confidence (EXTRACTED | INFERRED | AMBIGUOUS).
-    Test-file dependents are marked [test] in the output. Use --production-only
-    to filter them out and see only the production blast radius.
+    By default only the production blast radius is shown (test dependents are hidden
+    and their count reported); pass --include-tests to also see test-file dependents
+    (marked [test] in the output).
     """
     # WHY: check mutual exclusion before any DB work so the error is immediate.
     try:
@@ -684,8 +689,8 @@ def impact_cmd(
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
-    # include_tests=False when --production-only is set; True (default) otherwise.
-    include_tests = not production_only
+    # include_tests comes straight from the --include-tests/--no-include-tests flag
+    # (default off = production-only blast radius), matching the MCP tool default.
 
     # --lean sets verbose=False; output becomes byte-identical to the MCP tool
     # called with verbose=False — heavy fields absent from every tier entry.
@@ -757,18 +762,18 @@ def impact_cmd(
         for entries in tier_group.values()
     )
 
-    # hidden_tests is only present when --production-only filtered test dependents out.
+    # hidden_tests is only present when the production-only default filtered tests out.
     hidden_tests = result.get("hidden_tests", 0)
 
     if total == 0:
         if hidden_tests:
             # Critical distinction: this symbol is NOT dead code — it has test
-            # dependents that --production-only hid. Saying "no dependents" here
-            # would be a dangerous false-safe (an agent might delete/rewrite it).
+            # dependents hidden by the production-only default. Saying "no dependents"
+            # here would be a dangerous false-safe (an agent might delete/rewrite it).
             console.print(
                 f"[yellow]No production dependents for [bold]{symbol}[/bold][/yellow] — "
-                f"but {hidden_tests} test dependent(s) hidden by --production-only. "
-                "Re-run without the flag to see them."
+                f"but {hidden_tests} test dependent(s) hidden. "
+                "Re-run with --include-tests to see them."
             )
         else:
             console.print(f"[dim]No dependents found for [bold]{symbol}[/bold].[/dim]")
@@ -836,7 +841,8 @@ def impact_cmd(
     # note the hidden count so the blast radius is not silently under-reported.
     if hidden_tests:
         console.print(
-            f"\n[dim]({hidden_tests} test dependent(s) hidden by --production-only)[/dim]"
+            f"\n[dim]({hidden_tests} test dependent(s) hidden; "
+            f"use --include-tests to show them)[/dim]"
         )
 
 

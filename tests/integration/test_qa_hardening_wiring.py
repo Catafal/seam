@@ -173,29 +173,44 @@ def test_handler_include_tests_false_removes_test_entries(
     )
 
 
-# ── W3: include_tests=True (default) keeps test entries ──────────────────────
+# ── W3: explicit include_tests=True keeps test entries (default now excludes) ──
 
 
 def test_handler_include_tests_true_keeps_test_entries(
     mixed_impact_db: tuple[sqlite3.Connection, Path],
 ) -> None:
-    """handle_seam_impact default (include_tests=True) must keep test-file entries."""
+    """Explicit include_tests=True keeps test entries; the default now EXCLUDES them.
+
+    P1 flipped the seam_impact default to production-only (include_tests=False). This
+    verifies both halves of the flipped contract through the handler:
+      - default (no arg) → test_caller filtered out (production blast radius)
+      - explicit include_tests=True → test_caller restored (opt-in)
+    """
     conn, root = mixed_impact_db
 
-    result = handle_seam_impact(conn, "A", root, direction="upstream", max_depth=3)
-
-    all_names = [
-        e["name"]
-        for tier_list in result["upstream"].values()
-        for e in tier_list
+    # Default: production-only — test_caller is filtered out.
+    default_result = handle_seam_impact(conn, "A", root, direction="upstream", max_depth=3)
+    default_names = [
+        e["name"] for tier_list in default_result["upstream"].values() for e in tier_list
     ]
+    assert "test_caller" not in default_names, (
+        f"default is now production-only; test_caller must be filtered; got: {default_names}"
+    )
+    assert "prod_caller" in default_names, (
+        f"prod_caller must remain by default; got: {default_names}"
+    )
 
-    assert "test_caller" in all_names, (
-        f"test_caller must be present by default; got: {all_names}"
+    # Opt-in: include_tests=True restores test dependents.
+    included_result = handle_seam_impact(
+        conn, "A", root, direction="upstream", max_depth=3, include_tests=True
     )
-    assert "prod_caller" in all_names, (
-        f"prod_caller must be present by default; got: {all_names}"
+    included_names = [
+        e["name"] for tier_list in included_result["upstream"].values() for e in tier_list
+    ]
+    assert "test_caller" in included_names, (
+        f"explicit include_tests=True must keep test_caller; got: {included_names}"
     )
+    assert "prod_caller" in included_names
 
 
 # ── W4: handle_seam_changes partial=True when cap hit ────────────────────────
