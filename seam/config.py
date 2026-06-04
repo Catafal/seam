@@ -192,6 +192,39 @@ SEAM_FLOW_MAX_BREADTH: int = int(os.getenv("SEAM_FLOW_MAX_BREADTH", "8"))
 SEAM_FLOW_REACH_DEPTH: int = int(os.getenv("SEAM_FLOW_REACH_DEPTH", "5"))
 
 
+# ── Semantic search configuration (opt-in, Phase Semantic) ───────────────────
+
+# Master switch for semantic (embedding-based) search. "off" by default — opt-in.
+# Set to "on" to enable hybrid FTS5 + cosine recall in seam_search / seam_query.
+# Requires: (a) `[semantic]` extra installed, (b) `seam init --semantic` run to
+# populate the `embeddings` table. When "off" (or extra absent, or no embeddings),
+# falls back to the existing pure-FTS5 path — behaviour is byte-identical to today.
+SEAM_SEMANTIC: str = os.getenv("SEAM_SEMANTIC", "off")
+
+# Local embedding model identifier (fastembed / HuggingFace model name).
+# Default: bge-small-en-v1.5 — 384-dim, quantized ONNX on CPU, ~67MB, MIT.
+# The model is downloaded ONCE on first `seam init --semantic`; subsequent runs use
+# the local fastembed cache. Changing this value requires a full `seam init --semantic`
+# to repopulate the embeddings table — mixing model vectors silently degrades quality.
+SEAM_EMBED_MODEL: str = os.getenv("SEAM_EMBED_MODEL", "BAAI/bge-small-en-v1.5")
+
+# Top-k semantic candidates fetched before merging with FTS results via RRF.
+# Higher values improve recall but cost more cosine comparisons. 20 is a good
+# default at the scale of a typical codebase (1k–20k symbols).
+SEAM_SEMANTIC_LIMIT: int = int(os.getenv("SEAM_SEMANTIC_LIMIT", "20"))
+
+# Maximum number of stored embedding rows loaded per semantic scan.
+# Bounds the brute-force cosine scan: rows beyond this cap are never loaded.
+# Protects against unbounded memory use on very large indexes.
+# Default 20000: covers ~20k symbols; adjust up if your codebase is larger.
+SEAM_SEMANTIC_SCAN_CAP: int = int(os.getenv("SEAM_SEMANTIC_SCAN_CAP", "20000"))
+
+# RRF smoothing constant k (used in Reciprocal Rank Fusion).
+# k=60 is the standard value from Cormack, Clarke & Buettcher (SIGIR 2009).
+# Higher k flattens rank differences; lower k amplifies them.
+SEAM_RRF_K: int = int(os.getenv("SEAM_RRF_K", "60"))
+
+
 def get_db_path(project_root: Path) -> Path:
     """Resolve the database path relative to the project root."""
     return project_root / SEAM_DB_PATH

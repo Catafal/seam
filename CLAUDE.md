@@ -13,19 +13,24 @@ Local code intelligence MCP server — indexes codebases with tree-sitter, store
 - `make gate` — Full verification (lint + typecheck + tests) — **run before every commit**
 - `make install-dev` — Install all deps including dev
 - `make fmt` — Format + fix lint (not part of gate)
+- `make bench-semantic` — Run semantic recall benchmark (requires `[semantic]` extra + one-time model download; NOT part of gate)
 - `uv run seam init` — Index current directory
+- `uv run seam init --semantic` — Index + build local embeddings for hybrid semantic search (requires `pip install 'seam-mcp[semantic]'`; downloads model ~67 MB on first run)
 - `uv run seam sync` — Incrementally reconcile the index (changed/added/removed files) + gated cluster recompute
+- `uv run seam sync --semantic` — Reconcile + rebuild all embeddings (full re-embed; safe/idempotent)
 - `uv run seam start` — Start MCP server + watcher
-- `uv run seam status` — Show index stats
+- `uv run seam status` — Show index stats (includes `embeddings` row: count + model, or mismatch warning)
 - `uv run seam search <text>` / `seam query <concept>` / `seam context <symbol>` — CLI-only read
   commands (no MCP server needed); `--json`/`--quiet`, `--lean` on context
+- `uv run seam search <text> --no-semantic` — Force keyword-only FTS5, bypassing hybrid path
+- `uv run seam query <concept> --no-semantic` — Force keyword-only FTS5, bypassing hybrid path
 - `uv run seam flows [entry]` — execution flows: list entry points (call-graph roots ranked by
   downstream reach), or expand one entry's forward call-chain tree; `--json`/`--quiet`
 - `uv run seam install` — Write the MCP config into an agent (`--target claude|cursor|codex|all`,
   `--location project|user`, `--print-config`); `uv run seam uninstall` reverses it
 - `uv run seam serve` — Start the local Seam Explorer web server (FastAPI, 127.0.0.1:7420);
   requires `[web]` extra (`pip install 'seam-mcp[web]'`); `--host`, `--port`, `--no-open`
-- `uv sync` installs the CLI only; `uv sync --extra server` adds the optional MCP server (`mcp` package)
+- `uv sync` installs the CLI only; `uv sync --extra server` adds the optional MCP server (`mcp` package); `uv sync --extra semantic` adds fastembed for semantic search
 
 ## File References
 - `DISCOVERY.md` — real goal (what we're building and why)
@@ -69,6 +74,28 @@ seam/config.py               ← all settings (env vars with defaults)
                                 SEAM_FLOW_MAX_DEPTH: max depth when expanding a flow tree (default: 6)
                                 SEAM_FLOW_MAX_BREADTH: max callees per node in a flow tree (default: 8)
                                 SEAM_FLOW_REACH_DEPTH: BFS depth used to score entry-point reach (default: 5)
+                                SEAM_SEMANTIC: "off" | "on" — master switch for hybrid semantic search (default: off)
+                                SEAM_EMBED_MODEL: fastembed model name (default: "BAAI/bge-small-en-v1.5")
+                                SEAM_SEMANTIC_LIMIT: top-k semantic candidates fetched before RRF merge (default: 20)
+                                SEAM_SEMANTIC_SCAN_CAP: max embedding rows loaded per scan (default: 20000)
+                                SEAM_RRF_K: RRF smoothing constant k, Cormack et al. SIGIR 2009 (default: 60)
+seam/analysis/embeddings.py  ← LEAF: fastembed wrapper for semantic search (Semantic phase)
+                                is_available() → bool (lazy, cached; never raises)
+                                symbol_text(name, signature, docstring) → str (canonical embed input)
+                                embed_texts(texts, model) → list[bytes] (float32 blobs; [] on failure)
+                                embed_query(text, model) → bytes (b'' on failure); both degrade gracefully
+                                fastembed + numpy are LAZY imports (only inside function bodies, never at module scope)
+seam/indexer/embedding_index.py ← index orchestration bridge for embeddings (Semantic phase, mirrors cluster_index)
+                                index_embeddings(conn, *, model, batch) → int: -1=error, 0=skipped, ≥1=count
+                                single-transaction batch upsert (INSERT OR REPLACE) for clean-retry on failure
+                                called by `seam init --semantic` after clustering; NOT called by the watcher
+seam/query/semantic.py       ← LEAF: semantic search read path (Semantic phase)
+                                rrf_merge(fts_ranked, semantic_ranked, k=60) → list[int] (pure RRF, no model)
+                                cosine_sim(a_bytes, b_bytes) → float (pure-Python struct.unpack; no numpy dep)
+                                semantic_candidates(conn, query, *, model, limit) → list[tuple[int, float]]
+                                  model-mismatch guard → [] (never silently mixes embedding spaces)
+                                  numpy fast path inside _semantic_candidates_impl (matmul, ~1–5ms/10k)
+                                  pure-Python cosine_sim fallback when numpy absent (defensive)
 seam/analysis/processes.py   ← LEAF: execution flows (Flows) — list_entry_points (call-graph roots
                                 ranked by downstream reach, tests excluded) + build_flow (forward
                                 call-chain tree, depth/breadth-capped, cycle-safe). Reuses confidence
@@ -194,6 +221,19 @@ tests/fixtures/              ← sample.py, sample.ts, sample.go, sample.rs
 - **Edges use string names** (not symbol IDs) — required for independent re-indexing
 
 ## Current Phase
+Semantic search (opt-in local embeddings + hybrid FTS5+cosine via RRF).
+- **New `[semantic]` extra** (`pip install 'seam-mcp[semantic]'`) — pulls `fastembed>=0.4` (ONNX/CPU, no torch). Base install unchanged; gate stays offline.
+- **3 new modules:** `seam/analysis/embeddings.py` (fastembed wrapper), `seam/indexer/embedding_index.py` (index orchestration), `seam/query/semantic.py` (read path: RRF + cosine + model-mismatch guard).
+- **Schema v6→v7:** new `embeddings(symbol_id PK, model, dim, vector BLOB)` table. Auto-migrated on `connect()`; no backfill — populated only by `seam init --semantic`.
+- **5 new config knobs:** `SEAM_SEMANTIC` (off/on, default off), `SEAM_EMBED_MODEL` (default `BAAI/bge-small-en-v1.5`), `SEAM_SEMANTIC_LIMIT` (default 20), `SEAM_SEMANTIC_SCAN_CAP` (default 20000), `SEAM_RRF_K` (default 60).
+- **Hybrid path in `engine.py`:** `search()` uses RRF-merged result set (FTS snippets preserved); `query()` injects semantic symbols as seeds (score=0.5) before 1-hop expansion. `_is_hybrid_enabled` check is per-query (one COUNT — negligible); warns once per process if `SEAM_SEMANTIC=on` but no embeddings.
+- **CLI surfaces:** `seam init --semantic`, `seam sync --semantic`, `seam status` (embeddings row + model mismatch indicator), `seam search/query --no-semantic` (passes `semantic=False` param — no config mutation).
+- **MCP transparent:** `seam_search`/`seam_query` auto-hybrid via engine.py. No new tool, count stays 11. Optional `semantic` param (default `true`) lets callers force keyword-only.
+- **Benchmark:** `benchmarks/semantic_recall.py` (15 concept queries, 8 keyword-friendly + 7 vocabulary-gap), `make bench-semantic`. NOT part of gate — requires fastembed + model.
+- **Gate:** 1747 tests, 5 skipped (real-model behind `pytest.importorskip("fastembed")`), 0 failed. Fully offline.
+See `progress.txt`. Next: v0.1.0 — publish to PyPI as `seam-mcp`.
+
+### Prior phase (CLI-only completion + optional-MCP install profile)
 CLI-only completion + optional-MCP install profile.
 - **3 new CLI commands** — `seam query` / `search` / `context` (seam/cli/read.py) over the existing
   transport-agnostic handlers; query SQLite directly → the FULL feature set is usable with NO MCP server.
@@ -290,9 +330,9 @@ Phase 7 complete — one-shot `seam sync` with gated cluster recompute shipped.
 See `progress.txt` for session history. Next: roadmap item 8 (`seam install`) / v0.1.0 release prep.
 
 ## MCP Tools
-- `seam_query` — FTS5 + 1-hop graph expansion (Phase 0); OR-join + rescore since Phase 3
+- `seam_query` — FTS5 + 1-hop graph expansion (Phase 0); OR-join + rescore since Phase 3; **hybrid semantic+FTS5 via RRF when `SEAM_SEMANTIC=on` and embeddings exist** (Semantic phase); optional `semantic: bool = True` param to force keyword-only
 - `seam_context` — symbol 360-degree view, enriched with cluster_id/label/peers (Phase 2) + signature/decorators/is_exported/visibility/qualified_name (Phase 4)
-- `seam_search` — full-text FTS5 search (Phase 0); OR-join + rescore + fuzzy fallback since Phase 3; signature is FTS-searchable (Phase 4)
+- `seam_search` — full-text FTS5 search (Phase 0); OR-join + rescore + fuzzy fallback since Phase 3; signature is FTS-searchable (Phase 4); **hybrid semantic+FTS5 via RRF when `SEAM_SEMANTIC=on` and embeddings exist** (Semantic phase); optional `semantic: bool = True` param; FTS snippets preserved for FTS hits, "" for semantic-only hits
 - `seam_impact` — blast-radius analysis by risk tier (Phase 1); each entry now carries `resolved_by` (provenance) and `best_candidate` (proximity pick on AMBIGUOUS) since Phase 5; Phase 8 adds `risk_summary` (full per-tier counts), a per-tier `limit` cap (default 25, 0=unlimited), and `truncated`
 - `seam_trace` — shortest call/dependency path (Phase 1); each hop now carries `resolved_by` and `best_candidate` since Phase 5
 - `seam_changes` — git diff → changed symbols → risk level (Phase 1); --stdin on CLI
@@ -303,6 +343,8 @@ See `progress.txt` for session history. Next: roadmap item 8 (`seam install`) / 
 - `seam_flows` — execution flows: list entry points (call-graph roots ranked by downstream reach), or expand one entry's depth/breadth-capped, cycle-safe forward call-chain tree (Flows). No arg → `{entry_points:[{name,kind,file,reach}]}`; with `entry` → a Flow tree (or `{found:false}`). Pure-structural, no LLM.
 
 There are **eleven MCP tools** (`seam_flows` is the newest — see Flows below). The ten enrichment-carrying tools return the five Phase 4 enrichment fields where available: `signature`, `decorators`, `is_exported`, `visibility`, `qualified_name`. Fields are `null` (not absent) for pre-v5 rows or unsupported scenarios — callers treat `null` as "unknown". (`seam_flows` is the exception: its step shape is `name/kind/file/line/confidence` and it does NOT carry the Phase 4 fields.)
+
+**Semantic hybrid (Semantic phase):** `seam_search` and `seam_query` auto-merge FTS5 candidates with semantic (cosine) candidates via Reciprocal Rank Fusion (RRF, k=60) when BOTH conditions hold: `SEAM_SEMANTIC=on` AND embeddings exist for the configured model. No new MCP tool is added — tool count stays **11**. A keyword-only index behaves byte-identically to pre-Semantic. The `semantic` param (default `true`) can be passed to force keyword-only from a tool call.
 
 **Phase 8 lean output:** `seam_context`, `seam_trace`, `seam_impact`, `seam_context_pack` accept `verbose: bool = True`. With `verbose=False` the 6 heavy fields (decorators, is_exported, visibility, qualified_name, resolved_by, best_candidate) are **absent** (not null) — `signature` + core fields are always kept. `verbose=True` is byte-identical to pre-Phase-8 (EXCEPT `seam_impact`, which always adds `risk_summary`/`truncated` and caps by default). `seam_query` and `seam_search` carry no enrichment → no `verbose` flag.
 
@@ -414,6 +456,28 @@ There are **eleven MCP tools** (`seam_flows` is the newest — see Flows below).
   the weakest-hop rule (AMBIGUOUS < INFERRED < EXTRACTED). `resolved_by` on the path entry
   reflects the provenance of the edge that produced the weakest-hop confidence, not of every
   hop individually.
+- **Embeddings table is empty until `seam init --semantic`**: the v6→v7 migration (auto-run on
+  `connect()`) creates the `embeddings` table but does NOT backfill it. Rows are populated
+  only by `seam init --semantic` (or `seam sync --semantic`). Until then, `_is_hybrid_enabled`
+  returns False and `seam_search`/`seam_query` behave byte-identically to pre-Semantic.
+- **One-time model download on first `seam init --semantic`, then 100% local**: fastembed
+  downloads the model (~67 MB for `BAAI/bge-small-en-v1.5`) on the FIRST `seam init --semantic`
+  run; subsequent runs use the local fastembed cache at `~/.cache/huggingface/` (or the
+  platform equivalent). The MCP read path (query embedding) never touches the network.
+- **Changing `SEAM_EMBED_MODEL` requires a full `seam init --semantic` re-index**: vectors from
+  different embedding models live in different metric spaces — mixing them silently corrupts
+  cosine scores. When the stored model ≠ configured model, `semantic_candidates` detects the
+  mismatch (COUNT WHERE model=? == 0), logs a WARNING, and returns `[]`. The engine falls
+  through to pure-FTS5. Re-run `seam init --semantic` with the new model to rebuild.
+- **`[semantic]` extra required**: `seam-mcp` base install does NOT include fastembed.
+  Install with: `pip install 'seam-mcp[semantic]'` (or `uv sync --extra semantic`). When
+  fastembed is absent, `is_available()` returns False, `index_embeddings` returns 0 (skipped),
+  and the hybrid path degrades silently to FTS-only. An install hint is printed if `--semantic`
+  is requested but fastembed is absent.
+- **Gate skips real-model tests via `pytest.importorskip("fastembed")`**: all 5 skipped tests
+  in the gate require the `[semantic]` extra (and would trigger a model download). They are
+  skipped automatically when fastembed is not installed — the gate stays offline and fast.
+  Synthetic vectors (`struct.pack` float32 blobs) are used for all other semantic tests.
 
 ## GitNexus: Code Intelligence (MCP)
 This project is indexed. Use GitNexus MCP tools before coding on existing code.

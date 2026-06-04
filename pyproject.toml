@@ -49,6 +49,10 @@ server = ["mcp>=1.0.0"]
 # Web explorer is OPTIONAL — `pip install 'seam-mcp[web]'` adds the `seam serve` HTTP
 # server + React SPA. Starlette/Pydantic/uvicorn come in as FastAPI transitive deps.
 web = ["fastapi>=0.110"]
+# Semantic (embedding-based) search is OPTIONAL — `pip install 'seam-mcp[semantic]'`
+# adds local vector search via quantized ONNX on CPU (no torch, ~67MB model download).
+# Requires `seam init --semantic` to build the embeddings table before use.
+semantic = ["fastembed>=0.4"]
 
 [project.scripts]
 seam = "seam.cli.main:app"

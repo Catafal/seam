@@ -4,10 +4,11 @@ Local code intelligence MCP server for AI agents. Index your codebase once; let 
 
 ## Status
 
+Semantic search shipped (opt-in local embeddings, hybrid FTS5+cosine via RRF, `[semantic]` extra, no network at query time).
 Phase 10 complete — Swift support (11 → 12 languages); Kotlin deferred (grammar maturity).
 Agentic-readiness hardening done (MCP error/not-found contract, `.seam/` gitignore, distribution → `seam-mcp`).
 `seam install` ships — one-command MCP wiring for Claude Code / Cursor / Codex.
-Full CLI-only surface (`query`/`search`/`context` + analysis commands) usable with no MCP server. 1504 tests. Gate green.
+Full CLI-only surface (`query`/`search`/`context` + analysis commands) usable with no MCP server. 1747 tests. Gate green.
 
 ## Quickstart
 
@@ -19,8 +20,10 @@ Not yet published to PyPI (the distribution will be `seam-mcp`; the import packa
 
 ```bash
 git clone <repo-url> && cd seam
-uv sync                 # CLI only (no MCP server)
-uv sync --extra server  # add the MCP server (`seam start`) — needs the `mcp` package
+uv sync                    # CLI only (no MCP server, no semantic search)
+uv sync --extra server     # add the MCP server (`seam start`) — needs the `mcp` package
+uv sync --extra semantic   # add semantic search (fastembed, ONNX on CPU, no torch, ~67 MB model on first run)
+# or install everything: uv sync --extra server --extra semantic
 ```
 
 The **MCP server is optional**. The CLI works on its own — these all query the index
@@ -408,6 +411,29 @@ The confidence tier on every edge now explains itself, and import statements are
 - `SEAM_PROXIMITY_MAX_CANDIDATES` (default `25`) — cap on collision candidates ranked by proximity.
 
 `seam_impact` and `seam_trace` output now include `resolved_by` and `best_candidate` on each entry/hop. Both fields are `null` for pre-v6 indexes or when resolution context is unavailable — same null-contract as the Phase 4 enrichment fields.
+
+### Semantic Search — Opt-in Local Embeddings
+
+`seam_search` and `seam_query` now support **hybrid keyword + semantic search** via local embeddings. This closes the vocabulary-gap problem: `"retry logic"` can now surface `_backoff_with_jitter` even without a shared token.
+
+**How it works:** embeddings are built locally (ONNX CPU, no GPU, no API key) and stored in the SQLite index. At query time, the query is embedded locally and cosine-compared against stored vectors; results are merged with FTS5 candidates via Reciprocal Rank Fusion (RRF). The model is downloaded once on first use, then 100% local — the MCP read path never touches the network.
+
+**Setup:**
+
+```bash
+pip install 'seam-mcp[semantic]'   # or: uv sync --extra semantic
+export SEAM_SEMANTIC=on            # enable hybrid path (default: off)
+seam init --semantic               # index + build embeddings (downloads ~67 MB on first run)
+seam search "retry logic"          # hybrid FTS + semantic
+seam search "retry logic" --no-semantic   # force keyword-only
+seam sync --semantic               # re-embed after incremental sync
+```
+
+**No new MCP tool** — `seam_search` and `seam_query` auto-use hybrid when `SEAM_SEMANTIC=on` and embeddings exist. Tool count stays 11. Default is `SEAM_SEMANTIC=off` so a keyword-only index behaves exactly as before.
+
+**Config knobs:** `SEAM_SEMANTIC` (on/off), `SEAM_EMBED_MODEL` (default `BAAI/bge-small-en-v1.5` — 384-dim, quantized ONNX, MIT), `SEAM_SEMANTIC_LIMIT` (default 20 top-k candidates), `SEAM_SEMANTIC_SCAN_CAP` (default 20000 max rows scanned), `SEAM_RRF_K` (default 60).
+
+> **Note:** changing `SEAM_EMBED_MODEL` requires a new `seam init --semantic` — vectors from different models cannot be mixed. A model mismatch is detected at query time and logged as a WARNING; the engine falls back to FTS-only.
 
 ## Known Limitations (Phase 1b candidates)
 

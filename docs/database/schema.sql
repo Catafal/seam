@@ -1,4 +1,4 @@
--- Seam SQLite Schema (v6 — Phase 5: import resolution)
+-- Seam SQLite Schema (v7 — Semantic search foundation)
 -- Run via db.py:init_db() — idempotent (CREATE TABLE IF NOT EXISTS).
 -- FTS5 is required; init_db() verifies availability before proceeding.
 -- Schema v2 adds: edges.confidence (DEFAULT 'INFERRED').
@@ -7,11 +7,13 @@
 -- Schema v5 adds: symbols.signature, decorators, is_exported, visibility, qualified_name;
 --                 FTS5 rebuilt to index (name, docstring, signature).
 -- Schema v6 adds: import_mappings table (Phase 5 import resolution).
+-- Schema v7 adds: embeddings table (semantic search via local fastembed vectors).
 -- Migration from v1: db.py:_run_migration_v1_to_v2() (guarded ALTER TABLE).
 -- Migration from v2: db.py:_run_migration_v2_to_v3() (guards schema_version bump).
 -- Migration from v3: db.py:_run_migration_v3_to_v4() (adds clusters table + cluster_id).
 -- Migration from v4: db.py:_run_migration_v4_to_v5() (adds 5 enrichment cols + FTS rebuild).
 -- Migration from v5: db.py:_run_migration_v5_to_v6() (adds import_mappings table).
+-- Migration from v6: db.py:_run_migration_v6_to_v7() (adds embeddings table).
 
 PRAGMA journal_mode = WAL;      -- Write-ahead logging for concurrent reads
 PRAGMA foreign_keys = ON;
@@ -152,6 +154,19 @@ CREATE INDEX IF NOT EXISTS idx_import_mappings_file_id ON import_mappings(file_i
 -- Index for fast lookup by local name (used in import-promotion step A)
 CREATE INDEX IF NOT EXISTS idx_import_mappings_local_name ON import_mappings(local_name);
 
+-- ── Embeddings ───────────────────────────────────────────────────────────────
+-- One row per symbol that has been embedded with a local fastembed model.
+-- Populated ONLY by `seam init --semantic` (NOT by the base `seam init`).
+-- Not backfilled by migration — embeddings stay absent until a --semantic run.
+-- When absent (or model mismatch), seam_search/seam_query degrade to FTS5-only.
+-- Schema v7 addition (semantic search foundation).
+CREATE TABLE IF NOT EXISTS embeddings (
+    symbol_id INTEGER PRIMARY KEY REFERENCES symbols(id) ON DELETE CASCADE,
+    model     TEXT NOT NULL,    -- Model name used to produce this vector (e.g. 'BAAI/bge-small-en-v1.5')
+    dim       INTEGER NOT NULL, -- Vector dimensionality (e.g. 384 for bge-small)
+    vector    BLOB NOT NULL     -- float32 bytes: numpy.array(..., dtype=np.float32).tobytes()
+);
+
 -- ── Metadata ─────────────────────────────────────────────────────────────────
 -- Key-value store for index metadata (version, created_at, etc.)
 CREATE TABLE IF NOT EXISTS metadata (
@@ -160,9 +175,9 @@ CREATE TABLE IF NOT EXISTS metadata (
 );
 
 -- NOTE: INSERT OR IGNORE does not update existing rows. Fresh DBs are seeded at
--- the CURRENT schema version ('6') so a brand-new `seam init` is born current and
+-- the CURRENT schema version ('7') so a brand-new `seam init` is born current and
 -- does NOT trigger any migration advisory.
 -- Existing older DBs keep their stored version; db.py migrations bump them in place.
 INSERT OR IGNORE INTO metadata(key, value) VALUES
-    ('schema_version', '6'),
+    ('schema_version', '7'),
     ('seam_version',   '0.2.0');
