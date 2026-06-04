@@ -146,6 +146,13 @@ SEAM_IMPORT_RESOLUTION: str = os.getenv("SEAM_IMPORT_RESOLUTION", "on")
 # Prevents runaway DB queries on pathologically ambiguous indexes.
 SEAM_MAX_IMPORT_CANDIDATES: int = int(os.getenv("SEAM_MAX_IMPORT_CANDIDATES", "25"))
 
+# P6a — master switch for inheritance edge extraction. When "on" (default), class
+# base-class / interface clauses are emitted as kind='extends' / kind='implements'
+# edges (string-name-keyed: source=subclass, target=base), so an interface/base
+# change surfaces its subclasses/implementers in seam_impact via upstream traversal.
+# When "off", no inheritance edges are emitted — byte-identical to pre-P6a indexes.
+SEAM_INHERITANCE_EDGES: str = os.getenv("SEAM_INHERITANCE_EDGES", "on")
+
 # Cap on collision candidates ranked by file-path proximity (step D).
 # Prevents O(n) proximity computation on large symbol tables.
 SEAM_PROXIMITY_MAX_CANDIDATES: int = int(os.getenv("SEAM_PROXIMITY_MAX_CANDIDATES", "25"))

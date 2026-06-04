@@ -261,6 +261,51 @@ def _rust_impl_type_name(impl_node: Node) -> str | None:
     return None
 
 
+# ── Inheritance base-name normalizer (P6a) ───────────────────────────────────
+
+
+def _base_type_name(node: Node) -> str | None:
+    """Normalize a base-class / interface type node to its bare type NAME.
+
+    The edge graph is name-keyed and homonym-collapsed, so generic arguments and
+    namespace/package qualifiers are stripped to the rightmost simple type name —
+    matching how call/import targets are stored. Handles the shapes that appear in
+    base-class / interface clauses across Python, TypeScript, Java, and C#:
+
+      - identifier / type_identifier          → the text directly  (Base)
+      - generic_type   (Java/TS: Base<T>)     → first type_identifier child  (Base)
+      - generic_name   (C#:  IFace<T>)        → first identifier child       (IFace)
+      - qualified_name (C#:  Ns.Base)         → 'name' field, else last identifier child
+      - scoped_type_identifier (Java: a.B)    → 'name' field, else last type_identifier
+      - member_expression (TS: ns.Base)       → 'property' field, else last child
+
+    Returns the bare name string, or None when the node shape is unrecognized
+    (the caller then skips emitting an edge — never raises).
+    """
+    t = node.type
+    if t in ("identifier", "type_identifier"):
+        return _text(node)
+    if t in ("generic_type", "generic_name"):
+        for c in node.named_children:
+            if c.type in ("type_identifier", "identifier"):
+                return _text(c)
+        return None
+    if t in ("qualified_name", "scoped_type_identifier"):
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            return _text(name_node)
+        # Fallback: rightmost identifier-like child.
+        for c in reversed(node.named_children):
+            if c.type in ("identifier", "type_identifier"):
+                return _text(c)
+        return None
+    if t == "member_expression":
+        prop = node.child_by_field_name("property")
+        if prop is not None:
+            return _text(prop)
+    return None
+
+
 # ── Arrow-function name resolver (TypeScript/JS only) ─────────────────────────
 
 
