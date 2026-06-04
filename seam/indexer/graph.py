@@ -58,6 +58,7 @@ from seam.indexer.graph_common import (
     Confidence,
     Edge,
     Symbol,
+    _base_type_name,
     _block_comment_lines,
     _find_enclosing_function,
     _make_symbol,
@@ -352,7 +353,30 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
     file_str = str(filepath)
     file_stem = filepath.stem
 
+    emit_inheritance = config.SEAM_INHERITANCE_EDGES == "on"
+
     def _walk(node: Node) -> None:
+        if emit_inheritance and node.type == "class_definition":
+            # Python has no syntactic class/interface split — every base in the
+            # `superclasses` argument_list is an 'extends' edge (subclass → base).
+            cls_name = _node_name(node)
+            bases = node.child_by_field_name("superclasses")
+            if cls_name and bases is not None:
+                for base_child in bases.named_children:
+                    base_target = _base_type_name(base_child)
+                    if base_target:
+                        edges.append(
+                            Edge(
+                                source=cls_name,
+                                target=base_target,
+                                kind="extends",
+                                file=file_str,
+                                line=node.start_point[0] + 1,
+                                confidence="INFERRED",
+                            )
+                        )
+            # Fall through to recurse into the class body for nested calls/classes.
+
         if node.type == "import_statement":
             for child in node.children:
                 if child.type in ("dotted_name", "aliased_import"):
@@ -610,8 +634,55 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
     edges: list[Edge] = []
     file_str = str(filepath)
     file_stem = filepath.stem
+    emit_inheritance = config.SEAM_INHERITANCE_EDGES == "on"
+
+    def _emit_ts_inheritance(node: Node) -> None:
+        """Emit extends/implements edges for a TS class_declaration or interface_declaration.
+
+        class_declaration → class_heritage → extends_clause (extends) + implements_clause.
+        interface_declaration → extends_type_clause (interface inheritance → 'extends').
+        Each base name is normalized to a bare type name (generic args stripped).
+        """
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            return
+        src_name = _text(name_node)
+        line = node.start_point[0] + 1
+
+        def _emit_from_clause(clause: Node, kind: str) -> None:
+            for c in clause.named_children:
+                target = _base_type_name(c)
+                if target:
+                    edges.append(
+                        Edge(
+                            source=src_name,
+                            target=target,
+                            kind=kind,
+                            file=file_str,
+                            line=line,
+                            confidence="INFERRED",
+                        )
+                    )
+
+        for child in node.children:
+            if child.type == "class_heritage":
+                for clause in child.children:
+                    if clause.type == "extends_clause":
+                        _emit_from_clause(clause, "extends")
+                    elif clause.type == "implements_clause":
+                        _emit_from_clause(clause, "implements")
+            elif child.type == "extends_type_clause":
+                # interface A extends B, C — interface inheritance is 'extends'.
+                _emit_from_clause(child, "extends")
 
     def _walk(node: Node) -> None:
+        if emit_inheritance and node.type in (
+            "class_declaration",
+            "interface_declaration",
+        ):
+            _emit_ts_inheritance(node)
+            # Fall through to recurse for nested calls.
+
         if node.type == "import_statement":
             line = node.start_point[0] + 1
             clause = None

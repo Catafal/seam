@@ -21,6 +21,11 @@ from seam.analysis.imports import (
     extract_import_mappings,
     resolve_import_source,
 )
+from seam.analysis.imports_resolve import (
+    _TSCONFIG_ALIAS_CACHE,
+    _load_go_module,
+    _load_tsconfig_aliases,
+)
 from seam.indexer.parser import parse_go, parse_python, parse_rust, parse_typescript
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -376,3 +381,113 @@ class TestNeverRaisesContract:
         # Even with unusual paths
         result = compute_path_proximity(Path("/a"), Path("/b/c"))
         assert isinstance(result, int)
+
+
+# ── P3: tsconfig/jsconfig path-alias resolution ───────────────────────────────
+
+
+class TestTsconfigAliasResolution:
+    """P3 — tsconfig.json path aliases (@/foo) resolve to file paths at index time."""
+
+    def test_alias_resolves_via_paths_and_baseurl(self, tmp_path: Path) -> None:
+        # baseUrl '.', alias '@/*' -> ['src/*'] ; '@/foo' -> <root>/src/foo.ts
+        (tmp_path / "tsconfig.json").write_text(
+            '{"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["src/*"]}}}\n'
+        )
+        (tmp_path / "src").mkdir()
+        target = tmp_path / "src" / "foo.ts"
+        target.write_text("export const foo = 1;\n")
+        ref_file = tmp_path / "pages" / "index.ts"
+
+        result = resolve_import_source("@/foo", ref_file, tmp_path, "typescript")
+        assert str(target) in result
+
+    def test_json_with_comments_parses(self, tmp_path: Path) -> None:
+        # tsconfig permits // line and /* block */ comments — must strip before parse.
+        (tmp_path / "tsconfig.json").write_text(
+            "{\n"
+            "  // a line comment\n"
+            '  "compilerOptions": {\n'
+            '    "baseUrl": ".",\n'
+            "    /* block comment */\n"
+            '    "paths": {"@/*": ["src/*"]}\n'
+            "  }\n"
+            "}\n"
+        )
+        (tmp_path / "src").mkdir()
+        target = tmp_path / "src" / "bar.ts"
+        target.write_text("export const bar = 1;\n")
+        ref_file = tmp_path / "app" / "page.ts"
+
+        result = resolve_import_source("@/bar", ref_file, tmp_path, "typescript")
+        assert str(target) in result
+
+    def test_load_aliases_longest_prefix_first(self, tmp_path: Path) -> None:
+        # More specific alias must sort before the broader '@/*' alias.
+        (tmp_path / "jsconfig.json").write_text(
+            '{"compilerOptions": {"paths": '
+            '{"@/*": ["src/*"], "@/components/*": ["src/ui/*"]}}}\n'
+        )
+        aliases = _load_tsconfig_aliases(tmp_path)
+        keys = list(aliases.keys())
+        # The longer/more-specific prefix appears before the shorter one.
+        assert keys.index("@/components/*") < keys.index("@/*")
+
+    def test_missing_config_degrades(self, tmp_path: Path) -> None:
+        # No tsconfig -> bare specifier still returns [] (current behavior).
+        result = resolve_import_source("@/foo", tmp_path / "main.ts", tmp_path, "typescript")
+        assert result == []
+
+    def test_malformed_config_returns_empty_map(self, tmp_path: Path) -> None:
+        (tmp_path / "tsconfig.json").write_text("{ not valid json :::\n")
+        assert _load_tsconfig_aliases(tmp_path) == {}
+
+    def test_cache_keyed_by_repo_root(self, tmp_path: Path) -> None:
+        # Two distinct repo roots get independent alias maps.
+        _TSCONFIG_ALIAS_CACHE.clear()
+        repo_a = tmp_path / "a"
+        repo_b = tmp_path / "b"
+        repo_a.mkdir()
+        repo_b.mkdir()
+        (repo_a / "tsconfig.json").write_text(
+            '{"compilerOptions": {"paths": {"@/*": ["src/*"]}}}\n'
+        )
+        # repo_b has no config.
+        map_a = _load_tsconfig_aliases(repo_a)
+        map_b = _load_tsconfig_aliases(repo_b)
+        assert "@/*" in map_a
+        assert map_b == {}
+
+
+# ── P3: go.mod cross-package resolution ────────────────────────────────────────
+
+
+class TestGoModuleResolution:
+    """P3 — go.mod module prefix is stripped so cross-package imports resolve."""
+
+    def test_module_prefix_stripped_resolves_cross_package(self, tmp_path: Path) -> None:
+        (tmp_path / "go.mod").write_text("module github.com/org/repo\n\ngo 1.21\n")
+        (tmp_path / "pkg").mkdir()
+        target = tmp_path / "pkg" / "thing.go"
+        target.write_text("package pkg\n\nfunc Thing() {}\n")
+        ref_file = tmp_path / "main.go"
+
+        result = resolve_import_source(
+            "github.com/org/repo/pkg", ref_file, tmp_path, "go"
+        )
+        assert str(target) in result
+
+    def test_load_go_module_extracts_path(self, tmp_path: Path) -> None:
+        (tmp_path / "go.mod").write_text("module example.com/myapp\n\ngo 1.21\n")
+        assert _load_go_module(tmp_path) == "example.com/myapp"
+
+    def test_missing_go_mod_returns_none(self, tmp_path: Path) -> None:
+        assert _load_go_module(tmp_path) is None
+
+    def test_external_module_still_returns_empty(self, tmp_path: Path) -> None:
+        # A dependency outside this module's prefix must NOT resolve.
+        (tmp_path / "go.mod").write_text("module github.com/org/repo\n")
+        result = resolve_import_source(
+            "github.com/other/dep/pkg", tmp_path / "main.go", tmp_path, "go"
+        )
+        assert result == []

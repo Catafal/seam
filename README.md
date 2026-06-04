@@ -435,6 +435,32 @@ seam sync --semantic               # re-embed after incremental sync
 
 > **Note:** changing `SEAM_EMBED_MODEL` requires a new `seam init --semantic` — vectors from different models cannot be mixed. A model mismatch is detected at query time and logged as a WARNING; the engine falls back to FTS-only.
 
+### Roadmap P2–P6 — Graph Quality, Resolution & Stable Handles
+
+A batch of accuracy + ergonomics upgrades. **No new MCP tool — tool count stays 11.** All are additive and behave byte-identically to before when their (defaulted-on) switch is off.
+
+**Stable symbol UID handle (P6c).** Every `seam_search` / `seam_query` result now carries a `uid` — an opaque handle `sha1(abs_file)[:8]:line` that pins one exact symbol. Pass it back as the `uid` argument to `seam_context`, `seam_impact`, or `seam_trace` (and `target_uid` on `seam_trace`) to act on *that* homonym without a disambiguation round-trip. When `uid` is given, the name argument is ignored; an unknown/stale uid yields the normal not-found result, not an error. Pure computed string — **no schema change, no extra DB query.**
+
+**Class inheritance edges (P6a).** Class `extends` / interface `implements` relationships are now extracted as graph edges (Python, TypeScript, Java, C#), so changing a base class or interface surfaces its subclasses/implementers in `seam_impact` upstream and as `extends`/`implements` hops in `seam_trace`. Toggle with `SEAM_INHERITANCE_EDGES` (`"on"` default; `"off"` = pre-P6a).
+
+**Framework-aware entry-point ranking (P6b).** `seam_flows` (and `seam flows`) now rank entry points by **weighted reach** (`entry_score * reach`) instead of raw reach, so a Flask route or Django view with a shallow call chain isn't buried under deep utilities. `entry_score` (≥1.0, neutral 1.0) is computed at index time from the file-path pattern (`views.py`, `routes/`, `controllers/`, `cmd/`, …) and the symbol's decorator text (`@app.route`, `@router.get`, `@GetMapping`, …). The `reach` field still reports the **raw** transitive count. Toggle with `SEAM_ENTRY_SCORE` (`"on"` default; `"off"` = raw-reach ranking).
+
+**Better import resolution (P3 + P4).** Import-promotion now resolves more cross-file references, fixing false `AMBIGUOUS` verdicts in `seam_impact` / `seam_trace` / `seam_context`:
+- **tsconfig / jsconfig path aliases** — `@/foo` and other `compilerOptions.paths` + `baseUrl` aliases resolve to the real file (read once per repo, cached).
+- **Go `go.mod` module prefix** — a module-qualified import (`github.com/org/repo/pkg`) is stripped to its repo-relative directory and resolved; third-party deps still correctly return no match.
+- **Barrel re-export chasing (P4)** — a named import through a barrel `index.ts` that only re-exports (`export { X } from './x'`) is followed to the real declarer, up to `SEAM_BARREL_DEPTH` (default `3`) hops; bounded, cycle-safe, cached per `(file, name)`. Set `SEAM_BARREL_DEPTH=0` to disable.
+
+**Higher-quality clusters (P2).** Louvain community detection now produces cleaner functional areas:
+- On **large** graphs (`symbol_count > SEAM_CLUSTER_CONFIDENCE_FILTER`, default `1000`) only high-trust edges (EXTRACTED + import-kind INFERRED) feed Louvain, so homonym-noise `AMBIGUOUS` edges can't merge unrelated modules. Small repos pass the full edge set (`"off"` disables the filter entirely).
+- **Two-level cluster labels** skip generic scaffolding dirs (`src`/`lib`/`app`/`pkg`/`main`/`core`/`base`) and walk up to the enclosing module dir — `render/src/widget.py` labels as `render`, not `src`.
+- A per-cluster **cohesion** score (internal-edge ratio, schema v8 `clusters.cohesion`) adds a tiny tie-break bonus to search ranking among otherwise-equal results.
+
+**Swift inter-class call edges (P5).** The Swift extractor now resolves two high-value member-call patterns to qualified `Type.method` edges at index time: `self.method()` → `<EnclosingType>.method`, and `Foo().bar()` / a same-scope `let x = Foo(); x.bar()` → `Foo.bar`. Function-scope-local only (no cross-file inference). Toggle with `SEAM_SWIFT_TYPE_INFERENCE` (`"on"` default; `"off"` = bare-identifier call edges as before).
+
+**Schema v8 / v9.** v7→v8 adds `clusters.cohesion`; v8→v9 adds `symbols.entry_score`. Both auto-migrate on `connect()` (additive, fresh-DB-safe) and are **not** backfilled — run `seam init` to populate them. Until then, cohesion adds no search bonus and `entry_score` is treated as the neutral baseline (1.0), so ranking is unchanged.
+
+**New config knobs:** `SEAM_INHERITANCE_EDGES` (`"on"`), `SEAM_ENTRY_SCORE` (`"on"`), `SEAM_BARREL_DEPTH` (`3`), `SEAM_CLUSTER_CONFIDENCE_FILTER` (`"1000"`; `"off"` to disable, `"0"` to always filter), `SEAM_SWIFT_TYPE_INFERENCE` (`"on"`).
+
 ## Known Limitations (Phase 1b candidates)
 
 - **Cross-file confidence resolution:** Edge confidence is resolved against same-file symbols only, so edges to symbols defined in other files are mostly `INFERRED`. Full-index resolution (upgrading `INFERRED` to `EXTRACTED` or `AMBIGUOUS` after indexing) is a Phase-1b enhancement.

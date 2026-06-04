@@ -73,11 +73,17 @@ def _render_hits(rows: list[dict], title: str) -> None:
         return
     table = Table(title=title)
     table.add_column("symbol", style="bold")
+    table.add_column("uid", style="cyan")  # P6c: stable handle for context/impact/trace
     table.add_column("location", style="dim")
     table.add_column("score", justify="right")
     for row in rows:
         loc = f"{row.get('file', '?')}:{row.get('line', '?')}"
-        table.add_row(str(row.get("symbol", "")), loc, f"{row.get('score', 0):.1f}")
+        table.add_row(
+            str(row.get("symbol", "")),
+            str(row.get("uid", "")),
+            loc,
+            f"{row.get('score', 0):.1f}",
+        )
     console.print(table)
 
 

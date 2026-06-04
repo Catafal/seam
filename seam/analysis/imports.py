@@ -22,7 +22,16 @@ Per-language extension resolution order:
     JS      : ['.js', '.mjs', '.cjs', '/index.js']
     Go      : package directory (last segment of path)
 
-Out of scope: tsconfig aliases, Go-module prefix stripping, barrel chasing.
+P3 (tsconfig + go.mod resolution):
+    - TS/JS: tsconfig.json / jsconfig.json `compilerOptions.paths` + `baseUrl`
+      aliases (e.g. '@/*' -> ['src/*']) are expanded BEFORE the third-party
+      fallback so '@/foo' resolves to a real file. Config is read ONCE per
+      repo_root and cached (zero read-time cost).
+    - Go: the `module <path>` line in go.mod is read once per repo_root; a
+      module-qualified import that starts with that prefix is stripped to a
+      repo-relative directory and resolved normally.
+
+Out of scope: Java/C#/PHP package resolution (stays []), barrel chasing.
 """
 
 import logging
@@ -74,6 +83,14 @@ from seam.analysis.imports_ext import (
 )
 from seam.analysis.imports_ext import (
     _resolve_swift as _ext_resolve_swift,
+)
+
+# P3 resolution helpers live in a companion leaf (split to keep this file under
+# the 1000-line cap). Re-exported here so the public resolve_import_source path
+# and the test suite can reach them via seam.analysis.imports.
+from seam.analysis.imports_resolve import (
+    _load_go_module,
+    _resolve_ts_alias,
 )
 
 logger = logging.getLogger(__name__)
@@ -760,6 +777,14 @@ def resolve_import_source(
             return _resolve_python(source_module, referencing_file, repo_root)
         if language in ("typescript", "javascript"):
             exts = _TS_EXTENSIONS if language == "typescript" else _JS_EXTENSIONS
+            # P3: try tsconfig/jsconfig path-alias expansion (e.g. '@/foo') BEFORE
+            # the third-party fallback. Relative imports skip this (handled below).
+            if not (source_module.startswith("./") or source_module.startswith("../")):
+                alias_hits = _resolve_ts_alias(
+                    source_module, repo_root, exts, _probe_extensions
+                )
+                if alias_hits:
+                    return alias_hits
             return _resolve_relative_or_dotted(source_module, referencing_file, repo_root, exts)
         if language == "go":
             return _resolve_go(source_module, referencing_file, repo_root)
@@ -876,14 +901,25 @@ def _resolve_go(
     Go imports use directory-based packages. We look for the import path as a
     subdirectory under repo_root (same-repo relative reference).
 
-    Module-qualified Go imports (e.g. 'github.com/org/repo/pkg') are out of scope:
-    they will never be_dir() under repo_root, so they correctly return [] without
-    any special-casing. This resolver only handles same-repo-relative package paths
-    whose directory exists directly under repo_root.
+    P3: cross-package module-qualified imports (e.g. 'github.com/org/repo/pkg')
+    now resolve. `_load_go_module` reads the `module <path>` line from go.mod
+    once per repo; when the import starts with that module prefix, the prefix is
+    stripped to a repo-relative directory ('pkg') and resolved normally. Imports
+    OUTSIDE the module prefix (third-party deps) still correctly return [].
     """
+    # P3: strip the go.mod module prefix from a cross-package import so the
+    # remaining path is repo-relative. External deps keep their full path → [].
+    effective = source_module
+    module_prefix = _load_go_module(repo_root)
+    if module_prefix and source_module.startswith(module_prefix):
+        stripped = source_module[len(module_prefix) :].lstrip("/")
+        # Bare 'module' (root package) → no subdir; treat as repo_root itself.
+        effective = stripped if stripped else "."
+
     # Treat the import path as a directory relative to repo_root.
-    # Module-qualified paths silently return [] because is_dir() will be False — intended.
-    candidate_dir = repo_root / source_module
+    # Paths not under the module prefix silently return [] because is_dir()
+    # will be False (the full third-party path has no matching local dir).
+    candidate_dir = repo_root / effective
     if candidate_dir.is_dir():
         go_files = list(candidate_dir.glob("*.go"))
         return [str(f) for f in go_files[:max_candidates]]

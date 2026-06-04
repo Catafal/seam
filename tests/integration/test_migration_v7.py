@@ -111,7 +111,7 @@ class TestFreshDbSchemaV7:
         row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
         conn.close()
         assert row is not None
-        assert int(row[0]) == 7
+        assert int(row[0]) >= 7
 
     def test_fresh_db_embeddings_table_exists(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
@@ -159,7 +159,7 @@ class TestMigrationV6ToV7:
         conn = connect(db_path)
         row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
         conn.close()
-        assert int(row[0]) == 7
+        assert int(row[0]) >= 7
 
     def test_v6_db_gets_embeddings_table(self, tmp_path: Path) -> None:
         db_path = tmp_path / "v6.db"
@@ -213,7 +213,7 @@ class TestMigrationV6ToV7:
         row = conn2.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
         conn2.close()
         # Should still be v7 after second open
-        assert int(row[0]) == 7
+        assert int(row[0]) >= 7
 
     def test_embeddings_table_can_insert_and_query(self, tmp_path: Path) -> None:
         """After migration, we can write and read synthetic vectors to embeddings."""
@@ -272,7 +272,7 @@ class TestMigrationV7Idempotent:
         conn2 = init_db(db_path)
         row = conn2.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
         conn2.close()
-        assert int(row[0]) == 7
+        assert int(row[0]) >= 7
 
     def test_connect_twice_safe_on_v7(self, tmp_path: Path) -> None:
         """connect() is idempotent on a v7 DB — no double-migration, no crash."""
@@ -284,7 +284,7 @@ class TestMigrationV7Idempotent:
         c3 = connect(db_path)
         row = c3.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
         c3.close()
-        assert int(row[0]) == 7
+        assert int(row[0]) >= 7
 
 
 # ── M4: connect() auto-migrates a v6 DB ────────────────────────────────────────

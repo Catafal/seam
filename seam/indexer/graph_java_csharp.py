@@ -32,6 +32,7 @@ from seam.indexer.graph_common import (
     Comment,
     Edge,
     Symbol,
+    _base_type_name,
     _block_comment_lines,
     _find_enclosing_function,
     _make_symbol,
@@ -449,10 +450,18 @@ def _extract_edges_java(root: Node, filepath: Path) -> list[Edge]:
     edges: list[Edge] = []
     file_str = str(filepath)
     file_stem = filepath.stem
+    emit_inheritance = config.SEAM_INHERITANCE_EDGES == "on"
 
     def _walk(node: Node) -> None:
         try:
             ntype = node.type
+
+            if emit_inheritance and ntype in (
+                "class_declaration",
+                "interface_declaration",
+            ):
+                _handle_java_inheritance(node, file_str, edges)
+                # Fall through to recurse into the body for call edges.
 
             if ntype == "import_declaration":
                 _handle_java_import(node, file_str, file_stem, edges)
@@ -490,6 +499,58 @@ def _extract_edges_java(root: Node, filepath: Path) -> list[Edge]:
         _walk(child)
 
     return edges
+
+
+def _handle_java_inheritance(decl_node: Node, file_str: str, edges: list[Edge]) -> None:
+    """Emit extends/implements edges from a Java class or interface declaration.
+
+    class_declaration:
+        superclass        (extends Base)          → 'extends' edge subclass→Base
+        super_interfaces  (implements I, J)       → 'implements' edges per type
+    interface_declaration:
+        extends_interfaces (extends I, J)         → 'extends' edges (interface inheritance)
+
+    Each base name is normalized to a bare type name (generic args stripped).
+    String-name-keyed: source=this type's name, target=base name. Never raises.
+    """
+    name_node = decl_node.child_by_field_name("name")
+    if name_node is None:
+        return
+    src_name = _text(name_node)
+    line = decl_node.start_point[0] + 1
+
+    def _emit(type_node: Node, kind: str) -> None:
+        target = _base_type_name(type_node)
+        if target:
+            edges.append(
+                Edge(
+                    source=src_name,
+                    target=target,
+                    kind=kind,
+                    file=file_str,
+                    line=line,
+                    confidence="INFERRED",
+                )
+            )
+
+    for child in decl_node.children:
+        ctype = child.type
+        if ctype == "superclass":
+            # superclass → [extends, type_identifier|generic_type]
+            for sub in child.named_children:
+                _emit(sub, "extends")
+        elif ctype == "super_interfaces":
+            # super_interfaces → type_list → type_identifier+
+            for tl in child.named_children:
+                if tl.type == "type_list":
+                    for t in tl.named_children:
+                        _emit(t, "implements")
+        elif ctype == "extends_interfaces":
+            # interface inheritance → type_list → type_identifier+ ('extends')
+            for tl in child.named_children:
+                if tl.type == "type_list":
+                    for t in tl.named_children:
+                        _emit(t, "extends")
 
 
 def _handle_java_import(decl_node: Node, file_str: str, file_stem: str, edges: list[Edge]) -> None:
@@ -767,10 +828,20 @@ def _extract_edges_csharp(root: Node, filepath: Path) -> list[Edge]:
     edges: list[Edge] = []
     file_str = str(filepath)
     file_stem = filepath.stem
+    emit_inheritance = config.SEAM_INHERITANCE_EDGES == "on"
 
     def _walk(node: Node) -> None:
         try:
             ntype = node.type
+
+            if emit_inheritance and ntype in (
+                "class_declaration",
+                "struct_declaration",
+                "interface_declaration",
+                "record_declaration",
+            ):
+                _handle_csharp_inheritance(node, file_str, edges)
+                # Fall through to recurse into the body for call edges.
 
             if ntype == "using_directive":
                 _handle_csharp_using(node, file_str, file_stem, edges)
@@ -807,6 +878,41 @@ def _extract_edges_csharp(root: Node, filepath: Path) -> list[Edge]:
         _walk(child)
 
     return edges
+
+
+def _handle_csharp_inheritance(decl_node: Node, file_str: str, edges: list[Edge]) -> None:
+    """Emit extends edges from a C# type declaration's base_list.
+
+    C# does NOT syntactically distinguish a base class from implemented interfaces
+    (both live in `base_list` after the colon), so all base entries are emitted as
+    'extends' edges — the same string-name-keyed upstream traversal surfaces both
+    subclasses and interface implementers, which is the P6a goal.
+
+    Each base name is normalized to a bare type name (qualified Ns.Base → Base;
+    generic IFace<T> → IFace). String-name-keyed: source=type name, target=base.
+    Never raises.
+    """
+    name_node = decl_node.child_by_field_name("name")
+    if name_node is None:
+        return
+    src_name = _text(name_node)
+    line = decl_node.start_point[0] + 1
+
+    for child in decl_node.children:
+        if child.type == "base_list":
+            for base in child.named_children:
+                target = _base_type_name(base)
+                if target:
+                    edges.append(
+                        Edge(
+                            source=src_name,
+                            target=target,
+                            kind="extends",
+                            file=file_str,
+                            line=line,
+                            confidence="INFERRED",
+                        )
+                    )
 
 
 def _handle_csharp_using(

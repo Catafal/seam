@@ -81,6 +81,14 @@ SEAM_LLM_MODEL: str = os.getenv("SEAM_LLM_MODEL", "gpt-4o-mini")
 # Set to 1 to retain all singletons as their own clusters.
 SEAM_CLUSTER_MIN_SIZE: int = int(os.getenv("SEAM_CLUSTER_MIN_SIZE", "2"))
 
+# P2 — confidence-filtered Louvain. On LARGE graphs (symbol_count > this threshold),
+# only high-trust edges (EXTRACTED + import-kind INFERRED) are passed to community
+# detection, so noisy AMBIGUOUS/inferred-call edges can't merge unrelated modules.
+# Small repos are unaffected (the full edge set keeps recall on sparse graphs).
+# Special values: "off" disables the filter entirely (always pass all edges);
+# "0" forces the filter on for any non-empty graph (used by tests). Default 1000.
+SEAM_CLUSTER_CONFIDENCE_FILTER: str = os.getenv("SEAM_CLUSTER_CONFIDENCE_FILTER", "1000")
+
 
 # ── Phase 3: Affected-tests configuration ────────────────────────────────────
 
@@ -138,9 +146,26 @@ SEAM_IMPORT_RESOLUTION: str = os.getenv("SEAM_IMPORT_RESOLUTION", "on")
 # Prevents runaway DB queries on pathologically ambiguous indexes.
 SEAM_MAX_IMPORT_CANDIDATES: int = int(os.getenv("SEAM_MAX_IMPORT_CANDIDATES", "25"))
 
+# P6a — master switch for inheritance edge extraction. When "on" (default), class
+# base-class / interface clauses are emitted as kind='extends' / kind='implements'
+# edges (string-name-keyed: source=subclass, target=base), so an interface/base
+# change surfaces its subclasses/implementers in seam_impact via upstream traversal.
+# When "off", no inheritance edges are emitted — byte-identical to pre-P6a indexes.
+SEAM_INHERITANCE_EDGES: str = os.getenv("SEAM_INHERITANCE_EDGES", "on")
+
 # Cap on collision candidates ranked by file-path proximity (step D).
 # Prevents O(n) proximity computation on large symbol tables.
 SEAM_PROXIMITY_MAX_CANDIDATES: int = int(os.getenv("SEAM_PROXIMITY_MAX_CANDIDATES", "25"))
+
+# P4 — barrel re-export following. Max hops to chase a named import through
+# barrel index.ts/re-export files before giving up. When import promotion finds
+# a candidate file that does NOT itself declare the exported name (i.e. it is a
+# barrel that re-exports from siblings), the resolver follows that file's OWN
+# import_mappings up to this many hops to find the real declarer. Bounded and
+# cached per (file, name) within a single resolution → no unbounded read cost.
+# Default 3 matches CodeGraph's barrel-chasing depth. Set to 0 to DISABLE barrel
+# following entirely (byte-identical to pre-P4 behavior).
+SEAM_BARREL_DEPTH: int = int(os.getenv("SEAM_BARREL_DEPTH", "3"))
 
 
 # ── Phase 8: Lean output + impact cap ────────────────────────────────────────
@@ -191,6 +216,15 @@ SEAM_FLOW_MAX_BREADTH: int = int(os.getenv("SEAM_FLOW_MAX_BREADTH", "8"))
 # Separate from MAX_DEPTH: scoring wants a stable ranking signal, not a full walk.
 SEAM_FLOW_REACH_DEPTH: int = int(os.getenv("SEAM_FLOW_REACH_DEPTH", "5"))
 
+# P6b — framework entry-point scoring. When "on" (default), a per-symbol
+# entry_score float is computed at INDEX time from the file's path pattern
+# (e.g. views.py, routes/, controllers/) and the symbol's decorator text
+# (e.g. @app.route, @router.get). list_entry_points() then ranks by
+# entry_score * reach instead of raw reach, so a framework route (low reach)
+# can outrank a deep utility. When "off", entry_score is still stored as the
+# neutral baseline (1.0) and ranking is byte-identical to raw reach (pre-P6b).
+SEAM_ENTRY_SCORE: str = os.getenv("SEAM_ENTRY_SCORE", "on")
+
 
 # ── Semantic search configuration (opt-in, Phase Semantic) ───────────────────
 
@@ -223,6 +257,20 @@ SEAM_SEMANTIC_SCAN_CAP: int = int(os.getenv("SEAM_SEMANTIC_SCAN_CAP", "20000"))
 # k=60 is the standard value from Cormack, Clarke & Buettcher (SIGIR 2009).
 # Higher k flattens rank differences; lower k amplifies them.
 SEAM_RRF_K: int = int(os.getenv("SEAM_RRF_K", "60"))
+
+
+# ── P5: Swift inter-class call resolution ────────────────────────────────────
+
+# Lightweight receiver-type inference for Swift call edges. When "on" (default),
+# the Swift extractor resolves two HIGH-VALUE member-call patterns to qualified
+# 'Type.method' edges at INDEX time:
+#   (1) self.method()                 → '<EnclosingType>.method'
+#   (2) ClassName().method() OR a var assigned from a class instantiation in the
+#       SAME function scope (let x = Foo(); x.bar()) → 'Foo.bar'
+# Tracking is function-scope-local (a var→class dict during the AST walk) — no
+# cross-file inference. Set to "off" to revert to bare-identifier-only call edges
+# (byte-identical to pre-P5 behavior). See ADR-009.
+SEAM_SWIFT_TYPE_INFERENCE: str = os.getenv("SEAM_SWIFT_TYPE_INFERENCE", "on")
 
 
 def get_db_path(project_root: Path) -> Path:

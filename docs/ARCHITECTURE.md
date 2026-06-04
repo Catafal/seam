@@ -708,3 +708,101 @@ result iterator (quiet output, the total-entry count, Rich rendering) so the new
 `truncated` dicts are never mistaken for direction groups (the count path would otherwise call
 `len()` on an `int`). Rich mode prints a per-direction truncation footer; quiet mode writes a
 truncation signal to **stderr** so `stdout` stays a pure bare-name list for pipelines.
+
+## Roadmap P2–P6 — Graph Quality, Resolution & Stable Handles
+
+> Shipped on branch `feat/roadmap-p2-p6`. Schema migrated v7 → v9 (additive). **No new MCP tool
+> — count stays 11.** Each feature is gated by a defaulted-on switch; turning the switch off
+> restores byte-identical pre-P* behavior.
+
+### P6a — Class inheritance as graph edges (`seam/indexer/graph*.py`)
+
+The dependency graph previously captured only `call` and `import` edges, so a base-class or
+interface change had **no upstream blast radius** — its subclasses were invisible to `seam_impact`.
+P6a extracts a subclass→base `extends` edge and a class→interface `implements` edge for Python,
+TypeScript, Java, and C#. Because the `edges` table is **name-keyed and homonym-collapsed**, every
+base/interface reference is normalized to its bare rightmost type name (generic args and
+namespace/package qualifiers stripped) by the shared `_base_type_name` helper in `graph_common.py`,
+matching how call/import targets are stored. Edges carry `confidence='INFERRED'` (a base name is a
+type reference, not a resolved-in-file symbol) and flow through the **existing** impact/trace
+traversal unchanged — no new traversal code. Gated by `SEAM_INHERITANCE_EDGES` (`"on"` default).
+
+### P6b — Framework entry-point scoring (`seam/analysis/processes.py`, schema v9)
+
+Raw downstream-reach ranking buries a framework's true entry points: a Flask route or Django view
+often delegates to one service call (shallow reach) yet *is* where execution begins. `compute_entry_score(file_path, decorators)` returns a small multiplier (≥1.0, neutral baseline 1.0)
+from two cheap, language-agnostic signals — the file **path** pattern (`views.py`, `routes/`,
+`controllers/`, `cmd/`, …) and the symbol's **decorator** text (`@app.route`, `@router.get`,
+`@GetMapping`, …) — taking the MAX matching multiplier (not a sum). It is **pure and never raises**:
+bad input → 1.0.
+
+The score is computed **at index time** in `upsert_file` and persisted to the new
+`symbols.entry_score` column (schema v9). At read time, `list_entry_points` ranks by
+`entry_score * reach` while still reporting the **raw** `reach` (the multiplier is a ranking signal
+only). `_load_entry_scores` mirrors `_load_meta`'s lowest-id-wins homonym-collapse rule, and a NULL
+score (pre-v9 / un-reindexed row) is treated as the neutral 1.0. `SEAM_ENTRY_SCORE=off` forces the
+baseline for every symbol → byte-identical to raw-reach ranking.
+
+### P3 — tsconfig aliases + go.mod module prefix (`seam/analysis/imports_resolve.py`)
+
+Import promotion (Phase 5) could not resolve two common cross-file forms, leaving them falsely
+`AMBIGUOUS`. A new leaf module — split from `imports.py` purely to stay under the 1000-line cap —
+adds, all **index/read-time, cached once per `repo_root`, never-raise**:
+- **TS/JS path aliases** — `_load_tsconfig_aliases` reads `tsconfig.json` / `jsconfig.json`
+  `compilerOptions.paths` + `baseUrl` into a longest-prefix-first map; `_resolve_ts_alias` expands a
+  non-relative specifier (`@/foo`) to real files **before** the third-party fallback in
+  `resolve_import_source`.
+- **Go module prefix** — `_load_go_module` reads the `module <path>` line from `go.mod`; a
+  module-qualified import starting with that prefix is stripped to a repo-relative directory and
+  resolved normally. Imports outside the prefix (true third-party) still correctly return `[]`.
+
+### P4 — Barrel re-export chasing (`seam/analysis/confidence.py`)
+
+A named import through a barrel (`export { X } from './x'` in an `index.ts`) resolves to the barrel
+file, which does **not** declare `X` — so Phase 5's "resolved file must declare the name" guard
+correctly refused to promote, but the edge stayed `AMBIGUOUS`. `_resolve_with_import_promotion` now,
+when the resolved candidate does not declare the exported name, calls `_chase_barrel`: it follows
+that file's **own** `import_mappings` for the name, resolving each re-export source (with a TS/JS
+directory→`index.*` fallback in `_resolve_barrel_source`) and recursing until a single declaring
+file is found — up to `SEAM_BARREL_DEPTH` (default `3`) hops. **Bounded, cycle-safe** (a `visited`
+set of `(file, name)` pairs guards termination and avoids repeat DB hits), and it stops on a
+branch to multiple declarers (genuine ambiguity). `SEAM_BARREL_DEPTH=0` disables it entirely.
+
+### P2 — Cluster quality (`seam/indexer/cluster_index.py`, `cluster_naming.py`, schema v8)
+
+Three changes make Louvain communities read as real functional areas:
+1. **Confidence-filtered edges (large graphs only).** `_should_filter_edges(symbol_count)` gates on
+   `SEAM_CLUSTER_CONFIDENCE_FILTER` (default `1000`): when the graph is large enough that homonym
+   `AMBIGUOUS` edges would wrongly merge unrelated modules, only high-trust edges (EXTRACTED, or
+   import-kind INFERRED) are passed to `detect_communities`. Small/sparse repos pass the full set
+   (those AMBIGUOUS edges are often the only connective tissue). `"off"` never filters; `"0"` always.
+2. **Two-level labels.** `_module_dir_for_path` walks a member file's path from leaf upward and
+   returns the first **non-generic** directory, skipping packaging scaffolding (`GENERIC_DIRS` =
+   `src`/`lib`/`app`/`pkg`/`main`/`core`/`base`) — so `render/src/widget.py` labels as `render`.
+3. **Cohesion (schema v8 `clusters.cohesion`).** `_compute_cohesion` = internal-edge / total-edge
+   ratio over a deterministic sample (≤50 members per cluster, a perf bound on hub clusters),
+   computed from the **full unfiltered** edge graph so the score reflects real connectivity. It
+   feeds a deliberately tiny additive search-rank bonus (`seam/query/fts.py`) that only nudges
+   ordering among otherwise-equal results.
+
+### P5 — Swift inter-class call resolution (`seam/indexer/graph_swift.py`)
+
+Swift call edges were bare-identifier only. P5 adds **function-scope-local** receiver-type inference
+for two high-value member-call patterns, resolved to qualified `Type.method` edges at index time:
+`self.method()` → `<EnclosingType>.method`, and `Foo().method()` or a same-scope
+`let x = Foo(); x.method()` → `Foo.method` (tracked via a per-function `var→class` dict during the
+AST walk — no cross-file inference). `SEAM_SWIFT_TYPE_INFERENCE=off` reverts to bare-identifier
+edges. See ADR-009.
+
+### P6c — Stable symbol UID handle (`seam/server/tools.py`, `seam/query/engine.py`)
+
+A homonym follow-up (search → context) otherwise forces an agent to re-disambiguate by file path —
+an extra round-trip. `compute_uid(file_path, start_line)` = `sha1(abs_path)[:8] + ':' + line` is a
+**pure computed string** surfaced on every `seam_search` / `seam_query` result (computed from the
+ABSOLUTE path *before* relativization, so it round-trips). `seam_context` / `seam_impact` /
+`seam_trace` accept it as an alternative to the name argument (`uid`, plus `target_uid` on trace).
+Resolution (`_resolve_uid`) narrows by `start_line` in SQL — cheap, no schema change, no O(files)
+scan — then recomputes the UID over each candidate's absolute path until one matches.
+`engine.context_at(file, line)` powers the exact-symbol context path (vs. `context()`'s first-by-
+name); the impact/trace graphs are name-keyed, so a UID there is resolved to its symbol NAME. An
+unknown/stale UID returns the standard not-found result, never an error.

@@ -30,6 +30,7 @@ Import rules (no circular deps):
 """
 
 import logging
+import os
 import sqlite3
 from pathlib import Path
 from typing import TypedDict
@@ -180,6 +181,152 @@ def load_import_mappings(
         return []
 
 
+# P4 — barrel directory-entry filenames. A directory import (`from './barrel'`)
+# resolves to one of these inside that directory. TS/JS only — the languages
+# where the barrel/index.* convention exists. Ordered by precedence.
+_BARREL_INDEX_FILES = ("index.ts", "index.tsx", "index.js", "index.mjs", "index.cjs")
+
+
+def _resolve_barrel_source(
+    source_module: str,
+    referencing_file: Path,
+    repo_root: Path,
+    language: str,
+    max_import_candidates: int,
+) -> list[str]:
+    """Resolve an import source, adding TS/JS directory→index.* barrel probing.
+
+    `resolve_import_source` does not map a directory import (`./barrel`) to its
+    `index.ts` entry (the TS extension order has no `/index.*`). Barrels ARE
+    directory imports, so this P4-local helper falls back to probing for a
+    barrel index file inside the resolved directory when the normal resolution
+    returns nothing. Only applies to TS/JS; never raises.
+    """
+    hits = resolve_import_source(source_module, referencing_file, repo_root, language)[
+        :max_import_candidates
+    ]
+    if hits or language not in ("typescript", "javascript"):
+        return hits
+
+    # Directory-import barrel fallback: probe <dir>/index.* for relative sources.
+    if not (source_module.startswith("./") or source_module.startswith("../")):
+        return hits
+    try:
+        base = Path(os.path.normpath(referencing_file.parent / source_module))
+    except Exception:  # noqa: BLE001
+        return hits
+    for index_name in _BARREL_INDEX_FILES:
+        candidate = base / index_name
+        if candidate.exists():
+            return [str(candidate)]
+    return hits
+
+
+def _chase_barrel(
+    exported: str,
+    barrel_paths: list[str],
+    repo_root: Path,
+    conn: sqlite3.Connection,
+    language: str,
+    max_import_candidates: int,
+    depth: int,
+    visited: set[tuple[str, str]],
+) -> str | None:
+    """Follow a re-export chain through barrel files to the real declarer.
+
+    P4 — barrel re-export following. A barrel (e.g. index.ts) re-exports a name
+    from a sibling but does not declare it. This walks each barrel's OWN
+    import_mappings for `exported`, resolves the re-export source to file(s),
+    checks whether those declare the name, and recurses if they are themselves
+    barrels — up to `depth` more hops.
+
+    Returns the single declaring file path on success, or None when the chain
+    dead-ends, branches ambiguously, exceeds depth, or cycles. Never raises.
+
+    Args:
+        exported:       The exported name being chased (stable across hops here —
+                        re-exports modeled as non-aliased named bindings).
+        barrel_paths:   Candidate barrel file paths to inspect at this hop.
+        repo_root:      Repo root for import-source resolution.
+        conn:           DB connection (read-only).
+        language:       Language of the chain (TS/JS barrels in practice).
+        max_import_candidates: Per-import candidate cap (perf bound).
+        depth:          Remaining hops allowed (decremented per recursion).
+        visited:        (file, name) pairs already seen — cycle + repeat-DB guard.
+    """
+    if depth <= 0:
+        return None
+
+    for barrel_path in barrel_paths:
+        key = (barrel_path, exported)
+        if key in visited:
+            # Cycle or already-explored barrel — skip to guarantee termination
+            # and avoid repeated DB hits (the per-resolution cache requirement).
+            continue
+        visited.add(key)
+
+        # Load THIS barrel's own re-export mappings for the exported name.
+        barrel_maps = load_import_mappings(conn, barrel_path)
+        try:
+            barrel_dir = Path(barrel_path)
+        except Exception:  # noqa: BLE001
+            continue
+
+        for m in barrel_maps:
+            if m["is_wildcard"] or m["is_namespace"]:
+                continue
+            # Match on the local binding the barrel re-exports under (the name a
+            # consumer sees) — equals `exported` for plain `export { X } from`.
+            if m["local_name"] != exported:
+                continue
+
+            next_exported = m["exported_name"]
+            next_paths = _resolve_barrel_source(
+                m["source_module"], barrel_dir, repo_root, language,
+                max_import_candidates,
+            )
+            if not next_paths:
+                continue
+
+            # Does any resolved file actually DECLARE the name? → real declarer.
+            declaring = _declaring_files(conn, next_exported, next_paths)
+            if len(declaring) == 1:
+                return declaring[0]
+            if len(declaring) > 1:
+                # Branches to multiple declarers → genuinely ambiguous; stop.
+                return None
+
+            # None declare it → those files are themselves barrels; recurse.
+            hit = _chase_barrel(
+                next_exported, next_paths, repo_root, conn, language,
+                max_import_candidates, depth - 1, visited,
+            )
+            if hit is not None:
+                return hit
+
+    return None
+
+
+def _declaring_files(
+    conn: sqlite3.Connection,
+    name: str,
+    candidate_paths: list[str],
+) -> list[str]:
+    """Return which of candidate_paths declare `name` in the index. Never raises."""
+    try:
+        rows = conn.execute(
+            """
+            SELECT f.path FROM symbols s
+            JOIN files f ON f.id = s.file_id
+            WHERE s.name = ? AND f.path IN ({})
+            """.format(",".join("?" * len(candidate_paths))),
+            [name, *candidate_paths],
+        ).fetchall()
+    except Exception:  # noqa: BLE001
+        return []
+    return [row["path"] for row in rows]
+
+
 def _resolve_with_import_promotion(
     target_name: str,
     name_counts: dict[str, int],
@@ -196,10 +343,16 @@ def _resolve_with_import_promotion(
     Checks same-file import mappings for a binding of target_name to exactly
     one indexed declaring file. If found, promotes to EXTRACTED 'import'.
 
+    P4: when the resolved source file does NOT itself declare the exported name
+    (i.e. it is a barrel that re-exports from siblings), the chain is followed
+    through the barrel's OWN import_mappings up to SEAM_BARREL_DEPTH hops to find
+    the real declarer (bounded + cycle-safe + cached per (file, name)).
+
     Falls through to name-count resolution when:
     - No import binding found.
     - Import source resolves to no indexed file (third-party).
-    - Resolved file does NOT declare the exported name (prevents false promotion).
+    - Resolved file does NOT declare the exported name AND no barrel chain
+      reaches a single declarer (prevents false promotion).
     - Import is wildcard (no specific binding — star import, story 27).
 
     Args are pre-validated by the caller; this function does not guard them.
@@ -217,12 +370,24 @@ def _resolve_with_import_promotion(
             continue
 
         # This import binds target_name locally. Resolve the source module to file paths.
-        candidate_paths = resolve_import_source(
-            mapping["source_module"],
-            referencing_file,
-            repo_root,
-            language,
-        )[:max_import_candidates]
+        # When barrel following is enabled, a directory import (`from './barrel'`)
+        # additionally resolves to its index.* entry so the chain can be chased;
+        # SEAM_BARREL_DEPTH=0 uses the plain resolver → byte-identical to pre-P4.
+        if config.SEAM_BARREL_DEPTH > 0:
+            candidate_paths = _resolve_barrel_source(
+                mapping["source_module"],
+                referencing_file,
+                repo_root,
+                language,
+                max_import_candidates,
+            )
+        else:
+            candidate_paths = resolve_import_source(
+                mapping["source_module"],
+                referencing_file,
+                repo_root,
+                language,
+            )[:max_import_candidates]
 
         if not candidate_paths:
             # Third-party or unresolvable source — fall through to name-count rule.
@@ -236,19 +401,7 @@ def _resolve_with_import_promotion(
 
         # Check which candidate files actually declare the exported name in the index.
         exported = mapping["exported_name"]
-        try:
-            rows = conn.execute(
-                """
-                SELECT f.path FROM symbols s
-                JOIN files f ON f.id = s.file_id
-                WHERE s.name = ? AND f.path IN ({})
-                """.format(",".join("?" * len(candidate_paths))),
-                [exported, *candidate_paths],
-            ).fetchall()
-        except Exception:  # noqa: BLE001
-            continue
-
-        declaring_paths = [row["path"] for row in rows]
+        declaring_paths = _declaring_files(conn, exported, candidate_paths)
         if len(declaring_paths) == 1:
             # Exactly one indexed file declares the name → promote to EXTRACTED
             return Resolution(
@@ -256,9 +409,30 @@ def _resolve_with_import_promotion(
                 resolved_by=RESOLVED_BY_IMPORT,
                 best_candidate=declaring_paths[0],
             )
-        # 0 or >1 declaring files — can't promote; fall through to name-count rule.
+        # 0 or >1 declaring files — can't promote directly; fall through.
         # Debug logs so "why AMBIGUOUS not EXTRACTED" is answerable without reading source.
         if not declaring_paths:
+            # P4: the resolved source declares nothing — it may be a BARREL that
+            # re-exports the name from a sibling. Chase the re-export chain
+            # (bounded by SEAM_BARREL_DEPTH, cycle-safe, cached per (file, name))
+            # to find the real declarer. SEAM_BARREL_DEPTH=0 disables → pre-P4.
+            if config.SEAM_BARREL_DEPTH > 0:
+                hit = _chase_barrel(
+                    exported=exported,
+                    barrel_paths=candidate_paths,
+                    repo_root=repo_root,
+                    conn=conn,
+                    language=language,
+                    max_import_candidates=max_import_candidates,
+                    depth=config.SEAM_BARREL_DEPTH,
+                    visited=set(),
+                )
+                if hit is not None:
+                    return Resolution(
+                        confidence=CONFIDENCE_EXTRACTED,
+                        resolved_by=RESOLVED_BY_IMPORT,
+                        best_candidate=hit,
+                    )
             logger.debug(
                 "_resolve_with_import_promotion: %r — exported name %r not declared in resolved file(s) %s",
                 target_name,

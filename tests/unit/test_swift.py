@@ -606,3 +606,94 @@ class TestSwiftBuiltins:
         from seam.analysis.builtins import is_builtin
 
         assert is_builtin("print", "unknown_lang") is False
+
+
+# ── P5: Swift inter-class call edges (lightweight receiver-type inference) ──────
+
+
+def _edges_for_swift_source(src: str, tmp_path: Path) -> list[Edge]:
+    """Write Swift source to a temp file, parse it, and return its call edges.
+
+    Used by the type-inference tests to build small focused ASTs without bloating
+    the shared sample.swift fixture (P5 pattern: parse_swift + fixture-style temp file).
+    """
+    from seam.indexer.parser import parse_swift
+
+    f = tmp_path / "inf.swift"
+    f.write_text(src)
+    root = parse_swift(f)
+    assert root is not None, "inline Swift source failed to parse"
+    return [e for e in extract_edges(root, "swift", f) if e["kind"] == "call"]
+
+
+class TestSwiftTypeInference:
+    """P5: self.method() and instantiated-receiver calls produce qualified Type.method edges."""
+
+    SELF_SRC = (
+        "class Repo {\n"
+        "    func save() {\n"
+        "        self.persist()\n"
+        "    }\n"
+        "    func persist() {}\n"
+        "}\n"
+    )
+
+    VAR_SRC = (
+        "class Foo {\n"
+        "    func bar() {}\n"
+        "}\n"
+        "func use() {\n"
+        "    let x = Foo()\n"
+        "    x.bar()\n"
+        "}\n"
+    )
+
+    INLINE_SRC = (
+        "class Mailer {\n"
+        "    func send() {}\n"
+        "}\n"
+        "func notify() {\n"
+        "    Mailer().send()\n"
+        "}\n"
+    )
+
+    BARE_SRC = "func caller() {\n    callee()\n}\nfunc callee() {}\n"
+
+    def test_self_method_call_qualified_edge(self, tmp_path: Path) -> None:
+        """self.persist() inside Repo.save → call edge target 'Repo.persist'."""
+        edges = _edges_for_swift_source(self.SELF_SRC, tmp_path)
+        e = _edge(edges, target="Repo.persist", kind="call")
+        assert e is not None, f"Expected 'Repo.persist' edge, got: {[x['target'] for x in edges]}"
+        assert e["source"] == "Repo.save", f"Expected source='Repo.save', got {e['source']}"
+
+    def test_local_var_instantiation_qualified_edge(self, tmp_path: Path) -> None:
+        """let x = Foo(); x.bar() → call edge target 'Foo.bar'."""
+        edges = _edges_for_swift_source(self.VAR_SRC, tmp_path)
+        e = _edge(edges, target="Foo.bar", kind="call")
+        assert e is not None, f"Expected 'Foo.bar' edge, got: {[x['target'] for x in edges]}"
+
+    def test_inline_instantiation_qualified_edge(self, tmp_path: Path) -> None:
+        """Mailer().send() → call edge target 'Mailer.send'."""
+        edges = _edges_for_swift_source(self.INLINE_SRC, tmp_path)
+        e = _edge(edges, target="Mailer.send", kind="call")
+        assert e is not None, f"Expected 'Mailer.send' edge, got: {[x['target'] for x in edges]}"
+
+    def test_bare_call_still_works(self, tmp_path: Path) -> None:
+        """A bare callee() call still produces an unqualified 'callee' edge."""
+        edges = _edges_for_swift_source(self.BARE_SRC, tmp_path)
+        e = _edge(edges, target="callee", kind="call")
+        assert e is not None, f"Expected bare 'callee' edge, got: {[x['target'] for x in edges]}"
+        assert e["source"] == "caller"
+
+    def test_type_inference_off_reverts_to_bare_only(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """SEAM_SWIFT_TYPE_INFERENCE=off → self/typed-receiver calls emit no edge; bare still works."""
+        import seam.config as config
+
+        monkeypatch.setattr(config, "SEAM_SWIFT_TYPE_INFERENCE", "off")
+        self_edges = _edges_for_swift_source(self.SELF_SRC, tmp_path)
+        assert _edge(self_edges, target="Repo.persist", kind="call") is None
+        assert _edge(self_edges, target="persist", kind="call") is None
+        bare_edges = _edges_for_swift_source(self.BARE_SRC, tmp_path)
+        assert _edge(bare_edges, target="callee", kind="call") is not None

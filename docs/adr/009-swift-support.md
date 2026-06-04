@@ -85,3 +85,48 @@ partial index with ERROR-dropped symbols is an invisible, harder-to-debug regres
   and what the acceptance bar is.
 - `tree-sitter-swift` is added to `pyproject.toml` as a pinned dependency.
 - `tree-sitter-kotlin` is intentionally NOT added.
+
+## Addendum (P5, 2026-06-04) — lightweight Swift inter-class call edges
+
+Phase 10 shipped Swift with **bare-identifier call edges only**: `obj.method()` and
+`self.method()` were SKIPPED (row 13 of the table above). The result was empty caller /
+context / impact / trace lists for any code using member calls — the dominant Swift idiom.
+Swift `impact`/`context`/`callers`/`trace` cells scored 0–1 in the cross-tool eval.
+
+**Decision (P5):** add *lightweight, function-scope-local* receiver-type inference at INDEX
+time for the two highest-value patterns only (MVP), gated on `SEAM_SWIFT_TYPE_INFERENCE`
+(on/off, default on):
+
+| Pattern | Resolved target |
+|---------|-----------------|
+| `self.method()` | `<EnclosingType>.method` (enclosing class/struct/actor/extension) |
+| `ClassName().method()` | `ClassName.method` (inline instantiation receiver) |
+| `let x = ClassName(); x.method()` | `ClassName.method` (function-scope `var→class` dict) |
+
+Tracking is a plain dict built during the existing AST walk — no fixpoint propagation, no
+cross-file binding accumulator, no type-environment system (those are explicitly out of
+scope per the roadmap's "DO NOT COPY" list). Bindings are reset on entering each
+`function_body`, so they never leak across function scopes. An **unknown receiver yields no
+edge** (never a wrong global-name edge). With the knob `off`, navigation-call resolution is
+disabled entirely and behavior is byte-identical to pre-P5 (bare calls only). No schema
+change; edges stay string-name-keyed (`Type.method`).
+
+**Remaining limits (deliberately not addressed in P5):**
+
+- **Combine publisher chains** — `publisher.sink { ... }.store(in: &cancellables)` and other
+  fluent reactive chains resolve the receiver to the result of a prior call, which P5 does
+  not type. These navigation calls are skipped (no edge).
+- **Protocol / dynamic dispatch** — a call on a value typed as a protocol
+  (`let d: Describable = repo; d.describe()`) cannot be resolved to a concrete conforming
+  type without virtual-dispatch reasoning over the conformance graph (explicitly out of scope).
+  Such calls are skipped rather than guessed.
+- **Parameter / property / closure-captured receivers** — only `self`, inline
+  instantiations, and same-scope `let/var x = ClassName()` bindings are tracked. A receiver
+  that is a function parameter, a stored property, or captured in a closure is not typed and
+  produces no edge.
+- **Chained instantiations** (`Foo().bar().baz()` beyond the first hop) — only the first
+  navigation level off a direct instantiation is resolved.
+
+These limits keep the change under ~150 lines, keep the read path untouched (all work is
+index-time, materialized as edges), and avoid the false-positive edges that fluent/dynamic
+dispatch synthesis would introduce.

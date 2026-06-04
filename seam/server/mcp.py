@@ -122,19 +122,23 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         return _finalize(handle_seam_query(conn, concept, root, limit=limit))
 
     @mcp.tool()
-    def seam_context(symbol: str, verbose: bool = True) -> Any:
+    def seam_context(symbol: str = "", verbose: bool = True, uid: str | None = None) -> Any:
         """Get a 360-degree view of a symbol: its callers, callees, file location, and docstring.
 
         Use before touching any existing function or class.
+
+        Pass uid (a stable handle from a seam_search/seam_query result) instead of
+        symbol to pin the EXACT (file, line) symbol — bypassing homonym ambiguity and
+        saving a disambiguation round-trip. When uid is given, symbol is ignored.
 
         Set verbose=false to omit heavy enrichment fields (decorators, is_exported,
         visibility, qualified_name) and receive a compact response. signature and all
         core identity fields are always kept.
         verbose=true (default) is byte-identical to the pre-Phase-8 output.
 
-        Returns {found: false} when the symbol is not in the index.
+        Returns {found: false} when the symbol/uid is not in the index.
         """
-        return _finalize(handle_seam_context(conn, symbol, root, verbose=verbose))
+        return _finalize(handle_seam_context(conn, symbol, root, verbose=verbose, uid=uid))
 
     @mcp.tool()
     def seam_search(text: str, limit: int = _SEARCH_LIMIT_DEFAULT) -> Any:
@@ -147,12 +151,13 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
 
     @mcp.tool()
     def seam_impact(
-        target: str,
+        target: str = "",
         direction: str = _IMPACT_DIRECTION_DEFAULT,
         max_depth: int = _IMPACT_DEPTH_DEFAULT,
         include_tests: bool = False,
         verbose: bool = True,
         limit: int = _IMPACT_LIMIT_DEFAULT,
+        uid: str | None = None,
     ) -> Any:
         """Blast-radius analysis — what breaks if I change this symbol?
 
@@ -186,6 +191,9 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         from the full pre-cap result, so the blast radius size is always visible.
         When entries were truncated, truncated: {direction: {tier: omitted}} is included.
 
+        Pass uid (a stable handle from a seam_search/seam_query result) instead of
+        target to pin the exact symbol and skip homonym re-disambiguation.
+
         Use before editing any symbol to understand the blast radius.
         """
         return _finalize(
@@ -198,15 +206,18 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
                 include_tests=include_tests,
                 verbose=verbose,
                 limit=limit,
+                uid=uid,
             )
         )
 
     @mcp.tool()
     def seam_trace(
-        source: str,
-        target: str,
+        source: str = "",
+        target: str = "",
         max_depth: int = _TRACE_DEPTH_DEFAULT,
         verbose: bool = True,
+        uid: str | None = None,
+        target_uid: str | None = None,
     ) -> Any:
         """Trace the call/dependency path between two symbols.
 
@@ -229,9 +240,15 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
 
         Set verbose=false to omit heavy fields (resolved_by, best_candidate) from
         every hop and edge hop. verbose=true (default) is byte-identical to pre-Phase-8.
+
+        Pass uid / target_uid (stable handles from seam_search/seam_query results)
+        instead of source / target to pin exact symbols and skip re-disambiguation.
         """
         return _finalize(
-            handle_seam_trace(conn, source, target, root, max_depth=max_depth, verbose=verbose)
+            handle_seam_trace(
+                conn, source, target, root, max_depth=max_depth, verbose=verbose,
+                uid=uid, target_uid=target_uid,
+            )
         )
 
     @mcp.tool()

@@ -11,6 +11,7 @@ Error conventions (matching mcp-tools.yaml):
   {"error": "INVALID_QUERY", "message": "..."} — bad FTS5 syntax (seam_search only)
 """
 
+import hashlib
 import logging
 import sqlite3
 from pathlib import Path
@@ -129,6 +130,24 @@ def _serialize_edge_hop(hop: EdgeHop, root: Path | None = None) -> dict[str, Any
     }
 
 
+def _trace_not_found(source: str, target: str) -> dict[str, Any]:
+    """Empty trace result for an unknown uid/target_uid (P6c).
+
+    Mirrors the shape trace() produces for a genuinely-not-connected pair so an
+    unknown handle reads as "no path", not as an error.
+    """
+    return {
+        "found": False,
+        "source": source,
+        "target": target,
+        "paths": [],
+        "callers_source": [],
+        "callees_source": [],
+        "callers_target": [],
+        "callees_target": [],
+    }
+
+
 def _relativize(abs_path: str, root: Path) -> str:
     """Return abs_path relative to root; falls back to abs_path if not under root."""
     try:
@@ -140,6 +159,61 @@ def _relativize(abs_path: str, root: Path) -> str:
 def _clamp(value: int, lo: int, hi: int) -> int:
     """Clamp value to [lo, hi] inclusive."""
     return max(lo, min(hi, value))
+
+
+# ── Stable symbol UID handle (P6c) ────────────────────────────────────────────
+
+
+def compute_uid(file_path: str, start_line: int) -> str:
+    """Compute a stable, opaque handle for a symbol: sha1(file_path)[:8] + ':' + line.
+
+    P6c: a homonym follow-up otherwise forces an agent to re-disambiguate by file
+    path (an extra round-trip). The UID is a pure computed string — NO schema
+    change, NO extra DB query. It is surfaced on search/query results and accepted
+    as an alternative to `name` on context/impact/trace, where it resolves to the
+    EXACT (file, line) symbol, bypassing homonym ambiguity.
+
+    file_path is the ABSOLUTE path stored in the files table. We hash the absolute
+    path (not the relativized output path) so the UID can be resolved back to the
+    exact row by recomputing it over each candidate symbol's absolute path.
+    """
+    digest = hashlib.sha1(file_path.encode("utf-8")).hexdigest()[:8]
+    return f"{digest}:{start_line}"
+
+
+def _resolve_uid(conn: sqlite3.Connection, uid: str) -> tuple[str, str, int] | None:
+    """Resolve a UID handle to the exact (name, abs_file_path, start_line) it pins.
+
+    Strategy: a UID is sha1(abs_path)[:8] + ':' + start_line. The start_line is
+    recoverable directly; the file prefix is NOT reversible, so we narrow by
+    start_line in SQL (cheap — uses the line value) and recompute the UID for each
+    candidate symbol at that line until one matches. This keeps the read path lean:
+    no schema change, no O(files) scan — only the (typically tiny) set of symbols
+    that begin at the same line is examined.
+
+    Returns None for a malformed UID or one that matches no indexed symbol (the
+    same not-found contract as an unknown symbol name).
+    """
+    prefix, sep, line_str = uid.partition(":")
+    if not sep or not line_str.isdigit():
+        return None
+    start_line = int(line_str)
+
+    rows = conn.execute(
+        """
+        SELECT s.name AS name, f.path AS file
+        FROM symbols s
+        JOIN files f ON f.id = s.file_id
+        WHERE s.start_line = ?
+        ORDER BY s.id
+        """,
+        (start_line,),
+    ).fetchall()
+
+    for row in rows:
+        if compute_uid(row["file"], start_line) == uid:
+            return row["name"], row["file"], start_line
+    return None
 
 
 def _invalid_input(message: str) -> dict[str, Any]:
@@ -195,9 +269,13 @@ def handle_seam_query(
         return _invalid_query(f"FTS5 query syntax error: {exc}")
 
     # Relativize file paths so consumers get portable paths.
+    # uid is computed from the ABSOLUTE path (r["file"]) BEFORE relativizing, so it
+    # round-trips through _resolve_uid (P6c). It lets a follow-up context/impact/trace
+    # call pin this exact symbol by handle — no homonym re-disambiguation round-trip.
     return [
         {
             "symbol": r["symbol"],
+            "uid": compute_uid(r["file"], r["line"]),
             "file": _relativize(r["file"], root),
             "line": r["line"],
             "score": r["score"],
@@ -213,21 +291,36 @@ def handle_seam_context(
     symbol: str,
     root: Path,
     verbose: bool = True,
+    *,
+    uid: str | None = None,
 ) -> dict[str, Any] | None:
     """Handler for the seam_context MCP tool.
 
     Returns a ContextResult dict for a known symbol, None for unknown symbols,
     or an error dict on blank input.
 
+    uid (P6c): an optional stable handle (from a search/query result) that pins the
+    EXACT (file, line) symbol — an alternative to `symbol` that bypasses homonym
+    ambiguity and saves the disambiguation round-trip. When provided, `symbol` is
+    ignored. An unknown uid returns None (same not-found contract as an unknown name).
+
     verbose=True (default): output byte-identical to pre-Phase-8.
     verbose=False: decorators, is_exported, visibility, qualified_name are omitted.
                    signature and all core fields are kept.
     """
-    # Validate: symbol must not be empty or whitespace-only
-    if not symbol or not symbol.strip():
-        return _invalid_input("symbol must not be empty or whitespace-only")
-
-    result = engine.context(conn, symbol.strip())
+    if uid is not None:
+        # UID path: resolve the handle to the exact declaring (file, line) and build
+        # context for THAT row — not the first homonym by name.
+        resolved = _resolve_uid(conn, uid)
+        if resolved is None:
+            return None
+        _name, abs_file, line = resolved
+        result = engine.context_at(conn, abs_file, line)
+    else:
+        # Validate: symbol must not be empty or whitespace-only
+        if not symbol or not symbol.strip():
+            return _invalid_input("symbol must not be empty or whitespace-only")
+        result = engine.context(conn, symbol.strip())
 
     if result is None:
         return None
@@ -290,10 +383,12 @@ def handle_seam_search(
         # FTS5 rejects malformed query syntax with OperationalError
         return _invalid_query(f"FTS5 query syntax error: {exc}")
 
-    # Relativize file paths
+    # Relativize file paths. uid is computed from the ABSOLUTE path before
+    # relativizing so it resolves back to this exact symbol (P6c).
     return [
         {
             "symbol": r["symbol"],
+            "uid": compute_uid(r["file"], r["line"]),
             "file": _relativize(r["file"], root),
             "line": r["line"],
             "snippet": r["snippet"],
@@ -354,6 +449,8 @@ def handle_seam_impact(
     include_tests: bool = False,
     verbose: bool = True,
     limit: int = config.SEAM_IMPACT_MAX_RESULTS,
+    *,
+    uid: str | None = None,
 ) -> dict[str, Any]:
     """Handler for the seam_impact MCP tool.
 
@@ -405,6 +502,16 @@ def handle_seam_impact(
     Error shapes:
         {"error": "INVALID_INPUT", "message": "..."} — blank target or invalid direction.
     """
+    # uid (P6c): a stable handle pins the exact symbol. The impact graph is
+    # name-keyed (edges store names), so we resolve the uid to its symbol NAME and
+    # analyze that — the handle just removes the homonym disambiguation round-trip.
+    # An unknown uid returns the standard found=False result (not an error).
+    if uid is not None:
+        resolved = _resolve_uid(conn, uid)
+        if resolved is None:
+            return {"found": False, "target": uid, "risk_summary": {}}
+        target = resolved[0]
+
     # Validate: target must not be empty or whitespace-only.
     if not target or not target.strip():
         return _invalid_input("target must not be empty or whitespace-only")
@@ -510,6 +617,9 @@ def handle_seam_trace(
     root: Path,
     max_depth: int = _TRACE_DEPTH_DEFAULT,
     verbose: bool = True,
+    *,
+    uid: str | None = None,
+    target_uid: str | None = None,
 ) -> dict[str, Any]:
     """Handler for the seam_trace MCP tool.
 
@@ -552,6 +662,21 @@ def handle_seam_trace(
     Error shapes:
         {"error": "INVALID_INPUT", "message": "..."} — blank source or target.
     """
+    # uid / target_uid (P6c): stable handles pin the exact source/target symbols.
+    # The path graph is name-keyed, so each uid resolves to its symbol NAME — the
+    # handle just removes the disambiguation round-trip. An unknown uid yields the
+    # standard "not connected" result (found=False), not an error.
+    if uid is not None:
+        resolved_src = _resolve_uid(conn, uid)
+        if resolved_src is None:
+            return _trace_not_found(uid, target_uid or target)
+        source = resolved_src[0]
+    if target_uid is not None:
+        resolved_tgt = _resolve_uid(conn, target_uid)
+        if resolved_tgt is None:
+            return _trace_not_found(source, target_uid)
+        target = resolved_tgt[0]
+
     # Validate: source and target must not be empty or whitespace-only.
     if not source or not source.strip():
         return _invalid_input("source must not be empty or whitespace-only")

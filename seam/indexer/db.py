@@ -31,6 +31,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from seam.analysis.processes import compute_entry_score
+
 if TYPE_CHECKING:
     from seam.analysis.imports import ImportMapping
     from seam.indexer.graph import Comment, Edge, Symbol
@@ -130,10 +132,10 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
         row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
         version = int(row["value"]) if row else 0
 
-        if version >= 7:
+        if version >= 9:
             return  # Already up to date — no-op.
 
-        # Version is < 7: run pending migrations in order.
+        # Version is < 8: run pending migrations in order.
         # Each migration is guarded by its own version check — safe to call
         # when already at or above that version (they become no-ops).
         if version < 2:
@@ -151,6 +153,12 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
         # v6→v7: Semantic search migration (adds embeddings table).
         if version < 7:
             _run_migration_v6_to_v7(conn)
+        # v7→v8: P2 cluster quality migration (adds clusters.cohesion column).
+        if version < 8:
+            _run_migration_v7_to_v8(conn)
+        # v8→v9: P6b framework entry-point scoring (adds symbols.entry_score column).
+        if version < 9:
+            _run_migration_v8_to_v9(conn)
 
     except Exception as exc:  # noqa: BLE001
         # Do NOT raise here — failing to auto-migrate should not crash a read-only
@@ -550,6 +558,131 @@ def _run_migration_v6_to_v7(conn: sqlite3.Connection) -> None:
         ) from exc
 
 
+def _run_migration_v7_to_v8(conn: sqlite3.Connection) -> None:
+    """Guarded migration: add clusters.cohesion column (v7 → v8).
+
+    Additive-only: adds a nullable REAL column to the clusters table if absent.
+    Does NOT backfill — cohesion stays NULL on existing cluster rows until the
+    next `seam init` recomputes clusters (which writes the value). Until then,
+    the search rescore path treats NULL cohesion as "no bonus" (byte-identical
+    ranking), so the additive migration changes nothing for existing indexes.
+
+    Steps:
+      1. ALTER TABLE clusters ADD COLUMN cohesion REAL (guarded by table_info).
+      2. Bump schema_version to '8'.
+
+    Guarded: runs only when stored version < 8.
+    Idempotent: the PRAGMA table_info check skips the ALTER when the column
+                already exists; the version guard prevents double-bumping.
+    Fresh-DB-safe: a brand-new DB seeded with schema_version='8' returns early.
+
+    Uses BEGIN IMMEDIATE / COMMIT for atomicity (consistent with v6→v7 pattern).
+    Raises RuntimeError on failure so caller knows the DB is in a bad state.
+    """
+    try:
+        row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
+        version = int(row["value"]) if row else 0
+
+        if version >= 8:
+            return  # Already at v8 or newer — no-op.
+
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # Step 1: add the nullable cohesion column if it does not already exist.
+            col_names = {
+                r["name"] for r in conn.execute("PRAGMA table_info(clusters)").fetchall()
+            }
+            if "cohesion" not in col_names:
+                conn.execute("ALTER TABLE clusters ADD COLUMN cohesion REAL")
+
+            # Step 2: bump schema_version to '8' as the last step before commit.
+            conn.execute("UPDATE metadata SET value = '8' WHERE key = 'schema_version'")
+            conn.execute("COMMIT")
+
+            logger.info(
+                "Migrated Seam index v%d->v8 (added clusters.cohesion column). "
+                "Run 'seam init' to populate cohesion for existing clusters.",
+                version,
+            )
+        except Exception as exc:  # noqa: BLE001
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(
+                "Seam DB migration v7->v8 failed; run 'seam init' to rebuild the index"
+            ) from exc
+    except RuntimeError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "Seam DB migration v7->v8 failed; run 'seam init' to rebuild the index"
+        ) from exc
+
+
+def _run_migration_v8_to_v9(conn: sqlite3.Connection) -> None:
+    """Guarded migration: add symbols.entry_score column (v8 → v9).
+
+    Additive-only: adds a nullable REAL column to the symbols table if absent.
+    Does NOT backfill — entry_score stays NULL on existing symbol rows until the
+    next `seam init` re-indexes (upsert_file computes the score from the file
+    path pattern + decorator text). Until then, list_entry_points() treats NULL
+    entry_score as the neutral baseline (1.0), so the additive migration changes
+    nothing for existing indexes (byte-identical ranking).
+
+    Steps:
+      1. ALTER TABLE symbols ADD COLUMN entry_score REAL (guarded by table_info).
+      2. Bump schema_version to '9'.
+
+    Guarded: runs only when stored version < 9.
+    Idempotent: the PRAGMA table_info check skips the ALTER when the column
+                already exists; the version guard prevents double-bumping.
+    Fresh-DB-safe: a brand-new DB seeded with schema_version='9' returns early.
+
+    Uses BEGIN IMMEDIATE / COMMIT for atomicity (consistent with v7→v8 pattern).
+    Raises RuntimeError on failure so caller knows the DB is in a bad state.
+    """
+    try:
+        row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
+        version = int(row["value"]) if row else 0
+
+        if version >= 9:
+            return  # Already at v9 or newer — no-op.
+
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # Step 1: add the nullable entry_score column if it does not already exist.
+            col_names = {
+                r["name"] for r in conn.execute("PRAGMA table_info(symbols)").fetchall()
+            }
+            if "entry_score" not in col_names:
+                conn.execute("ALTER TABLE symbols ADD COLUMN entry_score REAL")
+
+            # Step 2: bump schema_version to '9' as the last step before commit.
+            conn.execute("UPDATE metadata SET value = '9' WHERE key = 'schema_version'")
+            conn.execute("COMMIT")
+
+            logger.info(
+                "Migrated Seam index v%d->v9 (added symbols.entry_score column). "
+                "Run 'seam init' to populate entry_score for framework entry-point ranking.",
+                version,
+            )
+        except Exception as exc:  # noqa: BLE001
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(
+                "Seam DB migration v8->v9 failed; run 'seam init' to rebuild the index"
+            ) from exc
+    except RuntimeError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "Seam DB migration v8->v9 failed; run 'seam init' to rebuild the index"
+        ) from exc
+
+
 def _run_migration_v2_to_v3(conn: sqlite3.Connection) -> None:
     """Guarded migration: bump schema_version from 2 to 3 (adds comments table).
 
@@ -629,6 +762,12 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     # Run v6->v7 migration guard (adds embeddings table — semantic search foundation).
     _run_migration_v6_to_v7(conn)
 
+    # Run v7->v8 migration guard (adds clusters.cohesion column — P2 cluster quality).
+    _run_migration_v7_to_v8(conn)
+
+    # Run v8->v9 migration guard (adds symbols.entry_score column — P6b framework scoring).
+    _run_migration_v8_to_v9(conn)
+
     return conn
 
 
@@ -689,14 +828,18 @@ def upsert_file(
         conn.execute("DELETE FROM symbols WHERE file_id = ?", (file_id,))
         conn.execute("DELETE FROM comments WHERE file_id = ?", (file_id,))
 
-        # 4. Insert symbols — includes Phase 4 enrichment fields (schema v5).
+        # 4. Insert symbols — includes Phase 4 enrichment fields (schema v5) and the
+        #    P6b framework entry_score (schema v9, computed at index time from the
+        #    file path pattern + decorator text — see processes.compute_entry_score).
+        file_path_str = str(filepath)
         conn.executemany(
             """
             INSERT INTO symbols (
                 file_id, name, kind, start_line, end_line, docstring,
-                signature, decorators, is_exported, visibility, qualified_name
+                signature, decorators, is_exported, visibility, qualified_name,
+                entry_score
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -721,6 +864,10 @@ def upsert_file(
                     else None,
                     sym.get("visibility"),
                     sym.get("qualified_name"),
+                    # P6b: framework entry-point multiplier. Pure + never-raises; the
+                    # neutral baseline 1.0 is stored when nothing matches so ranking is
+                    # byte-identical to raw reach for non-entry symbols.
+                    compute_entry_score(file_path_str, sym.get("decorators")),
                 )
                 for sym in symbols
             ],
