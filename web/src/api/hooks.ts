@@ -218,7 +218,7 @@ export function useChanges(scope: ChangesScope = "working", enabled: boolean = t
  *
  * @returns data — the flat symbols array (not the wrapper object)
  */
-export function useHubs(limit: number = 8) {
+export function useHubs(limit: number = 60) {
   return useQuery<HubSymbol[]>({
     queryKey: ["hubs", limit],
     queryFn: async () => {

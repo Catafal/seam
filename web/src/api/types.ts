@@ -228,7 +228,9 @@ export interface paths {
          * Get Hubs
          * @description Return the most-connected symbols — landing-page entry points.
          *
-         *     Reuses graph_api.top_hub_symbols (degree-ranked, defined-only).
+         *     Reuses graph_api.top_hub_symbols (degree-ranked, defined-only). The default
+         *     is high enough (60) that the Explorer's area cards each get covered when it
+         *     buckets hubs by their declaring path.
          */
         get: operations["get_hubs_api_hubs_get"];
         put?: never;
@@ -449,6 +451,8 @@ export interface components {
             kind: string | null;
             /** Degree */
             degree: number;
+            /** Path */
+            path: string | null;
         };
         /**
          * HubsResponse

@@ -433,6 +433,8 @@ def test_top_hub_symbols_ranks_by_degree(tmp_db: tuple[sqlite3.Connection, Path]
     assert names[0] == "hub"  # degree 3, highest
     assert hubs[0]["degree"] == 3
     assert hubs[0]["kind"] == "function"
+    # Each hub carries a representative declaring path (for area bucketing).
+    assert hubs[0]["path"] == a
 
 
 def test_top_hub_symbols_excludes_undefined_names(tmp_db: tuple[sqlite3.Connection, Path]) -> None:

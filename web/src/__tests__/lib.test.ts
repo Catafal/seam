@@ -231,3 +231,102 @@ describe("squarify", () => {
     expect(squarify([], rect)).toEqual([]);
   });
 });
+
+// ── deriveAreas (functional area cards) ─────────────────────────────────────────
+
+import { deriveAreas } from "../lib/deriveAreas";
+import type { HubSymbol } from "../api/schema-types";
+
+describe("deriveAreas", () => {
+  const sym = (path: string, name: string, kind = "function"): StructureSymbol => ({
+    path,
+    name,
+    kind,
+    line: 1,
+    qualified_name: name,
+  });
+
+  // pkg dominates (6 of 7 non-test symbols) and has sub-dirs → unwraps.
+  const symbols: StructureSymbol[] = [
+    sym("pkg/indexer/a.py", "index_one"),
+    sym("pkg/indexer/a.py", "walk"),
+    sym("pkg/indexer/a.py", "sha1"),
+    sym("pkg/query/b.py", "runQuery"),
+    sym("pkg/query/b.py", "rescore"),
+    sym("pkg/config.py", "settings"), // loose file under pkg → core
+    sym("web/x.ts", "render"),
+    sym("tests/test_a.py", "test_one"), // test → hidden by default
+    sym("tests/test_a.py", "test_two"),
+    sym("tests/test_a.py", "test_three"),
+    sym("tests/test_a.py", "test_four"),
+  ];
+
+  it("unwraps the dominant package into sub-areas, tests hidden", () => {
+    const areas = deriveAreas(symbols, [], { includeTests: false });
+    const names = areas.map((a) => a.name);
+    expect(names).toContain("indexer");
+    expect(names).toContain("query");
+    expect(names).toContain("web");
+    expect(names).toContain("core");
+    expect(names).not.toContain("pkg"); // unwrapped, not a single giant card
+    expect(names).not.toContain("tests"); // hidden by default
+    // Largest area first.
+    expect(areas[0].name).toBe("indexer");
+    const indexer = areas.find((a) => a.name === "indexer")!;
+    expect(indexer.fileCount).toBe(1);
+    expect(indexer.symbolCount).toBe(3);
+  });
+
+  it("folds loose package files into a 'core' area", () => {
+    const areas = deriveAreas(symbols, [], { includeTests: false });
+    const core = areas.find((a) => a.name === "core")!;
+    expect(core.key).toBe("pkg/__core__");
+    expect(core.symbolCount).toBe(1);
+    expect(core.paths).toEqual(["pkg/config.py"]);
+  });
+
+  it("includes a tests area when includeTests is true", () => {
+    const areas = deriveAreas(symbols, [], { includeTests: true });
+    expect(areas.map((a) => a.name)).toContain("tests");
+  });
+
+  it("buckets hubs into their area as key symbols", () => {
+    const hubs: HubSymbol[] = [
+      { name: "index_one", kind: "function", degree: 9, path: "pkg/indexer/a.py" },
+      { name: "runQuery", kind: "function", degree: 5, path: "pkg/query/b.py" },
+      { name: "settings", kind: "function", degree: 2, path: "pkg/config.py" },
+    ];
+    const areas = deriveAreas(symbols, hubs, { includeTests: false });
+    expect(areas.find((a) => a.name === "indexer")!.keySymbols).toContain("index_one");
+    expect(areas.find((a) => a.name === "query")!.keySymbols).toContain("runQuery");
+    expect(areas.find((a) => a.name === "core")!.keySymbols).toContain("settings");
+  });
+
+  it("caps key symbols at 3 per area", () => {
+    const hubs: HubSymbol[] = ["a", "b", "c", "d"].map((n, i) => ({
+      name: n,
+      kind: "function",
+      degree: 10 - i,
+      path: "pkg/indexer/a.py",
+    }));
+    const areas = deriveAreas(symbols, hubs, { includeTests: false });
+    expect(areas.find((a) => a.name === "indexer")!.keySymbols).toHaveLength(3);
+  });
+
+  it("returns [] for an empty index", () => {
+    expect(deriveAreas([], [], { includeTests: false })).toEqual([]);
+  });
+
+  it("falls back to top-level dirs when no package dominates", () => {
+    const flat: StructureSymbol[] = [
+      sym("a/x.py", "f1"),
+      sym("a/x.py", "f2"),
+      sym("b/y.py", "g1"),
+      sym("b/y.py", "g2"),
+      sym("c/z.py", "h1"),
+      sym("c/z.py", "h2"),
+    ];
+    const names = deriveAreas(flat, [], { includeTests: false }).map((a) => a.name).sort();
+    expect(names).toEqual(["a", "b", "c"]);
+  });
+});

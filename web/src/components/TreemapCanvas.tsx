@@ -42,11 +42,32 @@ function NodeGlyph({ node }: { node: TreeNode }) {
 export interface TreemapCanvasProps {
   /** Called with a symbol name when a leaf (function/method) rect is clicked. */
   onSelectSymbol: (name: string) => void;
+  /** When set, only these file paths are mapped (scopes the treemap to one area). */
+  scopePaths?: string[];
+  /** Root label when scoped (the area name). Defaults to "repo". */
+  scopeName?: string;
+  /** When set, a "‹ Areas" crumb returns to the functional-area cards. */
+  onBack?: () => void;
 }
 
-export function TreemapCanvas({ onSelectSymbol }: TreemapCanvasProps) {
+export function TreemapCanvas({
+  onSelectSymbol,
+  scopePaths,
+  scopeName,
+  onBack,
+}: TreemapCanvasProps) {
   const { data: symbols, isLoading } = useStructure(true);
-  const root = useMemo(() => buildTree(symbols ?? [], "repo"), [symbols]);
+  // Scope to an area's exact file set when provided (membership, not prefix — so
+  // the synthetic "core" bucket scopes correctly too).
+  const scoped = useMemo(() => {
+    if (!scopePaths) return symbols ?? [];
+    const allow = new Set(scopePaths);
+    return (symbols ?? []).filter((s) => allow.has(s.path));
+  }, [symbols, scopePaths]);
+  const root = useMemo(
+    () => buildTree(scoped, scopeName ?? "repo"),
+    [scoped, scopeName],
+  );
 
   // Drill trail: nodes from root to the current view. Empty = at root.
   const [trail, setTrail] = useState<TreeNode[]>([]);
@@ -109,6 +130,16 @@ export function TreemapCanvas({ onSelectSymbol }: TreemapCanvasProps) {
     <div className="flex flex-col w-full h-full">
       {/* Breadcrumb */}
       <div className="flex items-center gap-1 px-4 py-2 border-b border-zinc-800 text-xs shrink-0 overflow-x-auto">
+        {onBack && (
+          <button
+            onClick={onBack}
+            className="flex items-center gap-0.5 text-zinc-500 hover:text-zinc-300 shrink-0 mr-1"
+            data-testid="back-to-areas"
+          >
+            ‹ Areas
+            <ChevronRight className="w-3 h-3 text-zinc-600" />
+          </button>
+        )}
         {breadcrumb.map((n, i) => (
           <span key={i} className="flex items-center gap-1 shrink-0">
             {i > 0 && <ChevronRight className="w-3 h-3 text-zinc-600" />}
@@ -120,7 +151,7 @@ export function TreemapCanvas({ onSelectSymbol }: TreemapCanvasProps) {
                   : "text-zinc-500 hover:text-zinc-300"
               }
             >
-              {i === 0 ? "repo" : n.name}
+              {i === 0 ? scopeName ?? "repo" : n.name}
             </button>
           </span>
         ))}

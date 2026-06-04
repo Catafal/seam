@@ -477,7 +477,9 @@ def test_hubs_happy_path(client: TestClient) -> None:
     # both authenticate_user and check have an edge between them → both are hubs
     assert "authenticate_user" in names or "check" in names
     for s in data["symbols"]:
-        assert set(s.keys()) == {"name", "kind", "degree"}
+        assert set(s.keys()) == {"name", "kind", "degree", "path"}
+        # path is relativized to the project root — never absolute.
+        assert s["path"] is None or not s["path"].startswith("/")
 
 
 def test_hubs_no_index(no_index_client: TestClient) -> None:

@@ -360,8 +360,10 @@ def top_hub_symbols(conn: sqlite3.Connection, limit: int = 8) -> list[dict[str, 
     builtins/stdlib (e.g. `print`, `len`) that appear only as edge targets are
     excluded — they have no row in `symbols`.
 
-    Returns [{name, kind, degree}] sorted by degree desc, then name. Empty list
-    on any DB error or empty index. NEVER raises.
+    Returns [{name, kind, degree, path}] sorted by degree desc, then name. `path`
+    is a representative declaring file (lowest-id row for the name — homonym-safe);
+    the explorer uses it to bucket hubs into functional areas. Empty list on any
+    DB error or empty index. NEVER raises.
     """
     try:
         rows = conn.execute(
@@ -369,7 +371,9 @@ def top_hub_symbols(conn: sqlite3.Connection, limit: int = 8) -> list[dict[str, 
             SELECT
                 d.name AS name,
                 d.degree AS degree,
-                (SELECT s.kind FROM symbols s WHERE s.name = d.name ORDER BY s.id LIMIT 1) AS kind
+                (SELECT s.kind FROM symbols s WHERE s.name = d.name ORDER BY s.id LIMIT 1) AS kind,
+                (SELECT f.path FROM symbols s JOIN files f ON f.id = s.file_id
+                 WHERE s.name = d.name ORDER BY s.id LIMIT 1) AS path
             FROM (
                 SELECT name, COUNT(*) AS degree
                 FROM (
@@ -388,7 +392,10 @@ def top_hub_symbols(conn: sqlite3.Connection, limit: int = 8) -> list[dict[str, 
     except sqlite3.Error:
         return []
 
-    return [{"name": r["name"], "kind": r["kind"], "degree": r["degree"]} for r in rows]
+    return [
+        {"name": r["name"], "kind": r["kind"], "degree": r["degree"], "path": r["path"]}
+        for r in rows
+    ]
 
 
 def list_structure(conn: sqlite3.Connection) -> list[dict[str, Any]]:

@@ -301,6 +301,8 @@ class HubSymbol(BaseModel):
     name: str
     kind: str | None
     degree: int
+    # Representative declaring file (relativized) — lets the UI bucket hubs by area.
+    path: str | None
 
 
 class HubsResponse(BaseModel):
@@ -846,18 +848,31 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
 
     @app.get("/api/hubs", response_model=HubsResponse, tags=["graph"])
     def get_hubs(
-        limit: int = Query(8, ge=1, le=50, description="How many hub symbols to return"),
+        limit: int = Query(60, ge=1, le=200, description="How many hub symbols to return"),
     ) -> HubsResponse:
         """Return the most-connected symbols — landing-page entry points.
 
-        Reuses graph_api.top_hub_symbols (degree-ranked, defined-only).
+        Reuses graph_api.top_hub_symbols (degree-ranked, defined-only). The default
+        is high enough (60) that the Explorer's area cards each get covered when it
+        buckets hubs by their declaring path.
         """
         conn = _get_conn(db_path)
         try:
             hubs = top_hub_symbols(conn, limit=limit)
         finally:
             conn.close()
-        return HubsResponse(symbols=[HubSymbol(**h) for h in hubs])
+        # Relativize each hub's representative path so the UI matches it against
+        # the (already relativized) structure paths when bucketing into areas.
+        symbols = [
+            HubSymbol(
+                name=h["name"],
+                kind=h["kind"],
+                degree=h["degree"],
+                path=_relativize_path(h["path"], root) if h["path"] else None,
+            )
+            for h in hubs
+        ]
+        return HubsResponse(symbols=symbols)
 
     # ── Route: GET /api/structure ─────────────────────────────────────────────
 

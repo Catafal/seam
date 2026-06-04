@@ -21,7 +21,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { DetailPanel } from "./components/DetailPanel";
 import { ChangesDrawer } from "./components/ChangesDrawer";
-import { TreemapCanvas } from "./components/TreemapCanvas";
+import { StructureOverview } from "./components/StructureOverview";
 import { useStatus, useSearch, useClusters, useHubs } from "./api/hooks";
 import type { ClusterItem, SearchResultItem, HubSymbol } from "./api/schema-types";
 import { clusterColor } from "./lib/clusterColor";
@@ -402,8 +402,8 @@ function HeaderToggle({
 
 /**
  * App root: assembles the header, search, mode toggle, and the main area.
- * The main area is the TreemapCanvas (structure overview), the GraphCanvas
- * (neighborhood with a center), or the LandingPage (no center yet).
+ * The main area is the StructureOverview (functional areas → structure treemap),
+ * the GraphCanvas (neighborhood with a center), or the LandingPage (no center yet).
  */
 function App() {
   // centerSymbol: drives the graph canvas; null = show landing page
@@ -522,7 +522,7 @@ function App() {
         {/* Left: overview / graph canvas / landing page */}
         <div className="flex-1 overflow-hidden relative">
           {mode === "overview" ? (
-            <TreemapCanvas onSelectSymbol={handleOpenFromOverview} />
+            <StructureOverview onSelectSymbol={handleOpenFromOverview} />
           ) : showGraph ? (
             <GraphCanvas
               center={centerSymbol!}
