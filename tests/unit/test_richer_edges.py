@@ -378,3 +378,93 @@ class TestPythonAliasedImports:
         targets = {e["target"] for e in import_edges}
         assert "Path" in targets, f"expected 'Path' in targets, got {targets}"
         assert "P" not in targets, "alias 'P' must NOT appear as the edge target"
+
+
+# ── E: Python attribute / import-alias call sites ────────────────────────────
+
+
+class TestPythonAttributeCallEdges:
+    """E: Attribute calls (`mod.fn()`, `self.m()`, `a.b.c()`) must produce call
+    edges whose target is the RIGHTMOST identifier — the bare name under which
+    the declared symbol is stored (edge graph is name-keyed, homonym-collapsed).
+
+    Closes Gap 1 from the head-to-head benchmark: `fts.rescore(...)` in
+    engine.py's search()/query() produced NO edge, so `seam impact rescore`
+    and `seam context rescore` missed search()/query() as callers.
+    """
+
+    def test_module_alias_call_produces_edge_to_rightmost_name(
+        self, tmp_path: Path
+    ) -> None:
+        """E1: `fts.rescore(...)` inside search() → edge source='search', target='rescore'.
+
+        This is the exact pattern from seam/query/engine.py:585 that the
+        benchmark proved was being dropped.
+        """
+        src = _py_file(
+            tmp_path,
+            "from seam.query import fts\n"
+            "def search(text):\n"
+            "    rows = fts.rescore(text, [])\n"
+            "    return rows\n",
+        )
+        root = parse_python(src)
+        assert root is not None
+
+        edges = extract_edges(root, "python", src)
+        call_edges = {(e["source"], e["target"]) for e in edges if e["kind"] == "call"}
+        assert ("search", "rescore") in call_edges, (
+            f"expected ('search','rescore') call edge, got {call_edges}"
+        )
+
+    def test_self_method_call_produces_edge(self, tmp_path: Path) -> None:
+        """E2: `self.helper()` inside a method → call edge with target='helper'."""
+        src = _py_file(
+            tmp_path,
+            "class Engine:\n"
+            "    def run(self):\n"
+            "        return self.helper()\n"
+            "    def helper(self):\n"
+            "        return 1\n",
+        )
+        root = parse_python(src)
+        assert root is not None
+
+        edges = extract_edges(root, "python", src)
+        call_targets = {e["target"] for e in edges if e["kind"] == "call"}
+        assert "helper" in call_targets, (
+            f"expected 'helper' call target from self.helper(), got {call_targets}"
+        )
+
+    def test_chained_attribute_call_uses_rightmost_identifier(
+        self, tmp_path: Path
+    ) -> None:
+        """E3: `a.b.c()` → target = 'c' (rightmost), NOT 'a' or 'b'."""
+        src = _py_file(
+            tmp_path,
+            "def f(a):\n    return a.b.c()\n",
+        )
+        root = parse_python(src)
+        assert root is not None
+
+        edges = extract_edges(root, "python", src)
+        call_targets = {e["target"] for e in edges if e["kind"] == "call"}
+        assert "c" in call_targets, f"expected rightmost 'c', got {call_targets}"
+        assert "b" not in call_targets and "a" not in call_targets, (
+            f"only the rightmost identifier 'c' should be the target, got {call_targets}"
+        )
+
+    def test_bare_identifier_call_still_works(self, tmp_path: Path) -> None:
+        """E4 (regression): a plain `foo()` call still produces target='foo'."""
+        src = _py_file(
+            tmp_path,
+            "def g():\n    return foo()\n",
+        )
+        root = parse_python(src)
+        assert root is not None
+
+        edges = extract_edges(root, "python", src)
+        call_edges = {(e["source"], e["target"]) for e in edges if e["kind"] == "call"}
+        assert ("g", "foo") in call_edges, (
+            f"bare-identifier call regression — expected ('g','foo'), got {call_edges}"
+        )
