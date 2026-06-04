@@ -122,3 +122,7 @@ artifacts = ["seam/_web/**/*"]
 # distributions consistent. (Run `make build-web` before building a release.)
 [tool.hatch.build.targets.sdist]
 artifacts = ["seam/_web/**/*"]
+# Exclude the frontend toolchain from the sdist — the BUILT SPA already ships via the
+# artifact above (seam/_web). Without this, hatchling sweeps web/node_modules (~18MB of
+# esbuild/typescript) into the sdist, bloating it and stalling the PyPI upload.
+exclude = ["web"]
