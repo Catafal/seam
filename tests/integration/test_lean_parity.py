@@ -75,15 +75,15 @@ class TestMcpSchemaVerbose:
     """MCP tools affected by Phase 8 must expose a 'verbose' boolean parameter."""
 
     def test_tool_count_still_ten(self, tmp_path: Path) -> None:
-        """Tool count must remain 10 after adding verbose params."""
+        """Tool count is 11 (seam_flows added; verbose params add no tools)."""
         conn, root, db_path, _ = _make_db(tmp_path)
         server = create_server(conn, root)
         conn.close()
 
         # FastMCP stores tools in a dict; get_tool is the official API
         tool_names = list(server._tool_manager._tools.keys())
-        assert len(tool_names) == 10, (
-            f"Expected 10 tools, got {len(tool_names)}: {sorted(tool_names)}"
+        assert len(tool_names) == 11, (
+            f"Expected 11 tools, got {len(tool_names)}: {sorted(tool_names)}"
         )
 
     def test_seam_query_has_no_verbose_param(self, tmp_path: Path) -> None:

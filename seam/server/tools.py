@@ -29,6 +29,7 @@ from seam.analysis.changes import (
     detect_changes,
 )
 from seam.analysis.flows import EdgeHop, Hop
+from seam.analysis.processes import Flow, build_flow, list_entry_points
 from seam.query import engine
 from seam.query.clusters import cluster_members as query_cluster_members
 from seam.query.clusters import list_clusters as query_list_clusters
@@ -751,6 +752,38 @@ def handle_seam_clusters(
         }
         for m in members
     ]
+
+
+def handle_seam_flows(
+    conn: sqlite3.Connection,
+    root: Path,
+    entry: str | None = None,
+) -> Flow | dict[str, Any] | None:
+    """Handler for the seam_flows MCP tool — execution-flow discovery.
+
+    With no entry: returns {"entry_points": [{name, kind, file, reach}]} — the
+    program's top execution starting points (call-graph roots ranked by how much
+    they reach downstream: CLI commands, web routes, MCP handlers, main, …).
+
+    With an entry: returns that entry point's Flow tree (forward call-chain
+    expansion, depth/breadth-capped), or None when the name is unknown — the MCP
+    boundary normalizes None to {"found": false}.
+
+    File paths are relativized to root. Confidence on each step uses the fast
+    name-count resolver (a flow is an overview; use seam_impact/seam_trace for
+    import-promoted confidence).
+
+    Args:
+        conn:  Open SQLite connection (read-only).
+        root:  Project root for path relativization.
+        entry: Optional entry-point symbol name. None → list mode.
+    """
+    if entry is None:
+        return {"entry_points": list_entry_points(conn, repo_root=root)}
+    entry = entry.strip()
+    if not entry:
+        return _invalid_input("entry must not be empty or whitespace-only")
+    return build_flow(conn, entry, repo_root=root)
 
 
 def handle_seam_affected(

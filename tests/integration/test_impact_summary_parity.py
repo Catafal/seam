@@ -107,14 +107,14 @@ class TestMcpSchemaLimit:
         assert default_val == 25, f"Expected default=25, got {default_val}"
 
     def test_tool_count_still_ten(self, tmp_path: Path) -> None:
-        """Adding limit to seam_impact must not change the tool count."""
+        """Tool count is 11 after seam_flows was added (was 10 through Phase 8)."""
         conn, root, _ = _make_db(tmp_path, n_callers=2)
         server = create_server(conn, root)
         conn.close()
 
         tool_names = list(server._tool_manager._tools.keys())
-        assert len(tool_names) == 10, (
-            f"Expected 10 tools, got {len(tool_names)}: {sorted(tool_names)}"
+        assert len(tool_names) == 11, (
+            f"Expected 11 tools, got {len(tool_names)}: {sorted(tool_names)}"
         )
 
 

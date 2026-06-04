@@ -76,6 +76,7 @@ from seam.server.tools import (
     handle_seam_changes,
     handle_seam_clusters,
     handle_seam_context_pack,
+    handle_seam_flows,
     handle_seam_impact,
     handle_seam_trace,
     handle_seam_why,
@@ -1459,6 +1460,120 @@ def clusters_cmd(
         for c in clusters:
             table.add_row(str(c["id"]), c["label"], str(c["size"]))
         console.print(table)
+
+
+# ── seam flows ────────────────────────────────────────────────────────────────
+
+
+def _print_flow_tree(steps: list[Any], prefix: str = "") -> None:
+    """Render a flow's step tree as an indented ├─/└─ tree (Rich mode)."""
+    for i, step in enumerate(steps):
+        last = i == len(steps) - 1
+        branch = "└─ " if last else "├─ "
+        mark = " [yellow]…[/yellow]" if step["truncated"] else ""
+        console.print(f"{prefix}{branch}{step['name']} [dim]({step['kind'] or '?'})[/dim]{mark}")
+        _print_flow_tree(step["children"], prefix + ("   " if last else "│  "))
+
+
+@app.command(name="flows")
+def flows_cmd(
+    entry: str = typer.Argument(
+        default="",
+        help="Entry-point symbol to expand. Omit to list all entry points.",
+    ),
+    path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
+    db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
+) -> None:
+    """List execution entry points, or expand one entry point's flow.
+
+    Examples:
+      seam flows                 -- list entry points (call-graph roots, by reach)
+      seam flows init_db         -- expand the flow rooted at init_db
+    """
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
+    project_root = Path(path).resolve()
+    db_root = Path(db_dir).resolve() if db_dir else project_root
+    db_path = config.get_db_path(db_root)
+
+    if not db_path.exists():
+        if json_:
+            emit_json_error("NO_INDEX", "No index found. Run 'seam init' first.")
+        console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
+        raise typer.Exit(code=1)
+
+    try:
+        conn = connect(db_path)
+    except sqlite3.Error as exc:
+        if json_:
+            emit_json_error("DB_ERROR", f"Failed to open database: {exc}")
+        console.print(f"[red]Failed to open database:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    # WHY: reuse handle_seam_flows for all modes (MCP/CLI parity). None == unknown entry.
+    entry_arg = entry.strip() or None
+    try:
+        result = handle_seam_flows(conn, root=project_root, entry=entry_arg)
+    finally:
+        conn.close()
+
+    # ── JSON mode — structured envelope; unknown entry mirrors not-found contract.
+    if json_:
+        emit_json(result if result is not None else {"found": False})
+        return
+
+    # ── List mode (no entry) — the entry points ───────────────────────────────
+    if entry_arg is None:
+        assert result is not None  # list mode always returns {"entry_points": [...]}
+        points = result["entry_points"]  # type: ignore[typeddict-item]
+        if quiet:
+            for p in points:
+                sys.stdout.write(p["name"] + "\n")
+            return
+        if not points:
+            console.print(
+                "[yellow]No entry points found.[/yellow] Run [bold]seam init[/bold] first."
+            )
+            return
+        table = Table(title="Execution entry points", show_header=True)
+        table.add_column("entry", style="bold")
+        table.add_column("kind", style="dim")
+        table.add_column("reach", style="cyan", width=7)
+        table.add_column("file", style="dim")
+        for p in points:
+            table.add_row(p["name"], p["kind"] or "", str(p["reach"]), p["file"] or "")
+        console.print(table)
+        return
+
+    # ── Drill mode (one entry) — the flow tree ────────────────────────────────
+    if result is None:
+        if not quiet:
+            console.print(
+                f"[yellow]No flow found for[/yellow] [bold]{entry_arg}[/bold] — unknown symbol."
+            )
+        return
+
+    if quiet:
+        # Flatten: print every step name, depth-first, one per line.
+        stack = list(reversed(result["steps"]))
+        while stack:
+            step = stack.pop()
+            sys.stdout.write(step["name"] + "\n")
+            stack.extend(reversed(step["children"]))
+        return
+
+    console.print(
+        f"[bold]{result['entry']}[/bold] "
+        f"[dim]({result['kind'] or '?'} · {result['file'] or '?'})[/dim]"
+    )
+    footer = " · [yellow]truncated[/yellow]" if result["truncated"] else ""
+    console.print(f"[dim]{result['total_steps']} steps{footer}[/dim]")
+    _print_flow_tree(result["steps"])
 
 
 # ── seam affected ─────────────────────────────────────────────────────────────

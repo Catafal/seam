@@ -174,11 +174,11 @@ class TestMcpToolCount:
     """MCP tool count is still 9 — Phase 5 adds NO new tools."""
 
     def test_tool_count_updated_for_phase6(self) -> None:
-        """Verify the tools module exports 10 handler functions (Phase 6 adds seam_context_pack)."""
+        """tools module exports 11 handlers (seam_flows added on top of Phase 6's 10)."""
         tool_handlers = [
             attr for attr in dir(tools)
             if attr.startswith("handle_seam_")
         ]
-        assert len(tool_handlers) == 10, (
-            f"Expected 10 MCP tool handlers, found {len(tool_handlers)}: {tool_handlers}"
+        assert len(tool_handlers) == 11, (
+            f"Expected 11 MCP tool handlers, found {len(tool_handlers)}: {tool_handlers}"
         )
