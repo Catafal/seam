@@ -150,7 +150,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         target: str,
         direction: str = _IMPACT_DIRECTION_DEFAULT,
         max_depth: int = _IMPACT_DEPTH_DEFAULT,
-        include_tests: bool = True,
+        include_tests: bool = False,
         verbose: bool = True,
         limit: int = _IMPACT_LIMIT_DEFAULT,
     ) -> Any:
@@ -167,8 +167,11 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         Each entry also carries is_test (bool) so you can distinguish production dependents
         from test-only callers.
 
-        Set include_tests=false to filter out test-file dependents and see only the
-        production blast radius — useful when test callers dominate the results.
+        By default (include_tests=false) the result is the PRODUCTION blast radius:
+        test-file dependents are filtered out and their count is reported as hidden_tests.
+        This keeps "what breaks?" focused on production code (test callers otherwise
+        dominate the tiers and trip the per-tier cap). Set include_tests=true to include
+        test dependents too; or use seam_affected to get the impacted test files directly.
 
         Set verbose=false to omit heavy enrichment fields (resolved_by, best_candidate)
         from every tier entry and get a compact response. verbose=true (default) returns

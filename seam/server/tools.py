@@ -351,7 +351,7 @@ def handle_seam_impact(
     root: Path,
     direction: str = _IMPACT_DIRECTION_DEFAULT,
     max_depth: int = _IMPACT_DEPTH_DEFAULT,
-    include_tests: bool = True,
+    include_tests: bool = False,
     verbose: bool = True,
     limit: int = config.SEAM_IMPACT_MAX_RESULTS,
 ) -> dict[str, Any]:
@@ -368,9 +368,11 @@ def handle_seam_impact(
                        relativized to root before returning.
         direction:     "upstream" | "downstream" | "both". Default: "upstream".
         max_depth:     Max hops. Clamped to [1, 10]. Default: 3.
-        include_tests: When True (default), test-file dependents are included and tagged
-                       with is_test=True. When False, test-file entries are filtered out
-                       from all tiers (production-only blast radius).
+        include_tests: When False (default), test-file dependents are filtered out from
+                       all tiers — "what breaks?" answers with the PRODUCTION blast radius,
+                       and the count of hidden test dependents surfaces as `hidden_tests`.
+                       When True, test-file dependents are included and tagged is_test=True.
+                       (Test dependents are derivable separately via seam_affected.)
         verbose:       When True (default), output includes all Phase 4/5 enrichment fields.
                        When False, heavy fields (resolved_by, best_candidate, etc.) are
                        stripped from each entry — lean mode.
@@ -494,7 +496,7 @@ def handle_seam_impact(
 
     # Surface hidden_tests when present (include_tests=False filtered test dependents).
     # Lets MCP callers distinguish "no dependents" from "all dependents were tests and
-    # were hidden" — without it, --production-only could read as a false-safe.
+    # were hidden" — without it, the production-only default could read as a false-safe.
     if "hidden_tests" in raw:
         response["hidden_tests"] = raw["hidden_tests"]
 

@@ -216,6 +216,10 @@ TierGroup = dict[str, list[dict[str, Any]]]
 #   include_tests (bool, default True) — when True, returns all dependents (default behavior,
 #                                        backward-compatible). When False, test-file entries
 #                                        are removed from all tiers and hidden_tests is added.
+#     NOTE (P1): this ANALYSIS-LAYER default stays True (seam_changes depends on it). The
+#     seam_impact TOOL/handler/CLI default flipped to include_tests=False (production-only)
+#     — so a bare `seam impact X` shows the production blast radius. When False, file=null
+#     import sources whose name is a test-only file stem are also tagged is_test and hidden.
 ImpactResult = dict[str, Any]
 ```
 
