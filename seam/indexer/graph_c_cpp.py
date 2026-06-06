@@ -918,6 +918,33 @@ def _extract_edges_cpp(root: Node, filepath: Path) -> list[Edge]:
                 record_cpp_local_types(node, var_types)
                 # Still recurse to catch nested calls.
 
+            # Tier B B6: new_expression (new Foo(...)) → instantiates edge.
+            # type_identifier child = the constructed type name.
+            elif ntype == "new_expression":
+                type_node = next(
+                    (c for c in node.children if c.type == "type_identifier"), None
+                )
+                if type_node is not None:
+                    type_name = _text(type_node)
+                    if type_name:
+                        source = _find_enclosing_function(node, "cpp")
+                        if source is not None:
+                            edges.append(
+                                Edge(
+                                    source=source,
+                                    target=type_name,
+                                    kind="instantiates",
+                                    file=file_str,
+                                    line=node.start_point[0] + 1,
+                                    confidence="INFERRED",
+                                    receiver=None,
+                                )
+                            )
+                # Recurse into constructor args for nested news.
+                for child in node.children:
+                    _walk(child, class_name, class_fields, var_types)
+                return  # already recursed above
+
             elif ntype == "call_expression":
                 func_child = node.child_by_field_name("function")
                 # Tier B B2: capture receiver for field_expression calls.

@@ -825,9 +825,26 @@ def _handle_call(
     callee = node.children[0]
 
     if callee.type == "simple_identifier":
-        # Bare call: unqualified target (pre-P5 behavior, never disabled).
+        # Bare call: unqualified target.
         target = _text(callee)
         if not target:
+            return
+        # Tier B B6: PascalCase bare call Foo() in Swift → instantiates edge.
+        # Swift uses call_expression for both function calls and constructor calls.
+        # A PascalCase callee (starts with uppercase) is a constructor call.
+        # Lowercase callees remain plain call edges.
+        if target[0].isupper():
+            source = _find_enclosing_function(node, "swift")
+            if source is not None:
+                edges.append(Edge(
+                    source=source,
+                    target=target,
+                    kind="instantiates",
+                    file=file_str,
+                    line=node.start_point[0] + 1,
+                    confidence="INFERRED",
+                    receiver=None,
+                ))
             return
         _emit_call(node, file_str, target, receiver=None, edges=edges)
         return

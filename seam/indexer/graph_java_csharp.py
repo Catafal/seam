@@ -518,6 +518,35 @@ def _extract_edges_java(root: Node, filepath: Path) -> list[Edge]:
                 record_java_local_types(node, var_types)
                 # Still recurse to catch nested calls in initializer.
 
+            # Tier B B6: object_creation_expression (new Foo()) → instantiates edge.
+            # type_identifier child = the constructed type name.
+            elif ntype == "object_creation_expression":
+                type_node = node.child_by_field_name("type")
+                if type_node is None:
+                    type_node = next(
+                        (c for c in node.children if c.type == "type_identifier"), None
+                    )
+                if type_node is not None:
+                    type_name = _text(type_node)
+                    if type_name:
+                        source = _find_enclosing_function(node, "java")
+                        if source is not None:
+                            edges.append(
+                                Edge(
+                                    source=source,
+                                    target=type_name,
+                                    kind="instantiates",
+                                    file=file_str,
+                                    line=node.start_point[0] + 1,
+                                    confidence="INFERRED",
+                                    receiver=None,
+                                )
+                            )
+                # Recurse to catch nested new Foo(new Bar()) patterns.
+                for child in node.children:
+                    _walk(child, class_name, class_fields, var_types)
+                return  # already recursed above
+
             elif ntype == "method_invocation":
                 # Tier B B2: capture receiver for member calls (obj.method()).
                 # Two shapes:
@@ -955,6 +984,33 @@ def _extract_edges_csharp(root: Node, filepath: Path) -> list[Edge]:
             if infer and ntype == "local_declaration_statement":
                 record_cs_local_types(node, var_types)
                 # Still recurse to catch nested calls.
+
+            # Tier B B6: object_creation_expression (new Foo()) → instantiates edge.
+            # identifier child = the constructed type name.
+            elif ntype == "object_creation_expression":
+                type_node = next(
+                    (c for c in node.children if c.type == "identifier"), None
+                )
+                if type_node is not None:
+                    type_name = _text(type_node)
+                    if type_name:
+                        source = _find_enclosing_function(node, "csharp")
+                        if source is not None:
+                            edges.append(
+                                Edge(
+                                    source=source,
+                                    target=type_name,
+                                    kind="instantiates",
+                                    file=file_str,
+                                    line=node.start_point[0] + 1,
+                                    confidence="INFERRED",
+                                    receiver=None,
+                                )
+                            )
+                # Recurse into constructor args (nested new Foo(new Bar()) patterns).
+                for child in node.children:
+                    _walk(child, class_name, class_fields, var_types)
+                return  # already recursed above
 
             elif ntype == "invocation_expression":
                 func_node = node.child_by_field_name("function")

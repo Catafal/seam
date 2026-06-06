@@ -426,6 +426,16 @@ def _walk_php_edges(
         record_php_local_types(node, var_types)
         # Still recurse to catch nested calls.
 
+    # Tier B B6: object_creation_expression (new Foo()) → instantiates edge.
+    # 'name' child = the constructed type (plain name or qualified_name for \NS\Foo).
+    # Dynamic new ($className()) has a variable_name child — skip gracefully.
+    if ntype == "object_creation_expression":
+        _handle_php_new_expression(node, file_str, edges)
+        # Recurse to catch nested news in constructor arguments.
+        for child in node.children:
+            _walk_php_edges(child, file_str, file_stem, edges, infer, class_name, class_fields, var_types)
+        return  # already recursed above
+
     if ntype == "function_call_expression":
         _handle_php_call(node, file_str, file_stem, edges)
         # Still recurse — calls can be nested inside argument lists
@@ -442,6 +452,63 @@ def _walk_php_edges(
 
     for child in node.children:
         _walk_php_edges(child, file_str, file_stem, edges, infer, class_name, class_fields, var_types)
+
+
+def _handle_php_new_expression(
+    node: Node,
+    file_str: str,
+    edges: list[Edge],
+) -> None:
+    """Emit an instantiates edge from a PHP object_creation_expression node.
+
+    Tier B B6: new Foo() → kind='instantiates', target='Foo'.
+    For namespaced new (new \\NS\\Bar()) the last segment 'Bar' is the target.
+    Dynamic new ($className()) uses variable_name child — skipped gracefully (no edge).
+    Never raises.
+    """
+    try:
+        source = _find_enclosing_function(node, "php")
+        if source is None:
+            return
+        # Children of object_creation_expression: [new, name_node, arguments_node]
+        # name_node can be 'name' (plain), 'qualified_name' (namespaced), or
+        # 'variable_name' (dynamic — skip).
+        for child in node.children:
+            if child.type == "name":
+                type_name = _text(child)
+                if type_name:
+                    edges.append(Edge(
+                        source=source,
+                        target=type_name,
+                        kind="instantiates",
+                        file=file_str,
+                        line=node.start_point[0] + 1,
+                        confidence="INFERRED",
+                        receiver=None,
+                    ))
+                return
+            if child.type == "qualified_name":
+                # \NS\Bar → last 'name' child is 'Bar'
+                last_name: str | None = None
+                for gc in child.children:
+                    if gc.type == "name":
+                        last_name = _text(gc)
+                if last_name:
+                    edges.append(Edge(
+                        source=source,
+                        target=last_name,
+                        kind="instantiates",
+                        file=file_str,
+                        line=node.start_point[0] + 1,
+                        confidence="INFERRED",
+                        receiver=None,
+                    ))
+                return
+            # variable_name or other dynamic class — skip gracefully (no edge).
+            if child.type == "variable_name":
+                return
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _handle_php_use_declaration(

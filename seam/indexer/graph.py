@@ -441,6 +441,24 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
         method_name = _text(callee_node)
         target = method_name
 
+        # Tier B B6: PascalCase bare call (no receiver) → instantiates edge.
+        # A bare call like Foo() where the callee starts with an uppercase letter
+        # is a constructor call in Python. receiver_text=None means bare call
+        # (not obj.Foo()), so we emit kind='instantiates' instead of 'call'.
+        # Attribute calls (self.Foo(), obj.Foo()) are still call edges — only
+        # bare-identifier PascalCase calls trigger this.
+        if receiver_text is None and method_name and method_name[0].isupper():
+            edges.append(Edge(
+                source=source,
+                target=method_name,
+                kind="instantiates",
+                file=file_str,
+                line=node.start_point[0] + 1,
+                confidence="INFERRED",
+                receiver=None,
+            ))
+            return
+
         # Tier B B4: attempt receiver-type resolution when inference is enabled
         # and we have a receiver expression (attribute call, not bare call).
         if type_inference_on and receiver_text is not None:
@@ -852,6 +870,41 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
                                 receiver=None,
                             ))
 
+    def _emit_ts_instantiates(
+        node: Node,
+        class_name: str | None,
+        language: str,
+    ) -> None:
+        """Emit an instantiates edge from a TS/JS new_expression node.
+
+        Tier B B6: new Foo(...) → kind='instantiates' edge with target='Foo'.
+        The constructor name is the first identifier child of new_expression.
+        Dynamic news (new (expr)()) have a non-identifier child — skipped gracefully.
+        Never raises.
+        """
+        try:
+            source = _find_enclosing_function(node, language)
+            if source is None:
+                return
+            # Children of new_expression: [new, constructor, arguments]
+            # constructor is identifier for `new Foo()`, or a complex expr for dynamic.
+            for child in node.children:
+                if child.type == "identifier":
+                    type_name = _text(child)
+                    if type_name:
+                        edges.append(Edge(
+                            source=source,
+                            target=type_name,
+                            kind="instantiates",
+                            file=file_str,
+                            line=node.start_point[0] + 1,
+                            confidence="INFERRED",
+                            receiver=None,
+                        ))
+                    return  # Only the first identifier is the type name.
+        except Exception:  # noqa: BLE001
+            pass
+
     def _emit_call_edge_ts(
         node: Node,
         class_name: str | None,
@@ -935,6 +988,13 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
         if node.type == "call_expression":
             _emit_call_edge_ts(node, class_name, var_types, language)
             # Fall through to recurse — nested calls inside arguments, etc.
+
+        # Tier B B6: new_expression (new Foo(...)) → instantiates edge.
+        # The identifier child of new_expression is the constructed type name.
+        # Dynamic new (new (expr)()) has a non-identifier constructor — skip gracefully.
+        if node.type == "new_expression":
+            _emit_ts_instantiates(node, class_name, language)
+            # Fall through to recurse — constructor args may contain nested news.
 
         # Nested function/method: enter a new function scope.
         if node.type in ("function_declaration", "arrow_function", "function_expression"):

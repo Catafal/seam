@@ -77,7 +77,13 @@ class Symbol(TypedDict):
 class Edge(TypedDict):
     source: str  # Symbol name of caller / importer
     target: str  # Symbol name of callee / importee
-    kind: str  # 'import' | 'call'
+    # Edge kind vocabulary:
+    #   'import'       — module/symbol import statement
+    #   'call'         — function/method call edge
+    #   'extends'      — class inheritance (base class)
+    #   'implements'   — interface implementation
+    #   'instantiates' — object construction (new Foo(), Foo(), Foo::new(), Foo{}) [Tier B B6]
+    kind: str
     file: str
     line: int
     confidence: Confidence  # EXTRACTED | INFERRED | AMBIGUOUS

@@ -360,6 +360,37 @@ def _extract_edges_go(root: Node, filepath: Path) -> list[Edge]:
             record_go_local_types(node, var_types)
             # Still recurse to catch nested calls inside right-hand sides.
 
+        # Tier B B6: composite_literal (Foo{...}) → instantiates edge.
+        # The type_identifier child is the constructed type name.
+        # composite_literal may appear directly or inside &Foo{} (unary_expression).
+        if ntype == "composite_literal":
+            type_child = node.child_by_field_name("type")
+            if type_child is None:
+                # Fallback: first named child that is a type_identifier
+                type_child = next(
+                    (c for c in node.children if c.type == "type_identifier"), None
+                )
+            if type_child is not None and type_child.type == "type_identifier":
+                type_name = _text(type_child)
+                if type_name:
+                    source = _find_enclosing_function(node, "go")
+                    if source is not None:
+                        edges.append(
+                            Edge(
+                                source=source,
+                                target=type_name,
+                                kind="instantiates",
+                                file=file_str,
+                                line=node.start_point[0] + 1,
+                                confidence="INFERRED",
+                                receiver=None,
+                            )
+                        )
+            # Recurse into children even after emitting (initializer values may contain calls).
+            for child in node.children:
+                _walk(child, var_types)
+            return  # already recursed above
+
         if ntype == "call_expression":
             func_child = node.child_by_field_name("function")
             # Tier B B2: capture receiver for selector_expression calls (recv.Method).
@@ -782,6 +813,35 @@ def _extract_edges_rust(root: Node, filepath: Path) -> list[Edge]:
             record_rust_local_types(node, var_types)
             # Still recurse to catch nested calls in the initializer.
 
+        # Tier B B6: struct_expression (Foo { ... }) → instantiates edge.
+        # struct_expression has a type_identifier child (the struct type name).
+        if ntype == "struct_expression":
+            type_id = node.child_by_field_name("name")
+            if type_id is None:
+                type_id = next(
+                    (c for c in node.children if c.type == "type_identifier"), None
+                )
+            if type_id is not None:
+                type_name = _text(type_id)
+                if type_name:
+                    source = _find_enclosing_function(node, "rust")
+                    if source is not None:
+                        edges.append(
+                            Edge(
+                                source=source,
+                                target=type_name,
+                                kind="instantiates",
+                                file=file_str,
+                                line=node.start_point[0] + 1,
+                                confidence="INFERRED",
+                                receiver=None,
+                            )
+                        )
+            # Recurse so nested calls inside initializers are also captured.
+            for child in node.children:
+                _walk(child, var_types, impl_type)
+            return  # already recursed above
+
         if ntype == "call_expression":
             func_child = node.child_by_field_name("function")
             # Tier B B2: capture receiver for field_expression calls (recv.method).
@@ -806,7 +866,34 @@ def _extract_edges_rust(root: Node, filepath: Path) -> list[Edge]:
                     callee_name = _text(field_node)
                     if value_node is not None:
                         recv_text = _text(value_node)
-            # scoped_identifier (e.g. Type::new) → gracefully skip receiver capture
+            elif func_child and func_child.type == "scoped_identifier":
+                # Tier B B6: Type::new() → instantiates edge.
+                # A scoped call where the rightmost segment is 'new' is a constructor.
+                # Extract: Foo from Foo::new.
+                name_node = func_child.child_by_field_name("name")
+                if name_node is not None and _text(name_node) == "new":
+                    path_node = func_child.child_by_field_name("path")
+                    if path_node is not None:
+                        type_name = _text(path_node)
+                        if type_name:
+                            source = _find_enclosing_function(node, "rust")
+                            if source is not None:
+                                edges.append(
+                                    Edge(
+                                        source=source,
+                                        target=type_name,
+                                        kind="instantiates",
+                                        file=file_str,
+                                        line=node.start_point[0] + 1,
+                                        confidence="INFERRED",
+                                        receiver=None,
+                                    )
+                                )
+                # Recurse into arguments even for instantiates (nested calls inside args).
+                for child in node.children:
+                    _walk(child, var_types, impl_type)
+                return  # handled; skip generic call processing below
+            # scoped_identifier (other than ::new) → already handled above or skip
 
             if callee_name:
                 # B5: resolve receiver to type → qualify the target.

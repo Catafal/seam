@@ -507,6 +507,29 @@ def _handle_ruby_call(
             )
         return
 
+    # Tier B B6: Foo.new → instantiates edge.
+    # In Ruby, class names are constants (PascalCase) — tree-sitter represents them
+    # as 'constant' nodes. A call where method='new' and receiver is a 'constant'
+    # node is a constructor call. Lowercase receiver.new (identifier) is NOT a class
+    # constructor (e.g. obj.new is unusual Ruby — no instantiates edge emitted).
+    if method_name == "new" and receiver_node is not None and receiver_node.type == "constant":
+        type_name = _text(receiver_node)
+        if type_name:
+            source = _find_enclosing_function(node, "ruby")
+            if source is not None:
+                edges.append(
+                    Edge(
+                        source=source,
+                        target=type_name,
+                        kind="instantiates",
+                        file=file_str,
+                        line=node.start_point[0] + 1,
+                        confidence="INFERRED",
+                        receiver=None,
+                    )
+                )
+        return  # Do not also emit a call edge for Foo.new
+
     # Tier B B2 + B5: emit call edges for bare and receiver calls.
     # Receiver calls are resolved to qualified 'Type.method' when type is known.
     recv_text: str | None = None
