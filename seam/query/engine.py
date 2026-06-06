@@ -880,7 +880,10 @@ def context(conn: sqlite3.Connection, symbol_name: str) -> ContextResult | None:
     if not def_rows:
         return None
 
-    # is_exact_match: the returned defs have the same name as the query (not a bare resolution).
+    # Distinguish bare-name resolution from exact-name match: resolve_query_to_defs may
+    # return a "Parser.parse" row for a query of "parse" (bare suffix scan). The returned
+    # def's name differs from symbol_name in that case, so we cannot use dup_count for
+    # the caller's "Parser.parse" — it would misrepresent collision count for "parse".
     is_exact_match = def_rows[0]["name"] == symbol_name
 
     # Fast path: single exact-match def → byte-stable, dup_count drives ambiguous.

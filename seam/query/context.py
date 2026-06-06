@@ -43,6 +43,10 @@ def collect_edges_for_names(
         return set(), set()
     ph = ",".join("?" * len(match_names))
     try:
+        # DISTINCT prevents duplicate caller/callee names when match_names contains
+        # both the qualified form ("Class.method") and the bare form ("method") — both
+        # can match the same edge row, so without DISTINCT the same caller appears twice.
+        # The set comprehension dedups at Python level too, but DISTINCT reduces fetch size.
         callers = {
             r["source_name"]
             for r in conn.execute(
@@ -88,6 +92,10 @@ def build_merged_context_result(
         all_callers |= callers
         all_callees |= callees
 
+    # Cluster lookup uses the primary (lowest-id) def's name: for a bare-name resolution
+    # like "parse" → "Parser.parse", the original bare name has no cluster row, whereas
+    # the qualified name does. Using primary["name"] gives the right cluster for the
+    # canonical representation in the index.
     cluster_info = _cluster_peers(conn, primary["name"])
     c_id, c_label, c_peers = cluster_info if cluster_info is not None else (None, None, [])
     decoded_decorators, is_exported = decode_enrichment_fields_fn(primary)
@@ -99,6 +107,7 @@ def build_merged_context_result(
         end_line=primary["end_line"],
         kind=primary["kind"],
         docstring=primary["docstring"],
+        # Sorted so MCP consumers get a deterministic list regardless of edge insertion order.
         callers=sorted(all_callers),
         callees=sorted(all_callees),
         ambiguous=len(def_rows) > 1,
@@ -126,7 +135,9 @@ def build_context_result(
     resolve_query_to_defs rows do not include that window column).
     """
     symbol_name = row["name"]
-    # Slice 1 bridging: [qualified, bare] so call edges with bare target are found.
+    # A method stored as "Class.method" has call edges with target_name="method" (bare).
+    # edge_match_names expands to [qualified, bare] so both storage forms are matched —
+    # without this, callers of a qualified method always show up as an empty list.
     callers, callees = collect_edges_for_names(conn, _edge_match_names(conn, symbol_name))
     cluster_info = _cluster_peers(conn, symbol_name)
     c_id, c_label, c_peers = cluster_info if cluster_info is not None else (None, None, [])

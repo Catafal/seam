@@ -155,10 +155,12 @@ def get_member_names(conn: sqlite3.Connection, class_name: str) -> list[str]:
     if not class_name:
         return []
     try:
-        # LIKE 'Class.%' is the SQL pre-filter; Python confirms exact prefix below.
-        # Cap at SEAM_NAME_EXPANSION_CAP — 'Class.%' cannot match 'ClassExtra.method'
-        # because '.' is a literal SQL LIKE character (not a wildcard), so there are
-        # no false-positives that could cause the cap to be under-inclusive.
+        # The LIKE pre-filter runs in SQL so the Python loop only sees candidates
+        # that can plausibly be members. The '.' in 'Class.%' is a LIKE literal
+        # (not a wildcard), so 'ClassExtra.method' can never satisfy 'Class.%' —
+        # the SQL cap is therefore safe: it does not under-count real members.
+        # The Python startswith check below is still required because LIKE is
+        # case-insensitive by default on ASCII, whereas Python identity is exact.
         candidate_rows = conn.execute(
             "SELECT name FROM symbols WHERE name LIKE ? ORDER BY id LIMIT ?",
             (f"{class_name}.%", SEAM_NAME_EXPANSION_CAP),
@@ -171,12 +173,18 @@ def get_member_names(conn: sqlite3.Connection, class_name: str) -> list[str]:
     members: list[str] = []
     for row in candidate_rows:
         sym_name: str = row["name"]
-        # Exact prefix check: must start with "Class." (LIKE may match "ClassExtra.method").
+        # Guard against LIKE case-folding and any future schema quirk: the bare-name
+        # after the last dot must come from exactly "class_name.member", not a coincidental
+        # prefix match. Without this, a class named "Foo" would absorb "FooBar.method" rows
+        # that sneak through on case-insensitive SQLite builds.
         if sym_name.startswith(prefix):
             member_bare = bare_name(sym_name)
             if member_bare and member_bare not in members:
                 members.append(member_bare)
         if len(members) >= SEAM_NAME_EXPANSION_CAP:
+            # The SQL LIMIT cap fires before the Python prefix filter removes non-members,
+            # so the final member list can still reach the cap even after filtering.
+            # Break early to honour the cap exactly rather than overshooting.
             break
 
     if members:
@@ -383,9 +391,11 @@ def expand_impact_seeds(conn: sqlite3.Connection, name: str) -> list[str]:
     # Case 1: qualified name (contains a dot) → [qualified, bare].
     # A qualified method "Class.method" is NOT a container — skip member fan-out.
     if bare != name:
-        # Deduplicate in case bare == name (not possible when bare != name, but defensive).
         result = [name]
-        if bare and bare != name:
+        # Guard against trailing-dot edge case ("Class." → bare is ""), which bare_name()
+        # handles by returning "". Including an empty string as a seed would match all
+        # edges via target_name="", producing a massive false-positive blast radius.
+        if bare:
             result.append(bare)
         logger.debug(
             "expand_impact_seeds: qualified '%s' -> %s",
