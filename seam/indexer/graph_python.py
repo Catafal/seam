@@ -283,7 +283,22 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
         class_name: str | None,
         var_types: dict[str, str],
     ) -> None:
-        """Emit a call edge for a Python 'call' node using scope inference."""
+        """Emit a call edge for a Python 'call' node using scope inference.
+
+        Two-stage decision (Tier B B4 + B6):
+          1. Classify the call shape (bare identifier vs attribute):
+             - `foo()`          → bare call (receiver_text=None)
+             - `obj.method()`   → attribute call (receiver_text='obj')
+          2. Emit the right edge kind:
+             - Bare PascalCase  → 'instantiates' (B6); not 'call', because
+               seam_query needs to distinguish object-construction from
+               method calls, and callee_node is NOT stored at callee level.
+             - Attribute call   → 'call' with target qualified to Type.method
+               when the receiver type is known; bare method name when unknown.
+               receiver_text is ALWAYS stored in the edge so the Tier A read
+               path (names.py) and future passes have the raw text even when
+               type resolution succeeded (prevents information loss).
+        """
         func_child = node.child_by_field_name("function")
         callee_node: Node | None = None
         receiver_text: str | None = None
@@ -291,6 +306,7 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
         if func_child and func_child.type == "identifier":
             callee_node = func_child
         elif func_child and func_child.type == "attribute":
+            # attribute node: object='self'/'obj'/… + attribute='method_name'
             callee_node = func_child.child_by_field_name("attribute")
             object_node = func_child.child_by_field_name("object")
             if object_node is not None:
@@ -300,13 +316,20 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
             return
         source = _find_enclosing_function(node, "python")
         if source is None:
+            # Top-level code with no enclosing named scope — drop the edge;
+            # source would be the file stem which conflates all module-level calls.
             return
 
         method_name = _text(callee_node)
         target = method_name
 
-        # Tier B B6: PascalCase bare call (no receiver) → instantiates edge.
-        # Guard: skip stdlib/typing builtins (Exception, TypeError, NamedTuple, etc.)
+        # B6: PascalCase bare call (no receiver) → 'instantiates' edge.
+        # WHY 'instantiates' not 'call': a bare PascalCase name in Python is
+        # overwhelmingly a constructor call (Foo(), MyClass()), not a function named
+        # with an acronym. 'instantiates' allows seam_query to distinguish
+        # construction from regular calls. Early-return: no receiver to store.
+        # Guard: _PY_BUILTIN_TYPES excludes Exception, list, dict, etc. which would
+        # otherwise produce thousands of false instantiates edges to stdlib types.
         if (
             receiver_text is None
             and method_name
@@ -324,7 +347,11 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
             ))
             return
 
-        # Tier B B4: receiver-type inference for attribute calls.
+        # B4: receiver-type inference for attribute calls.
+        # WHY only when resolved: the conservatism contract forbids emitting a wrong
+        # qualified edge. When resolve_receiver_type returns None (unknown/optional/
+        # generic/chained), we keep the bare method name — Tier A can still elevate
+        # unambiguous bare names at read time, and the raw receiver_text is stored.
         if type_inference_on and receiver_text is not None:
             resolved_type = resolve_receiver_type(
                 receiver_text, class_name, var_types, _PY_SELF_NAMES
@@ -332,6 +359,9 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
             if resolved_type is not None:
                 target = f"{resolved_type}.{method_name}"
 
+        # Always store receiver_text even when the target was already qualified.
+        # WHY: the raw receiver is useful for debugging mis-resolutions and for
+        # future inference passes that re-process edges without a full re-index.
         edges.append(Edge(
             source=source,
             target=target,
@@ -343,6 +373,10 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
         ))
 
     def _walk_function_body(func_node: Node, class_name: str | None, class_fields: dict[str, str]) -> None:
+        # Start with a COPY of class_fields, not a reference. WHY: param/local bindings
+        # must not leak back into class_fields across methods (each function has an
+        # independent scope). class_fields is the order-independent Layer 1 pre-scan;
+        # var_types is the per-function Layer 2 scope that adds params and locals on top.
         var_types: dict[str, str] = dict(class_fields)
         record_py_param_types(func_node, var_types)
         body = func_node.child_by_field_name("body")
@@ -399,6 +433,12 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
                             receiver=None,
                         ))
 
+        # Pre-scan class body for field type bindings BEFORE walking methods.
+        # WHY: a method defined above a field declaration should still be able to
+        # resolve that field's type (e.g. DI patterns store injected objects as
+        # annotated class attributes). This is Layer 1 of the two-layer scope model.
+        # When SEAM_TYPE_INFERENCE=off the dict stays empty — inference is skipped
+        # entirely, producing the same bare-target edges as pre-Tier-B.
         class_fields: dict[str, str] = {}
         if type_inference_on and cls_name:
             class_fields = scan_class_fields_python(class_node)

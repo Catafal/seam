@@ -127,6 +127,13 @@ def _strip_ref_wrapper(type_text: str) -> str | None:
       *[]Client  → None       (pointer to slice — refuse)
       Vec<Client>→ None       (generic — refuse; may carry multiple types)
 
+    WHY refuse generics and double-pointers: the conservatism contract requires that we
+    only bind types we can be CERTAIN about. A double-pointer `**Foo` is an unusual
+    pattern where the variable holds a pointer-to-pointer — the actual type is unclear.
+    A generic like `Vec<Client>` has multiple possible element types; binding the outer
+    container to 'Vec' would produce wrong edges. Refusing preserves correctness over
+    coverage.
+
     Returns the stripped name, or None if the shape is not a plain single-ref.
     """
     if not type_text:

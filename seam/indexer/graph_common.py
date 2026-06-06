@@ -89,9 +89,19 @@ class Edge(TypedDict):
     confidence: Confidence  # EXTRACTED | INFERRED | AMBIGUOUS
     # Tier B B1 (v10): raw receiver expression text for attribute calls (e.g. 'self', 'obj').
     # None for import edges, bare-identifier call edges, and pre-v10 rows.
-    # NotRequired so existing Edge() callers that don't set it remain valid (null-contract:
-    # absent ≡ None at the DB layer — upsert_file uses .get("receiver") which defaults to None).
-    # Captured at extraction time; target_name stays the bare method name (edges remain string-keyed).
+    #
+    # WHY NotRequired (not a plain required field): the Edge TypedDict is constructed in
+    # many call sites across 12 language extractors. Making receiver Required would force
+    # all existing Edge() instantiations to be updated simultaneously. NotRequired lets
+    # us add the field incrementally — old callers remain valid, new callers opt in.
+    # upsert_file uses edge.get("receiver") which defaults to None, so absent ≡ None
+    # at the DB layer. This is the same null-contract as Phase 4/5 enrichment fields.
+    #
+    # WHY stored even when target is already qualified (e.g. 'Client.method'):
+    # Preserves the raw receiver text for debugging, future re-inference passes, and
+    # any tooling that needs to re-derive qualification without a full re-index.
+    # Edges remain string-name-keyed (source/target are names, not node IDs) as required
+    # for independent re-indexing.
     receiver: NotRequired[str | None]
 
 

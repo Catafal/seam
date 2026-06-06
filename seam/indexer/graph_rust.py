@@ -338,6 +338,14 @@ def _extract_edges_rust(root: Node, filepath: Path) -> list[Edge]:
             return
 
         if ntype == "function_item":
+            # Build a fresh per-function scope seeded with struct fields (Layer 1).
+            # WHY seed from struct_fields: in Rust, struct fields and impl methods are
+            # in separate AST nodes (struct_item vs impl_item). The pre-scan at struct_item
+            # populates struct_fields[TypeName]. Here, when inside an impl block for that
+            # type, we seed var_types from it so `self.field` lookups can resolve the
+            # field's declared type — equivalent to the Python class-body pre-scan.
+            # WHY fresh dict: same reason as Go/Python — parameter bindings must not leak
+            # between methods sharing the same impl block.
             new_types: dict[str, str] = {}
             if infer:
                 if impl_type and impl_type in struct_fields:

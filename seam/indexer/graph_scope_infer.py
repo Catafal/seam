@@ -147,6 +147,12 @@ def _py_plain_type_from_annotation(ann_node: Node) -> str | None:
       - String-quoted annotations (deferred — we'd need to eval the string)
       - Any complex expression
 
+    WHY refuse optionals and generics: `foo: Optional[Client]` means `foo` could be
+    None; emitting `Client.method()` on `foo.method()` would be wrong when foo=None.
+    `foo: list[Client]` means `foo` is a container — `foo.method()` resolves on list,
+    not Client. The conservatism contract requires NEVER emitting a wrong edge, so
+    any type that could be None or that wraps another type is refused entirely.
+
     The node passed here is whatever tree-sitter calls the 'type' field, or
     an 'annotation' node child. We inspect its grammar type:
       identifier      → plain bare name → accept
@@ -406,6 +412,13 @@ def _ts_plain_type_from_annotation(type_node: Node) -> str | None:
       - Array types (T[])                       → array_type node (or predefined_type)
       - Intersection, tuple, function types     → other nodes
       - Predefined/primitive types              → predefined_type (string, number, etc.)
+
+    WHY refuse union types: `foo: Client | null` means `foo` may be null; binding
+    Client and emitting `Client.method()` would be incorrect half the time at runtime.
+    WHY refuse generics: `Array<Client>` or `Map<K,V>` are container types — calling
+    `.method()` on them resolves on the container, not the element type.
+    Both refusals are required by the conservatism contract: prefer no edge over a
+    wrong edge.
 
     The node passed here is a type_annotation node or a direct type child.
     """

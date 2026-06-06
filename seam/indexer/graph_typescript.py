@@ -355,6 +355,16 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
         var_types: dict[str, str],
         language: str,
     ) -> None:
+        """Emit a call edge for a TS/JS call_expression node.
+
+        TS/JS does NOT need a PascalCase bare-call → 'instantiates' check here
+        because construction uses `new Foo(...)` (new_expression), handled separately
+        by _emit_ts_instantiates. Python has no 'new' keyword, so it must heuristic
+        on PascalCase; TS/JS has an explicit AST node for it.
+
+        receiver_text is stored in the edge even when the target was already qualified
+        — same reasoning as Python: preserves raw text for debugging and future passes.
+        """
         func_child = node.child_by_field_name("function")
         callee_node: Node | None = None
         receiver_text: str | None = None
@@ -362,6 +372,7 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
         if func_child and func_child.type == "identifier":
             callee_node = func_child
         elif func_child and func_child.type == "member_expression":
+            # member_expression: object.property() — 'property' is the callee name.
             prop = func_child.child_by_field_name("property")
             obj = func_child.child_by_field_name("object")
             if prop is not None and prop.type == "property_identifier":
@@ -378,6 +389,9 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
         method_name = _text(callee_node)
         target = method_name
 
+        # B4: qualify target to 'Type.method' when the receiver type is known.
+        # When resolve_receiver_type returns None (unknown, optional, generic,
+        # or chained), keep the bare method name — conservatism contract.
         if type_inference_on and receiver_text is not None:
             resolved_type = resolve_receiver_type(
                 receiver_text, class_name, var_types, _TS_SELF_NAMES
@@ -401,12 +415,18 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
         class_fields: dict[str, str],
         language: str,
     ) -> None:
+        # Copy class_fields into a fresh per-function scope (Layer 2).
+        # WHY copy not reference: param/local bindings must not bleed between methods.
+        # class_fields is immutable from the caller's perspective (Layer 1 pre-scan).
         var_types: dict[str, str] = dict(class_fields)
         record_ts_param_types(func_node, var_types)
         body = func_node.child_by_field_name("body")
         if body is None:
             return
         for stmt in body.children:
+            # Accumulate local type bindings BEFORE emitting call edges for this
+            # statement so that a call on the same line as a declaration can still
+            # see that declaration (e.g. `const e = new Engine(); e.start()`).
             record_ts_local_types(stmt, var_types)
             _walk_ts_stmt(stmt, class_name, var_types, class_fields, language)
 

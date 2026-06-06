@@ -282,6 +282,11 @@ def _extract_edges_go(root: Node, filepath: Path) -> list[Edge]:
             return
 
         if ntype in ("function_declaration", "method_declaration"):
+            # Start a fresh scope for each function/method.
+            # WHY new dict: Go has no class-level field pre-scan equivalent (fields live
+            # on the struct_item, not the method/function). Each function gets only its
+            # parameter bindings (and locals accumulated below). A fresh dict prevents
+            # bindings from leaking between sibling functions at the same nesting level.
             new_types: dict[str, str] = {}
             if infer:
                 record_go_param_types(node, new_types)
@@ -342,6 +347,13 @@ def _extract_edges_go(root: Node, filepath: Path) -> list[Edge]:
             if callee_name:
                 final_target = callee_name
                 if infer and recv_text is not None:
+                    # Go: pass frozenset() (empty) as self_names because Go has no
+                    # universal 'self' keyword. The receiver variable name is set by
+                    # the programmer (e.g. 'r', 's', 'c'). Receiver type comes purely
+                    # from param type bindings (record_go_param_types), not from a
+                    # conventional self-alias. Passing empty frozenset means no
+                    # receiver text is treated as "this class instance" — each variable
+                    # must be explicitly bound. Conservatism contract: no binding → None.
                     resolved_type = resolve_receiver_type_ext(
                         recv_text, None, var_types, frozenset()
                     )
