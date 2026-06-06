@@ -64,10 +64,10 @@ def split_identifier(text: str) -> list[str]:
 def build_search_text(name: str, qualified_name: str | None = None) -> str:
     """Return the space-joined search_text for a symbol: split(name) ∪ split(qualified_name).
 
-    qualified_name is folded in (deduped against the name tokens) to recover the
-    namespace/module word a bare function ``name`` lacks — the signal that makes a
-    "where is X in the Y package" locate query resolve. docstring is deliberately NOT
-    folded (already its own FTS column). Never raises.
+    qualified_name is folded in (deduped against the name tokens) to recover the enclosing
+    type/namespace word WHERE qualified_name carries it (e.g. 'Class.method' → adds 'class';
+    a bare top-level function whose qualified_name is just its own name adds nothing). docstring
+    is deliberately NOT folded — it is already its own FTS column. Never raises.
     """
     toks = split_identifier(name)
     if qualified_name:

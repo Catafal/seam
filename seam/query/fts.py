@@ -170,8 +170,11 @@ def build_match_query(text: str) -> str:
     for token in surviving:
         candidates = [token]
         if SEAM_TOKENIZE_IDENTIFIERS == "on":
-            # Sub-words below _MIN_TERM_LEN are dropped to match the original token filter.
-            candidates += [sub for sub in split_identifier(token) if len(sub) >= _MIN_TERM_LEN]
+            # Drop single-char sub-words: a "a"* / "x"* prefix term matches a huge swath of
+            # the index and only adds noise (the original camelCase token is already kept).
+            # Guard at >=2 explicitly (not _MIN_TERM_LEN, which is 1) since sub-tokens are the
+            # high-fan-out source — the OR-expansion makes short terms disproportionately costly.
+            candidates += [sub for sub in split_identifier(token) if len(sub) >= 2]
         for cand in candidates:
             low = cand.lower()
             if low not in seen_terms:

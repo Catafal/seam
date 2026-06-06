@@ -671,6 +671,15 @@ def _run_migration_v10_to_v11(conn: sqlite3.Connection) -> None:
             # Step 2: rebuild the FTS table with the new column set. The FTS5 column list
             # is fixed at creation, so a column addition requires a full drop+recreate.
             # Triggers must be dropped first (they reference the old column list).
+            # The 'rebuild' below re-tokenizes every symbol; on a large index this is a
+            # multi-second write under BEGIN IMMEDIATE, and it fires on the FIRST process to
+            # open the DB after upgrade (often a read command). Log up front so a momentarily
+            # slow `seam query`/`start` right after upgrading is explainable, not mysterious.
+            logger.info(
+                "Migrating Seam index v%d->v11: rebuilding FTS index for camelCase search "
+                "(one-time; may take a moment on a large index)...",
+                version,
+            )
             conn.execute("DROP TRIGGER IF EXISTS symbols_ai")
             conn.execute("DROP TRIGGER IF EXISTS symbols_ad")
             conn.execute("DROP TRIGGER IF EXISTS symbols_au")

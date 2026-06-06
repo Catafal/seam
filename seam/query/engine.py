@@ -528,7 +528,10 @@ def search(
                 f.path          AS file,
                 s.start_line    AS line,
                 snippet(symbols_fts, 0, '<b>', '</b>', '...', 8) AS snippet,
-                bm25(symbols_fts) AS score,
+                -- Column weights (name, docstring, signature, search_text): the Tier D #12
+                -- split-token column is weighted LOWEST so it adds camelCase RECALL without
+                -- outranking or evicting real name/doc/signature hits from the LIMIT window.
+                bm25(symbols_fts, 10.0, 2.0, 2.0, 1.0) AS score,
                 s.cluster_id    AS cluster_id,
                 s.signature     AS signature
             FROM symbols_fts
@@ -706,7 +709,10 @@ def query(
                 s.name          AS name,
                 f.path          AS file,
                 s.start_line    AS line,
-                bm25(symbols_fts) AS score,
+                -- Column weights (name, docstring, signature, search_text): the Tier D #12
+                -- split-token column is weighted LOWEST so it adds camelCase RECALL without
+                -- outranking or evicting real name/doc/signature hits from the LIMIT window.
+                bm25(symbols_fts, 10.0, 2.0, 2.0, 1.0) AS score,
                 s.cluster_id    AS cluster_id,
                 s.signature     AS signature
             FROM symbols_fts

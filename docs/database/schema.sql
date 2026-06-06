@@ -96,7 +96,8 @@ CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_name);
 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_name);
 
 -- ── FTS5 (Full-Text Search) ───────────────────────────────────────────────────
--- Virtual table for BM25-ranked search across symbol names + docstrings + signatures.
+-- Virtual table for BM25-ranked search across symbol names + docstrings + signatures
+-- + search_text (Tier D #12 split tokens). Read-path bm25() weights search_text lowest.
 -- Phase 5 change: added 'signature' column so type-shaped queries match on params/returns.
 -- Kept in sync with 'symbols' via triggers below.
 -- Tier D #12 (v11): search_text column added — split identifier tokens for camelCase recall.
