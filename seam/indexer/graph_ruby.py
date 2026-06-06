@@ -425,7 +425,8 @@ def _handle_ruby_call(
                     file=file_str,
                     line=node.start_point[0] + 1,
                     confidence="INFERRED",
-                )
+                                    receiver=None,
+                                )
             )
         return
 
@@ -443,7 +444,8 @@ def _handle_ruby_call(
                     file=file_str,
                     line=node.start_point[0] + 1,
                     confidence="INFERRED",
-                )
+                                    receiver=None,
+                                )
             )
         return
 
@@ -461,7 +463,8 @@ def _handle_ruby_call(
                 file=file_str,
                 line=node.start_point[0] + 1,
                 confidence="INFERRED",
-            )
+                            receiver=None,
+                        )
         )
 
 

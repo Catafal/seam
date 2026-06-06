@@ -373,6 +373,7 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
                                 file=file_str,
                                 line=node.start_point[0] + 1,
                                 confidence="INFERRED",
+                                receiver=None,
                             )
                         )
             # Fall through to recurse into the class body for nested calls/classes.
@@ -389,6 +390,7 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
                             file=file_str,
                             line=node.start_point[0] + 1,
                             confidence="INFERRED",
+                            receiver=None,
                         )
                     )
 
@@ -408,6 +410,7 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
                                 file=file_str,
                                 line=node.start_point[0] + 1,
                                 confidence="INFERRED",
+                                receiver=None,
                             )
                         )
                     elif child.type == "aliased_import":
@@ -421,22 +424,33 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
                                     file=file_str,
                                     line=node.start_point[0] + 1,
                                     confidence="INFERRED",
+                                    receiver=None,
                                 )
                             )
 
         elif node.type == "call":
             func_child = node.child_by_field_name("function")
-            # Resolve the callee NAME node. Two shapes:
-            #   identifier  → bare call `foo()`            → the identifier itself
+            # Resolve the callee NAME node and capture receiver. Two shapes:
+            #   identifier  → bare call `foo()`            → the identifier itself;
+            #                                                receiver = None
             #   attribute   → `mod.fn()` / `self.m()` / `a.b.c()`
-            #                 → the 'attribute' field = the rightmost identifier.
+            #                 → the 'attribute' field = the rightmost identifier;
+            #                   the 'object' field = the receiver expression (left of '.').
             # Attribute calls were previously dropped, hiding import-alias and
             # method call edges (e.g. `fts.rescore(...)`) from impact/callers.
             callee_node: Node | None = None
+            receiver_text: str | None = None  # Tier B B1: raw receiver expression text
             if func_child and func_child.type == "identifier":
                 callee_node = func_child
+                # Bare call: no receiver (receiver_text stays None)
             elif func_child and func_child.type == "attribute":
                 callee_node = func_child.child_by_field_name("attribute")
+                # Capture the receiver: the 'object' field is the LHS of the '.' access.
+                # This is the raw AST text — could be 'self', 'obj', 'a.b', etc.
+                # We store it as-is; later inference (Tier B slices B2+) resolves type.
+                object_node = func_child.child_by_field_name("object")
+                if object_node is not None:
+                    receiver_text = _text(object_node)
 
             if callee_node is not None and callee_node.type == "identifier":
                 source = _find_enclosing_function(node, "python")
@@ -449,6 +463,7 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
                             file=file_str,
                             line=node.start_point[0] + 1,
                             confidence="INFERRED",
+                            receiver=receiver_text,  # None for bare calls, text for attr calls
                         )
                     )
 
@@ -661,6 +676,7 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
                             file=file_str,
                             line=line,
                             confidence="INFERRED",
+                            receiver=None,
                         )
                     )
 
@@ -701,6 +717,7 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
                                 file=file_str,
                                 line=line,
                                 confidence="INFERRED",
+                                receiver=None,
                             )
                         )
                     elif clause_child.type == "namespace_import":
@@ -714,6 +731,7 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
                                         file=file_str,
                                         line=line,
                                         confidence="INFERRED",
+                                        receiver=None,
                                     )
                                 )
                                 break
@@ -732,6 +750,7 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
                                             file=file_str,
                                             line=line,
                                             confidence="INFERRED",
+                                            receiver=None,
                                         )
                                     )
 
@@ -748,6 +767,7 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
                             file=file_str,
                             line=node.start_point[0] + 1,
                             confidence="INFERRED",
+                            receiver=None,
                         )
                     )
 

@@ -372,7 +372,8 @@ def _extract_edges_c(root: Node, filepath: Path) -> list[Edge]:
                                 file=file_str,
                                 line=node.start_point[0] + 1,
                                 confidence="INFERRED",
-                            )
+                                                            receiver=None,
+                                                        )
                         )
 
             for child in node.children:
@@ -432,7 +433,8 @@ def _handle_c_include(node: Node, file_str: str, file_stem: str, edges: list[Edg
                     file=file_str,
                     line=line,
                     confidence="INFERRED",
-                )
+                                    receiver=None,
+                                )
             )
     except Exception:  # noqa: BLE001
         logger.debug("_handle_c_include: failed for node at row %d", node.start_point[0])
@@ -863,7 +865,8 @@ def _extract_edges_cpp(root: Node, filepath: Path) -> list[Edge]:
                                 file=file_str,
                                 line=node.start_point[0] + 1,
                                 confidence="INFERRED",
-                            )
+                                                            receiver=None,
+                                                        )
                         )
 
             for child in node.children:

@@ -796,7 +796,8 @@ def _handle_import(node: Node, file_str: str, file_stem: str, edges: list[Edge])
                         file=file_str,
                         line=line,
                         confidence="INFERRED",
-                    )
+                                            receiver=None,
+                                        )
                 )
             break
 
@@ -847,7 +848,8 @@ def _emit_call(node: Node, file_str: str, target: str, edges: list[Edge]) -> Non
                 file=file_str,
                 line=node.start_point[0] + 1,
                 confidence="INFERRED",
-            )
+                            receiver=None,
+                        )
         )
 
 

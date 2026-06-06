@@ -482,7 +482,8 @@ def _extract_edges_java(root: Node, filepath: Path) -> list[Edge]:
                                 file=file_str,
                                 line=node.start_point[0] + 1,
                                 confidence="INFERRED",
-                            )
+                                                            receiver=None,
+                                                        )
                         )
 
             for child in node.children:
@@ -530,7 +531,8 @@ def _handle_java_inheritance(decl_node: Node, file_str: str, edges: list[Edge]) 
                     file=file_str,
                     line=line,
                     confidence="INFERRED",
-                )
+                                    receiver=None,
+                                )
             )
 
     for child in decl_node.children:
@@ -583,7 +585,8 @@ def _handle_java_import(decl_node: Node, file_str: str, file_stem: str, edges: l
                     file=file_str,
                     line=line,
                     confidence="INFERRED",
-                )
+                                    receiver=None,
+                                )
             )
 
 
@@ -861,7 +864,8 @@ def _extract_edges_csharp(root: Node, filepath: Path) -> list[Edge]:
                                 file=file_str,
                                 line=node.start_point[0] + 1,
                                 confidence="INFERRED",
-                            )
+                                                            receiver=None,
+                                                        )
                         )
 
             for child in node.children:
@@ -911,7 +915,8 @@ def _handle_csharp_inheritance(decl_node: Node, file_str: str, edges: list[Edge]
                             file=file_str,
                             line=line,
                             confidence="INFERRED",
-                        )
+                                                    receiver=None,
+                                                )
                     )
 
 
@@ -952,7 +957,8 @@ def _handle_csharp_using(
                             file=file_str,
                             line=line,
                             confidence="INFERRED",
-                        )
+                                                    receiver=None,
+                                                )
                     )
         return
 
@@ -968,7 +974,8 @@ def _handle_csharp_using(
                     file=file_str,
                     line=line,
                     confidence="INFERRED",
-                )
+                                    receiver=None,
+                                )
             )
 
 

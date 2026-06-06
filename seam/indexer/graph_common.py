@@ -33,7 +33,7 @@ Contents:
 
 import logging
 import re
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 from tree_sitter import Node
 
@@ -81,6 +81,12 @@ class Edge(TypedDict):
     file: str
     line: int
     confidence: Confidence  # EXTRACTED | INFERRED | AMBIGUOUS
+    # Tier B B1 (v10): raw receiver expression text for attribute calls (e.g. 'self', 'obj').
+    # None for import edges, bare-identifier call edges, and pre-v10 rows.
+    # NotRequired so existing Edge() callers that don't set it remain valid (null-contract:
+    # absent ≡ None at the DB layer — upsert_file uses .get("receiver") which defaults to None).
+    # Captured at extraction time; target_name stays the bare method name (edges remain string-keyed).
+    receiver: NotRequired[str | None]
 
 
 class Comment(TypedDict):

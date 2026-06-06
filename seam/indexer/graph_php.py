@@ -410,7 +410,8 @@ def _handle_php_use_declaration(
                         file=file_str,
                         line=line,
                         confidence="INFERRED",
-                    )
+                                            receiver=None,
+                                        )
                 )
         elif child.type == "namespace_use_group":
             # Grouped use: use App\{Foo, Bar} — descend into the group's clauses.
@@ -426,7 +427,8 @@ def _handle_php_use_declaration(
                                 file=file_str,
                                 line=line,
                                 confidence="INFERRED",
-                            )
+                                                            receiver=None,
+                                                        )
                         )
 
 
@@ -481,7 +483,8 @@ def _handle_php_call(
                 file=file_str,
                 line=node.start_point[0] + 1,
                 confidence="INFERRED",
-            )
+                            receiver=None,
+                        )
         )
 
 

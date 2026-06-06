@@ -333,7 +333,8 @@ def _extract_edges_go(root: Node, filepath: Path) -> list[Edge]:
                             file=file_str,
                             line=node.start_point[0] + 1,
                             confidence="INFERRED",
-                        )
+                                                    receiver=None,
+                                                )
                     )
 
         for child in node.children:
@@ -374,7 +375,8 @@ def _handle_go_import(decl_node: Node, file_str: str, file_stem: str, edges: lis
                     file=file_str,
                     line=line,
                     confidence="INFERRED",
-                )
+                                    receiver=None,
+                                )
             )
 
     for child in decl_node.children:
@@ -667,7 +669,8 @@ def _extract_edges_rust(root: Node, filepath: Path) -> list[Edge]:
                             file=file_str,
                             line=node.start_point[0] + 1,
                             confidence="INFERRED",
-                        )
+                                                    receiver=None,
+                                                )
                     )
 
         for child in node.children:
@@ -708,7 +711,8 @@ def _handle_rust_use(use_node: Node, file_str: str, file_stem: str, edges: list[
                 file=file_str,
                 line=line,
                 confidence="INFERRED",
-            )
+                            receiver=None,
+                        )
         )
 
     def _collect(node: Node) -> None:

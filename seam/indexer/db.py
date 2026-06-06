@@ -7,13 +7,15 @@ Key design decisions:
 - init_db verifies FTS5 availability before running the schema script.
 - init_db runs guarded migrations: v1->v2 (edges.confidence), v2->v3 (comments table),
   v3->v4 (clusters + cluster_id), v4->v5 (Phase 4 node enrichment fields),
-  v5->v6 (Phase 5 import_mappings table), v6->v7 (semantic embeddings table).
+  v5->v6 (Phase 5 import_mappings table), v6->v7 (semantic embeddings table),
+  v9->v10 (Tier B B1: edges.receiver column for call-edge receiver capture).
 - upsert_file is a single transaction: INSERT OR REPLACE the file row,
   DELETE old symbols/edges/comments, then re-insert. Triggers handle FTS sync.
 - delete_file DELETE FROM files cascades to symbols/edges/comments via FK; FTS
   triggers fire on each symbol DELETE.
 - Edge["source"] -> source_name, Edge["target"] -> target_name (see CONTRACT.md).
 - Edge["confidence"] -> edges.confidence (schema v2 addition).
+- Edge["receiver"] -> edges.receiver (schema v10 addition; NULL for non-attribute edges).
 - Comment["marker"/"text"/"line"] -> comments table (schema v3 addition).
 - Phase 4 fields: symbols gain signature, decorators (JSON text), is_exported,
   visibility, qualified_name. FTS5 rebuilt to index (name, docstring, signature).
@@ -22,6 +24,8 @@ Key design decisions:
 - Semantic search (schema v7): embeddings table. Populated ONLY by `seam init --semantic`.
   Not backfilled by migration — falls back to FTS5-only when absent. ON DELETE CASCADE
   keeps embeddings in sync with symbol deletions automatically.
+- Tier B B1 (schema v10): edges.receiver TEXT column. NULL on pre-v10 rows (null-contract,
+  mirrors Phase 4/5 fields). Populated at index time for Python attribute calls.
 """
 
 import json
@@ -132,10 +136,10 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
         row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
         version = int(row["value"]) if row else 0
 
-        if version >= 9:
+        if version >= 10:
             return  # Already up to date — no-op.
 
-        # Version is < 8: run pending migrations in order.
+        # Version is < 10: run pending migrations in order.
         # Each migration is guarded by its own version check — safe to call
         # when already at or above that version (they become no-ops).
         if version < 2:
@@ -159,6 +163,9 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
         # v8→v9: P6b framework entry-point scoring (adds symbols.entry_score column).
         if version < 9:
             _run_migration_v8_to_v9(conn)
+        # v9→v10: Tier B B1 receiver capture (adds edges.receiver column).
+        if version < 10:
+            _run_migration_v9_to_v10(conn)
 
     except Exception as exc:  # noqa: BLE001
         # Do NOT raise here — failing to auto-migrate should not crash a read-only
@@ -683,6 +690,78 @@ def _run_migration_v8_to_v9(conn: sqlite3.Connection) -> None:
         ) from exc
 
 
+def _run_migration_v9_to_v10(conn: sqlite3.Connection) -> None:
+    """Guarded migration: add edges.receiver column (v9 → v10).
+
+    Tier B B1 addition: captures the raw receiver expression text from attribute-call
+    edges (e.g., `recv.method()` → receiver='recv'). This enables later receiver-type
+    inference (Tier B slices B2+) without requiring another schema change.
+
+    Additive-only: adds a nullable TEXT column to the edges table if absent.
+    Does NOT backfill — receiver stays NULL on existing rows until re-index.
+    The null-contract mirrors Phase 4/5 fields: NULL means "not yet captured" or
+    "not applicable" (import edges, bare calls), not "has no receiver".
+
+    Steps:
+      1. ALTER TABLE edges ADD COLUMN receiver TEXT (guarded by table_info).
+      2. Bump schema_version to '10'.
+
+    Guarded: runs only when stored version < 10.
+    Idempotent: the PRAGMA table_info check skips the ALTER when the column
+                already exists; the version guard prevents double-bumping.
+    Fresh-DB-safe: a brand-new DB seeded with schema_version='10' returns early.
+    Never raises: all exceptions are swallowed and logged — failure must not crash
+                a read-only command. The OperationalError surfaces later if the schema
+                is truly broken, giving a clear diagnostic message.
+
+    Uses BEGIN IMMEDIATE / COMMIT for atomicity (consistent with v8→v9 pattern).
+    Raises RuntimeError on failure so caller knows the DB is in a bad state.
+    """
+    try:
+        row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
+        version = int(row["value"]) if row else 0
+
+        if version >= 10:
+            return  # Already at v10 or newer — no-op.
+
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # Step 1: add the nullable receiver column if it does not already exist.
+            # Guarded by table_info to make repeated calls safe (idempotent).
+            col_names = {
+                r["name"] for r in conn.execute("PRAGMA table_info(edges)").fetchall()
+            }
+            if "receiver" not in col_names:
+                conn.execute("ALTER TABLE edges ADD COLUMN receiver TEXT")
+
+            # Step 2: bump schema_version to '10' as the last step before commit.
+            # Placing this last guarantees the version is only advanced when the
+            # structural change has succeeded.
+            conn.execute("UPDATE metadata SET value = '10' WHERE key = 'schema_version'")
+            conn.execute("COMMIT")
+
+            logger.info(
+                "Migrated Seam index v%d->v10 (added edges.receiver column for Tier B "
+                "receiver-type inference). Run 'seam init' to populate receiver for "
+                "existing Python attribute calls.",
+                version,
+            )
+        except Exception as exc:  # noqa: BLE001
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(
+                "Seam DB migration v9->v10 failed; run 'seam init' to rebuild the index"
+            ) from exc
+    except RuntimeError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "Seam DB migration v9->v10 failed; run 'seam init' to rebuild the index"
+        ) from exc
+
+
 def _run_migration_v2_to_v3(conn: sqlite3.Connection) -> None:
     """Guarded migration: bump schema_version from 2 to 3 (adds comments table).
 
@@ -767,6 +846,9 @@ def init_db(db_path: Path) -> sqlite3.Connection:
 
     # Run v8->v9 migration guard (adds symbols.entry_score column — P6b framework scoring).
     _run_migration_v8_to_v9(conn)
+
+    # Run v9->v10 migration guard (adds edges.receiver column — Tier B B1 receiver capture).
+    _run_migration_v9_to_v10(conn)
 
     return conn
 
@@ -876,19 +958,21 @@ def upsert_file(
         # 5. Insert edges — contract: Edge['source'] -> source_name,
         #                             Edge['target'] -> target_name
         #                             Edge['confidence'] -> confidence (schema v2)
+        #                             Edge['receiver'] -> receiver (schema v10, nullable)
         conn.executemany(
             """
-            INSERT INTO edges (source_name, target_name, kind, file_id, line, confidence)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO edges (source_name, target_name, kind, file_id, line, confidence, receiver)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
-                    edge["source"],  # Edge field 'source' -> column source_name
-                    edge["target"],  # Edge field 'target' -> column target_name
+                    edge["source"],    # Edge field 'source' -> column source_name
+                    edge["target"],    # Edge field 'target' -> column target_name
                     edge["kind"],
                     file_id,
                     edge["line"],
-                    edge["confidence"],  # required field — fail loud if missing
+                    edge["confidence"],         # required field — fail loud if missing
+                    edge.get("receiver"),       # nullable: None for import/bare-call edges
                 )
                 for edge in edges
             ],
