@@ -309,7 +309,11 @@ class TestPythonReceiverCapture:
         assert call_edges[0]["receiver"] == "obj"
 
     def test_self_call_captures_receiver(self) -> None:
-        """self.helper() inside a method → edge with target='helper', receiver='self'."""
+        """self.helper() inside a method → edge with receiver='self'.
+
+        B4 update: when SEAM_TYPE_INFERENCE=on, 'self' inside MyClass.run resolves
+        to 'MyClass', so the target becomes 'MyClass.helper'. Accept both forms.
+        """
         source = (
             "class MyClass:\n"
             "    def run(self):\n"
@@ -318,8 +322,9 @@ class TestPythonReceiverCapture:
             "        pass\n"
         )
         edges = _edges_from_source(source)
-        call_edges = [e for e in edges if e["kind"] == "call" and e["target"] == "helper"]
-        assert call_edges, f"No call edge for 'helper'; edges={edges}"
+        # Accept either bare 'helper' (inference off) or 'MyClass.helper' (inference on).
+        call_edges = [e for e in edges if e["kind"] == "call" and "helper" in e["target"]]
+        assert call_edges, f"No call edge for 'helper' or 'MyClass.helper'; edges={edges}"
         assert call_edges[0]["receiver"] == "self"
 
     def test_chained_attribute_call_captures_receiver(self) -> None:

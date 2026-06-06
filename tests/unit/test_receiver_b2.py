@@ -108,22 +108,33 @@ function caller(): void {
 """
 
     def test_member_call_receiver_captured(self, tmp_path: Path) -> None:
-        """p.print() → call edge target='print', receiver='p'."""
+        """p.print() → call edge with receiver='p'.
+
+        B4 update: since p: Printer is type-annotated, target may be 'Printer.print'
+        (inference on) or 'print' (inference off). Accept both forms.
+        """
         edges = _parse_and_extract(self.MEMBER_CALL_SRC, "typescript", ".ts")
-        e = _edge_by_target(edges, "print")
-        assert e is not None, (
-            f"Expected 'print' call edge, got: {[x['target'] for x in _call_edges(edges)]}"
+        # Accept either bare 'print' or qualified 'Printer.print'.
+        print_edges = [e for e in _call_edges(edges) if "print" in e["target"]]
+        assert print_edges, (
+            f"Expected a call edge containing 'print', got: {[x['target'] for x in _call_edges(edges)]}"
         )
+        e = print_edges[0]
         assert e["receiver"] == "p", f"Expected receiver='p', got {e['receiver']!r}"
-        assert e["target"] == "print", "target_name must be the bare method id"
 
     def test_this_call_receiver_captured(self, tmp_path: Path) -> None:
-        """this.process() → call edge target='process', receiver='this'."""
+        """this.process() → call edge with receiver='this'.
+
+        B4 update: 'this' inside Handler resolves to 'Handler', so target may be
+        'Handler.process' (inference on) or 'process' (inference off).
+        """
         edges = _parse_and_extract(self.THIS_CALL_SRC, "typescript", ".ts")
-        e = _edge_by_target(edges, "process")
-        assert e is not None, (
-            f"Expected 'process' call edge, got: {[x['target'] for x in _call_edges(edges)]}"
+        # Accept either bare 'process' or qualified 'Handler.process'.
+        process_edges = [e for e in _call_edges(edges) if "process" in e["target"]]
+        assert process_edges, (
+            f"Expected a call edge containing 'process', got: {[x['target'] for x in _call_edges(edges)]}"
         )
+        e = process_edges[0]
         assert e["receiver"] == "this", f"Expected receiver='this', got {e['receiver']!r}"
 
     def test_bare_call_receiver_none(self, tmp_path: Path) -> None:

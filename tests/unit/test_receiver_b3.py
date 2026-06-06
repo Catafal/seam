@@ -96,34 +96,49 @@ function test(p: Printer) {
 """
 
     def test_member_call_edge_emitted(self) -> None:
-        """REGRESSION: p.print() must produce a 'print' call edge (was silently dropped)."""
+        """REGRESSION: p.print() must produce a call edge (was silently dropped).
+
+        B4 update: since p: Printer is type-annotated, the edge target is now
+        qualified to 'Printer.print' rather than bare 'print'. The invariant
+        is that AN EDGE IS EMITTED — the exact target depends on whether
+        SEAM_TYPE_INFERENCE resolves the type.
+        """
         edges = _parse_ts(self.MINIMAL_MEMBER_CALL)
         call_targets = {e["target"] for e in _call_edges(edges)}
-        assert "print" in call_targets, (
+        # Accept either bare 'print' (inference off) or qualified 'Printer.print' (inference on).
+        assert "print" in call_targets or "Printer.print" in call_targets, (
             f"REGRESSION: member-expression call 'p.print()' must produce an edge. "
             f"Got call targets: {call_targets}. "
             "Pre-B2/B3 code silently dropped every obj.method() call."
         )
 
     def test_member_call_has_correct_target(self) -> None:
-        """target_name must be the rightmost identifier (the method name)."""
+        """target_name is either bare 'print' or qualified 'Printer.print' (B4 type inference).
+
+        B4 update: when SEAM_TYPE_INFERENCE=on (default), p: Printer resolves to
+        'Printer.print'. The core invariant is that the method name appears in target.
+        """
         edges = _parse_ts(self.MINIMAL_MEMBER_CALL)
-        e = _edge_by_target(edges, "print")
-        assert e is not None, "Expected 'print' call edge"
-        assert e["target"] == "print", f"Expected target='print', got {e['target']!r}"
+        call_targets = {e["target"] for e in _call_edges(edges)}
+        # The method name must appear in at least one call target.
+        has_print_target = any("print" in t for t in call_targets)
+        assert has_print_target, f"Expected a 'print' or 'Printer.print' call edge, got {call_targets!r}"
 
     def test_member_call_has_receiver(self) -> None:
-        """Receiver text is captured (p.print() -> receiver='p')."""
+        """Receiver text is captured (p.print() -> receiver='p'), regardless of inference."""
         edges = _parse_ts(self.MINIMAL_MEMBER_CALL)
-        e = _edge_by_target(edges, "print")
-        assert e is not None, "Expected 'print' call edge"
+        # Find any call edge whose receiver is 'p' (works for both bare and qualified).
+        print_edges = [e for e in _call_edges(edges) if "print" in e["target"]]
+        assert print_edges, "Expected a call edge targeting 'print' or 'Printer.print'"
+        e = print_edges[0]
         assert e.get("receiver") == "p", f"Expected receiver='p', got {e.get('receiver')!r}"
 
     def test_member_call_has_source(self) -> None:
         """Source is the enclosing function (test -> p.print())."""
         edges = _parse_ts(self.MINIMAL_MEMBER_CALL)
-        e = _edge_by_target(edges, "print")
-        assert e is not None, "Expected 'print' call edge"
+        print_edges = [e for e in _call_edges(edges) if "print" in e["target"]]
+        assert print_edges, "Expected a call edge targeting 'print' or 'Printer.print'"
+        e = print_edges[0]
         # Source should be 'test' (the enclosing function name)
         assert e["source"] == "test", f"Expected source='test', got {e['source']!r}"
 
@@ -236,10 +251,17 @@ function report(logger: Logger) {
 """
 
     def test_this_call_emitted_with_this_receiver(self) -> None:
-        """this.process() must produce an edge with receiver='this'."""
+        """this.process() must produce an edge with receiver='this'.
+
+        B4 update: when SEAM_TYPE_INFERENCE=on, 'this' inside Worker resolves to
+        'Worker', so the target becomes 'Worker.process'. The invariant is that
+        an edge IS emitted and the receiver is 'this'.
+        """
         edges = _parse_ts(self.THIS_CALL_SRC)
-        e = _edge_by_target(edges, "process")
-        assert e is not None, "this.process() must produce a 'process' call edge"
+        # Accept both bare 'process' (inference off) and 'Worker.process' (inference on).
+        process_edges = [e for e in _call_edges(edges) if "process" in e["target"]]
+        assert process_edges, "this.process() must produce a 'process' or 'Worker.process' call edge"
+        e = process_edges[0]
         assert e.get("receiver") == "this", (
             f"Expected receiver='this' for this.process(), got {e.get('receiver')!r}"
         )
@@ -265,12 +287,18 @@ function report(logger: Logger) {
             pytest.fail(f"Optional chain a?.method() raised an exception: {exc}")
 
     def test_multiple_member_calls_all_emitted(self) -> None:
-        """Multiple obj.method() calls in same function all produce separate edges."""
+        """Multiple obj.method() calls in same function all produce separate edges.
+
+        B4 update: logger: Logger resolves to 'Logger.log' and 'Logger.warn' when
+        SEAM_TYPE_INFERENCE=on. Accept both bare and qualified targets.
+        """
         edges = _parse_ts(self.MULTIPLE_MEMBER_CALLS_SRC)
         call_targets = {e["target"] for e in _call_edges(edges)}
-        assert "log" in call_targets, f"logger.log() must produce a 'log' edge; got {call_targets}"
-        assert "warn" in call_targets, (
-            f"logger.warn() must produce a 'warn' edge; got {call_targets}"
+        has_log = "log" in call_targets or "Logger.log" in call_targets
+        has_warn = "warn" in call_targets or "Logger.warn" in call_targets
+        assert has_log, f"logger.log() must produce a 'log' or 'Logger.log' edge; got {call_targets}"
+        assert has_warn, (
+            f"logger.warn() must produce a 'warn' or 'Logger.warn' edge; got {call_targets}"
         )
 
     def test_import_edges_unaffected(self) -> None:

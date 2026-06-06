@@ -85,27 +85,37 @@ class TestMemberEdgeStoredInDb:
     """B3-I1: member-expression call edge is stored in the DB after upsert."""
 
     def test_member_call_edge_in_db(self) -> None:
-        """The 'print' call edge must be present in the edges table after indexing."""
+        """A print-method call edge must be present in the edges table after indexing.
+
+        B4 update: since p: Printer is type-annotated, the target is now 'Printer.print'
+        (type inference on) rather than bare 'print'. Accept both forms.
+        """
         conn = _build_db()
         try:
+            # Accept either bare 'print' (inference off) or qualified 'Printer.print' (inference on).
             rows = conn.execute(
-                "SELECT source_name, target_name, receiver FROM edges WHERE target_name = ?",
-                ("print",),
+                "SELECT source_name, target_name, receiver FROM edges"
+                " WHERE target_name = ? OR target_name = ?",
+                ("print", "Printer.print"),
             ).fetchall()
         finally:
             conn.close()
 
         assert rows, (
-            "REGRESSION: 'print' call edge must be stored in DB. "
+            "REGRESSION: 'print' or 'Printer.print' call edge must be stored in DB. "
             "Pre-B2 code silently dropped every obj.method() call."
         )
 
     def test_member_call_edge_source_is_enclosing_function(self) -> None:
-        """Edge source must be the enclosing function (Runner.run or standalone)."""
+        """Edge source must be the enclosing function (Runner.run or standalone).
+
+        B4 update: accept either bare 'print' or qualified 'Printer.print' as target.
+        """
         conn = _build_db()
         try:
             rows = conn.execute(
-                "SELECT source_name FROM edges WHERE target_name = 'print'",
+                "SELECT source_name FROM edges WHERE target_name = ? OR target_name = ?",
+                ("print", "Printer.print"),
             ).fetchall()
         finally:
             conn.close()
@@ -113,21 +123,25 @@ class TestMemberEdgeStoredInDb:
         sources = {r["source_name"] for r in rows}
         # At least one of Runner.run or standalone must appear as source
         assert sources & {"Runner.run", "standalone"}, (
-            f"Expected 'Runner.run' or 'standalone' as edge source for 'print'; got {sources}"
+            f"Expected 'Runner.run' or 'standalone' as edge source for print edges; got {sources}"
         )
 
     def test_member_call_receiver_stored(self) -> None:
-        """Receiver text ('p') must be stored in the DB alongside the edge."""
+        """Receiver text ('p') must be stored in the DB alongside the edge.
+
+        B4 update: accept either bare 'print' or qualified 'Printer.print' as target.
+        """
         conn = _build_db()
         try:
             rows = conn.execute(
-                "SELECT receiver FROM edges WHERE target_name = 'print'",
+                "SELECT receiver FROM edges WHERE target_name = ? OR target_name = ?",
+                ("print", "Printer.print"),
             ).fetchall()
         finally:
             conn.close()
 
         receivers = {r["receiver"] for r in rows}
-        assert "p" in receivers, f"Expected receiver='p' stored for 'print' edges; got {receivers}"
+        assert "p" in receivers, f"Expected receiver='p' stored for print edges; got {receivers}"
 
 
 # ── B3-I2: Visible through context() ─────────────────────────────────────────

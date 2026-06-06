@@ -36,10 +36,14 @@ from tree_sitter import Node
 
 import seam.config as config
 
-# ── Phase 9 extractors — top-level imports, no cycle ─────────────────────────
-# Each family module imports only graph_common (leaf), so the import chain is
-# graph.py → graph_java_csharp/graph_c_cpp/graph_ruby/graph_php → graph_common (leaf).
-# No circular dependencies.
+# All seam imports in one block (alphabetically ordered, as required by ruff/isort).
+# Layer structure:
+#   graph_common      (leaf — no seam deps)
+#   graph_scope_infer (leaf — imports graph_common only; Tier B B4 receiver-type inference)
+#   graph_c_cpp / graph_go_rust / graph_java_csharp / graph_php / graph_ruby / graph_swift
+#                     (family extractors — import graph_common only; no cycle)
+#   signatures        (leaf — imports graph_common only)
+#   graph.py          (this file — orchestrator; imports all of the above)
 from seam.indexer.graph_c_cpp import (
     _extract_comments_c,
     _extract_comments_cpp,
@@ -48,10 +52,6 @@ from seam.indexer.graph_c_cpp import (
     _extract_symbols_c,
     _extract_symbols_cpp,
 )
-
-# ── Re-export shared primitives from the leaf module ──────────────────────────
-# graph_common is the leaf (no seam deps); importing from it here does not create
-# a cycle. All imports are at module top — no deferred/in-function imports.
 from seam.indexer.graph_common import (
     SEMANTIC_MARKERS,
     Comment,
@@ -66,10 +66,6 @@ from seam.indexer.graph_common import (
     _node_name,
     _text,
 )
-
-# ── Go/Rust extractors — top-level import, no cycle ──────────────────────────
-# graph_go_rust only imports from graph_common (the leaf). It does NOT import from
-# this file, so the import here is one-directional: graph.py → graph_go_rust.py.
 from seam.indexer.graph_go_rust import (
     _extract_comments_go,
     _extract_comments_rust,
@@ -97,7 +93,19 @@ from seam.indexer.graph_ruby import (
     _extract_symbols_ruby,
 )
 
-# Phase 10 — Swift extractor (leaf imports graph_common only)
+# Tier B B4 — scope-inference leaf (Python + TS/JS receiver-type resolution).
+# graph_scope_infer imports only graph_common (leaf) — no circular dependency.
+from seam.indexer.graph_scope_infer import (
+    _PY_SELF_NAMES,
+    _TS_SELF_NAMES,
+    record_py_local_types,
+    record_py_param_types,
+    record_ts_local_types,
+    record_ts_param_types,
+    resolve_receiver_type,
+    scan_class_fields_python,
+    scan_class_fields_typescript,
+)
 from seam.indexer.graph_swift import (
     _extract_comments_swift,
     _extract_edges_swift,
@@ -340,13 +348,13 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
       - import X     → target = 'X' (dotted_name as-is)
       - from X import Y → target = 'Y' for each name after 'import' keyword
 
-    Call heuristic:
+    Call heuristic (Tier B B4 enhanced):
       - call node where function is a bare identifier (`foo()`) → target = identifier
       - call node where function is an attribute (`mod.fn()`, `self.m()`, `a.b.c()`)
-        → target = the RIGHTMOST identifier (the bare name the declared symbol is
-        stored under — the edge graph is name-keyed / homonym-collapsed). This
-        captures import-alias and method calls that bare-identifier-only matching
-        dropped (e.g. `fts.rescore(...)`).
+        → when SEAM_TYPE_INFERENCE=on and receiver type is known in scope, target =
+          'Type.method' (qualified); otherwise target = the rightmost identifier (bare).
+      - Scope is two-layer: class field pre-scan (order-independent) + per-function
+        param/local types accumulated during the walk.
       - source = nearest enclosing function/method (skip if none)
     """
     edges: list[Edge] = []
@@ -354,46 +362,23 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
     file_stem = filepath.stem
 
     emit_inheritance = config.SEAM_INHERITANCE_EDGES == "on"
+    type_inference_on = config.SEAM_TYPE_INFERENCE == "on"
 
-    def _walk(node: Node) -> None:
-        if emit_inheritance and node.type == "class_definition":
-            # Python has no syntactic class/interface split — every base in the
-            # `superclasses` argument_list is an 'extends' edge (subclass → base).
-            cls_name = _node_name(node)
-            bases = node.child_by_field_name("superclasses")
-            if cls_name and bases is not None:
-                for base_child in bases.named_children:
-                    base_target = _base_type_name(base_child)
-                    if base_target:
-                        edges.append(
-                            Edge(
-                                source=cls_name,
-                                target=base_target,
-                                kind="extends",
-                                file=file_str,
-                                line=node.start_point[0] + 1,
-                                confidence="INFERRED",
-                                receiver=None,
-                            )
-                        )
-            # Fall through to recurse into the class body for nested calls/classes.
-
+    def _emit_import_edges(node: Node) -> None:
+        """Emit import edges for import_statement and import_from_statement nodes."""
         if node.type == "import_statement":
             for child in node.children:
                 if child.type in ("dotted_name", "aliased_import"):
                     target_node = child.child_by_field_name("name") or child
-                    edges.append(
-                        Edge(
-                            source=file_stem,
-                            target=_text(target_node),
-                            kind="import",
-                            file=file_str,
-                            line=node.start_point[0] + 1,
-                            confidence="INFERRED",
-                            receiver=None,
-                        )
-                    )
-
+                    edges.append(Edge(
+                        source=file_stem,
+                        target=_text(target_node),
+                        kind="import",
+                        file=file_str,
+                        line=node.start_point[0] + 1,
+                        confidence="INFERRED",
+                        receiver=None,
+                    ))
         elif node.type == "import_from_statement":
             found_import_kw = False
             for child in node.children:
@@ -402,76 +387,203 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
                     continue
                 if found_import_kw:
                     if child.type in ("dotted_name", "identifier"):
-                        edges.append(
-                            Edge(
+                        edges.append(Edge(
+                            source=file_stem,
+                            target=_text(child),
+                            kind="import",
+                            file=file_str,
+                            line=node.start_point[0] + 1,
+                            confidence="INFERRED",
+                            receiver=None,
+                        ))
+                    elif child.type == "aliased_import":
+                        name_node = child.child_by_field_name("name")
+                        if name_node:
+                            edges.append(Edge(
                                 source=file_stem,
-                                target=_text(child),
+                                target=_text(name_node),
                                 kind="import",
                                 file=file_str,
                                 line=node.start_point[0] + 1,
                                 confidence="INFERRED",
                                 receiver=None,
-                            )
-                        )
-                    elif child.type == "aliased_import":
-                        name_node = child.child_by_field_name("name")
-                        if name_node:
-                            edges.append(
-                                Edge(
-                                    source=file_stem,
-                                    target=_text(name_node),
-                                    kind="import",
-                                    file=file_str,
-                                    line=node.start_point[0] + 1,
-                                    confidence="INFERRED",
-                                    receiver=None,
-                                )
-                            )
+                            ))
 
-        elif node.type == "call":
-            func_child = node.child_by_field_name("function")
-            # Resolve the callee NAME node and capture receiver. Two shapes:
-            #   identifier  → bare call `foo()`            → the identifier itself;
-            #                                                receiver = None
-            #   attribute   → `mod.fn()` / `self.m()` / `a.b.c()`
-            #                 → the 'attribute' field = the rightmost identifier;
-            #                   the 'object' field = the receiver expression (left of '.').
-            # Attribute calls were previously dropped, hiding import-alias and
-            # method call edges (e.g. `fts.rescore(...)`) from impact/callers.
-            callee_node: Node | None = None
-            receiver_text: str | None = None  # Tier B B1: raw receiver expression text
-            if func_child and func_child.type == "identifier":
-                callee_node = func_child
-                # Bare call: no receiver (receiver_text stays None)
-            elif func_child and func_child.type == "attribute":
-                callee_node = func_child.child_by_field_name("attribute")
-                # Capture the receiver: the 'object' field is the LHS of the '.' access.
-                # This is the raw AST text — could be 'self', 'obj', 'a.b', etc.
-                # We store it as-is; later inference (Tier B slices B2+) resolves type.
-                object_node = func_child.child_by_field_name("object")
-                if object_node is not None:
-                    receiver_text = _text(object_node)
+    def _emit_call_edge(
+        node: Node,
+        class_name: str | None,
+        var_types: dict[str, str],
+    ) -> None:
+        """Emit a call edge for a Python 'call' node using scope inference.
 
-            if callee_node is not None and callee_node.type == "identifier":
-                source = _find_enclosing_function(node, "python")
-                if source is not None:
-                    edges.append(
-                        Edge(
-                            source=source,
-                            target=_text(callee_node),
-                            kind="call",
-                            file=file_str,
-                            line=node.start_point[0] + 1,
-                            confidence="INFERRED",
-                            receiver=receiver_text,  # None for bare calls, text for attr calls
-                        )
-                    )
+        With type_inference_on=True: when the receiver's type is in scope,
+        target = 'Type.method'; else target = bare method name.
+        Receiver field always carries the raw receiver text regardless.
+        """
+        func_child = node.child_by_field_name("function")
+        callee_node: Node | None = None
+        receiver_text: str | None = None
 
+        if func_child and func_child.type == "identifier":
+            callee_node = func_child
+        elif func_child and func_child.type == "attribute":
+            callee_node = func_child.child_by_field_name("attribute")
+            object_node = func_child.child_by_field_name("object")
+            if object_node is not None:
+                receiver_text = _text(object_node)
+
+        if callee_node is None or callee_node.type != "identifier":
+            return
+        source = _find_enclosing_function(node, "python")
+        if source is None:
+            return
+
+        method_name = _text(callee_node)
+        target = method_name
+
+        # Tier B B4: attempt receiver-type resolution when inference is enabled
+        # and we have a receiver expression (attribute call, not bare call).
+        if type_inference_on and receiver_text is not None:
+            resolved_type = resolve_receiver_type(
+                receiver_text, class_name, var_types, _PY_SELF_NAMES
+            )
+            if resolved_type is not None:
+                target = f"{resolved_type}.{method_name}"
+
+        edges.append(Edge(
+            source=source,
+            target=target,
+            kind="call",
+            file=file_str,
+            line=node.start_point[0] + 1,
+            confidence="INFERRED",
+            receiver=receiver_text,
+        ))
+
+    def _walk_function_body(func_node: Node, class_name: str | None, class_fields: dict[str, str]) -> None:
+        """Walk a function body with accumulated per-function scope.
+
+        Builds a fresh var_types dict (class fields + params + locals) for each
+        function, then walks the body emitting call edges with full scope context.
+        """
+        # Start with a copy of class fields as base scope; params/locals extend it.
+        var_types: dict[str, str] = dict(class_fields)
+        record_py_param_types(func_node, var_types)
+
+        body = func_node.child_by_field_name("body")
+        if body is None:
+            return
+        for stmt in body.children:
+            # Record local bindings BEFORE emitting edges so variables defined
+            # earlier in the function are in scope for later calls.
+            record_py_local_types(stmt, var_types)
+            _walk_stmt(stmt, class_name, var_types, class_fields)
+
+    def _walk_stmt(
+        node: Node,
+        class_name: str | None,
+        var_types: dict[str, str],
+        class_fields: dict[str, str],
+    ) -> None:
+        """Recursively walk a statement, emitting edges with current scope."""
+        if node.type in ("import_statement", "import_from_statement"):
+            _emit_import_edges(node)
+            return
+
+        if node.type == "call":
+            _emit_call_edge(node, class_name, var_types)
+            # Fall through to recurse — a call can contain nested calls.
+
+        # Nested function/class definitions: enter new scope.
+        if node.type in ("function_definition", "decorated_definition"):
+            # A nested function inside another function — recurse with empty class scope.
+            inner_fn = node
+            if node.type == "decorated_definition":
+                inner_fn = node.child_by_field_name("definition") or node
+            if inner_fn.type == "function_definition":
+                _walk_function_body(inner_fn, class_name, class_fields)
+                return  # Already recursed into body; don't double-recurse below.
+
+        if node.type == "class_definition":
+            _walk_class(node)
+            return  # Nested class is handled recursively.
+
+        # Recurse into all children (expressions, comprehensions, lambdas, etc.)
         for child in node.children:
-            _walk(child)
+            _walk_stmt(child, class_name, var_types, class_fields)
+
+    def _walk_class(class_node: Node) -> None:
+        """Walk a class definition: emit inheritance edges + recurse methods."""
+        cls_name = _node_name(class_node)
+
+        if emit_inheritance and cls_name:
+            bases = class_node.child_by_field_name("superclasses")
+            if bases is not None:
+                for base_child in bases.named_children:
+                    base_target = _base_type_name(base_child)
+                    if base_target:
+                        edges.append(Edge(
+                            source=cls_name,
+                            target=base_target,
+                            kind="extends",
+                            file=file_str,
+                            line=class_node.start_point[0] + 1,
+                            confidence="INFERRED",
+                            receiver=None,
+                        ))
+
+        # Pre-scan class fields for the two-layer scope model.
+        class_fields: dict[str, str] = {}
+        if type_inference_on and cls_name:
+            class_fields = scan_class_fields_python(class_node)
+
+        body = class_node.child_by_field_name("body")
+        if body is None:
+            return
+        for child in body.children:
+            # Each method/function in the class body gets its own per-function scope
+            # that starts from the class-level field map.
+            if child.type == "function_definition":
+                _walk_function_body(child, cls_name, class_fields)
+            elif child.type == "decorated_definition":
+                inner = child.child_by_field_name("definition")
+                if inner and inner.type == "function_definition":
+                    _walk_function_body(inner, cls_name, class_fields)
+                elif inner and inner.type == "class_definition":
+                    _walk_class(inner)
+                else:
+                    # Decorated non-function (e.g. decorated class var) — still recurse.
+                    _walk_stmt(child, cls_name, {}, class_fields)
+            elif child.type == "class_definition":
+                _walk_class(child)
+            else:
+                # Class body statements (class-level calls, annotations, etc.)
+                _walk_stmt(child, cls_name, class_fields, class_fields)
+
+    def _walk_toplevel(node: Node) -> None:
+        """Walk top-level (module-level) nodes."""
+        if node.type in ("import_statement", "import_from_statement"):
+            _emit_import_edges(node)
+        elif node.type == "class_definition":
+            _walk_class(node)
+        elif node.type == "function_definition":
+            _walk_function_body(node, None, {})
+        elif node.type == "decorated_definition":
+            inner = node.child_by_field_name("definition")
+            if inner and inner.type == "function_definition":
+                _walk_function_body(inner, None, {})
+            elif inner and inner.type == "class_definition":
+                _walk_class(inner)
+            else:
+                for child in node.children:
+                    _walk_toplevel(child)
+        else:
+            # Module-level calls, expressions, etc.
+            for child in node.children:
+                _walk_toplevel(child)
 
     for child in root.children:
-        _walk(child)
+        _walk_toplevel(child)
 
     return edges
 
@@ -644,20 +756,21 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
       - named import { X, Y }     → one edge per import_specifier (real name)
       - aliased import { a as b } → target = 'a' (real name, not alias)
       - namespace import * as ns  → target = 'ns'
-    Call heuristic: bare identifier call_expression → source/target edge.
+
+    Call heuristic (Tier B B4 enhanced):
+      - identifier call_expression → source/target edge (bare, no receiver)
+      - member_expression call (obj.method()) → when SEAM_TYPE_INFERENCE=on and the
+        receiver type is known in scope, target = 'Type.method'; else bare 'method'.
+      - Scope: class field pre-scan (order-independent) + per-function param/local types.
     """
     edges: list[Edge] = []
     file_str = str(filepath)
     file_stem = filepath.stem
     emit_inheritance = config.SEAM_INHERITANCE_EDGES == "on"
+    type_inference_on = config.SEAM_TYPE_INFERENCE == "on"
 
     def _emit_ts_inheritance(node: Node) -> None:
-        """Emit extends/implements edges for a TS class_declaration or interface_declaration.
-
-        class_declaration → class_heritage → extends_clause (extends) + implements_clause.
-        interface_declaration → extends_type_clause (interface inheritance → 'extends').
-        Each base name is normalized to a bare type name (generic args stripped).
-        """
+        """Emit extends/implements edges for a TS class_declaration or interface_declaration."""
         name_node = node.child_by_field_name("name")
         if name_node is None:
             return
@@ -668,17 +781,15 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
             for c in clause.named_children:
                 target = _base_type_name(c)
                 if target:
-                    edges.append(
-                        Edge(
-                            source=src_name,
-                            target=target,
-                            kind=kind,
-                            file=file_str,
-                            line=line,
-                            confidence="INFERRED",
-                            receiver=None,
-                        )
-                    )
+                    edges.append(Edge(
+                        source=src_name,
+                        target=target,
+                        kind=kind,
+                        file=file_str,
+                        line=line,
+                        confidence="INFERRED",
+                        receiver=None,
+                    ))
 
         for child in node.children:
             if child.type == "class_heritage":
@@ -688,115 +799,214 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
                     elif clause.type == "implements_clause":
                         _emit_from_clause(clause, "implements")
             elif child.type == "extends_type_clause":
-                # interface A extends B, C — interface inheritance is 'extends'.
                 _emit_from_clause(child, "extends")
 
-    def _walk(node: Node) -> None:
-        if emit_inheritance and node.type in (
-            "class_declaration",
-            "interface_declaration",
-        ):
-            _emit_ts_inheritance(node)
-            # Fall through to recurse for nested calls.
-
-        if node.type == "import_statement":
-            line = node.start_point[0] + 1
-            clause = None
-            for child in node.children:
-                if child.type == "import_clause":
-                    clause = child
-                    break
-            if clause:
-                for clause_child in clause.children:
-                    if clause_child.type == "identifier":
-                        edges.append(
-                            Edge(
+    def _emit_import_edges_ts(node: Node) -> None:
+        """Emit import edges for a TS import_statement."""
+        line = node.start_point[0] + 1
+        clause = None
+        for child in node.children:
+            if child.type == "import_clause":
+                clause = child
+                break
+        if not clause:
+            return
+        for clause_child in clause.children:
+            if clause_child.type == "identifier":
+                edges.append(Edge(
+                    source=file_stem,
+                    target=_text(clause_child),
+                    kind="import",
+                    file=file_str,
+                    line=line,
+                    confidence="INFERRED",
+                    receiver=None,
+                ))
+            elif clause_child.type == "namespace_import":
+                for ns_child in clause_child.children:
+                    if ns_child.type == "identifier":
+                        edges.append(Edge(
+                            source=file_stem,
+                            target=_text(ns_child),
+                            kind="import",
+                            file=file_str,
+                            line=line,
+                            confidence="INFERRED",
+                            receiver=None,
+                        ))
+                        break
+            elif clause_child.type == "named_imports":
+                for spec in clause_child.children:
+                    if spec.type == "import_specifier":
+                        name_node = spec.child_by_field_name("name")
+                        if name_node is None and spec.children:
+                            name_node = spec.children[0]
+                        if name_node:
+                            edges.append(Edge(
                                 source=file_stem,
-                                target=_text(clause_child),
+                                target=_text(name_node),
                                 kind="import",
                                 file=file_str,
                                 line=line,
                                 confidence="INFERRED",
                                 receiver=None,
-                            )
-                        )
-                    elif clause_child.type == "namespace_import":
-                        for ns_child in clause_child.children:
-                            if ns_child.type == "identifier":
-                                edges.append(
-                                    Edge(
-                                        source=file_stem,
-                                        target=_text(ns_child),
-                                        kind="import",
-                                        file=file_str,
-                                        line=line,
-                                        confidence="INFERRED",
-                                        receiver=None,
-                                    )
-                                )
-                                break
-                    elif clause_child.type == "named_imports":
-                        for spec in clause_child.children:
-                            if spec.type == "import_specifier":
-                                name_node = spec.child_by_field_name("name")
-                                if name_node is None and spec.children:
-                                    name_node = spec.children[0]
-                                if name_node:
-                                    edges.append(
-                                        Edge(
-                                            source=file_stem,
-                                            target=_text(name_node),
-                                            kind="import",
-                                            file=file_str,
-                                            line=line,
-                                            confidence="INFERRED",
-                                            receiver=None,
-                                        )
-                                    )
+                            ))
 
-        elif node.type == "call_expression":
-            func_child = node.child_by_field_name("function")
-            # Tier B B2: capture receiver for member_expression calls (obj.method()).
-            # Two shapes:
-            #   identifier      → bare call foo()     → receiver = None
-            #   member_expression → obj.method()      → receiver = obj-side text,
-            #                                           target = rightmost identifier
-            callee_node: Node | None = None
-            receiver_text: str | None = None
+    def _emit_call_edge_ts(
+        node: Node,
+        class_name: str | None,
+        var_types: dict[str, str],
+        language: str,
+    ) -> None:
+        """Emit a call edge for a TS/JS call_expression node using scope inference."""
+        func_child = node.child_by_field_name("function")
+        callee_node: Node | None = None
+        receiver_text: str | None = None
 
-            if func_child and func_child.type == "identifier":
-                callee_node = func_child
-                # Bare call: no receiver
-            elif func_child and func_child.type == "member_expression":
-                # Property field = rightmost method name identifier
-                prop = func_child.child_by_field_name("property")
-                # Object field = left-hand receiver expression
-                obj = func_child.child_by_field_name("object")
-                if prop is not None and prop.type == "property_identifier":
-                    callee_node = prop
-                    if obj is not None:
-                        receiver_text = _text(obj)
+        if func_child and func_child.type == "identifier":
+            callee_node = func_child
+        elif func_child and func_child.type == "member_expression":
+            prop = func_child.child_by_field_name("property")
+            obj = func_child.child_by_field_name("object")
+            if prop is not None and prop.type == "property_identifier":
+                callee_node = prop
+                if obj is not None:
+                    receiver_text = _text(obj)
 
-            if callee_node is not None:
-                source = _find_enclosing_function(node, "typescript")
-                if source is not None:
-                    edges.append(
-                        Edge(
-                            source=source,
-                            target=_text(callee_node),
-                            kind="call",
-                            file=file_str,
-                            line=node.start_point[0] + 1,
-                            confidence="INFERRED",
-                            receiver=receiver_text,
-                        )
-                    )
+        if callee_node is None:
+            return
+        source = _find_enclosing_function(node, language)
+        if source is None:
+            return
+
+        method_name = _text(callee_node)
+        target = method_name
+
+        # Tier B B4: receiver-type inference for member_expression calls.
+        if type_inference_on and receiver_text is not None:
+            resolved_type = resolve_receiver_type(
+                receiver_text, class_name, var_types, _TS_SELF_NAMES
+            )
+            if resolved_type is not None:
+                target = f"{resolved_type}.{method_name}"
+
+        edges.append(Edge(
+            source=source,
+            target=target,
+            kind="call",
+            file=file_str,
+            line=node.start_point[0] + 1,
+            confidence="INFERRED",
+            receiver=receiver_text,
+        ))
+
+    def _walk_ts_function_body(
+        func_node: Node,
+        class_name: str | None,
+        class_fields: dict[str, str],
+        language: str,
+    ) -> None:
+        """Walk a TS/JS function body with accumulated per-function scope."""
+        var_types: dict[str, str] = dict(class_fields)
+        record_ts_param_types(func_node, var_types)
+
+        body = func_node.child_by_field_name("body")
+        if body is None:
+            return
+        for stmt in body.children:
+            record_ts_local_types(stmt, var_types)
+            _walk_ts_stmt(stmt, class_name, var_types, class_fields, language)
+
+    def _walk_ts_stmt(
+        node: Node,
+        class_name: str | None,
+        var_types: dict[str, str],
+        class_fields: dict[str, str],
+        language: str,
+    ) -> None:
+        """Recursively walk a TS/JS statement, emitting edges with current scope."""
+        if node.type == "import_statement":
+            _emit_import_edges_ts(node)
+            return
+
+        if emit_inheritance and node.type in ("class_declaration", "interface_declaration"):
+            _emit_ts_inheritance(node)
+
+        if node.type == "call_expression":
+            _emit_call_edge_ts(node, class_name, var_types, language)
+            # Fall through to recurse — nested calls inside arguments, etc.
+
+        # Nested function/method: enter a new function scope.
+        if node.type in ("function_declaration", "arrow_function", "function_expression"):
+            _walk_ts_function_body(node, class_name, class_fields, language)
+            return
+        if node.type == "method_definition":
+            _walk_ts_function_body(node, class_name, class_fields, language)
+            return
+        if node.type == "class_declaration":
+            _walk_ts_class(node, language)
+            return
 
         for child in node.children:
-            _walk(child)
+            _walk_ts_stmt(child, class_name, var_types, class_fields, language)
+
+    def _walk_ts_class(class_node: Node, language: str) -> None:
+        """Walk a TS class_declaration: emit inheritance + recurse into methods."""
+        cls_name_node = class_node.child_by_field_name("name")
+        cls_name = _text(cls_name_node) if cls_name_node else None
+
+        if emit_inheritance and cls_name:
+            _emit_ts_inheritance(class_node)
+
+        class_fields: dict[str, str] = {}
+        if type_inference_on and cls_name:
+            class_fields = scan_class_fields_typescript(class_node)
+
+        body = class_node.child_by_field_name("body")
+        if body is None:
+            return
+        for child in body.children:
+            if child.type == "method_definition":
+                _walk_ts_function_body(child, cls_name, class_fields, language)
+            elif child.type in ("public_field_definition", "field_definition"):
+                # Already captured in pre-scan; skip to avoid re-emitting.
+                pass
+            elif child.type == "class_declaration":
+                _walk_ts_class(child, language)
+            else:
+                _walk_ts_stmt(child, cls_name, class_fields, class_fields, language)
+
+    def _walk_ts_toplevel(node: Node, language: str) -> None:
+        """Walk top-level TS/JS nodes."""
+        if node.type == "import_statement":
+            _emit_import_edges_ts(node)
+        elif node.type == "class_declaration":
+            _walk_ts_class(node, language)
+        elif emit_inheritance and node.type == "interface_declaration":
+            _emit_ts_inheritance(node)
+            body = node.child_by_field_name("body")
+            if body:
+                for child in body.children:
+                    _walk_ts_stmt(child, None, {}, {}, language)
+        elif node.type in ("function_declaration", "function_expression"):
+            _walk_ts_function_body(node, None, {}, language)
+        elif node.type == "lexical_declaration":
+            # const f = () => {...} — arrow function at top level
+            for child in node.children:
+                if child.type == "variable_declarator":
+                    val = child.child_by_field_name("value")
+                    if val and val.type in ("arrow_function", "function_expression"):
+                        _walk_ts_function_body(val, None, {}, language)
+        else:
+            for child in node.children:
+                _walk_ts_toplevel(child, language)
+
+    # Determine language for enclosing-function resolution.
+    # filepath suffix determines language — both "typescript" and "javascript" go here.
+    lang = "typescript"
 
     for child in root.children:
-        _walk(child)
+        _walk_ts_toplevel(child, lang)
 
     return edges
 
