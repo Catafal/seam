@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Tier A Slice 3: class-&gt;member expansion · Implementation Notes</title>
+  <style>
+    body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; max-width: 880px;
+           margin: 40px auto; padding: 0 24px; color: #292524; line-height: 1.55; }
+    h1 { border-bottom: 3px solid #0181c9; padding-bottom: 8px; }
+    h2 { margin-top: 36px; color: #0181c9; border-bottom: 1px solid #e5e5e5; padding-bottom: 4px; }
+    code { background: #f5f5f4; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+    .decision { background: #f0f9ff; border-left: 4px solid #0181c9; padding: 12px 16px; margin: 14px 0; }
+    .deviation { background: #fffbeb; border-left: 4px solid #d97706; padding: 12px 16px; margin: 14px 0; }
+    .tradeoff { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 12px 16px; margin: 14px 0; }
+    .open { background: #fef2f2; border-left: 4px solid #dc2626; padding: 12px 16px; margin: 14px 0; }
+    .tag { display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase;
+           letter-spacing: 0.5px; padding: 2px 8px; border-radius: 10px; color: #fff; }
+    .t-dec { background: #0181c9; } .t-dev { background: #d97706; }
+    .t-trade { background: #7c3aed; } .t-open { background: #dc2626; }
+    ul { margin-top: 6px; } .meta { color: #78716c; font-size: 0.9em; }
+    .done { color: #16a34a; font-weight: 600; }
+    table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+    th, td { border: 1px solid #e5e5e5; padding: 6px 10px; text-align: left; font-size: 0.92em; }
+    th { background: #fafaf9; }
+  </style>
+</head>
+<body>
+  <h1>Tier A Slice 3: class-&gt;member expansion in context() + query()</h1>
+  <p class="meta">Branch <code>feat/tier-a-name-resolution</code> · 2026-06-06 · Slice 3 of 4 in the Tier A read-path name-resolution fix.</p>
+  <p>This is a <strong>living document</strong> capturing how the implementation interprets,
+     diverges from, or trades off against the spec. Companion to Slices 1+2 which are already committed.</p>
+
+  <h2>The spec, in one line</h2>
+  <p>When a query name is a class/struct/interface, fan into its member symbols
+     (<code>qualified_name LIKE 'Class.%'</code>) so <code>edge_match_names</code> includes
+     the members' bare names, causing their callers to union up to the class. Bounded by a new
+     <code>SEAM_NAME_EXPANSION_CAP</code> config knob (default 50). Zero-member classes degrade
+     gracefully. Wire into <code>context()</code> and <code>query()</code> 1-hop expansion.</p>
+
+  <h2>Design decisions</h2>
+
+  <div class="decision"><span class="tag t-dec">Decision</span>
+    <strong>is_container_symbol() checks kind column, not a naming heuristic.</strong>
+    The spec says "class/struct/interface symbol" — rather than guessing from the name (e.g. PascalCase),
+    we query the <code>kind</code> column in the DB. The closed vocabulary is
+    <code>{"class", "interface", "struct"}</code>. This is exact: Go structs, C/C++ structs, TS interfaces,
+    Python classes all have correct kinds set by the extractors. A method named "Parser" would not
+    trigger fan-out because its kind is "method", not "class".
+  </div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span>
+    <strong>get_member_names() uses LIKE 'Class.%' with Python-side prefix confirmation.</strong>
+    Same pattern as the bare-suffix scan in Slice 2. LIKE is the SQL pre-filter; a Python startswith()
+    check ensures the prefix is exact. This prevents a class named "Foo" from matching "FooBar.method"
+    (the LIKE pattern "Foo.%" won't match "FooBar.method" anyway, but the guard is kept for consistency
+    with the existing naming conventions in the module).
+  </div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span>
+    <strong>edge_match_names() extended: container bare name fans out to member names.</strong>
+    A class symbol like "CompanionManager" has no call edges targeting "CompanionManager" directly
+    (callers invoke "start", "stop" — the bare method names). To make context(class) see callers
+    of members, edge_match_names must return ["CompanionManager", "start", "stop", ...] when the
+    name is a container. Non-containers and qualified names (with a dot) are unchanged from Slice 1.
+  </div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span>
+    <strong>query() 1-hop expansion reuses edge_match_names per seed, not a flat seed list.</strong>
+    The existing query() neighbor SQL used a flat <code>IN (seed_names)</code> clause. For class seeds
+    this missed all callers-of-members (no edge targets the class name itself). The fix: for each
+    seed name, collect <code>edge_match_names(conn, seed_name)</code> and union them into a single
+    edge_lookup_names list, deduped. The SQL shape is unchanged; only the parameter list grows.
+  </div>
+
+  <h2>Deviations</h2>
+
+  <div class="deviation"><span class="tag t-dev">Deviation</span>
+    <strong>No separate "container outline" in context() result (Tier D item 11).</strong>
+    The spec for Slice 3 only requires aggregating callers via member fan-out, not adding a
+    member list to the ContextResult dict. Adding a members field would require a TypedDict
+    change touching all callers. Kept out of scope per the "read-path only, minimal surface"
+    principle. Tier D item 11 (container outline) is the natural next step but is a separate slice.
+  </div>
+
+  <h2>Tradeoffs</h2>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span>
+    <strong>LIKE-based member scan vs. a DB index on the prefix.</strong>
+    A column-prefix index on <code>symbols.name</code> would make <code>LIKE 'Class.%'</code> fast
+    even on huge indexes. The existing <code>idx_symbols_name</code> is on the full name and SQLite
+    CAN use it for prefix LIKE (it's a B-tree scan from "Class." to "Class.\xff"). On realistic
+    codebases (&lt;100k symbols) this is negligible. The cap (50+10 buffer) bounds the worst case.
+    A separate "members" table or a "contains" edge would be the durable fix (Tier B item 4).
+  </div>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span>
+    <strong>Checking is_container_symbol() in edge_match_names() vs. caching the result.</strong>
+    Each call to edge_match_names() does up to 2 DB queries (is_container + get_members).
+    For context(), this is called O(N defs) — typically 1 call. For query() neighbor expansion,
+    it's called once per seed (O(seeds), typically &lt;10). Caching across calls would add
+    complexity; the cost is a handful of indexed lookups per query, which is negligible vs.
+    the FTS5 and edge queries already in the path.
+  </div>
+
+  <h2>Open questions</h2>
+
+  <div class="open"><span class="tag t-open">Open</span>
+    <strong>Should "type" kind (TypeScript type aliases, Rust type aliases) be a container?</strong>
+    TypeScript <code>type Foo = {...}</code> is stored as kind="type". In practice, type aliases
+    don't have member methods, so fan-out would return []. Including "type" in _CONTAINER_KINDS
+    would add one extra DB query per "type" symbol for zero benefit. Left out of _CONTAINER_KINDS
+    for now. Revisit if type aliases with method-like members appear (unlikely in current extractors).
+  </div>
+
+  <h2>Build / verification</h2>
+  <ul>
+    <li>Unit tests: 35 tests in tests/unit/test_names.py (all pass). Added 19 new Slice 3 tests
+        (M1-M10 covering is_container_symbol, get_member_names, edge_match_names fan-out).</li>
+    <li>Integration tests: 22 tests in tests/integration/test_tier_a.py (all pass). Added 7 new
+        Slice 3 tests (TA9-TA13: context() class aggregation, zero-member graceful, query() neighbors).</li>
+    <li>Full gate: 1911 passed, 0 failed, 1 warning (FastAPI/httpx deprecation — pre-existing).</li>
+    <li>No schema change, no migration, no new dependency, no re-index required.</li>
+    <li>New config knob: SEAM_NAME_EXPANSION_CAP (default 50) in seam/config.py only.</li>
+  </ul>
+
+  <h2>Progress</h2>
+  <table>
+    <tr><th>Slice</th><th>What</th><th>Status</th></tr>
+    <tr><td>1</td><td>bare_name + edge_match_names + qualified-bare bridging in context()</td><td class="done">done (prior commit)</td></tr>
+    <tr><td>2</td><td>resolve_query_to_defs + all-defs aggregation in context()</td><td class="done">done (prior commit)</td></tr>
+    <tr><td>3</td><td>is_container_symbol + get_member_names + member fan-out in context() + query()</td><td class="done">done (this commit)</td></tr>
+    <tr><td>4</td><td>TBD (per issue #56 parent)</td><td>pending</td></tr>
+  </table>
+</body>
+</html>

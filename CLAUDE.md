@@ -79,6 +79,10 @@ seam/config.py               ← all settings (env vars with defaults)
                                 SEAM_SEMANTIC_LIMIT: top-k semantic candidates fetched before RRF merge (default: 20)
                                 SEAM_SEMANTIC_SCAN_CAP: max embedding rows loaded per scan (default: 20000)
                                 SEAM_RRF_K: RRF smoothing constant k, Cormack et al. SIGIR 2009 (default: 60)
+                                SEAM_NAME_EXPANSION_CAP: max member bare names included when a class/interface/struct
+                                  is used as a context/impact/query seed (Tier A name-resolution; default: 50)
+                                SEAM_BARE_RESOLVE_CAP: max rows returned by the suffix scan inside
+                                  resolve_query_to_defs() for bare-name → qualified-def lookup (Tier A; default: 25)
 seam/analysis/embeddings.py  ← LEAF: fastembed wrapper for semantic search (Semantic phase)
                                 is_available() → bool (lazy, cached; never raises)
                                 symbol_text(name, signature, docstring) → str (canonical embed input)
@@ -181,6 +185,11 @@ seam/analysis/cluster_naming.py ← LEAF: deterministic + opt-in LLM cluster lab
 seam/query/engine.py         ← query(), context(), search() — read path
                                 context() enriched with cluster_id/label/peers (Phase 2)
                                 all three return signature/decorators/is_exported/visibility/qualified_name (Phase 4)
+seam/query/names.py          ← LEAF: Tier A name-resolution helpers — bare_name, is_container_symbol,
+                                get_member_names, edge_match_names, resolve_query_to_defs,
+                                expand_impact_seeds. Imports only stdlib + seam/config (leaf, like clusters.py).
+                                Bridges the qualified-symbol / bare-edge asymmetry: symbols stored as
+                                "Class.method", edges stored as bare "method". Pure read-time; no schema change.
 seam/query/clusters.py       ← cluster read queries (Phase 2): list_clusters, cluster_members,
                                 cluster_peers; guards pre-v4 indexes
 seam/query/pack.py           ← LEAF: context_pack(conn, symbol_name) → ContextPack | None
@@ -221,7 +230,17 @@ tests/fixtures/              ← sample.py, sample.ts, sample.go, sample.rs
 - **Edges use string names** (not symbol IDs) — required for independent re-indexing
 
 ## Current Phase
-Semantic search (opt-in local embeddings + hybrid FTS5+cosine via RRF).
+Tier A name-resolution (read-path-only bridge between qualified symbol names and bare call-edge targets).
+- **Root cause fixed (read-path only, no schema change):** Seam stores method symbols as `Class.method` but call-edge `target_name` as the bare identifier `method`. This asymmetry caused every method context/impact to show empty upstream. Tier A patches this entirely at read time.
+- **New leaf module `seam/query/names.py`:** five pure functions — `bare_name`, `is_container_symbol`, `get_member_names`, `edge_match_names`, `resolve_query_to_defs`, `expand_impact_seeds`. Imports only stdlib + `seam/config`. Pattern mirrors `seam/query/clusters.py`.
+- **Slice 1 — qualified↔bare bridging in `engine.py` context():** edge lookups now search `[name, bare_name]` so a call stored as bare `method` joins against the qualified symbol `Class.method`.
+- **Slice 2 — all-definitions aggregation:** `context()` resolves to ALL matching symbol defs (bare-name suffix scan via `resolve_query_to_defs`), not just the first homonym. A bare query `speakText` finds `TTS.speakText`, `AudioPlayer.speakText` etc. and merges their callers/callees. `ambiguous` flag is set when >1 definition is found.
+- **Slice 3 — class→member expansion in `context()` + `query()`:** when the seed is a class/interface/struct, `edge_match_names` fans out to all member bare names so callers of any method of the class are included. Bounded by `SEAM_NAME_EXPANSION_CAP` (default 50).
+- **Slice 4 — seed-expansion in `seam_impact` + `seam_trace`:** `expand_impact_seeds` provides the same qualified+bare (or class+members) seed list to the BFS `walk()`, so impact analysis now shows upstream callers for qualified method names and containers.
+- **2 new config knobs:** `SEAM_NAME_EXPANSION_CAP` (default 50), `SEAM_BARE_RESOLVE_CAP` (default 25). No schema change, no migration, no re-index needed; MCP tool count stays 11. Gate: all tests pass.
+See `progress.txt`.
+
+### Prior phase (Semantic search)
 - **New `[semantic]` extra** (`pip install 'seam-mcp[semantic]'`) — pulls `fastembed>=0.4` (ONNX/CPU, no torch). Base install unchanged; gate stays offline.
 - **3 new modules:** `seam/analysis/embeddings.py` (fastembed wrapper), `seam/indexer/embedding_index.py` (index orchestration), `seam/query/semantic.py` (read path: RRF + cosine + model-mismatch guard).
 - **Schema v6→v7:** new `embeddings(symbol_id PK, model, dim, vector BLOB)` table. Auto-migrated on `connect()`; no backfill — populated only by `seam init --semantic`.
@@ -331,10 +350,10 @@ See `progress.txt` for session history. Next: roadmap item 8 (`seam install`) / 
 
 ## MCP Tools
 - `seam_query` — FTS5 + 1-hop graph expansion (Phase 0); OR-join + rescore since Phase 3; **hybrid semantic+FTS5 via RRF when `SEAM_SEMANTIC=on` and embeddings exist** (Semantic phase); optional `semantic: bool = True` param to force keyword-only
-- `seam_context` — symbol 360-degree view, enriched with cluster_id/label/peers (Phase 2) + signature/decorators/is_exported/visibility/qualified_name (Phase 4)
+- `seam_context` — symbol 360-degree view, enriched with cluster_id/label/peers (Phase 2) + signature/decorators/is_exported/visibility/qualified_name (Phase 4); **Tier A: resolves bare/qualified/class names and aggregates all matching defs** (callers/callees merged across homonyms; `ambiguous=true` when >1 def found; class name fans out to all member callers)
 - `seam_search` — full-text FTS5 search (Phase 0); OR-join + rescore + fuzzy fallback since Phase 3; signature is FTS-searchable (Phase 4); **hybrid semantic+FTS5 via RRF when `SEAM_SEMANTIC=on` and embeddings exist** (Semantic phase); optional `semantic: bool = True` param; FTS snippets preserved for FTS hits, "" for semantic-only hits
-- `seam_impact` — blast-radius analysis by risk tier (Phase 1); each entry now carries `resolved_by` (provenance) and `best_candidate` (proximity pick on AMBIGUOUS) since Phase 5; Phase 8 adds `risk_summary` (full per-tier counts), a per-tier `limit` cap (default 25, 0=unlimited), and `truncated`
-- `seam_trace` — shortest call/dependency path (Phase 1); each hop now carries `resolved_by` and `best_candidate` since Phase 5
+- `seam_impact` — blast-radius analysis by risk tier (Phase 1); each entry now carries `resolved_by` (provenance) and `best_candidate` (proximity pick on AMBIGUOUS) since Phase 5; Phase 8 adds `risk_summary` (full per-tier counts), a per-tier `limit` cap (default 25, 0=unlimited), and `truncated`; **Tier A: `expand_impact_seeds` bridges qualified↔bare and fans out class seeds to member names before BFS walk**
+- `seam_trace` — shortest call/dependency path (Phase 1); each hop now carries `resolved_by` and `best_candidate` since Phase 5; **Tier A: source/target seeds use the same qualified↔bare expansion as seam_impact**
 - `seam_changes` — git diff → changed symbols → risk level (Phase 1); --stdin on CLI
 - `seam_why` — semantic comments WHY/HACK/NOTE/TODO/FIXME (Phase 1b)
 - `seam_clusters` — list functional areas or drill into one cluster (Phase 2)
@@ -353,6 +372,11 @@ There are **eleven MCP tools** (`seam_flows` is the newest — see Flows below).
 `seam_context_pack` returns `truncated: {callers, callees, comments}` counts of entries dropped by caps. When a neighbor name has no indexed declaration it is silently skipped (not an error). Use `seam_impact` for the full blast radius when the pack is truncated.
 
 ## Known Gotchas
+- **Tier A name-resolution is read-time-only**: the qualified↔bare bridging in `seam_context`, `seam_impact`, `seam_trace`, and `seam_query` is a pure read-path shim — it does NOT change how symbols or edges are stored. The extractor still writes method symbol names as `Class.method` and call-edge `target_name` as bare `method`. The bridge reconciles this at query time via `seam/query/names.py`.
+- **`ambiguous` flag semantics in `seam_context` (Tier A)**: before Tier A, `ambiguous=True` meant the name appeared in more than one file (cross-file collision). After Tier A, `ambiguous=True` also means a bare query resolved to multiple qualified definitions (e.g. querying `parse` found `Parser.parse` + `Lexer.parse`). In BOTH cases callers/callees are merged across ALL matching definitions. `ambiguous` signals "merged view — consider disambiguating with a qualified name or uid".
+- **`SEAM_NAME_EXPANSION_CAP` (default 50) caps class→member fan-out**: when `seam_context`, `seam_impact`, or `seam_query` receives a class/interface/struct name, up to 50 member bare names are added to the edge lookup. Classes with >50 methods will silently have some members excluded from the fan-out; raise the cap via env var if precision matters more than query cost.
+- **`SEAM_BARE_RESOLVE_CAP` (default 25) caps the bare-name suffix scan**: `resolve_query_to_defs` uses `LIKE '%.name'` which cannot use the B-tree index (full-table scan). The cap bounds the scan before the Python exact-suffix filter. Common identifiers like `run`, `get`, `parse` can match thousands of qualified symbols — without the cap this would be O(N) unbounded. Set to 0 for unlimited (not recommended on large codebases).
+- **Tier A does NOT fix cross-class method calls**: if two unrelated classes both have a method `send`, querying bare `send` will aggregate both, and `seam_impact send` will union upstream callers of BOTH. Use a qualified name (`MyClass.send`) or a `uid` to pin one definition. The extractor discards the receiver expression on call edges (e.g. `obj.send()` → stored as bare `send`) — fixing that requires a Tier B schema change.
 - **Clusters recomputed only on full `seam init` OR `seam sync` (Phase 7)**: the file *watcher*
   still does NOT recompute clusters after per-file edits — new symbols indexed by the live watcher
   get `cluster_id=NULL` until a recompute runs. `seam sync` now closes this: it recomputes clusters
