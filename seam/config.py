@@ -294,6 +294,19 @@ SEAM_BARE_RESOLVE_CAP: int = int(os.getenv("SEAM_BARE_RESOLVE_CAP", "25"))
 SEAM_TYPE_INFERENCE: str = os.getenv("SEAM_TYPE_INFERENCE", "on")
 
 
+# ── Tier D #12: identifier compound-split tokenization (search recall) ───────
+
+# When "on" (default), the indexer writes a camelCase/snake_case-split version of each
+# symbol name (+ qualified_name segments) into symbols.search_text — a dedicated FTS5
+# column — so a natural-language query like "push to talk monitor" matches the camelCase
+# symbol GlobalPushToTalkShortcutMonitor. The query layer (fts.py) splits query terms with
+# the SAME splitter so both sides tokenize identically.
+# Index-time: toggling requires `seam init` re-index (search_text is computed at write time).
+# When "off", search_text is stored NULL and query-term expansion is skipped — byte-identical
+# to pre-Tier-D #12 keyword search.
+SEAM_TOKENIZE_IDENTIFIERS: str = os.getenv("SEAM_TOKENIZE_IDENTIFIERS", "on")
+
+
 # ── P5: Swift inter-class call resolution ────────────────────────────────────
 
 # Lightweight receiver-type inference for Swift call edges. When "on" (default),

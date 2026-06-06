@@ -103,13 +103,14 @@ class TestMigrationV9ToV10:
         conn.close()
         assert "receiver" in col_names, f"receiver column missing; got {col_names}"
 
-    def test_fresh_db_schema_version_is_10(self) -> None:
-        """A freshly initialized DB reports schema_version=10."""
+    def test_fresh_db_schema_version_is_current(self) -> None:
+        """A freshly initialized DB reports the current schema_version (>= 10 incl. receiver)."""
         conn = init_db(Path(":memory:"))
         row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
         conn.close()
         assert row is not None
-        assert int(row["value"]) == 10
+        # >= 10 because v10 added edges.receiver; later migrations (v11 search_text) bump higher.
+        assert int(row["value"]) >= 10
 
     def test_upgrade_from_v9_adds_receiver_column(self) -> None:
         """An existing v9 DB gains the receiver column when connect() auto-migrates."""
@@ -154,7 +155,9 @@ class TestMigrationV9ToV10:
             conn2.close()
 
         assert "receiver" in col_names2, f"receiver column missing after migration; got {col_names2}"
-        assert version == 10
+        # connect() runs the full pending-migration chain, so the version lands at the current
+        # schema (>= 10). The v9->v10 step is verified by the receiver column being present.
+        assert version >= 10
 
     def test_old_rows_read_receiver_null(self) -> None:
         """Pre-v10 rows (inserted without receiver) read back with receiver=NULL."""
@@ -191,15 +194,18 @@ class TestMigrationV9ToV10:
         assert row["receiver"] is None
 
     def test_migration_idempotent(self) -> None:
-        """Running _run_migration_v9_to_v10 twice on a v10 DB is a no-op (no crash)."""
+        """Running _run_migration_v9_to_v10 on an already-current DB is a no-op (no crash)."""
         conn = init_db(Path(":memory:"))
-        # Running again must be a no-op — version stays 10, no error raised.
+        before = int(
+            conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()["value"]
+        )
+        # Version guard (>= 10) makes this a no-op on a current DB — version unchanged, no error.
         _run_migration_v9_to_v10(conn)
-        version = int(
+        after = int(
             conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()["value"]
         )
         conn.close()
-        assert version == 10
+        assert after == before >= 10
 
 
 # ── B1b — Edge TypedDict model ─────────────────────────────────────────────────
