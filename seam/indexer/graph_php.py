@@ -1,6 +1,6 @@
 """PHP symbol, edge, and comment extraction from tree-sitter ASTs.
 
-LAYER: imports from graph_common (leaf) only — never from graph.py.
+LAYER: imports from graph_common (leaf) and graph_scope_infer_ext[2] (leaf) — never from graph.py.
 
 LAYERING:
     graph_common    (leaf — no seam deps)
@@ -711,10 +711,13 @@ def _handle_php_scoped_call(
     file_str: str,
     edges: list[Edge],
 ) -> None:
-    """Emit a call edge from a PHP scoped_call_expression node (Tier B B2).
+    """Emit a call edge from a PHP scoped_call_expression node (Tier B B2 + B5).
 
     Handles ClassName::method() (static dispatch).
-    The class_name is used as receiver; the method name is the target.
+    Because the class name is literally present in the AST (no scope lookup needed),
+    the target is immediately qualified as 'ClassName.method' (B5 intent: consistent
+    with Java method_invocation and C# invocation_expression qualification).
+    The class_name is also stored as receiver for provenance.
     Gracefully skips when nodes are absent or not a plain 'name'. Never raises.
     """
     try:
@@ -730,10 +733,13 @@ def _handle_php_scoped_call(
 
         source = _find_enclosing_function(node, "php")
         if source is not None:
+            # B5: qualify the target directly — the class is explicit in the AST
+            # (conservatism contract satisfied: type is stated, not inferred from scope).
+            qualified_target = f"{class_name}.{method_name}"
             edges.append(
                 Edge(
                     source=source,
-                    target=method_name,
+                    target=qualified_target,
                     kind="call",
                     file=file_str,
                     line=node.start_point[0] + 1,

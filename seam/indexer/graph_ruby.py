@@ -1,6 +1,6 @@
 """Ruby symbol, edge, and comment extraction from tree-sitter ASTs.
 
-LAYER: imports from graph_common (leaf) only — never from graph.py.
+LAYER: imports from graph_common (leaf) and graph_scope_infer_ext[2] (leaf) — never from graph.py.
 
 LAYERING:
     graph_common    (leaf — no seam deps)

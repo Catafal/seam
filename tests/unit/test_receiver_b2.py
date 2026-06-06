@@ -695,14 +695,18 @@ function caller(): void {
         assert e["receiver"] == "$this", f"Expected receiver='$this', got {e['receiver']!r}"
 
     def test_static_call_receiver_captured(self) -> None:
-        """Config::get() → call edge target='get', receiver='Config'.
+        """Config::get() → call edge target='Config.get', receiver='Config'.
 
-        PHP static calls use scoped_call_expression in the tree-sitter grammar.
+        PHP static calls (scoped_call_expression) are immediately qualified by
+        _handle_php_scoped_call because the class name is literally in the AST —
+        no scope lookup needed (B5 conservatism contract satisfied).
+        The target is 'Config.get' (qualified); receiver='Config' for provenance.
         """
         edges = _parse_and_extract(self.STATIC_CALL_SRC, "php", ".php")
-        e = _edge_by_target(edges, "get")
+        # B5 fix: target is now fully qualified as 'Config.get', not bare 'get'.
+        e = _edge_by_target(edges, "Config.get")
         assert e is not None, (
-            f"Expected 'get' call edge, got: {[x['target'] for x in _call_edges(edges)]}"
+            f"Expected 'Config.get' call edge, got: {[x['target'] for x in _call_edges(edges)]}"
         )
         assert e["receiver"] == "Config", f"Expected receiver='Config', got {e['receiver']!r}"
 

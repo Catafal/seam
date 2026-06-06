@@ -710,10 +710,6 @@ def _run_migration_v9_to_v10(conn: sqlite3.Connection) -> None:
     Idempotent: the PRAGMA table_info check skips the ALTER when the column
                 already exists; the version guard prevents double-bumping.
     Fresh-DB-safe: a brand-new DB seeded with schema_version='10' returns early.
-    Never raises: all exceptions are swallowed and logged — failure must not crash
-                a read-only command. The OperationalError surfaces later if the schema
-                is truly broken, giving a clear diagnostic message.
-
     Uses BEGIN IMMEDIATE / COMMIT for atomicity (consistent with v8→v9 pattern).
     Raises RuntimeError on failure so caller knows the DB is in a bad state.
     """
