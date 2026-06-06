@@ -41,6 +41,18 @@ from seam.indexer.graph_common import (
     _text,
 )
 
+# Scope-inference extension: provides param/local/field binding helpers + resolver.
+# graph_scope_infer_ext is a leaf (imports only graph_common + stdlib).
+from seam.indexer.graph_scope_infer_ext import (
+    _RUST_SELF_NAMES,
+    record_go_local_types,
+    record_go_param_types,
+    record_rust_local_types,
+    record_rust_param_types,
+    resolve_receiver_type_ext,
+    scan_class_fields_rust,
+)
+
 # signatures.py is a leaf (no seam deps) so importing it here does not create a cycle.
 from seam.indexer.signatures import extract_node_fields
 
@@ -308,19 +320,47 @@ def _extract_edges_go(root: Node, filepath: Path) -> list[Edge]:
         import "pkg/path"         → target = last path segment ('path')
         import ( "pkg/path" ... ) → one edge per import_spec
 
-    Call heuristic (MVP — bare identifiers only):
-        call_expression where 'function' field is an identifier → target = identifier
+    Call heuristic:
+        call_expression where 'function' field is an identifier → bare call → target = identifier
+        call_expression where 'function' field is a selector_expression → recv.Method() →
+          receiver = operand text, target = method name.
+
+    Tier B B5: when SEAM_TYPE_INFERENCE is on, selector-expression calls are resolved to
+    'Type.method' qualified targets by looking up the receiver identifier in the per-function
+    scope map (params + locals). The scope map is rebuilt at each function/method entry.
     """
     edges: list[Edge] = []
     file_str = str(filepath)
     file_stem = filepath.stem
+    infer = config.SEAM_TYPE_INFERENCE == "on"
 
-    def _walk(node: Node) -> None:
-        if node.type == "import_declaration":
+    def _walk(node: Node, var_types: dict[str, str]) -> None:
+        ntype = node.type
+
+        if ntype == "import_declaration":
             _handle_go_import(node, file_str, file_stem, edges)
             return  # handled inside; no need to recurse
 
-        elif node.type == "call_expression":
+        if ntype in ("function_declaration", "method_declaration"):
+            # New function/method scope: fresh var_types seeded with params.
+            new_types: dict[str, str] = {}
+            if infer:
+                record_go_param_types(node, new_types)
+            for child in node.children:
+                _walk(child, new_types)
+            return  # already recursed inside
+
+        if infer and ntype in (
+            "short_var_declaration",
+            "var_declaration",
+            "var_spec",
+            "assignment_statement",
+        ):
+            # Record local variable type bindings incrementally.
+            record_go_local_types(node, var_types)
+            # Still recurse to catch nested calls inside right-hand sides.
+
+        if ntype == "call_expression":
             func_child = node.child_by_field_name("function")
             # Tier B B2: capture receiver for selector_expression calls (recv.Method).
             # Two shapes:
@@ -344,12 +384,22 @@ def _extract_edges_go(root: Node, filepath: Path) -> list[Edge]:
                         recv_text = _text(operand)
 
             if callee_name:
+                # B5: resolve receiver to type → qualify the target.
+                final_target = callee_name
+                if infer and recv_text is not None:
+                    resolved_type = resolve_receiver_type_ext(
+                        recv_text, None, var_types, frozenset()
+                    )
+                    if resolved_type:
+                        final_target = f"{resolved_type}.{callee_name}"
+                        recv_text = recv_text  # keep raw receiver on the edge
+
                 source = _find_enclosing_function(node, "go")
                 if source is not None:
                     edges.append(
                         Edge(
                             source=source,
-                            target=callee_name,
+                            target=final_target,
                             kind="call",
                             file=file_str,
                             line=node.start_point[0] + 1,
@@ -359,10 +409,10 @@ def _extract_edges_go(root: Node, filepath: Path) -> list[Edge]:
                     )
 
         for child in node.children:
-            _walk(child)
+            _walk(child, var_types)
 
     for child in root.children:
-        _walk(child)
+        _walk(child, {})
 
     return edges
 
@@ -665,19 +715,74 @@ def _extract_edges_rust(root: Node, filepath: Path) -> list[Edge]:
         use name                  → target = 'name'
         use foo as bar            → target = 'foo' (real name, not alias)
 
-    Call heuristic (MVP — bare identifiers only):
-        call_expression where 'function' is identifier → target = identifier.
+    Call heuristic:
+        call_expression where 'function' is identifier → bare call → target = identifier.
+        call_expression where 'function' is field_expression → recv.method() → capture receiver.
+
+    Tier B B5: when SEAM_TYPE_INFERENCE is on, field_expression calls are resolved to
+    'Type.method' qualified targets by looking up the receiver in the per-function scope
+    (params + let_declarations). Also handles self.method() → 'Type.method'.
     """
     edges: list[Edge] = []
     file_str = str(filepath)
     file_stem = filepath.stem
+    infer = config.SEAM_TYPE_INFERENCE == "on"
 
-    def _walk(node: Node) -> None:
-        if node.type == "use_declaration":
+    # Rust impl type context: track struct name → field types via pre-scan
+    # (struct fields are in struct_item, not impl_item; we walk the whole file
+    # so struct_fields is keyed by struct name for lookup when impl_type matches)
+    struct_fields: dict[str, dict[str, str]] = {}
+
+    def _walk(
+        node: Node,
+        var_types: dict[str, str],
+        impl_type: str | None,
+    ) -> None:
+        ntype = node.type
+
+        if ntype == "use_declaration":
             _handle_rust_use(node, file_str, file_stem, edges)
             return  # handled recursively inside
 
-        elif node.type == "call_expression":
+        if ntype == "struct_item" and infer:
+            # Pre-scan struct fields so impl methods can see them.
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                sname = _text(name_node).strip()
+                if sname:
+                    struct_fields[sname] = scan_class_fields_rust(node)
+
+        if ntype == "impl_item":
+            # Track which struct this impl block is for.
+            new_impl_type = None
+            type_node = node.child_by_field_name("type")
+            if type_node is not None:
+                from seam.indexer.graph_common import _rust_impl_type_name
+                new_impl_type = _rust_impl_type_name(node)
+            body = node.child_by_field_name("body")
+            if body is not None:
+                for child in body.children:
+                    _walk(child, {}, new_impl_type)
+            return
+
+        if ntype == "function_item":
+            # New function scope: inherit class fields from impl type, bind params.
+            new_types: dict[str, str] = {}
+            if infer:
+                if impl_type and impl_type in struct_fields:
+                    new_types.update(struct_fields[impl_type])
+                record_rust_param_types(node, new_types)
+            body = node.child_by_field_name("body")
+            if body is not None:
+                for child in body.children:
+                    _walk(child, new_types, impl_type)
+            return
+
+        if infer and ntype == "let_declaration":
+            record_rust_local_types(node, var_types)
+            # Still recurse to catch nested calls in the initializer.
+
+        if ntype == "call_expression":
             func_child = node.child_by_field_name("function")
             # Tier B B2: capture receiver for field_expression calls (recv.method).
             # Two shapes:
@@ -704,12 +809,21 @@ def _extract_edges_rust(root: Node, filepath: Path) -> list[Edge]:
             # scoped_identifier (e.g. Type::new) → gracefully skip receiver capture
 
             if callee_name:
+                # B5: resolve receiver to type → qualify the target.
+                final_target = callee_name
+                if infer and recv_text is not None:
+                    resolved_type = resolve_receiver_type_ext(
+                        recv_text, impl_type, var_types, _RUST_SELF_NAMES
+                    )
+                    if resolved_type:
+                        final_target = f"{resolved_type}.{callee_name}"
+
                 source = _find_enclosing_function(node, "rust")
                 if source is not None:
                     edges.append(
                         Edge(
                             source=source,
-                            target=callee_name,
+                            target=final_target,
                             kind="call",
                             file=file_str,
                             line=node.start_point[0] + 1,
@@ -719,10 +833,10 @@ def _extract_edges_rust(root: Node, filepath: Path) -> list[Edge]:
                     )
 
         for child in node.children:
-            _walk(child)
+            _walk(child, var_types, impl_type)
 
     for child in root.children:
-        _walk(child)
+        _walk(child, {}, None)
 
     return edges
 

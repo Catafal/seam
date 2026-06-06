@@ -40,6 +40,19 @@ from seam.indexer.graph_common import (
     _text,
 )
 
+# Scope-inference: shared resolver from ext, Java/C# helpers from ext2.
+from seam.indexer.graph_scope_infer_ext import resolve_receiver_type_ext
+from seam.indexer.graph_scope_infer_ext2 import (
+    _CS_SELF_NAMES,
+    _JAVA_SELF_NAMES,
+    record_cs_local_types,
+    record_cs_param_types,
+    record_java_local_types,
+    record_java_param_types,
+    scan_class_fields_cs,
+    scan_class_fields_java,
+)
+
 # signatures.py is a leaf (no seam deps) so importing here does not create a cycle.
 from seam.indexer.signatures import extract_node_fields
 
@@ -443,16 +456,26 @@ def _extract_edges_java(root: Node, filepath: Path) -> list[Edge]:
         import java.util.List;  → target = 'List' (last segment of scoped_identifier)
         import static java.lang.Math.abs; → target = 'abs' (same rule)
 
-    Call heuristic (MVP — bare identifiers only):
-        method_invocation where there is no 'object' field → bare call → target = name text.
-        Selector/member calls (this.foo(), obj.bar()) have an 'object' field → skipped.
+    Call heuristic:
+        method_invocation where 'object' field is absent → bare call → target = name text.
+        method_invocation where 'object' field is set → obj.method() → capture receiver.
+
+    Tier B B5: when SEAM_TYPE_INFERENCE is on, receiver calls are resolved to
+    'Type.method' qualified targets using a per-function scope map (class fields +
+    params + local variable declarations).
     """
     edges: list[Edge] = []
     file_str = str(filepath)
     file_stem = filepath.stem
     emit_inheritance = config.SEAM_INHERITANCE_EDGES == "on"
+    infer = config.SEAM_TYPE_INFERENCE == "on"
 
-    def _walk(node: Node) -> None:
+    def _walk(
+        node: Node,
+        class_name: str | None,
+        class_fields: dict[str, str],
+        var_types: dict[str, str],
+    ) -> None:
         try:
             ntype = node.type
 
@@ -467,6 +490,34 @@ def _extract_edges_java(root: Node, filepath: Path) -> list[Edge]:
                 _handle_java_import(node, file_str, file_stem, edges)
                 return  # No need to recurse into import declarations.
 
+            if ntype == "class_declaration":
+                # Update class context: pre-scan fields, reset scope.
+                new_class_name: str | None = None
+                name_node = node.child_by_field_name("name")
+                if name_node is not None:
+                    new_class_name = _text(name_node).strip() or None
+                new_fields: dict[str, str] = scan_class_fields_java(node) if infer else {}
+                body = node.child_by_field_name("body")
+                if body is not None:
+                    for child in body.named_children:
+                        _walk(child, new_class_name, new_fields, dict(new_fields))
+                return  # already recursed into body
+
+            if ntype in ("method_declaration", "constructor_declaration"):
+                # New method scope: inherit class fields, bind params.
+                new_types: dict[str, str] = dict(class_fields)
+                if infer:
+                    record_java_param_types(node, new_types)
+                body = node.child_by_field_name("body")
+                if body is not None:
+                    for child in body.named_children:
+                        _walk(child, class_name, class_fields, new_types)
+                return
+
+            if infer and ntype == "local_variable_declaration":
+                record_java_local_types(node, var_types)
+                # Still recurse to catch nested calls in initializer.
+
             elif ntype == "method_invocation":
                 # Tier B B2: capture receiver for member calls (obj.method()).
                 # Two shapes:
@@ -477,12 +528,20 @@ def _extract_edges_java(root: Node, filepath: Path) -> list[Edge]:
                 name_node = node.child_by_field_name("name")
                 if name_node is not None:
                     recv_text: str | None = _text(obj) if obj is not None else None
+                    # B5: resolve receiver to type → qualify the target.
+                    final_target = _text(name_node)
+                    if infer and recv_text is not None:
+                        resolved_type = resolve_receiver_type_ext(
+                            recv_text, class_name, var_types, _JAVA_SELF_NAMES
+                        )
+                        if resolved_type:
+                            final_target = f"{resolved_type}.{_text(name_node)}"
                     source = _find_enclosing_function(node, "java")
                     if source is not None:
                         edges.append(
                             Edge(
                                 source=source,
-                                target=_text(name_node),
+                                target=final_target,
                                 kind="call",
                                 file=file_str,
                                 line=node.start_point[0] + 1,
@@ -492,7 +551,7 @@ def _extract_edges_java(root: Node, filepath: Path) -> list[Edge]:
                         )
 
             for child in node.children:
-                _walk(child)
+                _walk(child, class_name, class_fields, var_types)
 
         except Exception:  # noqa: BLE001
             logger.debug(
@@ -502,7 +561,7 @@ def _extract_edges_java(root: Node, filepath: Path) -> list[Edge]:
             )
 
     for child in root.children:
-        _walk(child)
+        _walk(child, None, {}, {})
 
     return edges
 
@@ -829,16 +888,26 @@ def _extract_edges_csharp(root: Node, filepath: Path) -> list[Edge]:
         using System;                    → target = 'System'   (identifier)
         using System.Collections.Generic → target = 'Generic'  (qualified_name.name)
 
-    Call heuristic (MVP — bare identifiers only):
-        invocation_expression where 'function' field is an identifier → bare call.
-        If 'function' is a member_access_expression → selector call → skipped.
+    Call heuristic:
+        invocation_expression where 'function' is an identifier → bare call.
+        invocation_expression where 'function' is member_access_expression → obj.Method().
+
+    Tier B B5: when SEAM_TYPE_INFERENCE is on, member-access calls are resolved to
+    'Type.method' qualified targets using per-function scope (class fields + params +
+    local declaration statements).
     """
     edges: list[Edge] = []
     file_str = str(filepath)
     file_stem = filepath.stem
     emit_inheritance = config.SEAM_INHERITANCE_EDGES == "on"
+    infer = config.SEAM_TYPE_INFERENCE == "on"
 
-    def _walk(node: Node) -> None:
+    def _walk(
+        node: Node,
+        class_name: str | None,
+        class_fields: dict[str, str],
+        var_types: dict[str, str],
+    ) -> None:
         try:
             ntype = node.type
 
@@ -855,13 +924,41 @@ def _extract_edges_csharp(root: Node, filepath: Path) -> list[Edge]:
                 _handle_csharp_using(node, file_str, file_stem, edges)
                 return  # No need to recurse into using directives.
 
+            if ntype in (
+                "class_declaration",
+                "struct_declaration",
+                "record_declaration",
+            ):
+                # Update class context and pre-scan fields.
+                new_class_name: str | None = None
+                cn = node.child_by_field_name("name")
+                if cn is not None:
+                    new_class_name = _text(cn).strip() or None
+                new_fields: dict[str, str] = scan_class_fields_cs(node) if infer else {}
+                body = node.child_by_field_name("body")
+                if body is not None:
+                    for child in body.named_children:
+                        _walk(child, new_class_name, new_fields, dict(new_fields))
+                return
+
+            if ntype in ("method_declaration", "constructor_declaration"):
+                # New method scope: inherit class fields, bind params.
+                new_types: dict[str, str] = dict(class_fields)
+                if infer:
+                    record_cs_param_types(node, new_types)
+                body = node.child_by_field_name("body")
+                if body is not None:
+                    for child in body.named_children:
+                        _walk(child, class_name, class_fields, new_types)
+                return
+
+            if infer and ntype == "local_declaration_statement":
+                record_cs_local_types(node, var_types)
+                # Still recurse to catch nested calls.
+
             elif ntype == "invocation_expression":
                 func_node = node.child_by_field_name("function")
                 # Tier B B2: capture receiver for member_access_expression calls.
-                # Two shapes:
-                #   identifier                → bare call Helper()   → receiver = None
-                #   member_access_expression  → obj.Method()         → receiver = expression text,
-                #                                                       target = name identifier text
                 cs_callee: str | None = None
                 cs_recv: str | None = None
 
@@ -878,12 +975,20 @@ def _extract_edges_csharp(root: Node, filepath: Path) -> list[Edge]:
                             cs_recv = _text(expr_node)
 
                 if cs_callee is not None:
+                    # B5: resolve receiver to type → qualify the target.
+                    final_target = cs_callee
+                    if infer and cs_recv is not None:
+                        resolved_type = resolve_receiver_type_ext(
+                            cs_recv, class_name, var_types, _CS_SELF_NAMES
+                        )
+                        if resolved_type:
+                            final_target = f"{resolved_type}.{cs_callee}"
                     source = _find_enclosing_function(node, "csharp")
                     if source is not None:
                         edges.append(
                             Edge(
                                 source=source,
-                                target=cs_callee,
+                                target=final_target,
                                 kind="call",
                                 file=file_str,
                                 line=node.start_point[0] + 1,
@@ -893,7 +998,7 @@ def _extract_edges_csharp(root: Node, filepath: Path) -> list[Edge]:
                         )
 
             for child in node.children:
-                _walk(child)
+                _walk(child, class_name, class_fields, var_types)
 
         except Exception:  # noqa: BLE001
             logger.debug(
@@ -903,7 +1008,7 @@ def _extract_edges_csharp(root: Node, filepath: Path) -> list[Edge]:
             )
 
     for child in root.children:
-        _walk(child)
+        _walk(child, None, {}, {})
 
     return edges
 

@@ -45,6 +45,14 @@ from seam.indexer.graph_common import (
     _text,
 )
 
+# Scope-inference: shared resolver from ext, Ruby helpers from ext2.
+from seam.indexer.graph_scope_infer_ext import resolve_receiver_type_ext
+from seam.indexer.graph_scope_infer_ext2 import (
+    _RUBY_SELF_NAMES,
+    record_ruby_local_types,
+    scan_class_fields_ruby,
+)
+
 # signatures_ext is the leaf enrichment module for Phase 9 languages.
 from seam.indexer.signatures_ext import _extract_ruby as _sig_ruby
 
@@ -354,18 +362,24 @@ def _extract_edges_ruby(root: Node, filepath: Path) -> list[Edge]:
         require('x')             → target = 'x'
         require_relative('./x')  → target = basename stem of 'x' (strip dir + .rb)
 
-    Call heuristic (MVP — bare identifiers only):
-        call node where 'method' field is identifier AND no 'receiver' field → call edge.
-        require/require_relative calls are already handled as imports — excluded from calls.
+    Call heuristic:
+        call node where 'method' field is identifier → call edge.
+        require/require_relative calls are handled as imports — excluded from calls.
+
+    Tier B B5: when SEAM_TYPE_INFERENCE is on, receiver calls are resolved to
+    'Type.method' qualified targets using per-function scope (class ivar bindings +
+    local variable constructor calls). Ruby has no static type annotations — we infer
+    from `var = ClassName.new` patterns.
 
     NEVER raises. Returns [] on any failure.
     """
     edges: list[Edge] = []
     file_str = str(filepath)
     file_stem = filepath.stem
+    infer = config.SEAM_TYPE_INFERENCE == "on"
 
     try:
-        _walk_ruby_edges(root, file_str, file_stem, edges)
+        _walk_ruby_edges(root, file_str, file_stem, edges, infer, None, {}, {})
     except Exception as exc:  # noqa: BLE001
         logger.debug("_extract_edges_ruby: unexpected error for %s: %r", filepath, exc)
 
@@ -377,14 +391,54 @@ def _walk_ruby_edges(
     file_str: str,
     file_stem: str,
     edges: list[Edge],
+    infer: bool,
+    class_name: str | None,
+    class_fields: dict[str, str],
+    var_types: dict[str, str],
 ) -> None:
-    """Recursive walker for Ruby edge extraction."""
-    if node.type == "call":
-        _handle_ruby_call(node, file_str, file_stem, edges)
+    """Recursive walker for Ruby edge extraction.
+
+    Threads class_name + class_fields (ivar types from initialize) + var_types
+    (local var types from constructor calls in the current method body).
+    """
+    ntype = node.type
+
+    if ntype == "class":
+        # Update class context and pre-scan ivar types from initialize.
+        new_class: str | None = None
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            new_class = _text(name_node).strip() or None
+        new_fields = scan_class_fields_ruby(node) if infer else {}
+        body = node.child_by_field_name("body")
+        if body is not None:
+            for child in body.children:
+                _walk_ruby_edges(
+                    child, file_str, file_stem, edges, infer, new_class, new_fields, dict(new_fields)
+                )
+        return
+
+    if ntype in ("method", "singleton_method"):
+        # New method scope: inherit class fields (ivars), empty local vars.
+        new_types: dict[str, str] = dict(class_fields)
+        body = node.child_by_field_name("body")
+        if body is not None:
+            for child in body.children:
+                _walk_ruby_edges(
+                    child, file_str, file_stem, edges, infer, class_name, class_fields, new_types
+                )
+        return
+
+    if infer and ntype == "assignment":
+        record_ruby_local_types(node, var_types)
+        # Still recurse to catch nested calls.
+
+    if ntype == "call":
+        _handle_ruby_call(node, file_str, file_stem, edges, infer, class_name, var_types)
         # Still recurse — calls can be nested
 
     for child in node.children:
-        _walk_ruby_edges(child, file_str, file_stem, edges)
+        _walk_ruby_edges(child, file_str, file_stem, edges, infer, class_name, class_fields, var_types)
 
 
 def _handle_ruby_call(
@@ -392,13 +446,17 @@ def _handle_ruby_call(
     file_str: str,
     file_stem: str,
     edges: list[Edge],
+    infer: bool,
+    class_name: str | None,
+    var_types: dict[str, str],
 ) -> None:
     """Emit import or call edges from a Ruby call node.
 
     A 'call' node can be either a bare function call (no receiver) or a method
-    call on an object (with receiver). We only emit edges for bare calls — those
-    without a 'receiver' field. The 'method' field holds the identifier name.
+    call on an object (with receiver). We emit edges for both — bare calls get
+    receiver=None; receiver calls get the raw receiver text.
 
+    Tier B B5: when infer=True, resolves receiver text to type name → qualified target.
     require/require_relative are handled as import edges (not call edges).
     """
     # 'method' field = the function/method identifier being called
@@ -449,20 +507,27 @@ def _handle_ruby_call(
             )
         return
 
-    # Tier B B2: emit call edges for BOTH bare calls and receiver calls.
-    # - Bare call (no receiver) → receiver=None
-    # - Receiver call (obj.foo) → receiver=obj text, target=method name
-    # Previously receiver calls were silently dropped; they are now emitted.
+    # Tier B B2 + B5: emit call edges for bare and receiver calls.
+    # Receiver calls are resolved to qualified 'Type.method' when type is known.
     recv_text: str | None = None
     if receiver_node is not None:
         recv_text = _text(receiver_node)
+
+    # B5: resolve receiver to type → qualify the target.
+    final_target = method_name
+    if infer and recv_text is not None:
+        resolved_type = resolve_receiver_type_ext(
+            recv_text, class_name, var_types, _RUBY_SELF_NAMES
+        )
+        if resolved_type:
+            final_target = f"{resolved_type}.{method_name}"
 
     source = _find_enclosing_function(node, "ruby")
     if source is not None:
         edges.append(
             Edge(
                 source=source,
-                target=method_name,
+                target=final_target,
                 kind="call",
                 file=file_str,
                 line=node.start_point[0] + 1,

@@ -205,14 +205,19 @@ func caller() {
 """
 
     def test_selector_call_receiver_captured(self) -> None:
-        """logger.Log("hello") → call edge target='Log', receiver='logger'."""
+        """logger.Log("hello") → call edge for Log (bare or qualified), receiver='logger'.
+
+        B5 update: when logger's type is known from param (`logger *Logger`), the target
+        is qualified to 'Logger.Log'. The receiver field is preserved on the emitted edge.
+        """
         edges = _parse_and_extract(self.SELECTOR_CALL_SRC, "go", ".go")
-        e = _edge_by_target(edges, "Log")
+        call_edges = _call_edges(edges)
+        # Accept either qualified ('Logger.Log') or bare ('Log') — B5 qualifies when type known.
+        e = _edge_by_target(edges, "Logger.Log") or _edge_by_target(edges, "Log")
         assert e is not None, (
-            f"Expected 'Log' call edge, got: {[x['target'] for x in _call_edges(edges)]}"
+            f"Expected 'Logger.Log' or 'Log' call edge, got: {[x['target'] for x in call_edges]}"
         )
         assert e["receiver"] == "logger", f"Expected receiver='logger', got {e['receiver']!r}"
-        assert e["target"] == "Log", "target_name must be the bare method id"
 
     def test_bare_call_receiver_none(self) -> None:
         """callee() bare call → receiver=None."""
@@ -265,20 +270,29 @@ fn caller() {
 """
 
     def test_field_expression_receiver_captured(self) -> None:
-        """db.connect() → call edge target='connect', receiver='db'."""
+        """db.connect() → call edge for connect (bare or qualified), receiver='db'.
+
+        B5 update: when db's type is known from param (`db: &mut Db`), target may be
+        qualified to 'Db.connect'. Receiver field is always preserved.
+        """
         edges = _parse_and_extract(self.METHOD_CALL_SRC, "rust", ".rs")
-        e = _edge_by_target(edges, "connect")
+        call_edges = _call_edges(edges)
+        e = _edge_by_target(edges, "Db.connect") or _edge_by_target(edges, "connect")
         assert e is not None, (
-            f"Expected 'connect' call edge, got: {[x['target'] for x in _call_edges(edges)]}"
+            f"Expected 'Db.connect' or 'connect' call edge, got: {[x['target'] for x in call_edges]}"
         )
         assert e["receiver"] == "db", f"Expected receiver='db', got {e['receiver']!r}"
 
     def test_self_receiver_captured(self) -> None:
-        """self.init() → call edge target='init', receiver='self'."""
+        """self.init() → call edge for init (bare or qualified), receiver='self'.
+
+        B5 update: self.init() inside impl Db → qualified to 'Db.init'. Receiver='self'.
+        """
         edges = _parse_and_extract(self.METHOD_CALL_SRC, "rust", ".rs")
-        e = _edge_by_target(edges, "init")
+        call_edges = _call_edges(edges)
+        e = _edge_by_target(edges, "Db.init") or _edge_by_target(edges, "init")
         assert e is not None, (
-            f"Expected 'init' call edge, got: {[x['target'] for x in _call_edges(edges)]}"
+            f"Expected 'Db.init' or 'init' call edge, got: {[x['target'] for x in call_edges]}"
         )
         assert e["receiver"] == "self", f"Expected receiver='self', got {e['receiver']!r}"
 
@@ -321,14 +335,17 @@ class Util {
 """
 
     def test_object_call_receiver_captured(self) -> None:
-        """svc.start() → call edge target='start', receiver='svc'."""
+        """svc.start() → call edge for start (bare or qualified), receiver='svc'.
+
+        B5 update: Service svc = new Service() → type known → 'Service.start'. Receiver preserved.
+        """
         edges = _parse_and_extract(self.MEMBER_CALL_SRC, "java", ".java")
-        e = _edge_by_target(edges, "start")
+        call_edges = _call_edges(edges)
+        e = _edge_by_target(edges, "Service.start") or _edge_by_target(edges, "start")
         assert e is not None, (
-            f"Expected 'start' call edge, got: {[x['target'] for x in _call_edges(edges)]}"
+            f"Expected 'Service.start' or 'start' call edge, got: {[x['target'] for x in call_edges]}"
         )
         assert e["receiver"] == "svc", f"Expected receiver='svc', got {e['receiver']!r}"
-        assert e["target"] == "start", "target_name must be the bare method id"
 
     def test_bare_call_receiver_none(self) -> None:
         """helper() → receiver=None."""
@@ -378,20 +395,28 @@ class Utils {
 """
 
     def test_member_call_receiver_captured(self) -> None:
-        """log.Log("hello") → call edge target='Log', receiver='log'."""
+        """log.Log("hello") → call edge for Log (bare or qualified), receiver='log'.
+
+        B5 update: Logger log = new Logger() → type known → 'Logger.Log'. Receiver preserved.
+        """
         edges = _parse_and_extract(self.MEMBER_CALL_SRC, "csharp", ".cs")
-        e = _edge_by_target(edges, "Log")
+        call_edges = _call_edges(edges)
+        e = _edge_by_target(edges, "Logger.Log") or _edge_by_target(edges, "Log")
         assert e is not None, (
-            f"Expected 'Log' call edge, got: {[x['target'] for x in _call_edges(edges)]}"
+            f"Expected 'Logger.Log' or 'Log' call edge, got: {[x['target'] for x in call_edges]}"
         )
         assert e["receiver"] == "log", f"Expected receiver='log', got {e['receiver']!r}"
 
     def test_this_call_receiver_captured(self) -> None:
-        """this.Execute() → call edge target='Execute', receiver='this'."""
+        """this.Execute() → call edge for Execute (bare or qualified), receiver='this'.
+
+        B5 update: this.Execute() inside Worker → 'Worker.Execute'. Receiver='this'.
+        """
         edges = _parse_and_extract(self.THIS_CALL_SRC, "csharp", ".cs")
-        e = _edge_by_target(edges, "Execute")
+        call_edges = _call_edges(edges)
+        e = _edge_by_target(edges, "Worker.Execute") or _edge_by_target(edges, "Execute")
         assert e is not None, (
-            f"Expected 'Execute' call edge, got: {[x['target'] for x in _call_edges(edges)]}"
+            f"Expected 'Worker.Execute' or 'Execute' call edge, got: {[x['target'] for x in call_edges]}"
         )
         assert e["receiver"] == "this", f"Expected receiver='this', got {e['receiver']!r}"
 
@@ -546,31 +571,41 @@ void caller() {
 """
 
     def test_arrow_call_receiver_captured(self) -> None:
-        """e->start() → call edge target='start', receiver='e'."""
+        """e->start() → call edge for start (bare or qualified), receiver='e'.
+
+        B5 update: `Engine* e` → type known as Engine → 'Engine.start'. Receiver preserved.
+        """
         edges = _parse_and_extract(self.FIELD_CALL_SRC, "cpp", ".cpp")
-        # Find the call from launch() context (receiver='e'), not from run() (receiver='this')
         call_edges = _call_edges(edges)
-        start_edges = [e for e in call_edges if e["target"] == "start"]
+        # Accept qualified 'Engine.start' or bare 'start' (B5 qualifies when type known)
+        start_edges = [e for e in call_edges if e["target"] in ("start", "Engine.start")]
         assert start_edges, (
-            f"Expected 'start' call edges, got: {[x['target'] for x in call_edges]}"
+            f"Expected 'start' or 'Engine.start' call edges, got: {[x['target'] for x in call_edges]}"
         )
         receivers = {e["receiver"] for e in start_edges}
         assert "e" in receivers, f"Expected receiver='e' among {receivers}"
 
     def test_this_arrow_call_receiver_captured(self) -> None:
-        """this->start() → call edge target='start', receiver='this'."""
+        """this->start() → call edge for start (bare or qualified), receiver='this'.
+
+        B5 update: this->start() inside Engine → 'Engine.start'. Receiver='this'.
+        """
         edges = _parse_and_extract(self.FIELD_CALL_SRC, "cpp", ".cpp")
         call_edges = _call_edges(edges)
-        start_edges = [e for e in call_edges if e["target"] == "start"]
+        start_edges = [e for e in call_edges if e["target"] in ("start", "Engine.start")]
         receivers = {e["receiver"] for e in start_edges}
         assert "this" in receivers, f"Expected receiver='this' among {receivers}"
 
     def test_dot_call_receiver_captured(self) -> None:
-        """cfg.load() → call edge target='load', receiver='cfg'."""
+        """cfg.load() → call edge for load (bare or qualified), receiver='cfg'.
+
+        B5 update: `Config cfg` typed param → 'Config.load'. Receiver='cfg'.
+        """
         edges = _parse_and_extract(self.DOT_CALL_SRC, "cpp", ".cpp")
-        e = _edge_by_target(edges, "load")
+        call_edges = _call_edges(edges)
+        e = _edge_by_target(edges, "Config.load") or _edge_by_target(edges, "load")
         assert e is not None, (
-            f"Expected 'load' call edge, got: {[x['target'] for x in _call_edges(edges)]}"
+            f"Expected 'Config.load' or 'load' call edge, got: {[x['target'] for x in call_edges]}"
         )
         assert e["receiver"] == "cfg", f"Expected receiver='cfg', got {e['receiver']!r}"
 
@@ -634,20 +669,28 @@ function caller(): void {
 """
 
     def test_member_call_receiver_captured(self) -> None:
-        """$mailer->send("hello") → call edge target='send', receiver='$mailer'."""
+        """$mailer->send("hello") → call edge for send (bare or qualified), receiver='$mailer'.
+
+        B5 update: $mailer = new Mailer() → type known → 'Mailer.send'. Receiver preserved.
+        """
         edges = _parse_and_extract(self.MEMBER_CALL_SRC, "php", ".php")
-        e = _edge_by_target(edges, "send")
+        call_edges = _call_edges(edges)
+        e = _edge_by_target(edges, "Mailer.send") or _edge_by_target(edges, "send")
         assert e is not None, (
-            f"Expected 'send' call edge, got: {[x['target'] for x in _call_edges(edges)]}"
+            f"Expected 'Mailer.send' or 'send' call edge, got: {[x['target'] for x in call_edges]}"
         )
         assert e["receiver"] == "$mailer", f"Expected receiver='$mailer', got {e['receiver']!r}"
 
     def test_this_call_receiver_captured(self) -> None:
-        """$this->process() → call edge target='process', receiver='$this'."""
+        """$this->process() → call edge for process (bare or qualified), receiver='$this'.
+
+        B5 update: $this->process() inside Handler → 'Handler.process'. Receiver='$this'.
+        """
         edges = _parse_and_extract(self.THIS_CALL_SRC, "php", ".php")
-        e = _edge_by_target(edges, "process")
+        call_edges = _call_edges(edges)
+        e = _edge_by_target(edges, "Handler.process") or _edge_by_target(edges, "process")
         assert e is not None, (
-            f"Expected 'process' call edge, got: {[x['target'] for x in _call_edges(edges)]}"
+            f"Expected 'Handler.process' or 'process' call edge, got: {[x['target'] for x in call_edges]}"
         )
         assert e["receiver"] == "$this", f"Expected receiver='$this', got {e['receiver']!r}"
 

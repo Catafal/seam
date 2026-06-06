@@ -67,6 +67,15 @@ from seam.indexer.graph_common import (
     _text,
 )
 
+# Scope-inference: shared resolver from ext, C++ helpers from ext2.
+from seam.indexer.graph_scope_infer_ext import resolve_receiver_type_ext
+from seam.indexer.graph_scope_infer_ext2 import (
+    _CPP_SELF_NAMES,
+    record_cpp_local_types,
+    record_cpp_param_types,
+    scan_class_fields_cpp,
+)
+
 # signatures.py is a leaf (no seam deps) so importing it here does not create a cycle.
 from seam.indexer.signatures import extract_node_fields
 
@@ -856,28 +865,62 @@ def _extract_edges_cpp(root: Node, filepath: Path) -> list[Edge]:
         #include "x.h"  → target = stem ('x')
         #include <x>    → target = stem ('x')  [system/STL header]
 
-    Call heuristic (MVP — bare identifiers only):
-        call_expression where 'function' is an identifier → kind="call".
-        Selector/member calls (obj.m(), Class::f()) are NOT tracked in this MVP.
+    Call heuristic:
+        call_expression where 'function' is an identifier → bare call.
+        call_expression where 'function' is field_expression → obj.m() or obj->m().
+
+    Tier B B5: when SEAM_TYPE_INFERENCE is on, field_expression calls are resolved to
+    'Type.method' qualified targets using per-function scope (class fields + params +
+    local declarations). 'this' receiver → enclosing class name.
     """
     try:
         edges: list[Edge] = []
         file_str = str(filepath)
         file_stem = filepath.stem
+        infer = config.SEAM_TYPE_INFERENCE == "on"
 
-        def _walk(node: Node) -> None:
-            if node.type == "preproc_include":
+        def _walk(
+            node: Node,
+            class_name: str | None,
+            class_fields: dict[str, str],
+            var_types: dict[str, str],
+        ) -> None:
+            ntype = node.type
+            if ntype == "preproc_include":
                 # Reuse the shared C/C++ include handler
                 _handle_c_include(node, file_str, file_stem, edges)
                 return
 
-            elif node.type == "call_expression":
+            if ntype in ("class_specifier", "struct_specifier") and infer:
+                # Update class context and pre-scan fields.
+                new_class: str | None = None
+                cn = node.child_by_field_name("name")
+                if cn is not None:
+                    new_class = _text(cn).strip() or None
+                new_fields = scan_class_fields_cpp(node) if infer else {}
+                for child in node.children:
+                    _walk(child, new_class, new_fields, dict(new_fields))
+                return
+
+            if ntype == "function_definition":
+                # New function scope: inherit class fields, bind params.
+                new_types: dict[str, str] = dict(class_fields)
+                if infer:
+                    record_cpp_param_types(node, new_types)
+                body = node.child_by_field_name("body")
+                if body is not None:
+                    for child in body.children:
+                        _walk(child, class_name, class_fields, new_types)
+                    return  # already recursed into body
+                # No body (declaration only) — still recurse for imports etc.
+
+            if infer and ntype == "declaration":
+                record_cpp_local_types(node, var_types)
+                # Still recurse to catch nested calls.
+
+            elif ntype == "call_expression":
                 func_child = node.child_by_field_name("function")
                 # Tier B B2: capture receiver for field_expression calls.
-                # Two shapes:
-                #   identifier       → bare call foo()       → receiver = None
-                #   field_expression → obj->m() or obj.m()   → receiver = argument text,
-                #                                               target = field (method name)
                 cpp_callee: str | None = None
                 cpp_recv: str | None = None
 
@@ -894,12 +937,24 @@ def _extract_edges_cpp(root: Node, filepath: Path) -> list[Edge]:
                             cpp_recv = _text(arg_node)
 
                 if cpp_callee:
+                    # B5: resolve receiver to type → qualify the target.
+                    final_target = cpp_callee
+                    if infer and cpp_recv is not None:
+                        # C++ 'this' is a pointer — strip the pointer dereference marker.
+                        # AST: field_expression's argument is 'this' for this->method().
+                        recv_lookup = cpp_recv.lstrip("*").strip()
+                        resolved_type = resolve_receiver_type_ext(
+                            recv_lookup, class_name, var_types, _CPP_SELF_NAMES
+                        )
+                        if resolved_type:
+                            final_target = f"{resolved_type}.{cpp_callee}"
+
                     source = _find_enclosing_function(node, "cpp")
                     if source is not None:
                         edges.append(
                             Edge(
                                 source=source,
-                                target=cpp_callee,
+                                target=final_target,
                                 kind="call",
                                 file=file_str,
                                 line=node.start_point[0] + 1,
@@ -909,10 +964,10 @@ def _extract_edges_cpp(root: Node, filepath: Path) -> list[Edge]:
                         )
 
             for child in node.children:
-                _walk(child)
+                _walk(child, class_name, class_fields, var_types)
 
         for child in root.children:
-            _walk(child)
+            _walk(child, None, {}, {})
 
         return edges
     except Exception:  # noqa: BLE001
