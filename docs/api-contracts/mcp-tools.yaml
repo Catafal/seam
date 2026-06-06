@@ -26,6 +26,13 @@ tools:
       mismatch), behavior is byte-identical to pre-Semantic (pure FTS5 path).
 
       No new tool is added — tool count stays 11. Pass semantic=false to force keyword-only.
+
+      Tier A name-resolution: the 1-hop graph expansion uses the same qualified<->bare
+      bridging as seam_context. When a FTS seed is a class/interface/struct, its callers
+      include callers of all member methods (edge_match_names fan-out). When a seed is a
+      qualified method ("Class.method"), callers stored under the bare form are included.
+      This improves recall for method-level and class-level concept queries with no
+      change to the tool interface.
     input:
       concept:
         type: string
@@ -109,6 +116,21 @@ tools:
     description: |
       Get a 360° view of a symbol: its callers, callees, file location, and docstring.
       Use before touching any existing function or class.
+
+      Tier A name-resolution: seam_context bridges the qualified<->bare name asymmetry
+      stored in the index. You may pass:
+        - A qualified name:  "Parser.parse"  → looks up the exact symbol; also matches
+          call edges stored under the bare form "parse". Callers that call the bare
+          identifier are included.
+        - A bare name:       "parse"         → if no symbol with that exact name exists,
+          resolves to ALL qualified defs ending ".parse" (e.g. "Parser.parse",
+          "Lexer.parse") and merges their callers/callees. `ambiguous` is true when
+          more than one definition was found and merged.
+        - A class name:      "Parser"        → includes callers of ALL of Parser's
+          methods by fanning out to member bare names in the edge lookup.
+          Bounded by SEAM_NAME_EXPANSION_CAP (default 50).
+      `ambiguous: true` means the result is a merged view across multiple definitions.
+      Use a qualified name or the `uid` field from seam_search/seam_query to pin one.
     input:
       symbol:
         type: string
@@ -320,6 +342,16 @@ tools:
       call/import edges, so changing a base class or interface surfaces its
       subclasses/implementers upstream. Set SEAM_INHERITANCE_EDGES=off to omit
       inheritance edges (byte-identical to pre-P6a).
+
+      Tier A name-resolution: the BFS walk seeds are expanded before traversal:
+        - Qualified name ("Parser.parse"): seeds are ["Parser.parse", "parse"].
+          Upstream callers that stored the bare "parse" target are found.
+        - Class name ("Parser"): seeds are ["Parser"] + all member bare names
+          (e.g. ["Parser", "parse", "validate"]). Upstream callers of any method
+          of the class are included. Bounded by SEAM_NAME_EXPANSION_CAP (default 50).
+        - Bare non-container name ("orchestrate"): seed is ["orchestrate"] as before.
+      This expansion is transparent — `target` in the response is always the original
+      queried name. No schema change; pure read-time bridging.
     input:
       target:
         type: string
