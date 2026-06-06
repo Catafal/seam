@@ -423,6 +423,34 @@ def expand_impact_seeds(conn: sqlite3.Connection, name: str) -> list[str]:
         )
         return result
 
-    # Case 3: bare non-container name — exact match only.
+    # Case 3: bare name that is neither a container nor (necessarily) a stored symbol.
+    # It may be a METHOD stored ONLY as "Class.method" with no bare symbol — the exact
+    # case Tier B introduced (receiver-typed qualified edge targets). impact/trace must
+    # resolve it the same way context() does, else `impact speakText` shows found=false
+    # with empty upstream even though callers exist. resolve_query_to_defs() returns the
+    # EXACT row when a bare symbol genuinely exists (standalone function → bare name only,
+    # byte-identical to before), or the qualified suffix matches when it is a method.
+    defs = resolve_query_to_defs(conn, name)
+    qualified = [
+        row["name"]
+        for row in defs
+        if row["name"] != name and bare_name(row["name"]) == name
+    ]
+    if qualified:
+        result = [name]
+        seen = {name}
+        for q in qualified:
+            if q not in seen and len(result) <= SEAM_NAME_EXPANSION_CAP:
+                result.append(q)
+                seen.add(q)
+        logger.debug(
+            "expand_impact_seeds: bare method '%s' -> %d qualified seed(s): %s",
+            name,
+            len(result),
+            result,
+        )
+        return result
+
+    # Genuinely standalone / unknown bare name — exact match only (pre-Tier-B behavior).
     logger.debug("expand_impact_seeds: bare non-container '%s' -> ['%s']", name, name)
     return [name]

@@ -228,6 +228,13 @@ def _resolve_navigation_target(
     # x.method — try scope lookup first, then fall through to static-call heuristic.
     if receiver.type == "simple_identifier":
         recv_name = _text(receiver)
+        # `Self` (capital S) is Swift's metatype keyword: it names the ENCLOSING type,
+        # exactly like lowercase `self`. The tree-sitter grammar parses it as a plain
+        # simple_identifier (not self_expression), so without this it would fall into the
+        # PascalCase static-call heuristic below and emit a bogus target `Self.method`
+        # (a type literally named "Self") — which joins no symbol. Normalize to the class.
+        if recv_name == "Self":
+            return f"{class_name}.{method}" if class_name else None
         # Scope lookup (class property / parameter / local — set during AST walk).
         cls = var_types.get(recv_name)
         if cls:
