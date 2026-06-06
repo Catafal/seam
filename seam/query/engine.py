@@ -43,6 +43,7 @@ from seam.config import SEAM_FUZZY_MAX_CANDIDATES, SEAM_FUZZY_MAX_DIST
 from seam.query import fts
 from seam.query.clusters import cluster_peers as _cluster_peers
 from seam.query.fts import extract_terms as _extract_terms
+from seam.query.names import edge_match_names as _edge_match_names
 from seam.query.semantic import rrf_merge, semantic_candidates
 
 logger = logging.getLogger(__name__)
@@ -937,14 +938,28 @@ def _build_context_result(
     """
     symbol_name = row["name"]
 
-    # Callers: edges where target_name = symbol_name -> source_name is the caller
+    # Tier A Slice 1: resolve the set of edge names to match against.
+    # For a bare name (no dot): [name] — exact match only, same as before.
+    # For a qualified name "Class.method": ["Class.method", "method"] — also matches
+    # call edges stored with the bare target/source (graph.py stores target as bare).
+    # This fixes the asymmetry: symbol stored as "Class.method", edge target as "method".
+    match_names = _edge_match_names(conn, symbol_name)
+    placeholders = ",".join("?" * len(match_names))
+
+    # Callers: edges where target_name IN match_names -> source_name is the caller.
+    # Use DISTINCT so a symbol that appears in both bare and qualified edges isn't listed twice.
     caller_rows = conn.execute(
-        "SELECT source_name FROM edges WHERE target_name = ?", (symbol_name,)
+        f"SELECT DISTINCT source_name FROM edges WHERE target_name IN ({placeholders})",
+        match_names,
     ).fetchall()
 
-    # Callees: edges where source_name = symbol_name -> target_name is the callee
+    # Callees: edges where source_name IN match_names -> target_name is the callee.
+    # The source_name is always the qualified name (graph_common.py:367 uses qualified),
+    # so for callees the exact match on [name] is sufficient. Matching the bare form
+    # here is safe (no extra false positives because source_name is typically qualified).
     callee_rows = conn.execute(
-        "SELECT target_name FROM edges WHERE source_name = ?", (symbol_name,)
+        f"SELECT DISTINCT target_name FROM edges WHERE source_name IN ({placeholders})",
+        match_names,
     ).fetchall()
 
     effective_dup = dup_count if dup_count is not None else row["dup_count"]
