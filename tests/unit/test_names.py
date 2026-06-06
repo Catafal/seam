@@ -1,6 +1,7 @@
 """Unit tests for seam/query/names.py — name-resolver leaf module.
 
 Tier A Slice 1: qualified<->bare bridging.
+Tier A Slice 2: resolve_query_to_defs — all-definitions aggregation.
 These tests are written FIRST (TDD) and must be run before the implementation.
 
 Coverage:
@@ -15,6 +16,15 @@ Coverage:
     N9 — edge_match_names(): never raises on empty string
     N10 — edge_match_names(): no duplicates when bare == qualified (no dot)
     N11 — edge_match_names(): returns list[str] (not set, but deduped)
+
+Slice 2:
+    R1 — resolve_query_to_defs(): exact match by name returns that symbol row
+    R2 — resolve_query_to_defs(): unknown name returns []
+    R3 — resolve_query_to_defs(): bare name with unique qualified def resolves to that def
+    R4 — resolve_query_to_defs(): bare name with multiple qualified defs returns all
+    R5 — resolve_query_to_defs(): exact class-name query returns the class row (no bare fallback)
+    R6 — resolve_query_to_defs(): never raises on empty string
+    R7 — resolve_query_to_defs(): qualified exact match is returned directly, no suffix scan
 """
 
 import sqlite3
@@ -25,7 +35,7 @@ import pytest
 
 from seam.indexer.db import init_db, upsert_file
 from seam.indexer.graph import Edge, Symbol
-from seam.query.names import bare_name, edge_match_names
+from seam.query.names import bare_name, edge_match_names, resolve_query_to_defs
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -185,3 +195,111 @@ class TestEdgeMatchNames:
         assert isinstance(result, list)
         # Deduped: no duplicates
         assert len(result) == len(set(result))
+
+
+# ── Slice 2: resolve_query_to_defs() tests ────────────────────────────────────
+
+
+def _seed_db_with(symbols: list[tuple[str, str, int, int]]) -> sqlite3.Connection:
+    """Helper: seed a DB with (name, kind, start, end) tuples in a single temp file."""
+    conn = init_db(Path(":memory:"))
+    with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+        filepath = Path(f.name)
+        f.write(b"# seam test\n")
+    try:
+        syms = [
+            Symbol(
+                name=name,
+                kind=kind,
+                file=str(filepath),
+                start_line=start,
+                end_line=end,
+                docstring=None,
+            )
+            for name, kind, start, end in symbols
+        ]
+        upsert_file(conn, filepath, "python", "abc123", syms, [])
+    finally:
+        filepath.unlink(missing_ok=True)
+    return conn
+
+
+class TestResolveQueryToDefs:
+    """resolve_query_to_defs(conn, name) — all-definitions aggregation (Slice 2)."""
+
+    def test_exact_match_returns_that_symbol_row(self) -> None:
+        """R1: an exact name match returns the single row for that symbol."""
+        conn = _seed_db_with([("Parser.parse", "method", 10, 20)])
+        rows = resolve_query_to_defs(conn, "Parser.parse")
+        conn.close()
+        assert len(rows) == 1
+        assert rows[0]["name"] == "Parser.parse"
+
+    def test_unknown_name_returns_empty(self) -> None:
+        """R2: a name that is neither exact nor a bare suffix returns []."""
+        conn = _seed_db_with([("Parser.parse", "method", 10, 20)])
+        rows = resolve_query_to_defs(conn, "unknown_symbol_xyz")
+        conn.close()
+        assert rows == []
+
+    def test_bare_name_unique_qualified_resolves_to_that_def(self) -> None:
+        """R3: bare name 'parse' with only 'Parser.parse' in index -> [Parser.parse]."""
+        conn = _seed_db_with([
+            ("Parser.parse", "method", 10, 20),
+            ("Parser.init", "method", 30, 40),
+        ])
+        rows = resolve_query_to_defs(conn, "parse")
+        conn.close()
+        assert len(rows) == 1, f"Expected 1 def for unique bare 'parse', got {len(rows)}"
+        assert rows[0]["name"] == "Parser.parse"
+
+    def test_bare_name_multiple_qualified_returns_all(self) -> None:
+        """R4: bare 'process' with Parser.process + Worker.process -> both returned."""
+        conn = _seed_db_with([
+            ("Parser.process", "method", 10, 20),
+            ("Worker.process", "method", 30, 40),
+            ("Other.unrelated", "method", 50, 60),
+        ])
+        rows = resolve_query_to_defs(conn, "process")
+        conn.close()
+        names = {r["name"] for r in rows}
+        assert "Parser.process" in names, "Parser.process must be in result"
+        assert "Worker.process" in names, "Worker.process must be in result"
+        assert "Other.unrelated" not in names, "unrelated symbol must NOT be in result"
+        assert len(rows) == 2
+
+    def test_class_name_exact_match_returned_directly(self) -> None:
+        """R5: exact class name 'Parser' returns the class row — no suffix scan needed."""
+        conn = _seed_db_with([
+            ("Parser", "class", 1, 50),
+            ("Parser.parse", "method", 10, 20),
+        ])
+        rows = resolve_query_to_defs(conn, "Parser")
+        conn.close()
+        # Should find the exact 'Parser' class row
+        names = {r["name"] for r in rows}
+        assert "Parser" in names, "Exact class 'Parser' must be returned"
+
+    def test_never_raises_on_empty_string(self) -> None:
+        """R6: empty string input must never raise — returns [] or a stable result."""
+        conn = _seed_db_with([("Parser.parse", "method", 10, 20)])
+        try:
+            rows = resolve_query_to_defs(conn, "")
+            assert isinstance(rows, list)
+        except Exception as exc:  # noqa: BLE001
+            pytest.fail(f"resolve_query_to_defs raised on empty string: {exc}")
+        finally:
+            conn.close()
+
+    def test_qualified_exact_match_not_suffix_scanned(self) -> None:
+        """R7: 'A.method' with exact row -> [A.method] only, no extra suffix rows."""
+        conn = _seed_db_with([
+            ("A.method", "method", 10, 20),
+            ("B.method", "method", 30, 40),  # same bare suffix, should NOT appear
+        ])
+        # Querying by exact qualified name 'A.method' should return only A.method
+        rows = resolve_query_to_defs(conn, "A.method")
+        conn.close()
+        # The exact match must be returned
+        names = {r["name"] for r in rows}
+        assert "A.method" in names

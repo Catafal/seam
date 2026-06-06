@@ -3,34 +3,10 @@
 All functions take an open sqlite3.Connection. No connection management here.
 Returns typed dicts matching the MCP tool output spec in docs/api-contracts/mcp-tools.yaml.
 
-Implementation notes:
-- search(): FTS5 BM25 + fts.build_match_query() OR-join + fts.rescore() + LIKE/fuzzy fallback.
-- query(): FTS5 seed via build_match_query() -> 1-hop expansion -> dedupe -> rescore -> limit.
-  Callers/callees counts are computed per symbol after collecting the result set.
-- context(): single-symbol lookup; callers = edges where target_name = name,
-  callees = edges where source_name = name.
-  Phase 2: enriched with cluster_id, cluster_label, cluster_peers when clustering
-  data is present. Fields are None/[] when the index has no cluster assignments.
-
-Phase 3 changes (Slice 1):
-- search() and query() build MATCH via fts.build_match_query() instead of raw text.
-  This is the OR-join fix: one non-matching word can no longer zero the result set.
-- Both pass FTS rows through fts.rescore() for multi-signal ranking.
-- LIKE→fuzzy fallback: when FTS returns zero rows, fall back to LIKE %term% substring
-  query; if still empty and term is ≥3 chars, a bounded Damerau-Levenshtein fuzzy
-  match over distinct symbol names is attempted.
-- The existing OperationalError propagation is preserved: genuinely malformed input
-  still surfaces distinctly. After OR-join, most user text won't be malformed, but
-  the propagation path must remain so callers can still map it to INVALID_QUERY.
-
-Semantic search (T6):
-- search() and query() support an opt-in hybrid mode when SEAM_SEMANTIC=on.
-- When enabled AND embeddings exist AND model matches: FTS5 candidates are merged
-  with semantic candidates via rrf_merge (Reciprocal Rank Fusion, k=60).
-  The merged id list is hydrated into full rows and returned.
-- When disabled or degraded (fastembed absent, model mismatch, no embeddings):
-  the existing pure-FTS5 path is used — behavior is byte-identical to pre-T6.
-- Semantic ONLY ADDS recall; it never removes a keyword hit.
+context(): Tier A Slice 2 — resolves bare names to all qualified definitions and merges
+callers/callees. See seam/query/names.py for the qualified<->bare bridging details.
+search() / query(): FTS5 BM25 + OR-join + rescore + LIKE/fuzzy fallback (Phase 3).
+Hybrid semantic (T6): opt-in RRF merge when SEAM_SEMANTIC=on and embeddings present.
 """
 
 import json
@@ -44,6 +20,7 @@ from seam.query import fts
 from seam.query.clusters import cluster_peers as _cluster_peers
 from seam.query.fts import extract_terms as _extract_terms
 from seam.query.names import edge_match_names as _edge_match_names
+from seam.query.names import resolve_query_to_defs as _resolve_query_to_defs
 from seam.query.semantic import rrf_merge, semantic_candidates
 
 logger = logging.getLogger(__name__)
@@ -856,50 +833,36 @@ def query(
 def context(conn: sqlite3.Connection, symbol_name: str) -> ContextResult | None:
     """Get 360-degree view of a symbol: location, kind, docstring, callers, callees.
 
-    Returns None if the symbol is not in the index.
-    When multiple symbols share the same name, returns the first match and sets
-    ambiguous=True so the caller knows to disambiguate rather than trust the result.
-
-    The ambiguous flag is a query-layer signal: it detects cross-file name collisions
-    that edge extraction cannot see (extraction is per-file). See CONTRACT.md for
-    the full contract evolution note.
+    Tier A Slice 2: resolves bare names to all qualified definitions and merges
+    callers/callees across them. Sets ambiguous=True when resolution spans >1 definition.
+    Exact single-def match stays byte-stable. Returns None when nothing is found.
+    Per-edge confidence is preserved (union never invents confidence).
     """
-    # Single atomic query: fetch the first matching symbol and the total count of
-    # same-name symbols via a window function. Avoids the count/fetch race of two
-    # separate queries and removes the now-dead double-None check. Pre-v5 rows return
-    # NULL for the Phase 4 enrichment columns — the read path handles that below.
-    row = conn.execute(
-        """
-        SELECT s.name, f.path AS file, s.start_line, s.end_line, s.kind, s.docstring,
-               COUNT(*) OVER () AS dup_count,
-               s.signature, s.decorators, s.is_exported, s.visibility, s.qualified_name
-        FROM symbols s
-        JOIN files f ON s.file_id = f.id
-        WHERE s.name = ?
-        ORDER BY s.id
-        LIMIT 1
-        """,
-        (symbol_name,),
-    ).fetchone()
-
-    if row is None:
+    # resolve_query_to_defs handles: exact match, bare-name suffix scan, qualified-not-found.
+    def_rows = _resolve_query_to_defs(conn, symbol_name)
+    if not def_rows:
         return None
 
-    return _build_context_result(conn, row)
+    # is_exact_match: the returned defs have the same name as the query (not a bare resolution).
+    is_exact_match = def_rows[0]["name"] == symbol_name
+
+    # Fast path: single exact-match def → byte-stable, dup_count drives ambiguous.
+    if is_exact_match and len(def_rows) == 1:
+        dup_count = conn.execute(
+            "SELECT COUNT(*) FROM symbols WHERE name = ?", (symbol_name,)
+        ).fetchone()[0]
+        return _build_context_result(conn, def_rows[0], dup_count=dup_count)
+
+    # Multi-def path: bare-name homonym or exact-name collision → merge and mark ambiguous.
+    return _build_merged_context_result(conn, def_rows)
 
 
 def context_at(
     conn: sqlite3.Connection, file_path: str, start_line: int
 ) -> ContextResult | None:
-    """Like context(), but resolves the EXACT symbol at (file_path, start_line).
+    """P6c: resolve the EXACT symbol at (file_path, start_line) — bypasses name lookup.
 
-    P6c: powers UID-handle resolution — a UID pins a single homonym to its exact
-    declaring file + line, so this bypasses the "first match by name" behavior of
-    context() and returns the precise symbol the agent asked for.
-
-    file_path is the ABSOLUTE path stored in the files table (the UID is derived
-    from that same absolute path at index/result time). Returns None when no symbol
-    is declared at that exact location (unknown/stale UID — same not-found contract).
+    Returns None when no symbol is at that exact location (unknown/stale UID).
     """
     row = conn.execute(
         """
@@ -917,12 +880,83 @@ def context_at(
     if row is None:
         return None
 
-    # ambiguous reflects whether THIS name collides elsewhere (parity with context()).
     dup_count = conn.execute(
         "SELECT COUNT(*) FROM symbols WHERE name = ?", (row["name"],)
     ).fetchone()[0]
 
     return _build_context_result(conn, row, dup_count=dup_count)
+
+
+def _collect_edges_for_names(
+    conn: sqlite3.Connection,
+    match_names: list[str],
+) -> tuple[set[str], set[str]]:
+    """Return (callers_set, callees_set) for match_names via DISTINCT edge lookups.
+
+    Used by both single-def (_build_context_result) and multi-def aggregation paths.
+    Per-edge confidence from the DB is preserved — the union never invents confidence.
+    """
+    if not match_names:
+        return set(), set()
+    ph = ",".join("?" * len(match_names))
+    callers = {
+        r["source_name"]
+        for r in conn.execute(
+            f"SELECT DISTINCT source_name FROM edges WHERE target_name IN ({ph})",
+            match_names,
+        ).fetchall()
+    }
+    callees = {
+        r["target_name"]
+        for r in conn.execute(
+            f"SELECT DISTINCT target_name FROM edges WHERE source_name IN ({ph})",
+            match_names,
+        ).fetchall()
+    }
+    return callers, callees
+
+
+def _build_merged_context_result(
+    conn: sqlite3.Connection,
+    def_rows: list[sqlite3.Row],
+) -> ContextResult:
+    """Merge callers/callees across multiple defs (Slice 2 multi-def path).
+
+    Primary def (lowest id) supplies location/kind/enrichment. ambiguous=True when >1
+    def or exact-name collision; False for unique bare-name resolution (1 qualified def).
+    """
+    primary = def_rows[0]
+    all_callers: set[str] = set()
+    all_callees: set[str] = set()
+    for row in def_rows:
+        match_names = _edge_match_names(conn, row["name"])
+        callers, callees = _collect_edges_for_names(conn, match_names)
+        all_callers |= callers
+        all_callees |= callees
+
+    cluster_info = _cluster_peers(conn, primary["name"])
+    c_id, c_label, c_peers = cluster_info if cluster_info is not None else (None, None, [])
+    decoded_decorators, is_exported = decode_enrichment_fields(primary)
+
+    return ContextResult(
+        symbol=primary["name"],
+        file=primary["file"],
+        line=primary["start_line"],
+        end_line=primary["end_line"],
+        kind=primary["kind"],
+        docstring=primary["docstring"],
+        callers=sorted(all_callers),
+        callees=sorted(all_callees),
+        ambiguous=len(def_rows) > 1,
+        cluster_id=c_id,
+        cluster_label=c_label,
+        cluster_peers=c_peers,
+        signature=primary["signature"],
+        decorators=decoded_decorators,
+        is_exported=is_exported,
+        visibility=primary["visibility"],
+        qualified_name=primary["qualified_name"],
+    )
 
 
 def _build_context_result(
@@ -931,49 +965,16 @@ def _build_context_result(
     *,
     dup_count: int | None = None,
 ) -> ContextResult:
-    """Assemble a ContextResult from a fetched symbol row (shared by context/context_at).
+    """Single symbol row → ContextResult. Used by context_at and the single-def fast path.
 
-    dup_count: when provided, used as the same-name collision count; otherwise the
-    row's own COUNT(*) OVER () window value is used (context() supplies it inline).
+    dup_count: explicit collision count (or row["dup_count"] window value if None).
     """
     symbol_name = row["name"]
-
-    # Tier A Slice 1: resolve the set of edge names to match against.
-    # For a bare name (no dot): [name] — exact match only, same as before.
-    # For a qualified name "Class.method": ["Class.method", "method"] — also matches
-    # call edges stored with the bare target/source (graph.py stores target as bare).
-    # This fixes the asymmetry: symbol stored as "Class.method", edge target as "method".
-    match_names = _edge_match_names(conn, symbol_name)
-    placeholders = ",".join("?" * len(match_names))
-
-    # Callers: edges where target_name IN match_names -> source_name is the caller.
-    # Use DISTINCT so a symbol that appears in both bare and qualified edges isn't listed twice.
-    caller_rows = conn.execute(
-        f"SELECT DISTINCT source_name FROM edges WHERE target_name IN ({placeholders})",
-        match_names,
-    ).fetchall()
-
-    # Callees: edges where source_name IN match_names -> target_name is the callee.
-    # The source_name is always the qualified name (graph_common.py:367 uses qualified),
-    # so for callees the exact match on [name] is sufficient. Matching the bare form
-    # here is safe (no extra false positives because source_name is typically qualified).
-    callee_rows = conn.execute(
-        f"SELECT DISTINCT target_name FROM edges WHERE source_name IN ({placeholders})",
-        match_names,
-    ).fetchall()
-
+    # Slice 1 bridging: [qualified, bare] so call edges with bare target are found.
+    callers, callees = _collect_edges_for_names(conn, _edge_match_names(conn, symbol_name))
     effective_dup = dup_count if dup_count is not None else row["dup_count"]
-
-    # Phase 2: Enrich with cluster information.
-    # cluster_peers() handles pre-v4 indexes gracefully (returns None when unavailable).
     cluster_info = _cluster_peers(conn, symbol_name)
-    if cluster_info is not None:
-        c_id, c_label, c_peers = cluster_info
-    else:
-        c_id, c_label, c_peers = None, None, []
-
-    # Decode Phase 4 enrichment columns via shared helper — single source of truth
-    # for the 0/1/NULL→bool and JSON TEXT→list[str] decode that pack.py also needs.
+    c_id, c_label, c_peers = cluster_info if cluster_info is not None else (None, None, [])
     decoded_decorators, is_exported = decode_enrichment_fields(row)
 
     return ContextResult(
@@ -983,13 +984,12 @@ def _build_context_result(
         end_line=row["end_line"],
         kind=row["kind"],
         docstring=row["docstring"],
-        callers=[r["source_name"] for r in caller_rows],
-        callees=[r["target_name"] for r in callee_rows],
-        ambiguous=effective_dup > 1,  # True when name collision detected
+        callers=sorted(callers),
+        callees=sorted(callees),
+        ambiguous=effective_dup > 1,
         cluster_id=c_id,
         cluster_label=c_label,
         cluster_peers=c_peers,
-        # Phase 4 enrichment fields
         signature=row["signature"],
         decorators=decoded_decorators,
         is_exported=is_exported,

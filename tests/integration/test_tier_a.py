@@ -270,3 +270,128 @@ class TestCallerDeduplication:
         assert callers.count("main") <= 1, (
             f"'main' appears {callers.count('main')} times in callers — must be deduped"
         )
+
+
+# ── Slice 2: bare-name resolution and multi-def aggregation in context() ──────
+#
+# The test fixture below has:
+#   Symbols: "TTS.speakText" and "AudioPlayer.speakText" (same bare suffix, 2 classes)
+#   Edges:
+#     "main" -> "speakText" (bare — as graph.py would store it)
+#
+# Slice 2 target behaviors:
+#   TA5 — context("speakText") resolves (was found:false before), returns callers
+#   TA6 — context("speakText") with 2 qualified defs sets ambiguous=True
+#   TA7 — context("speakText") with unique qualified def is unambiguous, callers merged
+#   TA8 — unique qualified symbol remains byte-stable (single def, ambiguous unchanged)
+
+
+@pytest.fixture()
+def multi_class_speaktext_db() -> sqlite3.Connection:
+    """Two classes both with a 'speakText' method; caller uses bare 'speakText'."""
+    symbols = [
+        _sym("TTS.speakText", kind="method", start=10, end=20),
+        _sym("AudioPlayer.speakText", kind="method", start=30, end=40),
+        _sym("main", kind="function", start=50, end=70),
+    ]
+    edges = [
+        # main calls speakText bare — as graph.py stores it
+        _edge("main", "speakText"),
+    ]
+    return _seed_db(symbols, edges)
+
+
+@pytest.fixture()
+def unique_speaktext_db() -> sqlite3.Connection:
+    """Single class with 'speakText' method; bare query should resolve to it uniquely."""
+    symbols = [
+        _sym("ElevenLabsTTSClient.speakText", kind="method", start=10, end=20),
+        _sym("main", kind="function", start=50, end=70),
+    ]
+    edges = [
+        _edge("main", "speakText"),
+    ]
+    return _seed_db(symbols, edges)
+
+
+class TestBareNameResolutionInContext:
+    """TA5-TA8: context() bare-name resolution resolving to qualified defs."""
+
+    def test_bare_name_previously_not_found_now_found(
+        self, unique_speaktext_db: sqlite3.Connection
+    ) -> None:
+        """TA5: context('speakText') no longer returns None (was found:false before)."""
+        result = context(unique_speaktext_db, "speakText")
+        assert result is not None, (
+            "context('speakText') should resolve to ElevenLabsTTSClient.speakText, "
+            "not return None. Bare-name resolution not working."
+        )
+
+    def test_unique_bare_resolution_returns_callers(
+        self, unique_speaktext_db: sqlite3.Connection
+    ) -> None:
+        """TA7: unique bare 'speakText' -> resolves to unique def, caller 'main' returned."""
+        result = context(unique_speaktext_db, "speakText")
+        assert result is not None
+        assert "main" in result["callers"], (
+            "main->speakText edge should appear in callers after bare-name resolution"
+        )
+
+    def test_unique_bare_resolution_not_ambiguous(
+        self, unique_speaktext_db: sqlite3.Connection
+    ) -> None:
+        """TA7: a bare name resolving to exactly ONE qualified def is NOT ambiguous."""
+        result = context(unique_speaktext_db, "speakText")
+        assert result is not None
+        assert result["ambiguous"] is False, (
+            "A bare name resolving to a single unique qualified def should NOT be ambiguous"
+        )
+
+    def test_homonym_bare_resolution_is_ambiguous(
+        self, multi_class_speaktext_db: sqlite3.Connection
+    ) -> None:
+        """TA6: bare 'speakText' resolving to TTS.speakText AND AudioPlayer.speakText
+        must set ambiguous=True."""
+        result = context(multi_class_speaktext_db, "speakText")
+        assert result is not None, "context('speakText') must find at least one def"
+        assert result["ambiguous"] is True, (
+            "Multiple qualified defs for bare 'speakText' must be marked ambiguous"
+        )
+
+    def test_homonym_bare_resolution_merges_callers(
+        self, multi_class_speaktext_db: sqlite3.Connection
+    ) -> None:
+        """TA6: callers are merged across all resolved defs (main calls speakText bare)."""
+        result = context(multi_class_speaktext_db, "speakText")
+        assert result is not None
+        assert "main" in result["callers"], (
+            "Caller 'main' must appear in merged callers even with multiple defs"
+        )
+
+    def test_unique_exact_match_unchanged(self) -> None:
+        """TA8: a unique exact-name match is byte-stable — behavior unchanged."""
+        symbols = [
+            _sym("unique_fn", kind="function", start=1, end=10),
+            _sym("caller", kind="function", start=15, end=25),
+        ]
+        edges = [_edge("caller", "unique_fn")]
+        conn = _seed_db(symbols, edges)
+        result = context(conn, "unique_fn")
+        conn.close()
+        assert result is not None
+        assert result["symbol"] == "unique_fn"
+        assert result["ambiguous"] is False
+        assert "caller" in result["callers"]
+
+    def test_callers_deduped_across_multi_def_resolution(
+        self, multi_class_speaktext_db: sqlite3.Connection
+    ) -> None:
+        """TA6: callers are deduped when the same caller appears for multiple defs."""
+        result = context(multi_class_speaktext_db, "speakText")
+        assert result is not None
+        callers = result["callers"]
+        # "main" may appear for both TTS.speakText and AudioPlayer.speakText via bare edge;
+        # it must appear at most once after dedup
+        assert callers.count("main") <= 1, (
+            f"'main' appears {callers.count('main')} times — must be deduped across defs"
+        )
