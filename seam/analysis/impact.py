@@ -350,17 +350,21 @@ def impact(
 
     safe_depth = clamp_depth(max_depth)
 
-    # Determine existence before walking — lets callers distinguish "not found" from
-    # "found but isolated". This is a cheap indexed lookup.
-    found = _symbol_exists(conn, target)
-
     # Expand the target name to a set of walk() seeds — bridges the qualified-symbol /
     # bare-edge asymmetry. e.g. "Parser.parse" -> ["Parser.parse", "parse"] so that
     # walk() matches edges whose target_name is the bare "parse" (as stored by the extractor).
     # For a class seed like "Parser" -> ["Parser", "parse", "validate"] to aggregate
-    # all member callers. The seeds list is deduped and bounded by config cap.
+    # all member callers. A bare METHOD ("speakText") expands to its qualified def(s)
+    # ("TTS.speakText") so a method stored only as Class.method still resolves.
+    # The seeds list is deduped and bounded by config cap.
     seeds = expand_impact_seeds(conn, target)
     logger.debug("impact: target=%r expanded to seeds=%s", target, seeds)
+
+    # Determine existence over the EXPANDED seeds — lets callers distinguish "not found"
+    # from "found but isolated". Checking the seeds (not just the raw target) is what makes
+    # `impact speakText` report found=True when the symbol is stored as `TTS.speakText`:
+    # the bare target itself is not a symbol/edge endpoint, but its qualified seed is.
+    found = any(_symbol_exists(conn, s) for s in seeds)
 
     # Collect all reached symbols so we can batch the file lookup.
     upstream_reached: list[Reached] = []
