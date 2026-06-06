@@ -468,10 +468,15 @@ def _extract_edges_java(root: Node, filepath: Path) -> list[Edge]:
                 return  # No need to recurse into import declarations.
 
             elif ntype == "method_invocation":
-                # Bare-identifier call: no 'object' field (not a member call).
+                # Tier B B2: capture receiver for member calls (obj.method()).
+                # Two shapes:
+                #   no 'object' field    → bare call helper()   → receiver = None
+                #   'object' field set   → obj.method()         → receiver = obj text,
+                #                                                  target = name text
                 obj = node.child_by_field_name("object")
                 name_node = node.child_by_field_name("name")
-                if obj is None and name_node is not None:
+                if name_node is not None:
+                    recv_text: str | None = _text(obj) if obj is not None else None
                     source = _find_enclosing_function(node, "java")
                     if source is not None:
                         edges.append(
@@ -482,8 +487,8 @@ def _extract_edges_java(root: Node, filepath: Path) -> list[Edge]:
                                 file=file_str,
                                 line=node.start_point[0] + 1,
                                 confidence="INFERRED",
-                                                            receiver=None,
-                                                        )
+                                receiver=recv_text,
+                            )
                         )
 
             for child in node.children:
@@ -852,20 +857,39 @@ def _extract_edges_csharp(root: Node, filepath: Path) -> list[Edge]:
 
             elif ntype == "invocation_expression":
                 func_node = node.child_by_field_name("function")
+                # Tier B B2: capture receiver for member_access_expression calls.
+                # Two shapes:
+                #   identifier                → bare call Helper()   → receiver = None
+                #   member_access_expression  → obj.Method()         → receiver = expression text,
+                #                                                       target = name identifier text
+                cs_callee: str | None = None
+                cs_recv: str | None = None
+
                 if func_node is not None and func_node.type == "identifier":
-                    # Bare identifier call (not a member access).
+                    cs_callee = _text(func_node)
+                elif func_node is not None and func_node.type == "member_access_expression":
+                    # expression field = receiver (log, this, etc.)
+                    expr_node = func_node.child_by_field_name("expression")
+                    # name field = method name identifier
+                    name_node = func_node.child_by_field_name("name")
+                    if name_node is not None and name_node.type == "identifier":
+                        cs_callee = _text(name_node)
+                        if expr_node is not None:
+                            cs_recv = _text(expr_node)
+
+                if cs_callee is not None:
                     source = _find_enclosing_function(node, "csharp")
                     if source is not None:
                         edges.append(
                             Edge(
                                 source=source,
-                                target=_text(func_node),
+                                target=cs_callee,
                                 kind="call",
                                 file=file_str,
                                 line=node.start_point[0] + 1,
                                 confidence="INFERRED",
-                                                            receiver=None,
-                                                        )
+                                receiver=cs_recv,
+                            )
                         )
 
             for child in node.children:

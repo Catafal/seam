@@ -377,6 +377,16 @@ def _walk_php_edges(
         _handle_php_call(node, file_str, file_stem, edges)
         # Still recurse — calls can be nested inside argument lists
 
+    elif node.type in ("member_call_expression", "nullsafe_member_call_expression"):
+        # Tier B B2: $obj->method() and $obj?->method() — capture receiver.
+        _handle_php_member_call(node, file_str, edges)
+        # Still recurse for nested calls
+
+    elif node.type == "scoped_call_expression":
+        # Tier B B2: ClassName::method() — capture class name as receiver.
+        _handle_php_scoped_call(node, file_str, edges)
+        # Still recurse for nested calls
+
     for child in node.children:
         _walk_php_edges(child, file_str, file_stem, edges)
 
@@ -483,9 +493,87 @@ def _handle_php_call(
                 file=file_str,
                 line=node.start_point[0] + 1,
                 confidence="INFERRED",
-                            receiver=None,
-                        )
+                receiver=None,
+            )
         )
+
+
+def _handle_php_member_call(
+    node: Node,
+    file_str: str,
+    edges: list[Edge],
+) -> None:
+    """Emit a call edge from a PHP member_call_expression node (Tier B B2).
+
+    Handles $obj->method() and $obj?->method() (nullsafe).
+    Captures the receiver text ($obj, $this, etc.) and the method name.
+    Gracefully skips when the name field is absent or not a plain 'name' node.
+    Never raises.
+    """
+    try:
+        # object field = receiver expression ($obj, $this, variable_name, etc.)
+        obj_node = node.child_by_field_name("object")
+        # name field = method name (a 'name' node in the PHP grammar)
+        name_node = node.child_by_field_name("name")
+        if name_node is None or name_node.type != "name":
+            return  # complex dynamic dispatch — skip gracefully
+
+        target = _text(name_node)
+        recv_text: str | None = _text(obj_node) if obj_node is not None else None
+        source = _find_enclosing_function(node, "php")
+        if source is not None:
+            edges.append(
+                Edge(
+                    source=source,
+                    target=target,
+                    kind="call",
+                    file=file_str,
+                    line=node.start_point[0] + 1,
+                    confidence="INFERRED",
+                    receiver=recv_text,
+                )
+            )
+    except Exception:  # noqa: BLE001
+        pass  # never raise from the extractor
+
+
+def _handle_php_scoped_call(
+    node: Node,
+    file_str: str,
+    edges: list[Edge],
+) -> None:
+    """Emit a call edge from a PHP scoped_call_expression node (Tier B B2).
+
+    Handles ClassName::method() (static dispatch).
+    The class_name is used as receiver; the method name is the target.
+    Gracefully skips when nodes are absent or not a plain 'name'. Never raises.
+    """
+    try:
+        # scoped_call_expression children: name(class) :: name(method) arguments
+        # The grammar does NOT use named fields — walk children directly.
+        names = [c for c in node.children if c.type == "name"]
+        if len(names) < 2:
+            return  # unexpected shape — degrade gracefully
+        class_name = _text(names[0])
+        method_name = _text(names[1])
+        if not class_name or not method_name:
+            return
+
+        source = _find_enclosing_function(node, "php")
+        if source is not None:
+            edges.append(
+                Edge(
+                    source=source,
+                    target=method_name,
+                    kind="call",
+                    file=file_str,
+                    line=node.start_point[0] + 1,
+                    confidence="INFERRED",
+                    receiver=class_name,
+                )
+            )
+    except Exception:  # noqa: BLE001
+        pass  # never raise from the extractor
 
 
 # ── PHP comment extraction ─────────────────────────────────────────────────────

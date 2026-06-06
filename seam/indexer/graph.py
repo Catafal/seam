@@ -756,18 +756,39 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
 
         elif node.type == "call_expression":
             func_child = node.child_by_field_name("function")
+            # Tier B B2: capture receiver for member_expression calls (obj.method()).
+            # Two shapes:
+            #   identifier      → bare call foo()     → receiver = None
+            #   member_expression → obj.method()      → receiver = obj-side text,
+            #                                           target = rightmost identifier
+            callee_node: Node | None = None
+            receiver_text: str | None = None
+
             if func_child and func_child.type == "identifier":
+                callee_node = func_child
+                # Bare call: no receiver
+            elif func_child and func_child.type == "member_expression":
+                # Property field = rightmost method name identifier
+                prop = func_child.child_by_field_name("property")
+                # Object field = left-hand receiver expression
+                obj = func_child.child_by_field_name("object")
+                if prop is not None and prop.type == "property_identifier":
+                    callee_node = prop
+                    if obj is not None:
+                        receiver_text = _text(obj)
+
+            if callee_node is not None:
                 source = _find_enclosing_function(node, "typescript")
                 if source is not None:
                     edges.append(
                         Edge(
                             source=source,
-                            target=_text(func_child),
+                            target=_text(callee_node),
                             kind="call",
                             file=file_str,
                             line=node.start_point[0] + 1,
                             confidence="INFERRED",
-                            receiver=None,
+                            receiver=receiver_text,
                         )
                     )
 

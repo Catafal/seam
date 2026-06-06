@@ -361,19 +361,38 @@ def _extract_edges_c(root: Node, filepath: Path) -> list[Edge]:
 
             elif node.type == "call_expression":
                 func_child = node.child_by_field_name("function")
+                # Tier B B2: capture receiver for field_expression calls.
+                # C has no methods, but struct-pointer dispatch uses field_expression:
+                #   obj->func_ptr()   → argument='obj', field='func_ptr' → receiver='obj'
+                # Plain function calls: identifier → receiver=None.
+                c_callee: str | None = None
+                c_recv: str | None = None
+
                 if func_child and func_child.type == "identifier":
+                    c_callee = _text(func_child)
+                elif func_child and func_child.type == "field_expression":
+                    # argument field = receiver (left of -> or .)
+                    arg_node = func_child.child_by_field_name("argument")
+                    # field field = the member/function name
+                    field_node = func_child.child_by_field_name("field")
+                    if field_node is not None and field_node.type == "field_identifier":
+                        c_callee = _text(field_node)
+                        if arg_node is not None:
+                            c_recv = _text(arg_node)
+
+                if c_callee:
                     source = _find_enclosing_function(node, "c")
                     if source is not None:
                         edges.append(
                             Edge(
                                 source=source,
-                                target=_text(func_child),
+                                target=c_callee,
                                 kind="call",
                                 file=file_str,
                                 line=node.start_point[0] + 1,
                                 confidence="INFERRED",
-                                                            receiver=None,
-                                                        )
+                                receiver=c_recv,
+                            )
                         )
 
             for child in node.children:
@@ -854,19 +873,39 @@ def _extract_edges_cpp(root: Node, filepath: Path) -> list[Edge]:
 
             elif node.type == "call_expression":
                 func_child = node.child_by_field_name("function")
+                # Tier B B2: capture receiver for field_expression calls.
+                # Two shapes:
+                #   identifier       → bare call foo()       → receiver = None
+                #   field_expression → obj->m() or obj.m()   → receiver = argument text,
+                #                                               target = field (method name)
+                cpp_callee: str | None = None
+                cpp_recv: str | None = None
+
                 if func_child and func_child.type == "identifier":
+                    cpp_callee = _text(func_child)
+                elif func_child and func_child.type == "field_expression":
+                    # argument field = receiver (this, e, cfg, etc.)
+                    arg_node = func_child.child_by_field_name("argument")
+                    # field field = method name identifier
+                    field_node = func_child.child_by_field_name("field")
+                    if field_node is not None and field_node.type == "field_identifier":
+                        cpp_callee = _text(field_node)
+                        if arg_node is not None:
+                            cpp_recv = _text(arg_node)
+
+                if cpp_callee:
                     source = _find_enclosing_function(node, "cpp")
                     if source is not None:
                         edges.append(
                             Edge(
                                 source=source,
-                                target=_text(func_child),
+                                target=cpp_callee,
                                 kind="call",
                                 file=file_str,
                                 line=node.start_point[0] + 1,
                                 confidence="INFERRED",
-                                                            receiver=None,
-                                                        )
+                                receiver=cpp_recv,
+                            )
                         )
 
             for child in node.children:

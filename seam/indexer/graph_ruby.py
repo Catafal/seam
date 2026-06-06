@@ -449,9 +449,13 @@ def _handle_ruby_call(
             )
         return
 
-    # Bare call: only emit when no receiver (bare identifier call).
+    # Tier B B2: emit call edges for BOTH bare calls and receiver calls.
+    # - Bare call (no receiver) → receiver=None
+    # - Receiver call (obj.foo) → receiver=obj text, target=method name
+    # Previously receiver calls were silently dropped; they are now emitted.
+    recv_text: str | None = None
     if receiver_node is not None:
-        return  # receiver call like obj.foo — skip
+        recv_text = _text(receiver_node)
 
     source = _find_enclosing_function(node, "ruby")
     if source is not None:
@@ -463,8 +467,8 @@ def _handle_ruby_call(
                 file=file_str,
                 line=node.start_point[0] + 1,
                 confidence="INFERRED",
-                            receiver=None,
-                        )
+                receiver=recv_text,
+            )
         )
 
 

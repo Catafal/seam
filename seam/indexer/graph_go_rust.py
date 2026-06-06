@@ -322,19 +322,40 @@ def _extract_edges_go(root: Node, filepath: Path) -> list[Edge]:
 
         elif node.type == "call_expression":
             func_child = node.child_by_field_name("function")
+            # Tier B B2: capture receiver for selector_expression calls (recv.Method).
+            # Two shapes:
+            #   identifier          → bare call foo()       → receiver = None
+            #   selector_expression → recv.Method()         → receiver = operand text,
+            #                                                  target = field (method name)
+            callee_name: str | None = None
+            recv_text: str | None = None
+
             if func_child and func_child.type == "identifier":
+                callee_name = _text(func_child)
+                # Bare call: no receiver
+            elif func_child and func_child.type == "selector_expression":
+                # operand field = receiver (left of dot)
+                operand = func_child.child_by_field_name("operand")
+                # field field = method name identifier
+                field = func_child.child_by_field_name("field")
+                if field is not None and field.type == "field_identifier":
+                    callee_name = _text(field)
+                    if operand is not None:
+                        recv_text = _text(operand)
+
+            if callee_name:
                 source = _find_enclosing_function(node, "go")
                 if source is not None:
                     edges.append(
                         Edge(
                             source=source,
-                            target=_text(func_child),
+                            target=callee_name,
                             kind="call",
                             file=file_str,
                             line=node.start_point[0] + 1,
                             confidence="INFERRED",
-                                                    receiver=None,
-                                                )
+                            receiver=recv_text,
+                        )
                     )
 
         for child in node.children:
@@ -658,19 +679,43 @@ def _extract_edges_rust(root: Node, filepath: Path) -> list[Edge]:
 
         elif node.type == "call_expression":
             func_child = node.child_by_field_name("function")
+            # Tier B B2: capture receiver for field_expression calls (recv.method).
+            # Two shapes:
+            #   identifier        → bare call foo()       → receiver = None
+            #   field_expression  → recv.method()         → receiver = value text,
+            #                                               target = field (method name)
+            # Scoped calls (Struct::new) store NULL receiver (they are type-qualified,
+            # not instance-receiver calls — graceful degradation).
+            callee_name: str | None = None
+            recv_text: str | None = None
+
             if func_child and func_child.type == "identifier":
+                callee_name = _text(func_child)
+                # Bare call: no receiver
+            elif func_child and func_child.type == "field_expression":
+                # value field = receiver expression (self, obj, etc.)
+                value_node = func_child.child_by_field_name("value")
+                # field field = method name
+                field_node = func_child.child_by_field_name("field")
+                if field_node is not None and field_node.type == "field_identifier":
+                    callee_name = _text(field_node)
+                    if value_node is not None:
+                        recv_text = _text(value_node)
+            # scoped_identifier (e.g. Type::new) → gracefully skip receiver capture
+
+            if callee_name:
                 source = _find_enclosing_function(node, "rust")
                 if source is not None:
                     edges.append(
                         Edge(
                             source=source,
-                            target=_text(func_child),
+                            target=callee_name,
                             kind="call",
                             file=file_str,
                             line=node.start_point[0] + 1,
                             confidence="INFERRED",
-                                                    receiver=None,
-                                                )
+                            receiver=recv_text,
+                        )
                     )
 
         for child in node.children:

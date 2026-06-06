@@ -321,13 +321,28 @@ class TestRubyEdges:
         assert e is not None
         assert e["source"] == "Person.greet", f"Expected source='Person.greet', got {e['source']}"
 
-    def test_receiver_call_not_extracted(self) -> None:
-        """obj.to_s receiver call → NOT emitted as a call edge (bare only)."""
+    def test_receiver_call_extracted_with_receiver_text(self) -> None:
+        """Tier B B2: value.to_s receiver call → NOW emitted with receiver='value'.
+
+        Pre-B2 behavior: receiver calls were silently dropped (bare-only policy).
+        Post-B2 behavior: receiver calls are emitted with the receiver text captured
+        in the 'receiver' field so the read path can use it for resolution.
+        """
         root = _get_rb_root()
         edges = extract_edges(root, "ruby", SAMPLE_RB)
-        targets = {e["target"] for e in edges if e["kind"] == "call"}
-        # 'to_s' is called via receiver (x.to_s) in Utils.fmt → should not appear
-        assert "to_s" not in targets, "Receiver call 'to_s' should not be a call edge"
+        call_edges = [e for e in edges if e["kind"] == "call"]
+        targets = {e["target"] for e in call_edges}
+        # 'to_s' is called via receiver (value.to_s) in Utils.fmt → now emitted
+        assert "to_s" in targets, (
+            f"Receiver call 'to_s' should now be emitted as a call edge (Tier B B2). "
+            f"Got targets: {targets}"
+        )
+        # Verify the receiver text is captured
+        to_s_edge = next((e for e in call_edges if e["target"] == "to_s"), None)
+        assert to_s_edge is not None
+        assert to_s_edge.get("receiver") == "value", (
+            f"Expected receiver='value', got {to_s_edge.get('receiver')!r}"
+        )
 
     def test_edges_have_confidence_field(self) -> None:
         """All edges carry a confidence field."""
