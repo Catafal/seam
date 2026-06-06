@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from seam.analysis.processes import compute_entry_score
+from seam.config import SEAM_TOKENIZE_IDENTIFIERS
 from seam.indexer.migrations import (
     _run_migration_v1_to_v2,
     _run_migration_v2_to_v3,
@@ -46,7 +47,9 @@ from seam.indexer.migrations import (
     _run_migration_v7_to_v8,
     _run_migration_v8_to_v9,
     _run_migration_v9_to_v10,
+    _run_migration_v10_to_v11,
 )
+from seam.indexer.tokenize import build_search_text
 
 if TYPE_CHECKING:
     from seam.analysis.imports import ImportMapping
@@ -118,7 +121,7 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
     Guard: only run when:
       1. The metadata table EXISTS (i.e. this is an initialized DB, not a fresh
          empty file with no schema yet).
-      2. schema_version < current version (7).
+      2. schema_version < current version (11).
 
     Fresh-DB safety: a brand-new empty file (no metadata table yet) is left alone —
     init_db() will create the schema and run all migrations in the correct order.
@@ -147,10 +150,10 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
         row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
         version = int(row["value"]) if row else 0
 
-        if version >= 10:
+        if version >= 11:
             return  # Already up to date — no-op.
 
-        # Version is < 10: run pending migrations in order.
+        # Version is < 11: run pending migrations in order.
         # Each migration is guarded by its own version check — safe to call
         # when already at or above that version (they become no-ops).
         if version < 2:
@@ -177,6 +180,9 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
         # v9→v10: Tier B B1 receiver capture (adds edges.receiver column).
         if version < 10:
             _run_migration_v9_to_v10(conn)
+        # v10→v11: Tier D #12 identifier split tokens (adds symbols.search_text + FTS column).
+        if version < 11:
+            _run_migration_v10_to_v11(conn)
 
     except Exception as exc:  # noqa: BLE001
         # Do NOT raise here — failing to auto-migrate should not crash a read-only
@@ -245,6 +251,9 @@ def init_db(db_path: Path) -> sqlite3.Connection:
 
     # Run v9->v10 migration guard (adds edges.receiver column — Tier B B1 receiver capture).
     _run_migration_v9_to_v10(conn)
+
+    # Run v10->v11 migration guard (adds symbols.search_text + 4th FTS column — Tier D #12).
+    _run_migration_v10_to_v11(conn)
 
     return conn
 
@@ -315,9 +324,9 @@ def upsert_file(
             INSERT INTO symbols (
                 file_id, name, kind, start_line, end_line, docstring,
                 signature, decorators, is_exported, visibility, qualified_name,
-                entry_score
+                entry_score, search_text
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -346,6 +355,11 @@ def upsert_file(
                     # neutral baseline 1.0 is stored when nothing matches so ranking is
                     # byte-identical to raw reach for non-entry symbols.
                     compute_entry_score(file_path_str, sym.get("decorators")),
+                    # Tier D #12: split-token search text (camelCase recall). NULL when the
+                    # knob is off → byte-identical to pre-D12 (no split-token FTS hits).
+                    build_search_text(sym["name"], sym.get("qualified_name"))
+                    if SEAM_TOKENIZE_IDENTIFIERS == "on"
+                    else None,
                 )
                 for sym in symbols
             ],

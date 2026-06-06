@@ -627,3 +627,120 @@ def _run_migration_v9_to_v10(conn: sqlite3.Connection) -> None:
         raise RuntimeError(
             "Seam DB migration v9->v10 failed; run 'seam init' to rebuild the index"
         ) from exc
+
+
+def _run_migration_v10_to_v11(conn: sqlite3.Connection) -> None:
+    """Guarded migration: add symbols.search_text + a 4th symbols_fts column (v10 → v11).
+
+    Tier D #12: identifier compound-split tokenization. Adds a nullable search_text column
+    holding camelCase/snake_case-split tokens, surfaced as a 4th FTS5 column so that a
+    natural-language query matches a camelCase identifier (the unicode61 tokenizer does not
+    split camelCase). Changing the FTS column set requires DROPping and recreating the
+    symbols_fts virtual table + its 3 sync triggers, then a 'rebuild'.
+
+    Additive-only / null-contract: search_text is NULL on existing rows after the rebuild —
+    full split-token recall arrives only after a `seam init` re-index. Until then, search
+    behaves exactly as before (the name/docstring/signature columns are unchanged).
+
+    Steps:
+      1. ALTER TABLE symbols ADD COLUMN search_text TEXT (guarded by table_info).
+      2. DROP the 3 sync triggers + symbols_fts; recreate symbols_fts with 4 columns and
+         the 3 triggers; INSERT ... VALUES('rebuild') to repopulate from the content table.
+      3. Bump schema_version to '11'.
+
+    Guarded (version < 11), idempotent (table_info guard + version guard), fresh-DB-safe
+    (a new DB seeded with '11' returns early). BEGIN IMMEDIATE / COMMIT for atomicity.
+    Raises RuntimeError on failure.
+    """
+    try:
+        row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
+        version = int(row["value"]) if row else 0
+
+        if version >= 11:
+            return  # Already at v11 or newer — no-op.
+
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # Step 1: add the nullable search_text column if absent (idempotent).
+            col_names = {
+                r["name"] for r in conn.execute("PRAGMA table_info(symbols)").fetchall()
+            }
+            if "search_text" not in col_names:
+                conn.execute("ALTER TABLE symbols ADD COLUMN search_text TEXT")
+
+            # Step 2: rebuild the FTS table with the new column set. The FTS5 column list
+            # is fixed at creation, so a column addition requires a full drop+recreate.
+            # Triggers must be dropped first (they reference the old column list).
+            # The 'rebuild' below re-tokenizes every symbol; on a large index this is a
+            # multi-second write under BEGIN IMMEDIATE, and it fires on the FIRST process to
+            # open the DB after upgrade (often a read command). Log up front so a momentarily
+            # slow `seam query`/`start` right after upgrading is explainable, not mysterious.
+            logger.info(
+                "Migrating Seam index v%d->v11: rebuilding FTS index for camelCase search "
+                "(one-time; may take a moment on a large index)...",
+                version,
+            )
+            conn.execute("DROP TRIGGER IF EXISTS symbols_ai")
+            conn.execute("DROP TRIGGER IF EXISTS symbols_ad")
+            conn.execute("DROP TRIGGER IF EXISTS symbols_au")
+            conn.execute("DROP TABLE IF EXISTS symbols_fts")
+            conn.execute(
+                """
+                CREATE VIRTUAL TABLE symbols_fts USING fts5(
+                    name, docstring, signature, search_text,
+                    content='symbols', content_rowid='id'
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TRIGGER symbols_ai AFTER INSERT ON symbols BEGIN
+                    INSERT INTO symbols_fts(rowid, name, docstring, signature, search_text)
+                    VALUES (new.id, new.name, new.docstring, new.signature, new.search_text);
+                END
+                """
+            )
+            conn.execute(
+                """
+                CREATE TRIGGER symbols_ad AFTER DELETE ON symbols BEGIN
+                    INSERT INTO symbols_fts(symbols_fts, rowid, name, docstring, signature, search_text)
+                    VALUES ('delete', old.id, old.name, old.docstring, old.signature, old.search_text);
+                END
+                """
+            )
+            conn.execute(
+                """
+                CREATE TRIGGER symbols_au AFTER UPDATE ON symbols BEGIN
+                    INSERT INTO symbols_fts(symbols_fts, rowid, name, docstring, signature, search_text)
+                    VALUES ('delete', old.id, old.name, old.docstring, old.signature, old.search_text);
+                    INSERT INTO symbols_fts(rowid, name, docstring, signature, search_text)
+                    VALUES (new.id, new.name, new.docstring, new.signature, new.search_text);
+                END
+                """
+            )
+            # Repopulate the FTS index from the content table (search_text = NULL on old rows).
+            conn.execute("INSERT INTO symbols_fts(symbols_fts) VALUES('rebuild')")
+
+            # Step 3: bump version last — only advance once the rebuild succeeded.
+            conn.execute("UPDATE metadata SET value = '11' WHERE key = 'schema_version'")
+            conn.execute("COMMIT")
+
+            logger.info(
+                "Migrated Seam index v%d->v11 (added symbols.search_text + 4th symbols_fts "
+                "column for camelCase search recall). Run 'seam init' to populate search_text.",
+                version,
+            )
+        except Exception as exc:  # noqa: BLE001
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(
+                "Seam DB migration v10->v11 failed; run 'seam init' to rebuild the index"
+            ) from exc
+    except RuntimeError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "Seam DB migration v10->v11 failed; run 'seam init' to rebuild the index"
+        ) from exc

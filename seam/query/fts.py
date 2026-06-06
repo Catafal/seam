@@ -33,6 +33,8 @@ import re
 from typing import Any
 
 from seam.analysis.testpaths import is_test_file
+from seam.config import SEAM_TOKENIZE_IDENTIFIERS
+from seam.indexer.tokenize import split_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -158,13 +160,34 @@ def build_match_query(text: str) -> str:
         )
         return _EMPTY_SENTINEL
 
+    # Tier D #12: expand each surviving token into its identifier sub-words so a camelCase
+    # query term ("GlobalPushToTalk") matches the split index, and the original token is kept
+    # (so exact/prefix matching on the name column still fires). split_identifier on a plain
+    # lowercase word returns just itself, so natural-language queries are unaffected.
+    # Gated on the knob: when off, the term set is byte-identical to pre-D12.
+    expanded: list[str] = []
+    seen_terms: set[str] = set()
+    for token in surviving:
+        candidates = [token]
+        if SEAM_TOKENIZE_IDENTIFIERS == "on":
+            # Drop single-char sub-words: a "a"* / "x"* prefix term matches a huge swath of
+            # the index and only adds noise (the original camelCase token is already kept).
+            # Guard at >=2 explicitly (not _MIN_TERM_LEN, which is 1) since sub-tokens are the
+            # high-fan-out source — the OR-expansion makes short terms disproportionately costly.
+            candidates += [sub for sub in split_identifier(token) if len(sub) >= 2]
+        for cand in candidates:
+            low = cand.lower()
+            if low not in seen_terms:
+                seen_terms.add(low)
+                expanded.append(cand)
+
     # Step 5+6: build quoted-prefix OR expression.
     # Each term is wrapped as "term"* so FTS5 does prefix-matching (matches any
     # indexed token starting with 'term'). Terms are OR-joined so that one
     # non-matching word cannot zero the entire result set — the fix for the
     # implicit-AND bug where "parse issues board" returned nothing if 'board' was
     # not indexed, even though 'parse' matched many symbols.
-    terms = [f'"{t}"*' for t in surviving]
+    terms = [f'"{t}"*' for t in expanded]
     match_expr = " OR ".join(terms)
 
     logger.debug("fts: built MATCH expression: %r", match_expr)

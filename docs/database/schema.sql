@@ -60,7 +60,12 @@ CREATE TABLE IF NOT EXISTS symbols (
     -- P6b (v9): framework entry-point ranking multiplier (>=1.0). Computed at index
     -- time from the file path pattern + decorator text (processes.compute_entry_score).
     -- NULL on pre-v9 rows until re-index; list_entry_points treats NULL as baseline 1.0.
-    entry_score    REAL
+    entry_score    REAL,
+    -- Tier D #12 (v11): camelCase/snake_case-split tokens of name + qualified_name, space-
+    -- joined and deduped (tokenize.build_search_text). Indexed as a 4th symbols_fts column so
+    -- "push to talk monitor" matches GlobalPushToTalkShortcutMonitor. NULL on pre-v11 rows and
+    -- when SEAM_TOKENIZE_IDENTIFIERS=off → no split-token recall until re-index.
+    search_text    TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
@@ -91,33 +96,36 @@ CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_name);
 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_name);
 
 -- ── FTS5 (Full-Text Search) ───────────────────────────────────────────────────
--- Virtual table for BM25-ranked search across symbol names + docstrings + signatures.
+-- Virtual table for BM25-ranked search across symbol names + docstrings + signatures
+-- + search_text (Tier D #12 split tokens). Read-path bm25() weights search_text lowest.
 -- Phase 5 change: added 'signature' column so type-shaped queries match on params/returns.
 -- Kept in sync with 'symbols' via triggers below.
+-- Tier D #12 (v11): search_text column added — split identifier tokens for camelCase recall.
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
     name,
     docstring,
     signature,
+    search_text,
     content='symbols',
     content_rowid='id'
 );
 
 -- Triggers: keep FTS5 in sync with symbols (avoids manual sync in application code)
 CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
-    INSERT INTO symbols_fts(rowid, name, docstring, signature)
-    VALUES (new.id, new.name, new.docstring, new.signature);
+    INSERT INTO symbols_fts(rowid, name, docstring, signature, search_text)
+    VALUES (new.id, new.name, new.docstring, new.signature, new.search_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS symbols_ad AFTER DELETE ON symbols BEGIN
-    INSERT INTO symbols_fts(symbols_fts, rowid, name, docstring, signature)
-    VALUES ('delete', old.id, old.name, old.docstring, old.signature);
+    INSERT INTO symbols_fts(symbols_fts, rowid, name, docstring, signature, search_text)
+    VALUES ('delete', old.id, old.name, old.docstring, old.signature, old.search_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS symbols_au AFTER UPDATE ON symbols BEGIN
-    INSERT INTO symbols_fts(symbols_fts, rowid, name, docstring, signature)
-    VALUES ('delete', old.id, old.name, old.docstring, old.signature);
-    INSERT INTO symbols_fts(rowid, name, docstring, signature)
-    VALUES (new.id, new.name, new.docstring, new.signature);
+    INSERT INTO symbols_fts(symbols_fts, rowid, name, docstring, signature, search_text)
+    VALUES ('delete', old.id, old.name, old.docstring, old.signature, old.search_text);
+    INSERT INTO symbols_fts(rowid, name, docstring, signature, search_text)
+    VALUES (new.id, new.name, new.docstring, new.signature, new.search_text);
 END;
 
 -- ── Comments ─────────────────────────────────────────────────────────────────
@@ -199,5 +207,5 @@ CREATE TABLE IF NOT EXISTS metadata (
 -- does NOT trigger any migration advisory.
 -- Existing older DBs keep their stored version; db.py migrations bump them in place.
 INSERT OR IGNORE INTO metadata(key, value) VALUES
-    ('schema_version', '10'),
+    ('schema_version', '11'),
     ('seam_version',   '0.2.0');
