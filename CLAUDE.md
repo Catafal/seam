@@ -83,6 +83,17 @@ seam/config.py               ← all settings (env vars with defaults)
                                   is used as a context/impact/query seed (Tier A name-resolution; default: 50)
                                 SEAM_BARE_RESOLVE_CAP: max rows returned by the suffix scan inside
                                   resolve_query_to_defs() for bare-name → qualified-def lookup (Tier A; default: 25)
+                                SEAM_TYPE_INFERENCE: "on" | "off" — master switch for extraction-time receiver-type
+                                  inference in Python and TypeScript/JS extractors (Tier B; default: on).
+                                  When "on", the extractor resolves receiver expressions (class fields, function
+                                  params, local variables with type annotations) to qualified 'Type.method' call
+                                  targets — e.g. `client: Client` turns obj.send() → `Client.send` as the edge
+                                  target. Conservatism contract: only plain user types bind; optionals/generics/
+                                  unknown identifiers return None → bare target kept (never emit a wrong edge).
+                                  When "off", inference is skipped entirely — byte-identical to pre-Tier-B.
+                                  See also SEAM_SWIFT_TYPE_INFERENCE (Swift-specific knob, independent).
+                                SEAM_SWIFT_TYPE_INFERENCE: "on" | "off" — Swift-specific receiver-type inference
+                                  (Phase 10 / Tier B Swift extension; default: on). Independent of SEAM_TYPE_INFERENCE.
 seam/analysis/embeddings.py  ← LEAF: fastembed wrapper for semantic search (Semantic phase)
                                 is_available() → bool (lazy, cached; never raises)
                                 symbol_text(name, signature, docstring) → str (canonical embed input)
@@ -144,6 +155,9 @@ seam/indexer/parser.py       ← tree-sitter parsing (Python, TypeScript, JavaSc
                                 Java, C#, Ruby, C, C++, PHP)
 seam/indexer/graph_common.py ← LEAF: shared TypedDicts (Symbol/Edge/Comment), helpers
                                 Symbol now carries: signature, decorators, is_exported, visibility, qualified_name
+                                Edge now carries: receiver (raw receiver text; None for bare/import/pre-v10 edges)
+                                Edge kind vocabulary: 'call' | 'import' | 'extends' | 'implements' | 'instantiates'
+                                  — 'instantiates' added by Tier B B6 (new/struct-literal/composite-literal nodes)
 seam/indexer/graph_go_rust.py← Go + Rust extractors (imports graph_common only)
 seam/indexer/graph_java_csharp.py ← Java + C# symbol/edge/comment extractors (Phase 9)
                                 imports graph_common only; split from graph.py to stay under 1000 lines
@@ -156,6 +170,25 @@ seam/indexer/graph_php.py    ← PHP symbol/edge/comment extractors (Phase 9)
 seam/indexer/graph_swift.py  ← Swift symbol/edge/comment extractors (Phase 10)
                                 imports graph_common only; class/struct/actor/extension→class,
                                 enum→type, protocol→interface; /// and /** */ docstrings
+seam/indexer/graph_swift_infer.py ← LEAF: Swift receiver-type inference (Phase 10 / Tier B extension)
+                                Two-layer scope model: class-level property pre-scan + per-function
+                                param/local bindings. Controlled by SEAM_SWIFT_TYPE_INFERENCE config knob.
+                                Conservatism contract: only plain user types bind; None on optionals/generics/
+                                chained/unknown. _resolve_navigation_target is the core lookup function.
+seam/indexer/graph_scope_infer.py ← LEAF: Python + TypeScript/JS receiver-type inference (Tier B B4)
+                                Mirrors graph_swift_infer two-layer scope model. Used by graph.py extractors.
+                                resolve_receiver_type(receiver_text, class_name, var_types, self_names) → str|None
+                                self/cls/this normalize to enclosing class; optionals/containers/generics → None.
+                                Controlled by SEAM_TYPE_INFERENCE config knob.
+seam/indexer/graph_scope_infer_ext.py ← LEAF: Java + C# + Ruby receiver-type inference (Tier B B5)
+                                Extends the two-layer scope model to Java/C#/Ruby families.
+seam/indexer/graph_scope_infer_ext2.py ← LEAF: Go + Rust + C/C++ + PHP receiver-type inference (Tier B B5)
+                                Extends the two-layer scope model to Go/Rust/C/C++/PHP families.
+seam/indexer/graph_typescript.py ← TypeScript/JS extractors (split from graph.py for Tier B B3)
+                                Tier B B3: member_expression call_expression nodes now emit call edges
+                                (previously only bare identifier calls were indexed — this fixes the
+                                major TS/JS recall hole where obj.method() calls were silently dropped).
+                                Tier B B6: new_expression nodes emit 'instantiates' edges.
 seam/indexer/graph.py        ← Python/TS dispatchers; re-exports types from graph_common;
                                 imports Go/Rust/Java/C#/C/C++/Ruby/PHP/Swift extractors at top level
 seam/indexer/signatures.py   ← LEAF: Phase 4 enrichment — extract_node_fields(node, language, ...) → NodeFields
@@ -230,6 +263,20 @@ tests/fixtures/              ← sample.py, sample.ts, sample.go, sample.rs
 - **Edges use string names** (not symbol IDs) — required for independent re-indexing
 
 ## Current Phase
+Tier B receiver capture + extraction-time receiver-type inference (schema v9 → v10).
+- **Root cause (the real fix):** Tier A bridged the qualified/bare asymmetry at read time. Tier B fixes it at the source: the extractor now captures the raw receiver expression in `edges.receiver` (v9→v10 migration) AND infers its type to emit a qualified `Type.method` target on the edge itself. Once a call is stored as `Client.send`, it joins the symbol row `Client.send` exactly — no read-time bridging needed for that edge.
+- **Schema v9 → v10:** single additive migration (`_run_migration_v9_to_v10`) adds `edges.receiver TEXT NULL`. Auto-runs on `connect()`; idempotent; never raises. Pre-v10 rows keep `receiver=NULL` (same null-contract as Phase 4/5 fields) — a full `seam init` re-index is needed to backfill receiver + qualified targets.
+- **B1 — receiver column + Python receiver capture:** `edges.receiver` added to schema and `Edge` TypedDict. Python call-edge extractor captures raw receiver text (e.g. `self`, `client`) into `Edge.receiver`. Import and bare-identifier edges remain `receiver=None`.
+- **B2 — receiver capture across remaining 11 languages:** all language extractors (TS/JS, Go, Rust, Java, C#, Ruby, C, C++, PHP, Swift) capture receiver text into `Edge.receiver` on attribute/member calls.
+- **B3 — TS/JS member-expression call edges (recall hole fix):** previously only bare identifier calls were indexed for TypeScript/JavaScript; `obj.method()` patterns were silently dropped. B3 adds `member_expression call_expression` handling to the TS/JS extractor — a major recall improvement. Controlled by `SEAM_TYPE_INFERENCE` (on by default).
+- **B4 — scope-inference module + Python/TS/JS receiver-type inference:** new leaf `seam/indexer/graph_scope_infer.py` provides `resolve_receiver_type()` — the core two-layer scope model (class-level field/property pre-scan + per-function param/local bindings) for Python and TS/JS. When a receiver type is confidently inferred, the extractor emits `target_name = "Type.method"` instead of the bare method name. Conservatism contract: NEVER emit a wrong edge — refuse on optionals, containers, generics, chained/unknown receivers.
+- **B5 — receiver-type inference for remaining families + Swift static calls:** two more inference leaf modules (`graph_scope_infer_ext.py` for Java/C#/Ruby; `graph_scope_infer_ext2.py` for Go/Rust/C/C++/PHP) plus Swift static class call patterns (extension of `graph_swift_infer.py`).
+- **B6 — instantiates edges across all 12 languages:** `new_expression` / struct-literal / composite-literal nodes now emit `kind="instantiates"` edges (e.g. `new Foo()`, `Foo{}`, `Foo { ... }`, PascalCase bare call in Swift). The `instantiates` kind is now part of the closed edge-kind vocabulary alongside `call`, `import`, `extends`, `implements`.
+- **1 new config knob:** `SEAM_TYPE_INFERENCE: "on" | "off"` (default `"on"`) — master switch for extraction-time receiver-type inference in Python and TS/JS. Set to `"off"` to revert to bare-identifier-only targets (byte-identical to pre-Tier-B). Swift uses its own independent `SEAM_SWIFT_TYPE_INFERENCE` knob.
+- **MCP tool count stays 11.** No new tools. Read path (Tier A names.py) consumes qualified targets automatically — no per-tool changes. Gate: all tests pass.
+See `progress.txt`.
+
+### Prior phase (Tier A name-resolution)
 Tier A name-resolution (read-path-only bridge between qualified symbol names and bare call-edge targets).
 - **Root cause fixed (read-path only, no schema change):** Seam stores method symbols as `Class.method` but call-edge `target_name` as the bare identifier `method`. This asymmetry caused every method context/impact to show empty upstream. Tier A patches this entirely at read time.
 - **New leaf module `seam/query/names.py`:** five pure functions — `bare_name`, `is_container_symbol`, `get_member_names`, `edge_match_names`, `resolve_query_to_defs`, `expand_impact_seeds`. Imports only stdlib + `seam/config`. Pattern mirrors `seam/query/clusters.py`.
@@ -352,8 +399,8 @@ See `progress.txt` for session history. Next: roadmap item 8 (`seam install`) / 
 - `seam_query` — FTS5 + 1-hop graph expansion (Phase 0); OR-join + rescore since Phase 3; **hybrid semantic+FTS5 via RRF when `SEAM_SEMANTIC=on` and embeddings exist** (Semantic phase); optional `semantic: bool = True` param to force keyword-only
 - `seam_context` — symbol 360-degree view, enriched with cluster_id/label/peers (Phase 2) + signature/decorators/is_exported/visibility/qualified_name (Phase 4); **Tier A: resolves bare/qualified/class names and aggregates all matching defs** (callers/callees merged across homonyms; `ambiguous=true` when >1 def found; class name fans out to all member callers)
 - `seam_search` — full-text FTS5 search (Phase 0); OR-join + rescore + fuzzy fallback since Phase 3; signature is FTS-searchable (Phase 4); **hybrid semantic+FTS5 via RRF when `SEAM_SEMANTIC=on` and embeddings exist** (Semantic phase); optional `semantic: bool = True` param; FTS snippets preserved for FTS hits, "" for semantic-only hits
-- `seam_impact` — blast-radius analysis by risk tier (Phase 1); each entry now carries `resolved_by` (provenance) and `best_candidate` (proximity pick on AMBIGUOUS) since Phase 5; Phase 8 adds `risk_summary` (full per-tier counts), a per-tier `limit` cap (default 25, 0=unlimited), and `truncated`; **Tier A: `expand_impact_seeds` bridges qualified↔bare and fans out class seeds to member names before BFS walk**
-- `seam_trace` — shortest call/dependency path (Phase 1); each hop now carries `resolved_by` and `best_candidate` since Phase 5; **Tier A: source/target seeds use the same qualified↔bare expansion as seam_impact**
+- `seam_impact` — blast-radius analysis by risk tier (Phase 1); each entry now carries `resolved_by` (provenance) and `best_candidate` (proximity pick on AMBIGUOUS) since Phase 5; Phase 8 adds `risk_summary` (full per-tier counts), a per-tier `limit` cap (default 25, 0=unlimited), and `truncated`; **Tier A: `expand_impact_seeds` bridges qualified↔bare and fans out class seeds to member names before BFS walk**; **Tier B: traverses `instantiates` edges alongside call/import/extends/implements; qualified Type.method targets resolve exactly**
+- `seam_trace` — shortest call/dependency path (Phase 1); each hop now carries `resolved_by` and `best_candidate` since Phase 5; **Tier A: source/target seeds use the same qualified↔bare expansion as seam_impact**; **Tier B: hop `kind` may now be `instantiates`**
 - `seam_changes` — git diff → changed symbols → risk level (Phase 1); --stdin on CLI
 - `seam_why` — semantic comments WHY/HACK/NOTE/TODO/FIXME (Phase 1b)
 - `seam_clusters` — list functional areas or drill into one cluster (Phase 2)
@@ -362,6 +409,8 @@ See `progress.txt` for session history. Next: roadmap item 8 (`seam install`) / 
 - `seam_flows` — execution flows: list entry points (call-graph roots ranked by downstream reach), or expand one entry's depth/breadth-capped, cycle-safe forward call-chain tree (Flows). No arg → `{entry_points:[{name,kind,file,reach}]}`; with `entry` → a Flow tree (or `{found:false}`). Pure-structural, no LLM.
 
 There are **eleven MCP tools** (`seam_flows` is the newest — see Flows below). The ten enrichment-carrying tools return the five Phase 4 enrichment fields where available: `signature`, `decorators`, `is_exported`, `visibility`, `qualified_name`. Fields are `null` (not absent) for pre-v5 rows or unsupported scenarios — callers treat `null` as "unknown". (`seam_flows` is the exception: its step shape is `name/kind/file/line/confidence` and it does NOT carry the Phase 4 fields.)
+
+**Tier B edge enrichment:** The edge kind vocabulary now includes `instantiates` (added in Tier B B6) alongside `call`, `import`, `extends`, `implements`. `seam_impact` and `seam_trace` traverse `instantiates` edges. `seam_trace` hop `kind` may be `instantiates`. Edges with a confidently inferred receiver type now carry a qualified `Type.method` target directly in the DB — `seam_context` and `seam_impact` resolve these with higher confidence (EXTRACTED when unique, no read-time bridging needed for those hops). The raw receiver text is stored in `edges.receiver` (v10 column, NULL for pre-v10 rows and for bare/import edges).
 
 **Semantic hybrid (Semantic phase):** `seam_search` and `seam_query` auto-merge FTS5 candidates with semantic (cosine) candidates via Reciprocal Rank Fusion (RRF, k=60) when BOTH conditions hold: `SEAM_SEMANTIC=on` AND embeddings exist for the configured model. No new MCP tool is added — tool count stays **11**. A keyword-only index behaves byte-identically to pre-Semantic. The `semantic` param (default `true`) can be passed to force keyword-only from a tool call.
 
@@ -372,11 +421,15 @@ There are **eleven MCP tools** (`seam_flows` is the newest — see Flows below).
 `seam_context_pack` returns `truncated: {callers, callees, comments}` counts of entries dropped by caps. When a neighbor name has no indexed declaration it is silently skipped (not an error). Use `seam_impact` for the full blast radius when the pack is truncated.
 
 ## Known Gotchas
-- **Tier A name-resolution is read-time-only**: the qualified↔bare bridging in `seam_context`, `seam_impact`, `seam_trace`, and `seam_query` is a pure read-path shim — it does NOT change how symbols or edges are stored. The extractor still writes method symbol names as `Class.method` and call-edge `target_name` as bare `method`. The bridge reconciles this at query time via `seam/query/names.py`.
+- **`edges.receiver` is NULL until `seam init` re-index after upgrading to v10**: the v9→v10 migration (auto-run on `connect()`) adds the `edges.receiver` column with `NULL` as the default. Existing edge rows keep `receiver=NULL` — same null-contract as the Phase 4/5 enrichment fields. Only a full `seam init` re-index populates `receiver` and upgrades bare call targets to qualified `Type.method` targets. Until then, qualified-target edges are absent and Tier A read-time bridging remains the only disambiguation.
+- **Tier B inference is extraction-time only — changing `SEAM_TYPE_INFERENCE` requires re-index**: `SEAM_TYPE_INFERENCE=off` skips inference during extraction; switching it later has no retroactive effect. Run `seam init` to rebuild the index with the new setting. Toggling the knob at read time has no effect (the edges are already stored).
+- **Conservatism contract — Tier B NEVER emits a wrong edge**: `resolve_receiver_type()` returns `None` (→ bare target kept) for optionals (`Foo | None`, `Foo?`, `Optional[Foo]`), containers (`list[T]`, `dict[K,V]`, `[Foo]`), generics (`Array<T>`, `Set<T>`), chained receivers (`a.b.c()`), and any identifier not found in the current scope. Only a plain user-type name that appears exactly in the class-field/param/local scope gets a qualified edge. The cost of a false negative (missed edge) is always lower than a false positive (wrong target).
+- **TS/JS member-expression call edges (Tier B B3) require `seam init` re-index**: pre-B3 indexes have no `obj.method()` call edges for TypeScript/JavaScript (they were silently dropped). After upgrading to Tier B, run `seam init` to capture these edges. Until then, `seam_impact` / `seam_context` on TS/JS methods will under-report upstream callers.
+- **`instantiates` edges require `seam init` re-index**: pre-B6 indexes have no `instantiates` edges. `new Foo()` / `Foo{}` / composite-literal calls appear as absent in the graph until re-indexed. The `instantiates` kind is traversed by `seam_impact` / `seam_trace` alongside `call` / `import` / `extends` / `implements`.
+- **Tier A name-resolution is read-time-only**: the qualified↔bare bridging in `seam_context`, `seam_impact`, `seam_trace`, and `seam_query` is a pure read-path shim — it does NOT change how symbols or edges are stored. The extractor still writes method symbol names as `Class.method` and call-edge `target_name` as bare `method`. The bridge reconciles this at query time via `seam/query/names.py`. Once Tier B edges are indexed, these edges are already qualified — Tier A handles the remainder.
 - **`ambiguous` flag semantics in `seam_context` (Tier A)**: before Tier A, `ambiguous=True` meant the name appeared in more than one file (cross-file collision). After Tier A, `ambiguous=True` also means a bare query resolved to multiple qualified definitions (e.g. querying `parse` found `Parser.parse` + `Lexer.parse`). In BOTH cases callers/callees are merged across ALL matching definitions. `ambiguous` signals "merged view — consider disambiguating with a qualified name or uid".
 - **`SEAM_NAME_EXPANSION_CAP` (default 50) caps class→member fan-out**: when `seam_context`, `seam_impact`, or `seam_query` receives a class/interface/struct name, up to 50 member bare names are added to the edge lookup. Classes with >50 methods will silently have some members excluded from the fan-out; raise the cap via env var if precision matters more than query cost.
 - **`SEAM_BARE_RESOLVE_CAP` (default 25) caps the bare-name suffix scan**: `resolve_query_to_defs` uses `LIKE '%.name'` which cannot use the B-tree index (full-table scan). The cap bounds the scan before the Python exact-suffix filter. Common identifiers like `run`, `get`, `parse` can match thousands of qualified symbols — without the cap this would be O(N) unbounded. Set to 0 for unlimited (not recommended on large codebases).
-- **Tier A does NOT fix cross-class method calls**: if two unrelated classes both have a method `send`, querying bare `send` will aggregate both, and `seam_impact send` will union upstream callers of BOTH. Use a qualified name (`MyClass.send`) or a `uid` to pin one definition. The extractor discards the receiver expression on call edges (e.g. `obj.send()` → stored as bare `send`) — fixing that requires a Tier B schema change.
 - **Clusters recomputed only on full `seam init` OR `seam sync` (Phase 7)**: the file *watcher*
   still does NOT recompute clusters after per-file edits — new symbols indexed by the live watcher
   get `cluster_id=NULL` until a recompute runs. `seam sync` now closes this: it recomputes clusters

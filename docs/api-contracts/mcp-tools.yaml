@@ -343,6 +343,14 @@ tools:
       subclasses/implementers upstream. Set SEAM_INHERITANCE_EDGES=off to omit
       inheritance edges (byte-identical to pre-P6a).
 
+      Tier B edge enrichment: edges whose receiver type was confidently inferred
+      at index time already carry a qualified 'Type.method' target in the DB —
+      these resolve with EXTRACTED confidence when the name is unique. The
+      'instantiates' edge kind (new Foo(), Foo{}, composite literals) is now
+      traversed exactly like 'call': if you change Foo, all sites that call
+      'new Foo()' appear in the blast radius. Edges with receiver=NULL (bare
+      calls, imports, pre-v10 rows) degrade to Tier A read-time bridging as before.
+
       Tier A name-resolution: the BFS walk seeds are expanded before traversal:
         - Qualified name ("Parser.parse"): seeds are ["Parser.parse", "parse"].
           Upstream callers that stored the bare "parse" target are found.
@@ -470,9 +478,14 @@ tools:
     description: |
       Trace the call/dependency path between two symbols.
       Returns the shortest path from source to target as an ordered list of hops,
-      where each hop carries the edge kind (call | import | extends | implements) and
-      per-edge confidence (EXTRACTED | INFERRED | AMBIGUOUS). The extends/implements
-      kinds are class-inheritance edges added in P6a (SEAM_INHERITANCE_EDGES=on).
+      where each hop carries the edge kind (call | import | extends | implements |
+      instantiates) and per-edge confidence (EXTRACTED | INFERRED | AMBIGUOUS).
+      The extends/implements kinds are class-inheritance edges added in P6a
+      (SEAM_INHERITANCE_EDGES=on). The instantiates kind was added in Tier B B6:
+      'new Foo()' / struct-literal / composite-literal calls. Tier B also enriches
+      edge resolution: when a call's receiver type was inferred at index time, the
+      target is already qualified ('Type.method') so it resolves with EXTRACTED
+      confidence when unique — no Tier A bridging needed for that hop.
 
       Also returns one-hop callers and callees for both symbols so the agent can
       see the immediate neighborhood alongside the path.
@@ -537,7 +550,7 @@ tools:
         Hop shape (per edge in a path):
           from_name      (str)      — source of this edge
           to_name        (str)      — target of this edge
-          kind           (str)      — 'call' | 'import' | 'extends' | 'implements'
+          kind           (str)      — 'call' | 'import' | 'extends' | 'implements' | 'instantiates'
           confidence     (str)      — EXTRACTED | INFERRED | AMBIGUOUS
                                       Resolved at read time against the whole index
                                       (EXTRACTED = to_name unique in index; AMBIGUOUS = shared name;
@@ -552,7 +565,7 @@ tools:
 
         EdgeHop shape (for callers_* / callees_* lists):
           name           (str)      — neighboring symbol name
-          kind           (str)      — 'call' | 'import' | 'extends' | 'implements'
+          kind           (str)      — 'call' | 'import' | 'extends' | 'implements' | 'instantiates'
           confidence     (str)      — EXTRACTED | INFERRED | AMBIGUOUS
           resolved_by    (str|null) — Phase 5. Same provenance vocabulary as Hop above.
                                       null for pre-v6 indexes or missing context.
