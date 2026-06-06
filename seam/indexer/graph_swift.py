@@ -49,6 +49,15 @@ from seam.indexer.graph_common import (
     _text,
 )
 
+# Pure receiver-type inference helpers live in a leaf module to keep this file under
+# the 1000-line limit (see graph_swift_infer for the layering rationale).
+from seam.indexer.graph_swift_infer import (
+    _record_param_types,
+    _record_var_binding,
+    _resolve_navigation_target,
+    _scan_class_properties,
+)
+
 # signatures.py is a leaf (no seam deps) so importing it here does not create a cycle.
 from seam.indexer.signatures import extract_node_fields
 
@@ -662,7 +671,16 @@ def _extract_edges_swift(root: Node, filepath: Path) -> list[Edge]:
     infer = config.SEAM_SWIFT_TYPE_INFERENCE == "on"
 
     try:
-        _walk_edges(root, file_str, file_stem, edges, infer, class_name=None, var_types={})
+        _walk_edges(
+            root,
+            file_str,
+            file_stem,
+            edges,
+            infer,
+            class_name=None,
+            var_types={},
+            class_var_types={},
+        )
     except Exception as exc:  # noqa: BLE001
         logger.debug("_extract_edges_swift: unhandled exception for %s: %r", filepath, exc)
 
@@ -688,22 +706,6 @@ def _swift_decl_type_name(node: Node) -> str | None:
     return None
 
 
-def _swift_instantiated_class(value_node: Node) -> str | None:
-    """If value_node is a 'ClassName(...)' instantiation, return 'ClassName', else None.
-
-    A Swift constructor call is a call_expression whose first child is a bare
-    simple_identifier (the type name). Used both for `let x = Foo()` binding capture
-    and for inline `Foo().method()` resolution. Returns None for any other shape.
-    """
-    if value_node.type != "call_expression" or not value_node.children:
-        return None
-    head = value_node.children[0]
-    if head.type == "simple_identifier":
-        text = _text(head)
-        return text or None
-    return None
-
-
 def _walk_edges(
     node: Node,
     file_str: str,
@@ -712,15 +714,25 @@ def _walk_edges(
     infer: bool,
     class_name: str | None,
     var_types: dict[str, str],
+    class_var_types: dict[str, str],
 ) -> None:
     """Recursively walk the AST to collect import and call edges.
 
-    Threads two context values for P5 type inference:
-      class_name — the nearest enclosing class/struct/actor/extension type name,
+    Threads three context values for type inference:
+      class_name      — the nearest enclosing class/struct/actor/extension type name,
         used to resolve self.method(). None at top level.
-      var_types  — function-scope-local map of local var name → instantiated class,
-        used to resolve `let x = Foo(); x.method()`. A FRESH dict is created on
-        entering each function_body so bindings never leak across function scopes.
+      class_var_types — the enclosing class's stored-property `name → type` map,
+        pre-scanned on entering the class so a typed property is visible in EVERY
+        body regardless of declaration order. Fresh per class.
+      var_types       — the current body's `name → type` map: re-seeded from
+        class_var_types (+ parameters, for functions) on entering a function_declaration,
+        and from class_var_types alone on entering a class (so class-body descendants —
+        initializers, computed accessors — see class properties without inheriting a
+        stale outer scope), then extended with local `let`/`var` bindings as walked.
+
+    Class-level stored `property_declaration`s are NOT recorded during the walk (they are
+    already in class_var_types via the pre-scan); recording them here would mutate the
+    shared class-scope dict in place and make resolution depend on source order.
     """
     node_type = node.type
 
@@ -729,51 +741,37 @@ def _walk_edges(
         return  # No need to recurse into import node
 
     if node_type == "class_declaration":
-        # Update enclosing-class context for descendants (self.method resolution).
+        # Update enclosing-class context for descendants (self.method resolution) and
+        # pre-scan its stored properties so bodies see DI'd typed properties. Seed the
+        # class-body scope too so initializers / nested classes don't inherit a stale
+        # outer var_types.
         class_name = _swift_decl_type_name(node) or class_name
+        if infer:
+            class_var_types = _scan_class_properties(node)
+            var_types = dict(class_var_types)
 
-    elif node_type == "function_body":
-        # Function-scope reset: local var→class bindings do not cross function scopes.
-        var_types = {}
+    elif node_type == "function_declaration":
+        if infer:
+            # New function scope: inherit class properties, then bind parameters.
+            # Local lets append below as the body is walked.
+            var_types = dict(class_var_types)
+            _record_param_types(node, var_types)
 
     elif infer and node_type == "property_declaration":
-        _record_var_binding(node, var_types)
+        # Record ONLY function-scope locals. A class-level stored property (direct child
+        # of class_body) is already in class_var_types; skipping it here keeps the
+        # class-scope dict unmutated, so resolution is order-independent.
+        if node.parent is None or node.parent.type != "class_body":
+            _record_var_binding(node, var_types)
 
     if node_type == "call_expression":
         _handle_call(node, file_str, edges, infer, class_name, var_types)
         # Still recurse — arguments can contain nested calls.
 
     for child in node.children:
-        _walk_edges(child, file_str, file_stem, edges, infer, class_name, var_types)
-
-
-def _record_var_binding(node: Node, var_types: dict[str, str]) -> None:
-    """Record a `let/var x = ClassName()` binding into the function-scope var_types map.
-
-    Captures the simple `pattern = call_expression(ClassName())` shape only — the
-    common single-variable instantiation. Compound/tuple patterns are ignored.
-    Never raises.
-    """
-    try:
-        var_name: str | None = None
-        value: Node | None = None
-        seen_eq = False
-        for child in node.children:
-            if child.type == "pattern" and var_name is None:
-                for gc in child.children:
-                    if gc.type == "simple_identifier":
-                        var_name = _text(gc)
-                        break
-            elif child.type == "=":
-                seen_eq = True
-            elif seen_eq and value is None:
-                value = child
-        if var_name and value is not None:
-            cls = _swift_instantiated_class(value)
-            if cls:
-                var_types[var_name] = cls
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("_record_var_binding: failed at %r: %r", node.start_point, exc)
+        _walk_edges(
+            child, file_str, file_stem, edges, infer, class_name, var_types, class_var_types
+        )
 
 
 def _handle_import(node: Node, file_str: str, file_stem: str, edges: list[Edge]) -> None:
@@ -851,56 +849,6 @@ def _emit_call(node: Node, file_str: str, target: str, edges: list[Edge]) -> Non
                 confidence="INFERRED",
             )
         )
-
-
-def _resolve_navigation_target(
-    nav: Node,
-    class_name: str | None,
-    var_types: dict[str, str],
-) -> str | None:
-    """Resolve a navigation_expression callee to a qualified 'Type.method' target.
-
-    Handles three receiver shapes (P5 MVP):
-      self.method          → '<class_name>.method'   (needs enclosing class)
-      ClassName().method   → 'ClassName.method'      (inline instantiation)
-      x.method (x = Foo()) → 'Foo.method'            (function-scope binding)
-    Returns None for any unknown receiver (e.g. a parameter, chained call, or an
-    unbound variable) so the caller drops the edge rather than guess.
-    """
-    receiver = nav.children[0] if nav.children else None
-    if receiver is None:
-        return None
-
-    # The method name lives in the navigation_suffix → simple_identifier child.
-    method = _navigation_method_name(nav)
-    if not method:
-        return None
-
-    # self.method → enclosing class.
-    if receiver.type == "self_expression":
-        return f"{class_name}.{method}" if class_name else None
-
-    # x.method where x was bound to a class instantiation in this scope.
-    if receiver.type == "simple_identifier":
-        cls = var_types.get(_text(receiver))
-        return f"{cls}.{method}" if cls else None
-
-    # ClassName().method — inline instantiation as the receiver.
-    inline_cls = _swift_instantiated_class(receiver)
-    if inline_cls:
-        return f"{inline_cls}.{method}"
-
-    return None
-
-
-def _navigation_method_name(nav: Node) -> str | None:
-    """Return the trailing method name from a navigation_expression's navigation_suffix."""
-    for child in nav.children:
-        if child.type == "navigation_suffix":
-            for gc in child.children:
-                if gc.type == "simple_identifier":
-                    return _text(gc)
-    return None
 
 
 # ── Swift comment extraction ───────────────────────────────────────────────────
