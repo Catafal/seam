@@ -259,6 +259,17 @@ SEAM_SEMANTIC_SCAN_CAP: int = int(os.getenv("SEAM_SEMANTIC_SCAN_CAP", "20000"))
 SEAM_RRF_K: int = int(os.getenv("SEAM_RRF_K", "60"))
 
 
+# ── Tier A Slice 3: class/container member fan-out ───────────────────────────
+
+# Maximum number of member bare names included in edge_match_names() when the
+# queried symbol is a class/interface/struct container. Caps the fan-out on
+# "god-class" containers that have hundreds of methods, which would otherwise
+# produce huge IN clauses and bloat the token budget.
+# Default 50: covers virtually all real-world classes; raise via env var on
+# very large containers if precision matters more than query cost.
+SEAM_NAME_EXPANSION_CAP: int = int(os.getenv("SEAM_NAME_EXPANSION_CAP", "50"))
+
+
 # ── P5: Swift inter-class call resolution ────────────────────────────────────
 
 # Lightweight receiver-type inference for Swift call edges. When "on" (default),

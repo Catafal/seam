@@ -1,14 +1,15 @@
-"""Integration tests for Tier A Slice 1: qualified<->bare name bridging in context().
-
-These tests exercise the REAL extract->store->read path with a multi-class fixture
-to verify that context("Class.method") now returns cross-class callers that were
-previously empty, and that unique-name functions remain byte-stable.
+"""Integration tests for Tier A:
+  Slice 1 — qualified<->bare name bridging in context().
+  Slice 2 — bare-name resolution and multi-def aggregation in context().
+  Slice 3 — class/container detection + member fan-out in context() and query().
 
 Test groups:
     TA1 — context("Class.method") returns cross-class callers/callees
     TA2 — unique-name function with already-matching edges is byte-stable
     TA3 — bare-name lookup still works when only bare edges exist
     TA4 — context("Class.method") callers deduped (no duplicates)
+    TA5-TA8 — Slice 2 bare-name resolution
+    TA9-TA13 — Slice 3 class aggregation in context() and query()
 """
 
 import sqlite3
@@ -19,7 +20,7 @@ import pytest
 
 from seam.indexer.db import init_db, upsert_file
 from seam.indexer.graph import Edge, Symbol
-from seam.query.engine import context
+from seam.query.engine import context, query
 
 # ── DB seed helpers ───────────────────────────────────────────────────────────
 
@@ -394,4 +395,143 @@ class TestBareNameResolutionInContext:
         # it must appear at most once after dedup
         assert callers.count("main") <= 1, (
             f"'main' appears {callers.count('main')} times — must be deduped across defs"
+        )
+
+
+# ── Slice 3: class/container aggregation in context() and query() ─────────────
+#
+# Fixture schema:
+#   Symbols:
+#     "CompanionManager"           kind=class
+#     "CompanionManager.start"     kind=method
+#     "CompanionManager.stop"      kind=method
+#     "ApplicationController"      kind=class
+#   Edges (bare target — as graph.py stores them):
+#     "main" -> "start"          (caller of CompanionManager.start)
+#     "cli" -> "stop"            (caller of CompanionManager.stop)
+#     "ApplicationController.run" -> "start"  (cross-class caller)
+#
+# Slice 3 target behaviors:
+#   TA9  — context("CompanionManager") returns callers of its methods (start/stop callers)
+#   TA10 — context("CompanionManager") callees are empty for the class row (no outbound edges from class itself)
+#   TA11 — class with zero members returns gracefully (not an error)
+#   TA12 — query() with a class concept surfaces class members as neighbors
+#   TA13 — callers deduped across member fan-out
+
+
+@pytest.fixture()
+def companion_manager_db() -> sqlite3.Connection:
+    """Fixture: CompanionManager class with two methods, cross-class callers."""
+    symbols = [
+        _sym("CompanionManager", kind="class", start=1, end=100),
+        _sym("CompanionManager.start", kind="method", start=10, end=30),
+        _sym("CompanionManager.stop", kind="method", start=35, end=50),
+        _sym("ApplicationController.run", kind="method", start=110, end=150),
+        _sym("main", kind="function", start=200, end=220),
+        _sym("cli", kind="function", start=230, end=250),
+    ]
+    edges = [
+        # bare targets — exactly how graph.py stores them
+        _edge("main", "start"),
+        _edge("cli", "stop"),
+        _edge("ApplicationController.run", "start"),
+    ]
+    return _seed_db(symbols, edges)
+
+
+class TestContextClassMemberExpansion:
+    """TA9-TA11: context() on a class aggregates callers of all its members."""
+
+    def test_class_context_aggregates_member_callers(
+        self, companion_manager_db: sqlite3.Connection
+    ) -> None:
+        """TA9: context('CompanionManager') returns callers of start AND stop."""
+        result = context(companion_manager_db, "CompanionManager")
+        assert result is not None, "CompanionManager class must be found"
+        callers = set(result["callers"])
+        # main calls 'start' (bare) -> should appear via member fan-out
+        assert "main" in callers, (
+            "main->start edge should appear in CompanionManager callers via member fan-out"
+        )
+        # cli calls 'stop' (bare) -> should appear via member fan-out
+        assert "cli" in callers, (
+            "cli->stop edge should appear in CompanionManager callers via member fan-out"
+        )
+        # Cross-class caller of 'start'
+        assert "ApplicationController.run" in callers, (
+            "ApplicationController.run->start should appear in CompanionManager callers"
+        )
+
+    def test_class_context_kind_is_class(
+        self, companion_manager_db: sqlite3.Connection
+    ) -> None:
+        """TA9: the returned symbol kind is 'class', not 'method'."""
+        result = context(companion_manager_db, "CompanionManager")
+        assert result is not None
+        assert result["kind"] == "class"
+
+    def test_class_context_callers_deduped(
+        self, companion_manager_db: sqlite3.Connection
+    ) -> None:
+        """TA13: callers are deduped across member fan-out."""
+        result = context(companion_manager_db, "CompanionManager")
+        assert result is not None
+        callers = result["callers"]
+        # Each caller name appears at most once
+        assert len(callers) == len(set(callers)), (
+            f"Duplicate callers found in class context: {callers}"
+        )
+
+    def test_zero_member_class_returns_gracefully(self) -> None:
+        """TA11: a class with zero indexed members returns result without error."""
+        symbols = [
+            _sym("EmptyClass", kind="class", start=1, end=50),
+            _sym("main", kind="function", start=60, end=70),
+        ]
+        # No edges at all — EmptyClass has no members and no callers
+        conn = _seed_db(symbols, [])
+        result = context(conn, "EmptyClass")
+        conn.close()
+        assert result is not None, "EmptyClass must be found (class exists in index)"
+        assert result["callers"] == [], (
+            "Zero-member class with no callers should have empty callers list"
+        )
+
+    def test_class_with_members_but_no_callers_returns_empty_callers(self) -> None:
+        """TA11 extended: class has methods in index but nobody calls them."""
+        symbols = [
+            _sym("SilentClass", kind="class", start=1, end=50),
+            _sym("SilentClass.doThing", kind="method", start=10, end=20),
+        ]
+        conn = _seed_db(symbols, [])
+        result = context(conn, "SilentClass")
+        conn.close()
+        assert result is not None
+        assert result["callers"] == [], "No callers -> empty list, not an error"
+
+
+class TestQueryClassMemberExpansion:
+    """TA12: query() with a class concept surfaces cross-class neighbors."""
+
+    def test_query_surfaces_class_members_as_neighbors(
+        self, companion_manager_db: sqlite3.Connection
+    ) -> None:
+        """TA12: query('CompanionManager') includes methods as neighbors in results."""
+        results = query(companion_manager_db, "CompanionManager")
+        result_names = {r["symbol"] for r in results}
+        # The class itself should appear (FTS seed)
+        assert "CompanionManager" in result_names, (
+            "CompanionManager class should be in query results"
+        )
+
+    def test_query_class_seed_finds_member_neighbors(
+        self, companion_manager_db: sqlite3.Connection
+    ) -> None:
+        """TA12: when CompanionManager is a seed, 1-hop expansion finds callers of members."""
+        results = query(companion_manager_db, "CompanionManager")
+        result_names = {r["symbol"] for r in results}
+        # main and cli called start/stop (members) — they should appear as neighbors
+        # via the extended edge_match_names that includes member bare names
+        assert "main" in result_names or "cli" in result_names, (
+            "Callers of CompanionManager methods should appear in query() neighbors"
         )

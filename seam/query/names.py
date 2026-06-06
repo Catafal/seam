@@ -1,4 +1,4 @@
-"""Name-resolution helpers for the qualified<->bare edge bridging (Tier A, Slices 1+2).
+"""Name-resolution helpers for the qualified<->bare edge bridging (Tier A, Slices 1-3).
 
 LEAF MODULE — imports only stdlib + seam/config. Never imports engine, tools, or other
 query sub-modules. Pattern mirrors seam/query/clusters.py.
@@ -12,11 +12,23 @@ ROOT CAUSE this module fixes:
       The rightmost identifier after the last dot. If there is no dot the input is
       returned unchanged. Never raises on empty or malformed input.
 
+  - is_container_symbol(conn, name) -> bool    [Slice 3]
+      Returns True if the named symbol is a class/interface/struct (container).
+      Returns False for functions, methods, unknown names, or empty string.
+      Never raises.
+
+  - get_member_names(conn, name) -> list[str]    [Slice 3]
+      Return the bare member names of a class container (symbols WHERE name LIKE 'Class.%').
+      Bounded by SEAM_NAME_EXPANSION_CAP. Returns [] for unknown/non-container names
+      and for classes with zero indexed members (graceful, not an error). Never raises.
+
   - edge_match_names(conn, name) -> list[str]
       The set of strings to use for edge table lookups (target_name IN / source_name IN).
       Returns [name] when name has no dot (bare — exact match only).
       Returns [name, bare_suffix] when name contains a dot, so a call edge stored as
       the bare form is also matched. Order is stable: qualified first, bare second.
+      [Slice 3] When name is a bare class/container, also appends member bare names
+      (e.g. 'parse', 'validate') so callers of any member are union-matched.
 
   - resolve_query_to_defs(conn, name) -> list[sqlite3.Row]    [Slice 2]
       Resolve a query name to ALL matching symbol definition rows.
@@ -33,19 +45,21 @@ WHY not store bare name in the DB:
   The bridging is pure read-time reconciliation using what is already stored.
 
 WHY edge_match_names takes a conn param:
-  Future slices (members expansion, Slice 3) will need DB queries to find all symbols
-  whose qualified_name starts with "Class." The conn param is threaded through now so
-  callers never need to change their call site when that capability is added.
-  For Slice 1 the conn is accepted but not queried.
+  Slice 3 uses DB queries to find all symbols whose name starts with "Class." so
+  edge_match_names can include member bare names for container symbols.
 """
 
 import logging
 import sqlite3
 
-# seam/config imports are available but not needed by this slice's logic.
-# The conn param is plumbed for future slice 3 DB-query expansion.
+from seam.config import SEAM_NAME_EXPANSION_CAP
 
 logger = logging.getLogger(__name__)
+
+# Symbol kinds that represent containers (have members in the graph).
+# Closed vocabulary matching the schema comment: 'function' | 'class' | 'method' |
+# 'interface' | 'type'. Rust/C/C++ use 'struct' (via graph_common kind mapping).
+_CONTAINER_KINDS: frozenset[str] = frozenset({"class", "interface", "struct"})
 
 
 def bare_name(qualified: str) -> str:
@@ -68,28 +82,120 @@ def bare_name(qualified: str) -> str:
     return after
 
 
+def is_container_symbol(conn: sqlite3.Connection, name: str) -> bool:
+    """Return True when the named symbol is a class/interface/struct (container kind).
+
+    Containers are symbols whose members appear as "Class.member" qualified names in
+    the index. This determines whether edge_match_names should fan out to member names.
+
+    Resolution: queries the symbols table for ANY row with this exact name and checks
+    if its kind is in _CONTAINER_KINDS. Only the first (lowest-id) row is checked —
+    homonyms with conflicting kinds are pathological and rare in practice.
+
+    Returns False for:
+      - Unknown names (not in DB)
+      - function / method / type kinds
+      - empty string input
+    Never raises.
+    """
+    if not name:
+        return False
+    try:
+        row = conn.execute(
+            "SELECT kind FROM symbols WHERE name = ? ORDER BY id LIMIT 1",
+            (name,),
+        ).fetchone()
+        if row is None:
+            return False
+        return row["kind"] in _CONTAINER_KINDS
+    except Exception:  # noqa: BLE001
+        # Degrade gracefully — read path must never crash.
+        logger.debug("is_container_symbol: DB error for name=%r", name, exc_info=True)
+        return False
+
+
+def get_member_names(conn: sqlite3.Connection, class_name: str) -> list[str]:
+    """Return the bare names of all members of a class/container symbol.
+
+    Queries for symbols whose name starts with "class_name." (the LIKE prefix) then
+    filters in Python to ensure the prefix is exact (no false positives from LIKE).
+    Returns bare names (the part after the last dot) bounded by SEAM_NAME_EXPANSION_CAP.
+
+    Examples:
+        class_name="Parser", members=["Parser.parse", "Parser.validate"]
+        → returns ["parse", "validate"]
+
+    Returns [] for:
+      - Unknown/non-container names
+      - Classes with zero indexed members (graceful — not an error)
+      - Empty string input
+    Never raises.
+    """
+    if not class_name:
+        return []
+    try:
+        # LIKE 'Class.%' is the SQL pre-filter; Python confirms exact prefix below.
+        # Cap at SEAM_NAME_EXPANSION_CAP + buffer to handle LIKE false-positives cleanly,
+        # then trim to cap after the Python filter.
+        candidate_rows = conn.execute(
+            "SELECT name FROM symbols WHERE name LIKE ? ORDER BY id LIMIT ?",
+            (f"{class_name}.%", SEAM_NAME_EXPANSION_CAP + 10),
+        ).fetchall()
+    except Exception:  # noqa: BLE001
+        logger.debug("get_member_names: DB error for class=%r", class_name, exc_info=True)
+        return []
+
+    prefix = f"{class_name}."
+    members: list[str] = []
+    for row in candidate_rows:
+        sym_name: str = row["name"]
+        # Exact prefix check: must start with "Class." (LIKE may match "ClassExtra.method").
+        if sym_name.startswith(prefix):
+            member_bare = bare_name(sym_name)
+            if member_bare and member_bare not in members:
+                members.append(member_bare)
+        if len(members) >= SEAM_NAME_EXPANSION_CAP:
+            break
+
+    if members:
+        logger.debug(
+            "get_member_names: class=%r -> %d member(s): %s",
+            class_name,
+            len(members),
+            members,
+        )
+    return members
+
+
 def edge_match_names(conn: sqlite3.Connection, name: str) -> list[str]:
     """Return the list of names to use for edges.target_name / edges.source_name lookups.
 
     The returned list is ordered and deduplicated:
-      - When name has no dot:  [name]               (exact match only)
+      - When name has no dot AND is not a container:  [name]  (exact match only)
+      - When name has no dot AND IS a container:      [name, member1, member2, ...]
+          Container = class/interface/struct. Member bare names are included so that
+          call edges to any member method are matched for the class context.
+          Bounded by SEAM_NAME_EXPANSION_CAP (see seam/config.py).
       - When name has a dot:   [name, bare_suffix]   (qualified first, then bare)
+          A qualified method name (Class.method) is NOT treated as a container —
+          only the containing class would be, not the method itself.
 
-    WHY two names:
+    WHY two names for qualified:
       Seam's extractor stores edge target_name as the bare identifier (e.g. "method")
       but symbol name as the qualified string ("Class.method"). Matching ONLY on the
       qualified name would miss all call edges; matching only on the bare would add
       false positives for other classes' methods with the same name. Including BOTH
       maximises recall while keeping the query simple (IN clause).
 
-    WHY qualified first:
-      The first entry is the "canonical" name the caller asked about. Keeping it first
-      makes the list deterministic and lets future callers (e.g. debug logging) identify
-      which match came from the exact vs. the bridged form.
+    WHY member fan-out for containers (Slice 3):
+      When name is a class, there are no call edges that target the class name itself
+      (callers invoke methods, not the class). Expanding to member bare names unions
+      all callers of "Class.method" edges into the class context result.
 
-    The conn parameter is accepted for API stability — future slices will extend this
-    function with DB queries (member expansion for class-level context). In Slice 1
-    no DB query is made; the function is pure.
+    WHY qualified first / container name first:
+      The first entry is always the "canonical" name the caller asked about, making
+      the list deterministic and allowing debug logging to identify which match came
+      from the exact vs. the bridged form.
     """
     # Defensive: always return a list[str] regardless of input
     if not name:
@@ -97,13 +203,27 @@ def edge_match_names(conn: sqlite3.Connection, name: str) -> list[str]:
 
     bare = bare_name(name)
 
-    # No dot in name — bare == name, return a single-element list (no dup)
-    if bare == name:
+    # Name contains a dot → it's a qualified method reference, not a container.
+    # Return [qualified, bare] per Slice 1 logic. No member fan-out for methods.
+    if bare != name:
+        return [name, bare]
+
+    # Bare name (no dot): check if it's a container to decide on member fan-out.
+    member_names = get_member_names(conn, name) if is_container_symbol(conn, name) else []
+
+    if not member_names:
+        # Non-container bare name OR container with zero members → exact match only.
         return [name]
 
-    # Qualified name: return [qualified, bare], deduped
-    # (bare != name since we checked above, so no duplicates possible here)
-    return [name, bare]
+    # Container with members: [class_name] + member bare names (deduped, bounded by cap).
+    # class_name itself first (canonical), then members in discovery order.
+    result = [name]
+    seen: set[str] = {name}
+    for m in member_names:
+        if m not in seen and len(result) <= SEAM_NAME_EXPANSION_CAP:
+            result.append(m)
+            seen.add(m)
+    return result
 
 
 def resolve_query_to_defs(conn: sqlite3.Connection, name: str) -> list[sqlite3.Row]:

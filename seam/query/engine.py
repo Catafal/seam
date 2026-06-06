@@ -774,10 +774,25 @@ def query(
             )
         return []
 
-    # Step 3: 1-hop expansion — collect neighbors of seed symbols
+    # Step 3: 1-hop expansion — collect neighbors of seed symbols.
+    # WHY expand seed names: a class seed like "CompanionManager" has NO call edges
+    # targeting the class name itself — callers invoke bare member names ("start", "stop").
+    # edge_match_names expands container seeds to include those bare member names so
+    # the neighbor SQL finds callers-of-members as neighbors of the class.
     neighbor_map: dict[str, tuple[str, int, float]] = {}
     seed_names = list(seed_map.keys())
-    placeholders = ",".join("?" * len(seed_names))
+
+    # Build the full set of edge-lookup names: for each seed, expand via edge_match_names
+    # (which includes bare/qualified bridging AND member fan-out for containers).
+    edge_lookup_names: list[str] = []
+    seen_edge_names: set[str] = set()
+    for seed_name in seed_names:
+        for match_name in _edge_match_names(conn, seed_name):
+            if match_name not in seen_edge_names:
+                edge_lookup_names.append(match_name)
+                seen_edge_names.add(match_name)
+
+    placeholders = ",".join("?" * len(edge_lookup_names))
 
     neighbor_sql = f"""
         SELECT DISTINCT
@@ -792,7 +807,9 @@ def query(
         WHERE e.source_name IN ({placeholders})
            OR e.target_name IN ({placeholders})
     """
-    neighbor_rows = conn.execute(neighbor_sql, seed_names + seed_names).fetchall()
+    neighbor_rows = conn.execute(
+        neighbor_sql, edge_lookup_names + edge_lookup_names
+    ).fetchall()
     for row in neighbor_rows:
         name = row["name"]
         if name not in seed_map and name not in neighbor_map:

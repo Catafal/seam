@@ -2,6 +2,7 @@
 
 Tier A Slice 1: qualified<->bare bridging.
 Tier A Slice 2: resolve_query_to_defs — all-definitions aggregation.
+Tier A Slice 3: class/container detection + member fan-out.
 These tests are written FIRST (TDD) and must be run before the implementation.
 
 Coverage:
@@ -25,6 +26,18 @@ Slice 2:
     R5 — resolve_query_to_defs(): exact class-name query returns the class row (no bare fallback)
     R6 — resolve_query_to_defs(): never raises on empty string
     R7 — resolve_query_to_defs(): qualified exact match is returned directly, no suffix scan
+
+Slice 3 (member fan-out):
+    M1 — is_container_symbol(): returns True for class/interface/struct kinds
+    M2 — is_container_symbol(): returns False for function/method kinds
+    M3 — is_container_symbol(): returns False for unknown name (not in DB)
+    M4 — get_member_names(): returns bare member names for a class
+    M5 — get_member_names(): returns [] for unknown/non-container symbol
+    M6 — get_member_names(): respects SEAM_NAME_EXPANSION_CAP cap
+    M7 — get_member_names(): returns [] when class has zero indexed members
+    M8 — edge_match_names(): container name includes member bare names
+    M9 — edge_match_names(): non-container name not extended with member names
+    M10 — edge_match_names(): cap respected (at most cap+2 entries for large classes)
 """
 
 import sqlite3
@@ -35,7 +48,13 @@ import pytest
 
 from seam.indexer.db import init_db, upsert_file
 from seam.indexer.graph import Edge, Symbol
-from seam.query.names import bare_name, edge_match_names, resolve_query_to_defs
+from seam.query.names import (
+    bare_name,
+    edge_match_names,
+    get_member_names,
+    is_container_symbol,
+    resolve_query_to_defs,
+)
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -303,3 +322,221 @@ class TestResolveQueryToDefs:
         # The exact match must be returned
         names = {r["name"] for r in rows}
         assert "A.method" in names
+
+
+# ── Slice 3: is_container_symbol + get_member_names + edge_match_names fan-out ─
+
+
+def _seed_db_with_kinds(
+    symbols: list[tuple[str, str, int, int]],
+) -> sqlite3.Connection:
+    """Helper: seed a DB with (name, kind, start, end) tuples — mirrors _seed_db_with."""
+    conn = init_db(Path(":memory:"))
+    with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+        filepath = Path(f.name)
+        f.write(b"# seam test\n")
+    try:
+        syms = [
+            Symbol(
+                name=name,
+                kind=kind,
+                file=str(filepath),
+                start_line=start,
+                end_line=end,
+                docstring=None,
+            )
+            for name, kind, start, end in symbols
+        ]
+        upsert_file(conn, filepath, "python", "abc123", syms, [])
+    finally:
+        filepath.unlink(missing_ok=True)
+    return conn
+
+
+class TestIsContainerSymbol:
+    """M1-M3: is_container_symbol() — detect class/interface/struct kinds."""
+
+    def test_class_kind_is_container(self) -> None:
+        """M1a: a symbol of kind 'class' is a container."""
+        conn = _seed_db_with_kinds([("Parser", "class", 1, 50)])
+        assert is_container_symbol(conn, "Parser") is True
+        conn.close()
+
+    def test_interface_kind_is_container(self) -> None:
+        """M1b: a symbol of kind 'interface' is a container."""
+        conn = _seed_db_with_kinds([("IParser", "interface", 1, 30)])
+        assert is_container_symbol(conn, "IParser") is True
+        conn.close()
+
+    def test_struct_kind_is_container(self) -> None:
+        """M1c: 'struct' kind (from Go/C/C++) is also treated as a container."""
+        conn = _seed_db_with_kinds([("Config", "struct", 1, 20)])
+        assert is_container_symbol(conn, "Config") is True
+        conn.close()
+
+    def test_function_kind_is_not_container(self) -> None:
+        """M2a: a symbol of kind 'function' is NOT a container."""
+        conn = _seed_db_with_kinds([("parse", "function", 1, 10)])
+        assert is_container_symbol(conn, "parse") is False
+        conn.close()
+
+    def test_method_kind_is_not_container(self) -> None:
+        """M2b: a symbol of kind 'method' is NOT a container."""
+        conn = _seed_db_with_kinds([("Parser.parse", "method", 1, 10)])
+        assert is_container_symbol(conn, "Parser.parse") is False
+        conn.close()
+
+    def test_unknown_name_returns_false(self) -> None:
+        """M3: a name not in the index returns False (graceful — not an error)."""
+        conn = _seed_db_with_kinds([("Parser", "class", 1, 50)])
+        assert is_container_symbol(conn, "NonExistent") is False
+        conn.close()
+
+    def test_never_raises_on_empty_string(self) -> None:
+        """M3 edge: empty string never raises, returns False."""
+        conn = _seed_db_with_kinds([("Parser", "class", 1, 50)])
+        try:
+            result = is_container_symbol(conn, "")
+            assert result is False
+        except Exception as exc:  # noqa: BLE001
+            pytest.fail(f"is_container_symbol raised on empty: {exc}")
+        finally:
+            conn.close()
+
+
+class TestGetMemberNames:
+    """M4-M7: get_member_names() — fan out to Class.* members."""
+
+    def test_class_with_methods_returns_bare_member_names(self) -> None:
+        """M4: Parser with Parser.parse and Parser.validate -> ['parse', 'validate']."""
+        conn = _seed_db_with_kinds([
+            ("Parser", "class", 1, 50),
+            ("Parser.parse", "method", 10, 20),
+            ("Parser.validate", "method", 25, 35),
+            ("Other.thing", "method", 60, 70),  # different class — must NOT appear
+        ])
+        members = get_member_names(conn, "Parser")
+        conn.close()
+        assert "parse" in members, "Parser.parse -> 'parse' must be in members"
+        assert "validate" in members, "Parser.validate -> 'validate' must be in members"
+        assert "thing" not in members, "Other.thing must NOT appear in Parser members"
+
+    def test_unknown_name_returns_empty(self) -> None:
+        """M5: a name not in the index returns [] — no error."""
+        conn = _seed_db_with_kinds([("Parser", "class", 1, 50)])
+        members = get_member_names(conn, "NonExistent")
+        conn.close()
+        assert members == []
+
+    def test_zero_member_class_returns_empty(self) -> None:
+        """M7: a class with no indexed members returns [] — graceful, not an error."""
+        conn = _seed_db_with_kinds([
+            ("Parser", "class", 1, 50),
+            # No Parser.* members in index
+        ])
+        members = get_member_names(conn, "Parser")
+        conn.close()
+        assert members == [], f"Expected [] for class with no members, got {members}"
+
+    def test_cap_respected(self) -> None:
+        """M6: when a class has more members than the cap, result length <= cap."""
+        import seam.config as cfg
+
+        cap = cfg.SEAM_NAME_EXPANSION_CAP
+        # Create cap+5 members to exceed the limit
+        symbols: list[tuple[str, str, int, int]] = [("BigClass", "class", 1, 1000)]
+        for i in range(cap + 5):
+            symbols.append((f"BigClass.method{i}", "method", i * 5 + 2, i * 5 + 4))
+        conn = _seed_db_with_kinds(symbols)
+        members = get_member_names(conn, "BigClass")
+        conn.close()
+        assert len(members) <= cap, (
+            f"get_member_names returned {len(members)} entries > cap {cap}"
+        )
+
+    def test_never_raises_on_empty_string(self) -> None:
+        """M5 edge: empty string never raises."""
+        conn = _seed_db_with_kinds([("Parser", "class", 1, 50)])
+        try:
+            result = get_member_names(conn, "")
+            assert isinstance(result, list)
+        except Exception as exc:  # noqa: BLE001
+            pytest.fail(f"get_member_names raised on empty: {exc}")
+        finally:
+            conn.close()
+
+
+class TestEdgeMatchNamesWithMembers:
+    """M8-M10: edge_match_names() extended with member fan-out for containers."""
+
+    def test_container_name_includes_member_bare_names(self) -> None:
+        """M8: edge_match_names('Parser') includes 'parse' and 'validate' (member bare names)."""
+        conn = _seed_db_with_kinds([
+            ("Parser", "class", 1, 50),
+            ("Parser.parse", "method", 10, 20),
+            ("Parser.validate", "method", 25, 35),
+        ])
+        result = edge_match_names(conn, "Parser")
+        conn.close()
+        # The class name itself must be first
+        assert result[0] == "Parser", "Container name must appear first"
+        # Member bare names must be included
+        assert "parse" in result, "'parse' (from Parser.parse) must be in edge_match_names"
+        assert "validate" in result, "'validate' (from Parser.validate) must be in edge_match_names"
+
+    def test_non_container_name_not_extended(self) -> None:
+        """M9: a function name (non-container) is NOT extended with member names."""
+        conn = _seed_db_with_kinds([
+            ("helper", "function", 1, 10),
+            ("helper.nested", "method", 3, 8),  # hypothetical — should NOT appear
+        ])
+        result = edge_match_names(conn, "helper")
+        conn.close()
+        # helper has no dot -> [helper] only (bare, non-container)
+        assert result == ["helper"], (
+            f"Non-container bare name must return ['helper'] only, got {result}"
+        )
+
+    def test_cap_respected_in_edge_match_names(self) -> None:
+        """M10: when a class has more members than the cap, edge_match_names stays bounded."""
+        import seam.config as cfg
+
+        cap = cfg.SEAM_NAME_EXPANSION_CAP
+        symbols: list[tuple[str, str, int, int]] = [("BigClass", "class", 1, 1000)]
+        for i in range(cap + 5):
+            symbols.append((f"BigClass.method{i}", "method", i * 5 + 2, i * 5 + 4))
+        conn = _seed_db_with_kinds(symbols)
+        result = edge_match_names(conn, "BigClass")
+        conn.close()
+        # Container name + up to cap member bare names
+        # (total = 1 + cap at most)
+        assert len(result) <= cap + 1, (
+            f"edge_match_names returned {len(result)} entries > cap+1 ({cap + 1})"
+        )
+
+    def test_zero_member_class_returns_just_class_name(self) -> None:
+        """M7+M8: a class with zero indexed members returns just [class_name], no error."""
+        conn = _seed_db_with_kinds([
+            ("EmptyClass", "class", 1, 50),
+        ])
+        result = edge_match_names(conn, "EmptyClass")
+        conn.close()
+        assert result == ["EmptyClass"], (
+            f"Zero-member class should return ['EmptyClass'] only, got {result}"
+        )
+
+    def test_qualified_method_not_treated_as_container(self) -> None:
+        """M9: 'Parser.parse' (a method) is not a container, returned as qualified+bare."""
+        conn = _seed_db_with_kinds([
+            ("Parser", "class", 1, 50),
+            ("Parser.parse", "method", 10, 20),
+        ])
+        result = edge_match_names(conn, "Parser.parse")
+        conn.close()
+        # Method is not a container — should be [qualified, bare] per slice 1 logic
+        assert "Parser.parse" in result
+        assert "parse" in result
+        # 'validate' or other class members must NOT appear
+        assert len(result) == 2, (
+            f"Qualified method should return [qualified, bare] only, got {result}"
+        )
