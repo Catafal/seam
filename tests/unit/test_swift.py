@@ -630,32 +630,12 @@ class TestSwiftTypeInference:
     """P5: self.method() and instantiated-receiver calls produce qualified Type.method edges."""
 
     SELF_SRC = (
-        "class Repo {\n"
-        "    func save() {\n"
-        "        self.persist()\n"
-        "    }\n"
-        "    func persist() {}\n"
-        "}\n"
+        "class Repo {\n    func save() {\n        self.persist()\n    }\n    func persist() {}\n}\n"
     )
 
-    VAR_SRC = (
-        "class Foo {\n"
-        "    func bar() {}\n"
-        "}\n"
-        "func use() {\n"
-        "    let x = Foo()\n"
-        "    x.bar()\n"
-        "}\n"
-    )
+    VAR_SRC = "class Foo {\n    func bar() {}\n}\nfunc use() {\n    let x = Foo()\n    x.bar()\n}\n"
 
-    INLINE_SRC = (
-        "class Mailer {\n"
-        "    func send() {}\n"
-        "}\n"
-        "func notify() {\n"
-        "    Mailer().send()\n"
-        "}\n"
-    )
+    INLINE_SRC = "class Mailer {\n    func send() {}\n}\nfunc notify() {\n    Mailer().send()\n}\n"
 
     BARE_SRC = "func caller() {\n    callee()\n}\nfunc callee() {}\n"
 
@@ -685,9 +665,7 @@ class TestSwiftTypeInference:
         assert e is not None, f"Expected bare 'callee' edge, got: {[x['target'] for x in edges]}"
         assert e["source"] == "caller"
 
-    def test_type_inference_off_reverts_to_bare_only(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    def test_type_inference_off_reverts_to_bare_only(self, tmp_path: Path, monkeypatch) -> None:
         """SEAM_SWIFT_TYPE_INFERENCE=off → self/typed-receiver calls emit no edge; bare still works."""
         import seam.config as config
 
@@ -697,3 +675,179 @@ class TestSwiftTypeInference:
         assert _edge(self_edges, target="persist", kind="call") is None
         bare_edges = _edges_for_swift_source(self.BARE_SRC, tmp_path)
         assert _edge(bare_edges, target="callee", kind="call") is not None
+
+
+class TestSwiftPropertyAndParamInference:
+    """Swift method-edges gap: typed stored properties, params, and self.prop chains.
+
+    Real Swift is dependency-injection heavy — classes hold typed stored properties and
+    call each other's methods through them. These cases were dropped pre-fix because the
+    function-scope var map was wiped at every function body and only `let x = Foo()`
+    (inline instantiation) was captured, never a typed declaration `let x: Foo`.
+
+    Safety contract (Swift module): NEVER emit a wrong edge. A declared type binds ONLY
+    when it is a plain user_type — optionals (`Foo?`), arrays (`[Foo]`), and generics do
+    NOT bind, so e.g. `items.append()` never becomes `Item.append`.
+    """
+
+    # Typed stored property → method call through it (the headline DI miss).
+    TYPED_PROP_SRC = (
+        "class Svc {\n"
+        "    func go() {}\n"
+        "}\n"
+        "class Manager {\n"
+        "    private let svc: Svc\n"
+        "    func run() {\n"
+        "        svc.go()\n"
+        "    }\n"
+        "}\n"
+    )
+
+    # Instantiated stored property used inside a method (proves class-scope persistence
+    # survives the function-body boundary that previously wiped local bindings).
+    INSTANTIATED_PROP_SRC = (
+        "class A {\n"
+        "    func run() {}\n"
+        "}\n"
+        "class B {\n"
+        "    let a = A()\n"
+        "    func trigger() {\n"
+        "        a.run()\n"
+        "    }\n"
+        "}\n"
+    )
+
+    # Parameter type → method call on the parameter.
+    PARAM_SRC = "class P {\n    func use() {}\n}\nfunc handle(p: P) {\n    p.use()\n}\n"
+
+    # self.prop.method() — one-level chain through a typed property.
+    SELF_CHAIN_SRC = (
+        "class Svc {\n"
+        "    func go() {}\n"
+        "}\n"
+        "class Manager {\n"
+        "    private let svc: Svc\n"
+        "    func run() {\n"
+        "        self.svc.go()\n"
+        "    }\n"
+        "}\n"
+    )
+
+    # Local typed declaration (no instantiation) → method call.
+    TYPED_LOCAL_SRC = "class X {\n    func m() {}\n}\nfunc use() {\n    let x: X\n    x.m()\n}\n"
+
+    # Optional-typed property: must NOT bind (conservative — no wrong edge).
+    OPTIONAL_PROP_SRC = (
+        "class Svc {\n"
+        "    func go() {}\n"
+        "}\n"
+        "class Manager {\n"
+        "    private let svc: Svc?\n"
+        "    func run() {\n"
+        "        svc.go()\n"
+        "    }\n"
+        "}\n"
+    )
+
+    # Array-typed property: must NOT bind element type to the array's own methods.
+    ARRAY_PROP_SRC = (
+        "class Item {\n"
+        "    func use() {}\n"
+        "}\n"
+        "class Bag {\n"
+        "    var items: [Item]\n"
+        "    func add(x: Item) {\n"
+        "        items.append(x)\n"
+        "    }\n"
+        "}\n"
+    )
+
+    def test_typed_class_property_method_edge(self, tmp_path: Path) -> None:
+        """`private let svc: Svc` + `svc.go()` in a method → edge target 'Svc.go'."""
+        edges = _edges_for_swift_source(self.TYPED_PROP_SRC, tmp_path)
+        e = _edge(edges, target="Svc.go", kind="call")
+        assert e is not None, f"Expected 'Svc.go' edge, got: {[x['target'] for x in edges]}"
+        assert e["source"] == "Manager.run", f"Expected source='Manager.run', got {e['source']}"
+
+    def test_instantiated_class_property_method_edge(self, tmp_path: Path) -> None:
+        """`let a = A()` property + `a.run()` in a method → 'A.run' (class-scope persists)."""
+        edges = _edges_for_swift_source(self.INSTANTIATED_PROP_SRC, tmp_path)
+        e = _edge(edges, target="A.run", kind="call")
+        assert e is not None, f"Expected 'A.run' edge, got: {[x['target'] for x in edges]}"
+
+    def test_parameter_type_method_edge(self, tmp_path: Path) -> None:
+        """`func handle(p: P) { p.use() }` → edge target 'P.use'."""
+        edges = _edges_for_swift_source(self.PARAM_SRC, tmp_path)
+        e = _edge(edges, target="P.use", kind="call")
+        assert e is not None, f"Expected 'P.use' edge, got: {[x['target'] for x in edges]}"
+
+    def test_self_property_chain_method_edge(self, tmp_path: Path) -> None:
+        """`self.svc.go()` with typed prop `svc: Svc` → edge target 'Svc.go'."""
+        edges = _edges_for_swift_source(self.SELF_CHAIN_SRC, tmp_path)
+        e = _edge(edges, target="Svc.go", kind="call")
+        assert e is not None, f"Expected 'Svc.go' edge, got: {[x['target'] for x in edges]}"
+
+    def test_typed_local_var_method_edge(self, tmp_path: Path) -> None:
+        """Local `let x: X` (no instantiation) + `x.m()` → edge target 'X.m'."""
+        edges = _edges_for_swift_source(self.TYPED_LOCAL_SRC, tmp_path)
+        e = _edge(edges, target="X.m", kind="call")
+        assert e is not None, f"Expected 'X.m' edge, got: {[x['target'] for x in edges]}"
+
+    def test_optional_typed_property_not_bound(self, tmp_path: Path) -> None:
+        """`let svc: Svc?` is optional → no 'Svc.go' edge (conservative: never wrong)."""
+        edges = _edges_for_swift_source(self.OPTIONAL_PROP_SRC, tmp_path)
+        assert _edge(edges, target="Svc.go", kind="call") is None, (
+            "Optional-typed receiver must not bind — would risk a wrong edge"
+        )
+
+    def test_array_property_not_misbound(self, tmp_path: Path) -> None:
+        """`var items: [Item]` + `items.append(x)` → no 'Item.append' edge (element ≠ array)."""
+        edges = _edges_for_swift_source(self.ARRAY_PROP_SRC, tmp_path)
+        assert _edge(edges, target="Item.append", kind="call") is None, (
+            "Array element type must not bind to the array's own methods"
+        )
+
+    def test_inference_off_drops_new_edges(self, tmp_path: Path, monkeypatch) -> None:
+        """With inference off, typed-property/param/chain edges are all dropped."""
+        import seam.config as config
+
+        monkeypatch.setattr(config, "SEAM_SWIFT_TYPE_INFERENCE", "off")
+        for src, target in (
+            (self.TYPED_PROP_SRC, "Svc.go"),
+            (self.PARAM_SRC, "P.use"),
+            (self.SELF_CHAIN_SRC, "Svc.go"),
+            (self.TYPED_LOCAL_SRC, "X.m"),
+        ):
+            edges = _edges_for_swift_source(src, tmp_path)
+            assert _edge(edges, target=target, kind="call") is None, (
+                f"Inference off must drop '{target}'"
+            )
+
+
+class TestSwiftPropertyOrderIndependence:
+    """A method using a class property declared AFTER it must still resolve, because the
+    class's stored properties are pre-scanned before any method body is walked (the
+    binding map is never built by in-place mutation during the walk, which would make
+    resolution depend on source order).
+    """
+
+    # The used property is declared AFTER the method that uses it.
+    ORDER_SRC = (
+        "class Svc {\n"
+        "    func go() {}\n"
+        "}\n"
+        "class Manager {\n"
+        "    func run() {\n"
+        "        svc.go()\n"
+        "    }\n"
+        "    private let svc: Svc\n"
+        "}\n"
+    )
+
+    def test_property_resolution_is_order_independent(self, tmp_path: Path) -> None:
+        """A method using a property declared AFTER it still resolves to 'Svc.go'."""
+        edges = _edges_for_swift_source(self.ORDER_SRC, tmp_path)
+        e = _edge(edges, target="Svc.go", kind="call")
+        assert e is not None, (
+            f"Expected 'Svc.go' regardless of decl order, got: {[x['target'] for x in edges]}"
+        )
