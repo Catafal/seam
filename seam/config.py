@@ -269,6 +269,16 @@ SEAM_RRF_K: int = int(os.getenv("SEAM_RRF_K", "60"))
 # very large containers if precision matters more than query cost.
 SEAM_NAME_EXPANSION_CAP: int = int(os.getenv("SEAM_NAME_EXPANSION_CAP", "50"))
 
+# ── Tier A Slice 2: bare-name suffix scan cap ────────────────────────────────
+
+# Maximum rows returned by the suffix scan (LIKE '%.name') inside
+# resolve_query_to_defs(). Without a cap, a bare name like "get", "parse", or
+# "run" can match thousands of qualified symbols (full-table scan, no index),
+# and each row then triggers additional DB calls in context() — O(N*4) queries.
+# Default 25 matches SEAM_MAX_IMPORT_CANDIDATES and is consistent with other caps.
+# Set to 0 for unlimited (not recommended on large codebases).
+SEAM_BARE_RESOLVE_CAP: int = int(os.getenv("SEAM_BARE_RESOLVE_CAP", "25"))
+
 
 # ── P5: Swift inter-class call resolution ────────────────────────────────────
 

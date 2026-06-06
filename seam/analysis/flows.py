@@ -62,7 +62,7 @@ No server/cli/query imports.
 import logging
 import sqlite3
 from pathlib import Path as FilePath
-from typing import TypedDict
+from typing import TypedDict, cast
 
 import seam.config as config
 from seam.analysis.confidence import (
@@ -432,6 +432,19 @@ def trace(
             if tgt_name in target_aliases:
                 parent_map[tgt_name] = (src_name, hop)
                 path = _reconstruct_path(tgt_name, parent_map)
+                # Normalize the terminal hop: when the alias matched was a bare form
+                # (e.g. tgt_name="parse" for target="Parser.parse"), substitute the
+                # canonical target name in the last hop so the returned path always
+                # terminates with to_name matching what the caller asked about.
+                # WHY: agents comparing path[-1]["to_name"] to their requested target
+                # string would see a mismatch otherwise — this keeps the on-wire path
+                # internally consistent without any schema or edge-data change.
+                if path and tgt_name != target:
+                    # Replace the terminal hop's to_name with the canonical target.
+                    # Cast to Hop after substituting to_name so mypy is satisfied.
+                    last_hop_dict = dict(path[-1])
+                    last_hop_dict["to_name"] = target
+                    path[-1] = cast(Hop, last_hop_dict)
                 logger.debug(
                     "trace(%r -> %r): found path of length %d via alias %r (import_promotion=%s)",
                     source,

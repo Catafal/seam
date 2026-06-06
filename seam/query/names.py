@@ -1,7 +1,9 @@
 """Name-resolution helpers for the qualified<->bare edge bridging (Tier A, Slices 1-3).
 
-LEAF MODULE — imports only stdlib + seam/config. Never imports engine, tools, or other
-query sub-modules. Pattern mirrors seam/query/clusters.py.
+Cross-layer utility module — imports only stdlib + seam/config. Imported by both
+engine.py (query layer) and analysis modules (impact.py, flows.py). Pattern mirrors
+seam/query/clusters.py in terms of import discipline: no engine, no tools, no other
+query sub-modules. Changes here have blast radius into both layers — keep it focused.
 
 ROOT CAUSE this module fixes:
   Seam stores method symbol names as the QUALIFIED string "Class.method" but stores
@@ -71,7 +73,7 @@ WHY edge_match_names takes a conn param:
 import logging
 import sqlite3
 
-from seam.config import SEAM_NAME_EXPANSION_CAP
+from seam.config import SEAM_BARE_RESOLVE_CAP, SEAM_NAME_EXPANSION_CAP
 
 logger = logging.getLogger(__name__)
 
@@ -154,11 +156,12 @@ def get_member_names(conn: sqlite3.Connection, class_name: str) -> list[str]:
         return []
     try:
         # LIKE 'Class.%' is the SQL pre-filter; Python confirms exact prefix below.
-        # Cap at SEAM_NAME_EXPANSION_CAP + buffer to handle LIKE false-positives cleanly,
-        # then trim to cap after the Python filter.
+        # Cap at SEAM_NAME_EXPANSION_CAP — 'Class.%' cannot match 'ClassExtra.method'
+        # because '.' is a literal SQL LIKE character (not a wildcard), so there are
+        # no false-positives that could cause the cap to be under-inclusive.
         candidate_rows = conn.execute(
             "SELECT name FROM symbols WHERE name LIKE ? ORDER BY id LIMIT ?",
-            (f"{class_name}.%", SEAM_NAME_EXPANSION_CAP + 10),
+            (f"{class_name}.%", SEAM_NAME_EXPANSION_CAP),
         ).fetchall()
     except Exception:  # noqa: BLE001
         logger.debug("get_member_names: DB error for class=%r", class_name, exc_info=True)
@@ -275,19 +278,25 @@ def resolve_query_to_defs(conn: sqlite3.Connection, name: str) -> list[sqlite3.R
     if not name:
         return []
 
-    # Step 1: exact name match — always try this first.
-    # Fetches all Phase 4 enrichment columns so context() can build a full ContextResult.
-    exact_rows = conn.execute(
-        """
-        SELECT s.name, f.path AS file, s.start_line, s.end_line, s.kind, s.docstring,
-               s.signature, s.decorators, s.is_exported, s.visibility, s.qualified_name
-        FROM symbols s
-        JOIN files f ON s.file_id = f.id
-        WHERE s.name = ?
-        ORDER BY s.id
-        """,
-        (name,),
-    ).fetchall()
+    try:
+        # Step 1: exact name match — always try this first.
+        # Fetches all Phase 4 enrichment columns so context() can build a full ContextResult.
+        # LIMIT is applied here as a safety cap — common identifiers can have many defs.
+        exact_rows = conn.execute(
+            """
+            SELECT s.name, f.path AS file, s.start_line, s.end_line, s.kind, s.docstring,
+                   s.signature, s.decorators, s.is_exported, s.visibility, s.qualified_name
+            FROM symbols s
+            JOIN files f ON s.file_id = f.id
+            WHERE s.name = ?
+            ORDER BY s.id
+            LIMIT ?
+            """,
+            (name, SEAM_BARE_RESOLVE_CAP),
+        ).fetchall()
+    except Exception:  # noqa: BLE001
+        logger.debug("resolve_query_to_defs: DB error (exact match) for name=%r", name, exc_info=True)
+        return []
 
     if exact_rows:
         # Exact match found — return as-is, preserving byte-stability.
@@ -300,19 +309,27 @@ def resolve_query_to_defs(conn: sqlite3.Connection, name: str) -> list[sqlite3.R
         return []
 
     # Candidate scan: find symbols whose name contains a dot and ends with ".{name}".
-    # LIKE '%.name' is a pre-filter; Python confirms exact suffix to avoid false positives.
+    # LIKE '%.name' is a pre-filter (with a leading % it CANNOT use the B-tree index —
+    # it is a full-table scan); Python confirms exact suffix to avoid LIKE false positives.
+    # LIMIT here caps the scan before the Python filter to prevent O(N) unbounded reads
+    # on large codebases (common bare names like "run", "get", "parse" can match 1000+ rows).
     suffix_pattern = f"%.{name}"
-    candidate_rows = conn.execute(
-        """
-        SELECT s.name, f.path AS file, s.start_line, s.end_line, s.kind, s.docstring,
-               s.signature, s.decorators, s.is_exported, s.visibility, s.qualified_name
-        FROM symbols s
-        JOIN files f ON s.file_id = f.id
-        WHERE s.name LIKE ?
-        ORDER BY s.id
-        """,
-        (suffix_pattern,),
-    ).fetchall()
+    try:
+        candidate_rows = conn.execute(
+            """
+            SELECT s.name, f.path AS file, s.start_line, s.end_line, s.kind, s.docstring,
+                   s.signature, s.decorators, s.is_exported, s.visibility, s.qualified_name
+            FROM symbols s
+            JOIN files f ON s.file_id = f.id
+            WHERE s.name LIKE ?
+            ORDER BY s.id
+            LIMIT ?
+            """,
+            (suffix_pattern, SEAM_BARE_RESOLVE_CAP),
+        ).fetchall()
+    except Exception:  # noqa: BLE001
+        logger.debug("resolve_query_to_defs: DB error (suffix scan) for name=%r", name, exc_info=True)
+        return []
 
     # Python-side exact suffix filter: the bare part after the LAST dot must be exactly `name`.
     # This eliminates LIKE false-positives (e.g. "Foo.speakTextWrapper" for query "speakText").

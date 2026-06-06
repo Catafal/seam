@@ -6,18 +6,29 @@ Returns typed dicts matching the MCP tool output spec in docs/api-contracts/mcp-
 context(): Tier A Slice 2 — resolves bare names to all qualified definitions and merges
 callers/callees. See seam/query/names.py for the qualified<->bare bridging details.
 search() / query(): FTS5 BM25 + OR-join + rescore + LIKE/fuzzy fallback (Phase 3).
+  Phase 3 (Slice 1): OR-join expression via fts.build_match_query() prevents one non-matching
+  word from zeroing the result; fts.rescore() applies name/path/test/cluster signals.
+  Phase 3 (Slice 2): LIKE→fuzzy two-tier fallback (FTS zero → LIKE %term% → DL fuzzy).
 Hybrid semantic (T6): opt-in RRF merge when SEAM_SEMANTIC=on and embeddings present.
+  RRF (Reciprocal Rank Fusion) merges BM25 FTS id-list with cosine semantic id-list.
+  FTS snippets are preserved for FTS hits; semantic-only hits get snippet="".
+  The hybrid path is skipped transparently if SEAM_SEMANTIC=off or embeddings missing.
+
+Context helpers (_collect_edges_for_names, _build_merged_context_result, _build_context_result)
+live in seam/query/context.py to keep engine.py under the 1000-line limit.
 """
 
 import json
 import logging
 import sqlite3
-from typing import TypedDict
+from typing import TypedDict, cast
 
 import seam.config as config
 from seam.config import SEAM_FUZZY_MAX_CANDIDATES, SEAM_FUZZY_MAX_DIST
 from seam.query import fts
-from seam.query.clusters import cluster_peers as _cluster_peers
+from seam.query.context import build_context_result as _build_context_result_fn
+from seam.query.context import build_merged_context_result as _build_merged_context_result_fn
+from seam.query.context import collect_edges_for_names as _collect_edges_for_names
 from seam.query.fts import extract_terms as _extract_terms
 from seam.query.names import edge_match_names as _edge_match_names
 from seam.query.names import resolve_query_to_defs as _resolve_query_to_defs
@@ -792,25 +803,33 @@ def query(
                 edge_lookup_names.append(match_name)
                 seen_edge_names.add(match_name)
 
-    placeholders = ",".join("?" * len(edge_lookup_names))
-
-    neighbor_sql = f"""
-        SELECT DISTINCT
-            s.name       AS name,
-            f.path       AS file,
-            s.start_line AS line
-        FROM edges e
-        JOIN symbols s ON (
-            s.name = e.target_name OR s.name = e.source_name
-        )
-        JOIN files f ON f.id = s.file_id
-        WHERE e.source_name IN ({placeholders})
-           OR e.target_name IN ({placeholders})
-    """
-    neighbor_rows = conn.execute(
-        neighbor_sql, edge_lookup_names + edge_lookup_names
-    ).fetchall()
-    for row in neighbor_rows:
+    # Batch the edge lookup to avoid hitting SQLite's SQLITE_MAX_VARIABLE_NUMBER=999 limit.
+    # Each batch of N names uses 2*N params (source_IN + target_IN), so cap at 450.
+    # WHY needed: Slice 3 container fan-out can produce up to 51 names per seed × 20 seeds
+    # = 1020 names → 2040 params, exceeding the 999-param limit on Linux/CI.
+    # traversal.py uses the same 900-item guard pattern (_SQL_VAR_BATCH).
+    neighbor_batch_size = 450  # 450 names × 2 params each = 900 total per query
+    neighbor_rows_raw: list[dict] = []
+    for batch_start in range(0, max(len(edge_lookup_names), 1), neighbor_batch_size):
+        batch = edge_lookup_names[batch_start : batch_start + neighbor_batch_size]
+        if not batch:
+            break
+        ph = ",".join("?" * len(batch))
+        batch_sql = f"""
+            SELECT DISTINCT
+                s.name       AS name,
+                f.path       AS file,
+                s.start_line AS line
+            FROM edges e
+            JOIN symbols s ON (
+                s.name = e.target_name OR s.name = e.source_name
+            )
+            JOIN files f ON f.id = s.file_id
+            WHERE e.source_name IN ({ph})
+               OR e.target_name IN ({ph})
+        """
+        neighbor_rows_raw.extend(conn.execute(batch_sql, batch + batch).fetchall())
+    for row in neighbor_rows_raw:
         name = row["name"]
         if name not in seed_map and name not in neighbor_map:
             neighbor_map[name] = (row["file"], row["line"], 0.0)
@@ -818,23 +837,24 @@ def query(
     # Step 4: Combine and deduplicate
     combined: dict[str, tuple[str, int, float]] = {**neighbor_map, **seed_map}
 
-    # Step 5: Compute callers/callees counts for each symbol in the result set
+    # Step 5: Compute callers/callees counts for each symbol in the result set.
+    # WHY _collect_edges_for_names instead of exact COUNT(*): a qualified symbol like
+    # "Parser.parse" has edges stored with bare "parse" as target_name, so an exact
+    # COUNT WHERE target_name="Parser.parse" returns 0. Using _edge_match_names expands
+    # "Parser.parse" → ["Parser.parse", "parse"] before counting, matching the same
+    # bridging logic used by context() — consistent, never shows 0 for qualified methods.
     result: list[QueryResult] = []
     for name, (file, line, score) in combined.items():
-        callers_row = conn.execute(
-            "SELECT COUNT(*) FROM edges WHERE target_name = ?", (name,)
-        ).fetchone()
-        callees_row = conn.execute(
-            "SELECT COUNT(*) FROM edges WHERE source_name = ?", (name,)
-        ).fetchone()
+        match_names = _edge_match_names(conn, name)
+        callers_set, callees_set = _collect_edges_for_names(conn, match_names)
         result.append(
             QueryResult(
                 symbol=name,
                 file=file,
                 line=line,
                 score=score,
-                callers_count=int(callers_row[0]),
-                callees_count=int(callees_row[0]),
+                callers_count=len(callers_set),
+                callees_count=len(callees_set),
             )
         )
 
@@ -868,10 +888,10 @@ def context(conn: sqlite3.Connection, symbol_name: str) -> ContextResult | None:
         dup_count = conn.execute(
             "SELECT COUNT(*) FROM symbols WHERE name = ?", (symbol_name,)
         ).fetchone()[0]
-        return _build_context_result(conn, def_rows[0], dup_count=dup_count)
+        return cast(ContextResult, _build_context_result_fn(conn, def_rows[0], dup_count=dup_count, decode_enrichment_fields_fn=decode_enrichment_fields))
 
     # Multi-def path: bare-name homonym or exact-name collision → merge and mark ambiguous.
-    return _build_merged_context_result(conn, def_rows)
+    return cast(ContextResult, _build_merged_context_result_fn(conn, def_rows, decode_enrichment_fields))
 
 
 def context_at(
@@ -901,115 +921,4 @@ def context_at(
         "SELECT COUNT(*) FROM symbols WHERE name = ?", (row["name"],)
     ).fetchone()[0]
 
-    return _build_context_result(conn, row, dup_count=dup_count)
-
-
-def _collect_edges_for_names(
-    conn: sqlite3.Connection,
-    match_names: list[str],
-) -> tuple[set[str], set[str]]:
-    """Return (callers_set, callees_set) for match_names via DISTINCT edge lookups.
-
-    Used by both single-def (_build_context_result) and multi-def aggregation paths.
-    Per-edge confidence from the DB is preserved — the union never invents confidence.
-    """
-    if not match_names:
-        return set(), set()
-    ph = ",".join("?" * len(match_names))
-    callers = {
-        r["source_name"]
-        for r in conn.execute(
-            f"SELECT DISTINCT source_name FROM edges WHERE target_name IN ({ph})",
-            match_names,
-        ).fetchall()
-    }
-    callees = {
-        r["target_name"]
-        for r in conn.execute(
-            f"SELECT DISTINCT target_name FROM edges WHERE source_name IN ({ph})",
-            match_names,
-        ).fetchall()
-    }
-    return callers, callees
-
-
-def _build_merged_context_result(
-    conn: sqlite3.Connection,
-    def_rows: list[sqlite3.Row],
-) -> ContextResult:
-    """Merge callers/callees across multiple defs (Slice 2 multi-def path).
-
-    Primary def (lowest id) supplies location/kind/enrichment. ambiguous=True when >1
-    def or exact-name collision; False for unique bare-name resolution (1 qualified def).
-    """
-    primary = def_rows[0]
-    all_callers: set[str] = set()
-    all_callees: set[str] = set()
-    for row in def_rows:
-        match_names = _edge_match_names(conn, row["name"])
-        callers, callees = _collect_edges_for_names(conn, match_names)
-        all_callers |= callers
-        all_callees |= callees
-
-    cluster_info = _cluster_peers(conn, primary["name"])
-    c_id, c_label, c_peers = cluster_info if cluster_info is not None else (None, None, [])
-    decoded_decorators, is_exported = decode_enrichment_fields(primary)
-
-    return ContextResult(
-        symbol=primary["name"],
-        file=primary["file"],
-        line=primary["start_line"],
-        end_line=primary["end_line"],
-        kind=primary["kind"],
-        docstring=primary["docstring"],
-        callers=sorted(all_callers),
-        callees=sorted(all_callees),
-        ambiguous=len(def_rows) > 1,
-        cluster_id=c_id,
-        cluster_label=c_label,
-        cluster_peers=c_peers,
-        signature=primary["signature"],
-        decorators=decoded_decorators,
-        is_exported=is_exported,
-        visibility=primary["visibility"],
-        qualified_name=primary["qualified_name"],
-    )
-
-
-def _build_context_result(
-    conn: sqlite3.Connection,
-    row: sqlite3.Row,
-    *,
-    dup_count: int | None = None,
-) -> ContextResult:
-    """Single symbol row → ContextResult. Used by context_at and the single-def fast path.
-
-    dup_count: explicit collision count (or row["dup_count"] window value if None).
-    """
-    symbol_name = row["name"]
-    # Slice 1 bridging: [qualified, bare] so call edges with bare target are found.
-    callers, callees = _collect_edges_for_names(conn, _edge_match_names(conn, symbol_name))
-    effective_dup = dup_count if dup_count is not None else row["dup_count"]
-    cluster_info = _cluster_peers(conn, symbol_name)
-    c_id, c_label, c_peers = cluster_info if cluster_info is not None else (None, None, [])
-    decoded_decorators, is_exported = decode_enrichment_fields(row)
-
-    return ContextResult(
-        symbol=row["name"],
-        file=row["file"],
-        line=row["start_line"],
-        end_line=row["end_line"],
-        kind=row["kind"],
-        docstring=row["docstring"],
-        callers=sorted(callers),
-        callees=sorted(callees),
-        ambiguous=effective_dup > 1,
-        cluster_id=c_id,
-        cluster_label=c_label,
-        cluster_peers=c_peers,
-        signature=row["signature"],
-        decorators=decoded_decorators,
-        is_exported=is_exported,
-        visibility=row["visibility"],
-        qualified_name=row["qualified_name"],
-    )
+    return cast(ContextResult, _build_context_result_fn(conn, row, dup_count=dup_count, decode_enrichment_fields_fn=decode_enrichment_fields))

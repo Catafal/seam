@@ -38,7 +38,7 @@ Slice 3 (member fan-out):
     M7 — get_member_names(): returns [] when class has zero indexed members
     M8 — edge_match_names(): container name includes member bare names
     M9 — edge_match_names(): non-container name not extended with member names
-    M10 — edge_match_names(): cap respected (at most cap+2 entries for large classes)
+    M10 — edge_match_names(): cap respected (at most cap+1 entries for large classes)
 
 Slice 4 (seed expansion for impact/trace walk path):
     S1 — expand_impact_seeds(): qualified name returns [qualified, bare]
