@@ -1,4 +1,4 @@
--- Seam SQLite Schema (v9 — P6b framework entry-point scoring: symbols.entry_score)
+-- Seam SQLite Schema (v10 — Tier B B1: edges.receiver for call-edge receiver capture)
 -- Run via db.py:init_db() — idempotent (CREATE TABLE IF NOT EXISTS).
 -- FTS5 is required; init_db() verifies availability before proceeding.
 -- Schema v2 adds: edges.confidence (DEFAULT 'INFERRED').
@@ -10,6 +10,8 @@
 -- Schema v7 adds: embeddings table (semantic search via local fastembed vectors).
 -- Schema v8 adds: clusters.cohesion (P2 internal-edge ratio; small search bonus).
 -- Schema v9 adds: symbols.entry_score (P6b framework entry-point ranking multiplier).
+-- Schema v10 adds: edges.receiver (Tier B B1: raw receiver text for attribute calls;
+--                  NULL for import/bare-call edges and pre-v10 rows).
 -- Migration from v1: db.py:_run_migration_v1_to_v2() (guarded ALTER TABLE).
 -- Migration from v2: db.py:_run_migration_v2_to_v3() (guards schema_version bump).
 -- Migration from v3: db.py:_run_migration_v3_to_v4() (adds clusters table + cluster_id).
@@ -18,6 +20,7 @@
 -- Migration from v6: db.py:_run_migration_v6_to_v7() (adds embeddings table).
 -- Migration from v7: db.py:_run_migration_v7_to_v8() (adds clusters.cohesion column).
 -- Migration from v8: db.py:_run_migration_v8_to_v9() (adds symbols.entry_score column).
+-- Migration from v9: db.py:_run_migration_v9_to_v10() (adds edges.receiver column).
 
 PRAGMA journal_mode = WAL;      -- Write-ahead logging for concurrent reads
 PRAGMA foreign_keys = ON;
@@ -68,14 +71,20 @@ CREATE INDEX IF NOT EXISTS idx_symbols_file_id ON symbols(file_id);
 -- source_name / target_name store the string name (not ID) so edges survive
 -- re-indexing of either endpoint independently.
 -- confidence: EXTRACTED (resolved to 1 symbol) | INFERRED (heuristic) | AMBIGUOUS (name collision)
+-- receiver: raw receiver expression text for attribute calls (e.g., 'self', 'obj').
+--   NULL for import edges, bare-identifier call edges, and pre-v10 rows.
+--   Captured at extraction time to enable later receiver-type inference (Tier B).
 CREATE TABLE IF NOT EXISTS edges (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     source_name TEXT NOT NULL,          -- Symbol name of the caller/importer
     target_name TEXT NOT NULL,          -- Symbol name of the callee/importee
-    kind        TEXT NOT NULL,          -- 'import' | 'call'
+    kind        TEXT NOT NULL,          -- 'import' | 'call' | 'extends' | 'implements' | 'instantiates'
     file_id     INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
     line        INTEGER NOT NULL,       -- Line where the relationship is expressed
-    confidence  TEXT NOT NULL DEFAULT 'INFERRED'   -- EXTRACTED | INFERRED | AMBIGUOUS (DEFAULT is INFERRED: conservative)
+    confidence  TEXT NOT NULL DEFAULT 'INFERRED',  -- EXTRACTED | INFERRED | AMBIGUOUS (DEFAULT is INFERRED: conservative)
+    -- Tier B B1 (v10): receiver text from attribute call expressions (recv.method).
+    -- NULL for import edges, bare calls, and pre-v10 rows (null-contract: same as Phase 4/5 fields).
+    receiver    TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_name);
@@ -186,9 +195,9 @@ CREATE TABLE IF NOT EXISTS metadata (
 );
 
 -- NOTE: INSERT OR IGNORE does not update existing rows. Fresh DBs are seeded at
--- the CURRENT schema version ('9') so a brand-new `seam init` is born current and
+-- the CURRENT schema version ('10') so a brand-new `seam init` is born current and
 -- does NOT trigger any migration advisory.
 -- Existing older DBs keep their stored version; db.py migrations bump them in place.
 INSERT OR IGNORE INTO metadata(key, value) VALUES
-    ('schema_version', '9'),
+    ('schema_version', '10'),
     ('seam_version',   '0.2.0');

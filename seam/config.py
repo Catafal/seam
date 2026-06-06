@@ -280,6 +280,20 @@ SEAM_NAME_EXPANSION_CAP: int = int(os.getenv("SEAM_NAME_EXPANSION_CAP", "50"))
 SEAM_BARE_RESOLVE_CAP: int = int(os.getenv("SEAM_BARE_RESOLVE_CAP", "25"))
 
 
+# ── Tier B B4: Receiver-type inference (Python + TypeScript/JS) ──────────────
+
+# Master switch for receiver-type inference in Python and TypeScript/JS extractors.
+# When "on" (default), the extractor resolves receiver expressions (class fields,
+# function parameters, and local variables with type annotations) to qualified
+# 'Type.method' call targets at INDEX time — e.g. `client: Client` → `Client.send`.
+# This fixes the cross-class call collapse (AMBIGUOUS) by emitting the right target.
+# Conservatism contract: only plain user types bind; optionals/generics/unknowns
+# → None → bare target kept (never emit a wrong edge).
+# When "off", inference is skipped entirely and targets remain bare — byte-identical
+# to pre-Tier-B behavior. Gating via env var so tests can toggle without monkey-patching.
+SEAM_TYPE_INFERENCE: str = os.getenv("SEAM_TYPE_INFERENCE", "on")
+
+
 # ── P5: Swift inter-class call resolution ────────────────────────────────────
 
 # Lightweight receiver-type inference for Swift call edges. When "on" (default),

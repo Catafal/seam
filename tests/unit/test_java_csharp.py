@@ -325,14 +325,27 @@ class TestJavaEdges:
             f"Call targets: {[e['target'] for e in edges if e['kind'] == 'call']}"
         )
 
-    def test_member_call_not_extracted(self) -> None:
-        """this.store.put() is a member call — NOT extracted as bare-identifier call."""
+    def test_member_call_extracted_with_receiver(self) -> None:
+        """Tier B B2: this.store.put() → NOW emitted with receiver text captured.
+
+        Pre-B2: member calls were dropped (bare-identifier-only policy).
+        Post-B2: member calls are emitted with receiver text in the 'receiver' field.
+        this.store.put() → target='put', receiver='this.store'.
+        """
         root = _get_java_root()
         edges = extract_edges(root, "java", SAMPLE_JAVA)
         call_targets = {e["target"] for e in edges if e["kind"] == "call"}
-        # "put" should not appear — it's called on this.store (has object field)
-        assert "put" not in call_targets, (
-            "'put' is a member call on this.store and should not be extracted"
+        # "put" is now emitted (member call: this.store.put → target='put')
+        assert "put" in call_targets, (
+            f"Tier B B2: 'put' member call should now be emitted. Got: {call_targets}"
+        )
+        # Verify receiver text is captured
+        put_edge = next(
+            (e for e in edges if e["kind"] == "call" and e["target"] == "put"), None
+        )
+        assert put_edge is not None
+        assert put_edge.get("receiver") is not None, (
+            "Member call 'put' must have a non-None receiver"
         )
 
     def test_call_edge_source_is_enclosing_method(self) -> None:
@@ -401,14 +414,26 @@ class TestCSharpEdges:
             f"Call targets: {[e['target'] for e in edges if e['kind'] == 'call']}"
         )
 
-    def test_member_call_not_extracted(self) -> None:
-        """this.Helper() / _store[key] are member accesses — NOT extracted as bare calls."""
+    def test_member_call_extracted_with_receiver(self) -> None:
+        """Tier B B2: _store.Clear() → NOW emitted with receiver text captured.
+
+        Pre-B2: member_access_expression calls were dropped (bare-identifier-only).
+        Post-B2: member calls are emitted with receiver text in the 'receiver' field.
+        """
         root = _get_cs_root()
         edges = extract_edges(root, "csharp", SAMPLE_CS)
         call_targets = {e["target"] for e in edges if e["kind"] == "call"}
-        # member_access_expression should be skipped
-        assert "Clear" not in call_targets, (
-            "'Clear' is called on _store (member access) and should not be extracted"
+        # "Clear" is now emitted as a member call edge
+        assert "Clear" in call_targets, (
+            f"Tier B B2: 'Clear' member call should now be emitted. Got: {call_targets}"
+        )
+        # Verify receiver text is captured
+        clear_edge = next(
+            (e for e in edges if e["kind"] == "call" and e["target"] == "Clear"), None
+        )
+        assert clear_edge is not None
+        assert clear_edge.get("receiver") is not None, (
+            "Member call 'Clear' must have a non-None receiver"
         )
 
     def test_call_edge_source_is_enclosing_method(self) -> None:

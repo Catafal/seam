@@ -1,6 +1,6 @@
 """PHP symbol, edge, and comment extraction from tree-sitter ASTs.
 
-LAYER: imports from graph_common (leaf) only — never from graph.py.
+LAYER: imports from graph_common (leaf) and graph_scope_infer_ext[2] (leaf) — never from graph.py.
 
 LAYERING:
     graph_common    (leaf — no seam deps)
@@ -49,6 +49,15 @@ from seam.indexer.graph_common import (
     _make_symbol,
     _match_marker,
     _text,
+)
+
+# Scope-inference: shared resolver from ext, PHP helpers from ext2.
+from seam.indexer.graph_scope_infer_ext import resolve_receiver_type_ext
+from seam.indexer.graph_scope_infer_ext2 import (
+    _PHP_SELF_NAMES,
+    record_php_local_types,
+    record_php_param_types,
+    scan_class_fields_php,
 )
 
 # signatures_ext is the leaf enrichment module for Phase 9 languages.
@@ -344,18 +353,24 @@ def _extract_edges_php(root: Node, filepath: Path) -> list[Edge]:
         namespace_use_group: descend into group to find clauses
         Aliased use: 'use App\\Models\\User as U' → target = 'User' (real name)
 
-    Call heuristic (MVP — bare identifiers only):
-        function_call_expression where 'function' field is a 'name' node → call edge.
-        member_call_expression ($this->m) → SKIP (not bare).
+    Call heuristic:
+        function_call_expression where 'function' field is a 'name' node → bare call.
+        member_call_expression ($this->m, $obj->m) → capture receiver.
+        scoped_call_expression (ClassName::m) → capture class as receiver.
+
+    Tier B B5: when SEAM_TYPE_INFERENCE is on, member calls are resolved to
+    'Type.method' qualified targets using per-method scope (class property types +
+    param type hints + local `new ClassName()` assignments).
 
     NEVER raises. Returns [] on any failure.
     """
     edges: list[Edge] = []
     file_str = str(filepath)
     file_stem = filepath.stem
+    infer = config.SEAM_TYPE_INFERENCE == "on"
 
     try:
-        _walk_php_edges(root, file_str, file_stem, edges)
+        _walk_php_edges(root, file_str, file_stem, edges, infer, None, {}, {})
     except Exception as exc:  # noqa: BLE001
         logger.debug("_extract_edges_php: unexpected error for %s: %r", filepath, exc)
 
@@ -367,18 +382,133 @@ def _walk_php_edges(
     file_str: str,
     file_stem: str,
     edges: list[Edge],
+    infer: bool,
+    class_name: str | None,
+    class_fields: dict[str, str],
+    var_types: dict[str, str],
 ) -> None:
-    """Recursive walker for PHP edge extraction."""
-    if node.type == "namespace_use_declaration":
+    """Recursive walker for PHP edge extraction with type-inference context threading."""
+    ntype = node.type
+
+    if ntype == "namespace_use_declaration":
         _handle_php_use_declaration(node, file_str, file_stem, edges)
         return  # no need to recurse into use declaration
 
-    if node.type == "function_call_expression":
+    if ntype == "class_declaration":
+        # Update class context and pre-scan property types.
+        new_class: str | None = None
+        cn = node.child_by_field_name("name")
+        if cn is not None:
+            new_class = _text(cn).strip() or None
+        new_fields = scan_class_fields_php(node) if infer else {}
+        body = node.child_by_field_name("body")
+        if body is not None:
+            for child in body.children:
+                _walk_php_edges(
+                    child, file_str, file_stem, edges, infer, new_class, new_fields, dict(new_fields)
+                )
+        return
+
+    if ntype == "method_declaration":
+        # New method scope: inherit class fields, bind type-hinted params.
+        new_types: dict[str, str] = dict(class_fields)
+        if infer:
+            record_php_param_types(node, new_types)
+        body = node.child_by_field_name("body")
+        if body is not None:
+            for child in body.children:
+                _walk_php_edges(
+                    child, file_str, file_stem, edges, infer, class_name, class_fields, new_types
+                )
+        return
+
+    if infer and ntype == "expression_statement":
+        record_php_local_types(node, var_types)
+        # Still recurse to catch nested calls.
+
+    # Tier B B6: object_creation_expression (new Foo()) → instantiates edge.
+    # 'name' child = the constructed type (plain name or qualified_name for \NS\Foo).
+    # Dynamic new ($className()) has a variable_name child — skip gracefully.
+    if ntype == "object_creation_expression":
+        _handle_php_new_expression(node, file_str, edges)
+        # Recurse to catch nested news in constructor arguments.
+        for child in node.children:
+            _walk_php_edges(child, file_str, file_stem, edges, infer, class_name, class_fields, var_types)
+        return  # already recursed above
+
+    if ntype == "function_call_expression":
         _handle_php_call(node, file_str, file_stem, edges)
         # Still recurse — calls can be nested inside argument lists
 
+    elif ntype in ("member_call_expression", "nullsafe_member_call_expression"):
+        # Tier B B2 + B5: $obj->method() — capture receiver and try to qualify.
+        _handle_php_member_call_infer(node, file_str, edges, infer, class_name, var_types)
+        # Still recurse for nested calls
+
+    elif ntype == "scoped_call_expression":
+        # Tier B B2: ClassName::method() — capture class name as receiver.
+        _handle_php_scoped_call(node, file_str, edges)
+        # Still recurse for nested calls
+
     for child in node.children:
-        _walk_php_edges(child, file_str, file_stem, edges)
+        _walk_php_edges(child, file_str, file_stem, edges, infer, class_name, class_fields, var_types)
+
+
+def _handle_php_new_expression(
+    node: Node,
+    file_str: str,
+    edges: list[Edge],
+) -> None:
+    """Emit an instantiates edge from a PHP object_creation_expression node.
+
+    Tier B B6: new Foo() → kind='instantiates', target='Foo'.
+    For namespaced new (new \\NS\\Bar()) the last segment 'Bar' is the target.
+    Dynamic new ($className()) uses variable_name child — skipped gracefully (no edge).
+    Never raises.
+    """
+    try:
+        source = _find_enclosing_function(node, "php")
+        if source is None:
+            return
+        # Children of object_creation_expression: [new, name_node, arguments_node]
+        # name_node can be 'name' (plain), 'qualified_name' (namespaced), or
+        # 'variable_name' (dynamic — skip).
+        for child in node.children:
+            if child.type == "name":
+                type_name = _text(child)
+                if type_name:
+                    edges.append(Edge(
+                        source=source,
+                        target=type_name,
+                        kind="instantiates",
+                        file=file_str,
+                        line=node.start_point[0] + 1,
+                        confidence="INFERRED",
+                        receiver=None,
+                    ))
+                return
+            if child.type == "qualified_name":
+                # \NS\Bar → last 'name' child is 'Bar'
+                last_name: str | None = None
+                for gc in child.children:
+                    if gc.type == "name":
+                        last_name = _text(gc)
+                if last_name:
+                    edges.append(Edge(
+                        source=source,
+                        target=last_name,
+                        kind="instantiates",
+                        file=file_str,
+                        line=node.start_point[0] + 1,
+                        confidence="INFERRED",
+                        receiver=None,
+                    ))
+                return
+            # variable_name or other dynamic class — skip gracefully (no edge).
+            if child.type == "variable_name":
+                return
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _handle_php_use_declaration(
@@ -410,7 +540,8 @@ def _handle_php_use_declaration(
                         file=file_str,
                         line=line,
                         confidence="INFERRED",
-                    )
+                                            receiver=None,
+                                        )
                 )
         elif child.type == "namespace_use_group":
             # Grouped use: use App\{Foo, Bar} — descend into the group's clauses.
@@ -426,7 +557,8 @@ def _handle_php_use_declaration(
                                 file=file_str,
                                 line=line,
                                 confidence="INFERRED",
-                            )
+                                                            receiver=None,
+                                                        )
                         )
 
 
@@ -481,8 +613,142 @@ def _handle_php_call(
                 file=file_str,
                 line=node.start_point[0] + 1,
                 confidence="INFERRED",
+                receiver=None,
             )
         )
+
+
+def _handle_php_member_call(
+    node: Node,
+    file_str: str,
+    edges: list[Edge],
+) -> None:
+    """Emit a call edge from a PHP member_call_expression node (Tier B B2).
+
+    Handles $obj->method() and $obj?->method() (nullsafe).
+    Captures the receiver text ($obj, $this, etc.) and the method name.
+    Gracefully skips when the name field is absent or not a plain 'name' node.
+    Never raises.
+    """
+    try:
+        # object field = receiver expression ($obj, $this, variable_name, etc.)
+        obj_node = node.child_by_field_name("object")
+        # name field = method name (a 'name' node in the PHP grammar)
+        name_node = node.child_by_field_name("name")
+        if name_node is None or name_node.type != "name":
+            return  # complex dynamic dispatch — skip gracefully
+
+        target = _text(name_node)
+        recv_text: str | None = _text(obj_node) if obj_node is not None else None
+        source = _find_enclosing_function(node, "php")
+        if source is not None:
+            edges.append(
+                Edge(
+                    source=source,
+                    target=target,
+                    kind="call",
+                    file=file_str,
+                    line=node.start_point[0] + 1,
+                    confidence="INFERRED",
+                    receiver=recv_text,
+                )
+            )
+    except Exception:  # noqa: BLE001
+        pass  # never raise from the extractor
+
+
+def _handle_php_member_call_infer(
+    node: Node,
+    file_str: str,
+    edges: list[Edge],
+    infer: bool,
+    class_name: str | None,
+    var_types: dict[str, str],
+) -> None:
+    """Emit a call edge from PHP member_call_expression with optional type inference (B5).
+
+    When infer=True, resolves $obj→method() receiver to 'Type.method' using var_types.
+    Fallback: emits the bare method name with raw receiver (same as B2 behavior).
+    Never raises.
+    """
+    try:
+        obj_node = node.child_by_field_name("object")
+        name_node = node.child_by_field_name("name")
+        if name_node is None or name_node.type != "name":
+            return
+
+        method_name = _text(name_node)
+        recv_text: str | None = _text(obj_node) if obj_node is not None else None
+
+        # B5: resolve receiver to type → qualify the target.
+        final_target = method_name
+        if infer and recv_text is not None:
+            resolved_type = resolve_receiver_type_ext(
+                recv_text, class_name, var_types, _PHP_SELF_NAMES
+            )
+            if resolved_type:
+                final_target = f"{resolved_type}.{method_name}"
+
+        source = _find_enclosing_function(node, "php")
+        if source is not None:
+            edges.append(
+                Edge(
+                    source=source,
+                    target=final_target,
+                    kind="call",
+                    file=file_str,
+                    line=node.start_point[0] + 1,
+                    confidence="INFERRED",
+                    receiver=recv_text,
+                )
+            )
+    except Exception:  # noqa: BLE001
+        pass  # never raise from the extractor
+
+
+def _handle_php_scoped_call(
+    node: Node,
+    file_str: str,
+    edges: list[Edge],
+) -> None:
+    """Emit a call edge from a PHP scoped_call_expression node (Tier B B2 + B5).
+
+    Handles ClassName::method() (static dispatch).
+    Because the class name is literally present in the AST (no scope lookup needed),
+    the target is immediately qualified as 'ClassName.method' (B5 intent: consistent
+    with Java method_invocation and C# invocation_expression qualification).
+    The class_name is also stored as receiver for provenance.
+    Gracefully skips when nodes are absent or not a plain 'name'. Never raises.
+    """
+    try:
+        # scoped_call_expression children: name(class) :: name(method) arguments
+        # The grammar does NOT use named fields — walk children directly.
+        names = [c for c in node.children if c.type == "name"]
+        if len(names) < 2:
+            return  # unexpected shape — degrade gracefully
+        class_name = _text(names[0])
+        method_name = _text(names[1])
+        if not class_name or not method_name:
+            return
+
+        source = _find_enclosing_function(node, "php")
+        if source is not None:
+            # B5: qualify the target directly — the class is explicit in the AST
+            # (conservatism contract satisfied: type is stated, not inferred from scope).
+            qualified_target = f"{class_name}.{method_name}"
+            edges.append(
+                Edge(
+                    source=source,
+                    target=qualified_target,
+                    kind="call",
+                    file=file_str,
+                    line=node.start_point[0] + 1,
+                    confidence="INFERRED",
+                    receiver=class_name,
+                )
+            )
+    except Exception:  # noqa: BLE001
+        pass  # never raise from the extractor
 
 
 # ── PHP comment extraction ─────────────────────────────────────────────────────

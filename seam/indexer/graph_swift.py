@@ -796,7 +796,8 @@ def _handle_import(node: Node, file_str: str, file_stem: str, edges: list[Edge])
                         file=file_str,
                         line=line,
                         confidence="INFERRED",
-                    )
+                                            receiver=None,
+                                        )
                 )
             break
 
@@ -815,28 +816,65 @@ def _handle_call(
     Navigation-expression callees (obj.m, self.m) are resolved to a qualified
     'Type.method' edge when type inference is on AND the receiver type is known;
     otherwise they are skipped (no wrong global-name edge is ever emitted).
+
+    Tier B B2: raw receiver text is captured from the navigation_expression's
+    first child (the receiver side) and stored on the emitted edge.
     """
     if not node.children:
         return
     callee = node.children[0]
 
     if callee.type == "simple_identifier":
-        # Bare call: unqualified target (pre-P5 behavior, never disabled).
+        # Bare call: unqualified target.
         target = _text(callee)
         if not target:
             return
-        _emit_call(node, file_str, target, edges)
+        # Tier B B6: PascalCase bare call Foo() in Swift → instantiates edge.
+        # Swift uses call_expression for both function calls and constructor calls.
+        # A PascalCase callee (starts with uppercase) is a constructor call.
+        # Lowercase callees remain plain call edges.
+        if target[0].isupper():
+            source = _find_enclosing_function(node, "swift")
+            if source is not None:
+                edges.append(Edge(
+                    source=source,
+                    target=target,
+                    kind="instantiates",
+                    file=file_str,
+                    line=node.start_point[0] + 1,
+                    confidence="INFERRED",
+                    receiver=None,
+                ))
+            return
+        _emit_call(node, file_str, target, receiver=None, edges=edges)
         return
 
     if infer and callee.type == "navigation_expression":
+        # Tier B B2: extract raw receiver text from the navigation_expression's
+        # first child (e.g. self_expression → 'self'; simple_identifier → var name).
+        nav_receiver: str | None = None
+        if callee.children:
+            recv_node = callee.children[0]
+            nav_receiver = _text(recv_node) if recv_node is not None else None
+
         nav_target = _resolve_navigation_target(callee, class_name, var_types)
         if nav_target is not None:
-            _emit_call(node, file_str, nav_target, edges)
+            _emit_call(node, file_str, nav_target, receiver=nav_receiver, edges=edges)
     # Unknown receiver (or inference off) → skip: never emit a wrong edge.
 
 
-def _emit_call(node: Node, file_str: str, target: str, edges: list[Edge]) -> None:
-    """Append a call edge sourced from the enclosing function, if any."""
+def _emit_call(
+    node: Node,
+    file_str: str,
+    target: str,
+    *,
+    receiver: str | None = None,
+    edges: list[Edge],
+) -> None:
+    """Append a call edge sourced from the enclosing function, if any.
+
+    Tier B B2: accepts an optional raw receiver text to store on the edge.
+    """
     source = _find_enclosing_function(node, "swift")
     if source is not None:
         edges.append(
@@ -847,6 +885,7 @@ def _emit_call(node: Node, file_str: str, target: str, edges: list[Edge]) -> Non
                 file=file_str,
                 line=node.start_point[0] + 1,
                 confidence="INFERRED",
+                receiver=receiver,
             )
         )
 

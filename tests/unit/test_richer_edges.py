@@ -418,7 +418,11 @@ class TestPythonAttributeCallEdges:
         )
 
     def test_self_method_call_produces_edge(self, tmp_path: Path) -> None:
-        """E2: `self.helper()` inside a method → call edge with target='helper'."""
+        """E2: `self.helper()` inside a method → call edge targeting 'helper'.
+
+        B4 update: when SEAM_TYPE_INFERENCE=on, 'self' inside Engine.run resolves
+        to 'Engine', so the target becomes 'Engine.helper'. Accept both forms.
+        """
         src = _py_file(
             tmp_path,
             "class Engine:\n"
@@ -432,8 +436,9 @@ class TestPythonAttributeCallEdges:
 
         edges = extract_edges(root, "python", src)
         call_targets = {e["target"] for e in edges if e["kind"] == "call"}
-        assert "helper" in call_targets, (
-            f"expected 'helper' call target from self.helper(), got {call_targets}"
+        # Accept either bare 'helper' (inference off) or 'Engine.helper' (inference on).
+        assert "helper" in call_targets or "Engine.helper" in call_targets, (
+            f"expected 'helper' or 'Engine.helper' call target from self.helper(), got {call_targets}"
         )
 
     def test_chained_attribute_call_uses_rightmost_identifier(

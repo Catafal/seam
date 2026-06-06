@@ -194,12 +194,23 @@ def _resolve_navigation_target(
     """Resolve a navigation_expression callee to a qualified 'Type.method' target.
 
     Handles these receiver shapes:
-      self.method            → '<class_name>.method'  (needs enclosing class)
-      ClassName().method     → 'ClassName.method'     (inline instantiation)
-      x.method (x: Type)     → 'Type.method'          (scope binding: prop/param/local)
-      self.prop.method       → '<type of prop>.method' (one-level chain via class prop)
-    Returns None for any unknown receiver (e.g. a multi-level chain, a non-self field
-    access, or an unbound variable) so the caller drops the edge rather than guess.
+      self.method              → '<class_name>.method'   (needs enclosing class)
+      ClassName().method       → 'ClassName.method'      (inline instantiation)
+      x.method (x: Type)       → 'Type.method'           (scope binding: prop/param/local)
+      self.prop.method         → '<type of prop>.method' (one-level chain via class prop)
+      TypeName.method          → 'TypeName.method'       (B5: static/enum call — PascalCase
+                                                           receiver NOT found in var_types)
+
+    The static-call path (B5, #6): when the receiver is a simple_identifier NOT in
+    var_types and its first character is uppercase (PascalCase), treat it as a type-qualified
+    static or enum call: `Logger.log()` → 'Logger.log'. This is gate-safe because:
+      (a) only plain simple_identifier receivers trigger it (no chains, no expressions),
+      (b) lowercase-first receivers that are NOT in scope still return None (the caller
+          drops the edge rather than guessing), preserving the conservatism contract.
+      (c) if the PascalCase name IS in var_types, the existing scope-lookup path fires
+          first (scope wins over static heuristic).
+
+    Returns None for any unknown receiver so the caller drops the edge rather than guess.
     """
     receiver = nav.children[0] if nav.children else None
     if receiver is None:
@@ -214,10 +225,18 @@ def _resolve_navigation_target(
     if receiver.type == "self_expression":
         return f"{class_name}.{method}" if class_name else None
 
-    # x.method where x's type is known in this scope (class property / parameter / local).
+    # x.method — try scope lookup first, then fall through to static-call heuristic.
     if receiver.type == "simple_identifier":
-        cls = var_types.get(_text(receiver))
-        return f"{cls}.{method}" if cls else None
+        recv_name = _text(receiver)
+        # Scope lookup (class property / parameter / local — set during AST walk).
+        cls = var_types.get(recv_name)
+        if cls:
+            return f"{cls}.{method}"
+        # B5 (#6): PascalCase receiver not in scope → static / enum / type call.
+        # Only fires for upper-first identifiers — lowercase unknown → refuse (None).
+        if recv_name and recv_name[0].isupper():
+            return f"{recv_name}.{method}"
+        return None
 
     # self.prop.method → resolve prop's type from the (inherited) scope map. Only the
     # self.<prop> form is resolvable: a property's type is in var_types, whereas a

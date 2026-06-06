@@ -33,7 +33,7 @@ Contents:
 
 import logging
 import re
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 from tree_sitter import Node
 
@@ -77,10 +77,32 @@ class Symbol(TypedDict):
 class Edge(TypedDict):
     source: str  # Symbol name of caller / importer
     target: str  # Symbol name of callee / importee
-    kind: str  # 'import' | 'call'
+    # Edge kind vocabulary:
+    #   'import'       — module/symbol import statement
+    #   'call'         — function/method call edge
+    #   'extends'      — class inheritance (base class)
+    #   'implements'   — interface implementation
+    #   'instantiates' — object construction (new Foo(), Foo(), Foo::new(), Foo{}) [Tier B B6]
+    kind: str
     file: str
     line: int
     confidence: Confidence  # EXTRACTED | INFERRED | AMBIGUOUS
+    # Tier B B1 (v10): raw receiver expression text for attribute calls (e.g. 'self', 'obj').
+    # None for import edges, bare-identifier call edges, and pre-v10 rows.
+    #
+    # WHY NotRequired (not a plain required field): the Edge TypedDict is constructed in
+    # many call sites across 12 language extractors. Making receiver Required would force
+    # all existing Edge() instantiations to be updated simultaneously. NotRequired lets
+    # us add the field incrementally — old callers remain valid, new callers opt in.
+    # upsert_file uses edge.get("receiver") which defaults to None, so absent ≡ None
+    # at the DB layer. This is the same null-contract as Phase 4/5 enrichment fields.
+    #
+    # WHY stored even when target is already qualified (e.g. 'Client.method'):
+    # Preserves the raw receiver text for debugging, future re-inference passes, and
+    # any tooling that needs to re-derive qualification without a full re-index.
+    # Edges remain string-name-keyed (source/target are names, not node IDs) as required
+    # for independent re-indexing.
+    receiver: NotRequired[str | None]
 
 
 class Comment(TypedDict):
