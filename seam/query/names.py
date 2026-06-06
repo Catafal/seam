@@ -40,6 +40,25 @@ ROOT CAUSE this module fixes:
         3. If no exact match AND name has a dot → return [] (unknown qualified name).
       Never raises. Returns an empty list when nothing is found.
 
+  - expand_impact_seeds(conn, name) -> list[str]    [Slice 4]
+      Expand a query name into the set of walk() seed strings for impact/trace analysis.
+      This bridges the qualified-symbol / bare-edge asymmetry at the walk() call boundary.
+
+      Expansion rules (applied in order; always returns a deduped list):
+        1. Qualified name (has dot): [name, bare_suffix]
+           e.g. "Parser.parse" → ["Parser.parse", "parse"]
+           Ensures walk() matches edges that store bare "parse" as target_name.
+        2. Container name (class/struct/interface, no dot): [name] + bare member names
+           e.g. "Parser" → ["Parser", "parse", "validate"]
+           Ensures walk() matches callers of any method of the class.
+        3. Bare non-container name: [name]
+           e.g. "orchestrate" → ["orchestrate"]
+           Exact match only — no expansion needed.
+
+      The caller passes ALL returned seeds to walk() at once; walk() already handles
+      multi-seed BFS (treats all seeds as the same starting level).
+      Never raises. Returns [name] as a safe fallback on any error.
+
 WHY not store bare name in the DB:
   Scope guard — Tier A is read-path-only. No schema change, no migration, no re-index.
   The bridging is pure read-time reconciliation using what is already stored.
@@ -308,3 +327,75 @@ def resolve_query_to_defs(conn: sqlite3.Connection, name: str) -> list[sqlite3.R
         )
 
     return matched
+
+
+def expand_impact_seeds(conn: sqlite3.Connection, name: str) -> list[str]:
+    """Expand a query name into the set of walk() seed strings for impact/trace analysis.
+
+    Bridges the qualified-symbol / bare-edge asymmetry: Seam stores symbol names as
+    qualified strings ("Class.method") but stores call-edge target_name as the bare
+    identifier ("method"). This makes walk() see no upstream for a qualified symbol.
+    Seed expansion resolves this at the walk() call boundary — no schema change needed.
+
+    Expansion rules (deduped, stable order):
+      1. Qualified name (has dot): [name, bare_suffix]
+         e.g. "Parser.parse" -> ["Parser.parse", "parse"]
+         walk() with direction=upstream then finds edges targeting bare "parse".
+
+      2. Container (class/struct/interface, no dot): [name] + member bare names
+         e.g. "Parser" -> ["Parser", "parse", "validate"]
+         Unions callers of all methods into a single walk() pass.
+         Bounded by SEAM_NAME_EXPANSION_CAP (same cap as get_member_names).
+
+      3. Non-container bare name: [name] (exact match only, no expansion)
+         e.g. "orchestrate" -> ["orchestrate"]
+
+    WHY this lives in names.py (leaf module):
+      names.py is already the single source of truth for all qualified<->bare bridging.
+      Placing expansion here keeps impact.py and flows.py thin — they just call this
+      function and pass the results to walk(). Leaf layering: imports only stdlib + config.
+
+    Never raises. Returns [name] on any error (safe fallback — degrades to pre-slice-4).
+    """
+    if not name:
+        # Empty string — return as-is; walk() will handle gracefully.
+        return [name]
+
+    bare = bare_name(name)
+
+    # Case 1: qualified name (contains a dot) → [qualified, bare].
+    # A qualified method "Class.method" is NOT a container — skip member fan-out.
+    if bare != name:
+        # Deduplicate in case bare == name (not possible when bare != name, but defensive).
+        result = [name]
+        if bare and bare != name:
+            result.append(bare)
+        logger.debug(
+            "expand_impact_seeds: qualified '%s' -> %s",
+            name,
+            result,
+        )
+        return result
+
+    # Case 2: bare name — check if it is a container (class/struct/interface).
+    member_names = get_member_names(conn, name) if is_container_symbol(conn, name) else []
+
+    if member_names:
+        # Container: [class_name] + member bare names (bounded by cap, deduped).
+        result = [name]
+        seen: set[str] = {name}
+        for m in member_names:
+            if m not in seen and len(result) <= SEAM_NAME_EXPANSION_CAP:
+                result.append(m)
+                seen.add(m)
+        logger.debug(
+            "expand_impact_seeds: container '%s' -> %d seed(s): %s",
+            name,
+            len(result),
+            result,
+        )
+        return result
+
+    # Case 3: bare non-container name — exact match only.
+    logger.debug("expand_impact_seeds: bare non-container '%s' -> ['%s']", name, name)
+    return [name]

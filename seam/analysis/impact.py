@@ -50,6 +50,7 @@ from typing import Any
 
 from seam.analysis.testpaths import is_test_file
 from seam.analysis.traversal import _SQL_VAR_BATCH, Reached, walk
+from seam.query.names import expand_impact_seeds
 
 logger = logging.getLogger(__name__)
 
@@ -353,15 +354,23 @@ def impact(
     # "found but isolated". This is a cheap indexed lookup.
     found = _symbol_exists(conn, target)
 
+    # Expand the target name to a set of walk() seeds — bridges the qualified-symbol /
+    # bare-edge asymmetry. e.g. "Parser.parse" -> ["Parser.parse", "parse"] so that
+    # walk() matches edges whose target_name is the bare "parse" (as stored by the extractor).
+    # For a class seed like "Parser" -> ["Parser", "parse", "validate"] to aggregate
+    # all member callers. The seeds list is deduped and bounded by config cap.
+    seeds = expand_impact_seeds(conn, target)
+    logger.debug("impact: target=%r expanded to seeds=%s", target, seeds)
+
     # Collect all reached symbols so we can batch the file lookup.
     upstream_reached: list[Reached] = []
     downstream_reached: list[Reached] = []
 
     if direction in ("upstream", "both"):
-        upstream_reached = walk(conn, [target], "upstream", safe_depth, repo_root=repo_root)
+        upstream_reached = walk(conn, seeds, "upstream", safe_depth, repo_root=repo_root)
 
     if direction in ("downstream", "both"):
-        downstream_reached = walk(conn, [target], "downstream", safe_depth, repo_root=repo_root)
+        downstream_reached = walk(conn, seeds, "downstream", safe_depth, repo_root=repo_root)
 
     # Batch lookup of files for all reached symbol names (single query per batch).
     all_names = [r["name"] for r in upstream_reached] + [r["name"] for r in downstream_reached]

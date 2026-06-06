@@ -80,6 +80,7 @@ from seam.analysis.traversal import (
     _SQL_VAR_BATCH,
     _rank,
 )
+from seam.query.names import expand_impact_seeds
 
 logger = logging.getLogger(__name__)
 
@@ -329,6 +330,20 @@ def trace(
     if source == target:
         return [[]]  # empty path — zero hops, trivially connected
 
+    # Expand the target to a set of alias names — bridges the qualified/bare edge gap.
+    # Seam's extractor stores edge target_name as bare "method" while the symbol is
+    # stored as "Class.method". The BFS checks tgt_name IN target_aliases so a hop
+    # that reaches bare "parse" is treated as reaching "Parser.parse".
+    # expand_impact_seeds("Parser.parse") -> ["Parser.parse", "parse"]
+    # The target_aliases set includes the original target too (exact match preserved).
+    target_seeds = expand_impact_seeds(conn, target)
+    target_aliases: set[str] = set(target_seeds)
+    # Always include the exact target — expand_impact_seeds returns it first but be explicit.
+    target_aliases.add(target)
+    logger.debug(
+        "trace: target=%r expanded aliases=%s", target, sorted(target_aliases)
+    )
+
     # Load whole-index name-count map ONCE per trace() call.
     name_counts = load_name_counts(conn)
 
@@ -410,14 +425,19 @@ def trace(
             )
 
             # Found the target — record its parent and return immediately (BFS = shortest).
-            if tgt_name == target:
+            # tgt_name IN target_aliases handles the bare/qualified asymmetry:
+            # e.g. tgt_name="parse" matches target_aliases={"Parser.parse", "parse"}.
+            # _reconstruct_path uses tgt_name as the key (the actual edge target stored),
+            # so the returned path reflects the real edge, not the alias.
+            if tgt_name in target_aliases:
                 parent_map[tgt_name] = (src_name, hop)
-                path = _reconstruct_path(target, parent_map)
+                path = _reconstruct_path(tgt_name, parent_map)
                 logger.debug(
-                    "trace(%r -> %r): found path of length %d (import_promotion=%s)",
+                    "trace(%r -> %r): found path of length %d via alias %r (import_promotion=%s)",
                     source,
                     target,
                     len(path),
+                    tgt_name,
                     use_import_promotion,
                 )
                 return [path]

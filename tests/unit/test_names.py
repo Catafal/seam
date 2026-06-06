@@ -3,6 +3,7 @@
 Tier A Slice 1: qualified<->bare bridging.
 Tier A Slice 2: resolve_query_to_defs — all-definitions aggregation.
 Tier A Slice 3: class/container detection + member fan-out.
+Tier A Slice 4: expand_impact_seeds — seed expansion for impact/trace walk path.
 These tests are written FIRST (TDD) and must be run before the implementation.
 
 Coverage:
@@ -38,6 +39,14 @@ Slice 3 (member fan-out):
     M8 — edge_match_names(): container name includes member bare names
     M9 — edge_match_names(): non-container name not extended with member names
     M10 — edge_match_names(): cap respected (at most cap+2 entries for large classes)
+
+Slice 4 (seed expansion for impact/trace walk path):
+    S1 — expand_impact_seeds(): qualified name returns [qualified, bare]
+    S2 — expand_impact_seeds(): bare non-container name returns [name]
+    S3 — expand_impact_seeds(): container class returns [name] + member bare names
+    S4 — expand_impact_seeds(): result is a deduped list (no duplicates)
+    S5 — expand_impact_seeds(): never raises on empty string
+    S6 — expand_impact_seeds(): cap respected for large container classes
 """
 
 import sqlite3
@@ -51,6 +60,7 @@ from seam.indexer.graph import Edge, Symbol
 from seam.query.names import (
     bare_name,
     edge_match_names,
+    expand_impact_seeds,
     get_member_names,
     is_container_symbol,
     resolve_query_to_defs,
@@ -539,4 +549,98 @@ class TestEdgeMatchNamesWithMembers:
         # 'validate' or other class members must NOT appear
         assert len(result) == 2, (
             f"Qualified method should return [qualified, bare] only, got {result}"
+        )
+
+
+# ── Slice 4: expand_impact_seeds() — seed expansion for walk() ────────────────
+
+
+class TestExpandImpactSeeds:
+    """S1-S6: expand_impact_seeds() — returns walk() seeds for impact/trace analysis."""
+
+    def test_qualified_name_returns_qualified_and_bare(self) -> None:
+        """S1: 'Class.method' -> ['Class.method', 'method'] — bridges bare-edge gap."""
+        conn = _seed_empty_db()
+        result = expand_impact_seeds(conn, "Parser.parse")
+        conn.close()
+        assert "Parser.parse" in result, "Qualified name must be in seeds"
+        assert "parse" in result, "Bare suffix must be in seeds for edge matching"
+        # Qualified comes first (canonical), bare second
+        assert result[0] == "Parser.parse", "Qualified must be first in result"
+
+    def test_bare_non_container_returns_just_name(self) -> None:
+        """S2: bare non-container name -> [name] (exact match only, no expansion)."""
+        conn = _seed_db_with_kinds([("orchestrate", "function", 1, 10)])
+        result = expand_impact_seeds(conn, "orchestrate")
+        conn.close()
+        assert result == ["orchestrate"], (
+            f"Non-container bare name should return ['orchestrate'] only, got {result}"
+        )
+
+    def test_container_class_returns_name_plus_member_bare_names(self) -> None:
+        """S3: class/container -> [class_name, member1_bare, member2_bare, ...]."""
+        conn = _seed_db_with_kinds([
+            ("Parser", "class", 1, 50),
+            ("Parser.parse", "method", 10, 20),
+            ("Parser.validate", "method", 25, 35),
+        ])
+        result = expand_impact_seeds(conn, "Parser")
+        conn.close()
+        # Class name first
+        assert result[0] == "Parser", "Class name must be first in seeds"
+        # Member bare names included
+        assert "parse" in result, "'parse' (from Parser.parse) must be in seeds"
+        assert "validate" in result, "'validate' (from Parser.validate) must be in seeds"
+
+    def test_result_is_deduped(self) -> None:
+        """S4: no duplicate names in the result list."""
+        conn = _seed_db_with_kinds([
+            ("Parser", "class", 1, 50),
+            ("Parser.parse", "method", 10, 20),
+        ])
+        result = expand_impact_seeds(conn, "Parser")
+        conn.close()
+        assert len(result) == len(set(result)), (
+            f"expand_impact_seeds returned duplicates: {result}"
+        )
+
+    def test_never_raises_on_empty_string(self) -> None:
+        """S5: empty string never raises; returns a list (stable fallback)."""
+        conn = _seed_empty_db()
+        try:
+            result = expand_impact_seeds(conn, "")
+            assert isinstance(result, list)
+        except Exception as exc:  # noqa: BLE001
+            pytest.fail(f"expand_impact_seeds raised on empty string: {exc}")
+        finally:
+            conn.close()
+
+    def test_cap_respected_for_large_container(self) -> None:
+        """S6: container with many members stays bounded by SEAM_NAME_EXPANSION_CAP."""
+        import seam.config as cfg
+
+        cap = cfg.SEAM_NAME_EXPANSION_CAP
+        symbols: list[tuple[str, str, int, int]] = [("BigClass", "class", 1, 1000)]
+        for i in range(cap + 5):
+            symbols.append((f"BigClass.m{i}", "method", i * 5 + 2, i * 5 + 4))
+        conn = _seed_db_with_kinds(symbols)
+        result = expand_impact_seeds(conn, "BigClass")
+        conn.close()
+        # class name (1) + up to cap member bare names = at most cap + 1
+        assert len(result) <= cap + 1, (
+            f"expand_impact_seeds returned {len(result)} > cap+1 ({cap + 1})"
+        )
+
+    def test_qualified_name_no_member_expansion(self) -> None:
+        """S3 guard: a qualified method name (has dot) is NOT a container, no fan-out."""
+        conn = _seed_db_with_kinds([
+            ("Parser", "class", 1, 50),
+            ("Parser.parse", "method", 10, 20),
+            ("Parser.validate", "method", 25, 35),
+        ])
+        result = expand_impact_seeds(conn, "Parser.parse")
+        conn.close()
+        # Should be exactly [qualified, bare] — no class member fan-out
+        assert result == ["Parser.parse", "parse"], (
+            f"Qualified method must return [qualified, bare] only, got {result}"
         )
