@@ -422,6 +422,149 @@ class TestCLIStructure:
         assert result.output.strip() != ""
 
 
+# ── S4: Slice 2 — functional-area annotation ──────────────────────────────────
+
+
+def _seed_clusters(conn: sqlite3.Connection, label: str, symbol_names: list[str]) -> int:
+    """Insert a cluster and assign the named symbols to it. Returns cluster id."""
+    cur = conn.execute(
+        "INSERT INTO clusters (label, size, naming_source) VALUES (?, ?, 'deterministic')",
+        (label, len(symbol_names)),
+    )
+    cid = cur.lastrowid
+    for name in symbol_names:
+        conn.execute("UPDATE symbols SET cluster_id = ? WHERE name = ?", (cid, name))
+    conn.commit()
+    return int(cid)
+
+
+class TestAreaAnnotation:
+    """S4: build_structure() with cluster data populates 'area' on file/dir nodes."""
+
+    def test_file_area_plurality_single_cluster(self, tmp_db) -> None:
+        """File node area = label of cluster with most symbols in that file."""
+        from seam.query.structure import build_structure
+
+        conn, tmp_path, _ = tmp_db
+        _seed_basic(conn, tmp_path)
+        # All 3 symbols in app.py -> cluster "core"
+        _seed_clusters(conn, "core", ["MyClass", "MyClass.do_thing", "standalone_func"])
+
+        result = build_structure(conn, tmp_path)
+        file_node = _find_node_by_path_fragment(result["tree"], "app.py")
+        assert file_node is not None
+        assert file_node["area"] == "core"
+
+    def test_file_area_plurality_winner_chosen(self, tmp_db) -> None:
+        """File area = the cluster label held by the MOST symbols (plurality)."""
+        from seam.query.structure import build_structure
+
+        conn, tmp_path, _ = tmp_db
+        _seed_basic(conn, tmp_path)
+        # app.py: MyClass + MyClass.do_thing -> "core" (2 symbols), standalone_func -> "util" (1)
+        _seed_clusters(conn, "core", ["MyClass", "MyClass.do_thing"])
+        _seed_clusters(conn, "util", ["standalone_func"])
+
+        result = build_structure(conn, tmp_path)
+        file_node = _find_node_by_path_fragment(result["tree"], "app.py")
+        assert file_node is not None
+        assert file_node["area"] == "core"  # 2 vs 1 -> core wins
+
+    def test_file_area_tie_deterministic_lowest_cluster_id(self, tmp_db) -> None:
+        """On a tie, the area with the lowest cluster id wins deterministically."""
+        from seam.query.structure import build_structure
+
+        conn, tmp_path, _ = tmp_db
+        _seed_basic(conn, tmp_path)
+        # app.py has 3 symbols; let's give 1 to each of two clusters and leave 1 unclustered.
+        # With exactly 1 symbol each in cluster A and cluster B, lowest id wins.
+        cid_a = _seed_clusters(conn, "alpha", ["MyClass"])
+        cid_b = _seed_clusters(conn, "beta", ["standalone_func"])
+        # MyClass.do_thing remains unclustered (cluster_id=NULL)
+
+        # alpha and beta have 1 symbol each in app.py — tie -> lowest id wins
+        winner_label = "alpha" if cid_a < cid_b else "beta"
+
+        result = build_structure(conn, tmp_path)
+        file_node = _find_node_by_path_fragment(result["tree"], "app.py")
+        assert file_node is not None
+        assert file_node["area"] == winner_label
+
+    def test_dir_area_plurality_of_child_files(self, tmp_db) -> None:
+        """Dir area = plurality of its child files' areas."""
+        from seam.query.structure import build_structure
+
+        conn, tmp_path, _ = tmp_db
+        _seed_basic(conn, tmp_path)
+        # app.py -> "core", utils.py -> "util", subdir/helper.py -> "util"
+        _seed_clusters(conn, "core", ["MyClass", "MyClass.do_thing", "standalone_func"])
+        _seed_clusters(conn, "util", ["UtilClass", "UtilClass.helper", "top_level", "bare_func"])
+
+        result = build_structure(conn, tmp_path)
+        # Root dir: 1 file (app.py) with "core", 1 file (utils.py) with "util"
+        # Plus subdir (which has 1 file -> "util"), so dir children are:
+        #   app.py (core), utils.py (util), subdir/ -> has 1 file "util"
+        # Root level: core(1), util(1 direct + 1 through subdir)... but area is
+        # computed from direct file children only (not recursive). Let's check subdir.
+        subdir_node = _find_node_by_name(result["tree"], "subdir")
+        assert subdir_node is not None
+        assert subdir_node["area"] == "util"
+
+    def test_no_clusters_area_stays_none(self, tmp_db) -> None:
+        """When the index has no cluster data, area is None for all nodes."""
+        from seam.query.structure import build_structure
+
+        conn, tmp_path, _ = tmp_db
+        _seed_basic(conn, tmp_path)
+        # No clusters seeded -> all cluster_id are NULL
+
+        result = build_structure(conn, tmp_path)
+
+        def _all_areas(node: dict) -> list:
+            areas = [node.get("area")]
+            for child in node.get("children", []):
+                areas.extend(_all_areas(child))
+            return areas
+
+        areas = _all_areas(result["tree"])
+        assert all(a is None for a in areas), f"Expected all None, got: {areas}"
+
+    def test_area_in_json_output(self, tmp_db) -> None:
+        """Area appears in --json output when clusters are present."""
+        from seam.cli.main import app
+
+        conn, tmp_path, db_path = tmp_db
+        _seed_basic(conn, tmp_path)
+        _seed_clusters(conn, "core", ["MyClass", "MyClass.do_thing", "standalone_func"])
+        conn.close()
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["structure", str(tmp_path), "--json"])
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+        data = json.loads(result.output)
+        tree = data["data"]["tree"]
+
+        # Find app.py file node and verify area is set
+        file_node = _find_node_by_path_fragment(tree, "app.py")
+        assert file_node is not None
+        assert file_node.get("area") == "core"
+
+    def test_area_in_quiet_output(self, tmp_db) -> None:
+        """Area label appears in --quiet CLI output when clusters are present."""
+        from seam.cli.main import app
+
+        conn, tmp_path, db_path = tmp_db
+        _seed_basic(conn, tmp_path)
+        _seed_clusters(conn, "core", ["MyClass", "MyClass.do_thing", "standalone_func"])
+        conn.close()
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["structure", str(tmp_path), "--quiet"])
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+        # The word "core" should appear in the output
+        assert "core" in result.output, f"Expected 'core' in output:\n{result.output}"
+
+
 # ── Tree-walking helpers ───────────────────────────────────────────────────────
 
 

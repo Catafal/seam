@@ -1696,6 +1696,8 @@ def _render_structure_quiet(node: StructureNode, depth: int = 0) -> None:
 
     WHY a separate helper: keeps the command body readable and matches the
     _print_flow_tree pattern established by seam flows.
+
+    Slice 2: file and dir nodes include their 'area' label when present.
     """
     indent = "  " * depth
     kind = node["kind"]
@@ -1703,12 +1705,16 @@ def _render_structure_quiet(node: StructureNode, depth: int = 0) -> None:
     path = node.get("path") or ""
     sym = node.get("symbol_count", 0)
     members = node.get("members", 0)
+    area = node.get("area")
 
-    # One line per node: indent + kind marker + name + counts
+    # Optional area suffix — shown for dir and file nodes when area is set.
+    area_suffix = f"  [{area}]" if area else ""
+
+    # One line per node: indent + kind marker + name + counts + optional area
     if kind == "dir":
-        sys.stdout.write(f"{indent}[{kind}] {name}/  ({sym} symbols)\n")
+        sys.stdout.write(f"{indent}[{kind}] {name}/  ({sym} symbols){area_suffix}\n")
     elif kind == "file":
-        sys.stdout.write(f"{indent}[{kind}] {path}  ({sym} symbols)\n")
+        sys.stdout.write(f"{indent}[{kind}] {path}  ({sym} symbols){area_suffix}\n")
     elif kind == "container":
         sys.stdout.write(f"{indent}[{kind}] {name}  ({members} members)\n")
     else:
