@@ -603,6 +603,13 @@ def build_structure(
     effective_max_depth: int = max_depth if max_depth is not None else config.SEAM_STRUCTURE_MAX_DEPTH
     effective_max_nodes: int = max_nodes if max_nodes is not None else config.SEAM_STRUCTURE_MAX_NODES
 
+    # Resolve `root` HERE (one syscall) so path matching is correct regardless of how
+    # the caller passed it. `seam init` stores symlink-resolved file paths, so an
+    # unresolved root (e.g. macOS /var vs /private/var) would make relative_to() fail
+    # for every file and leak absolute paths into the tree. The CLI/start already
+    # resolve, but this makes build_structure robust to any caller.
+    root = root.resolve()
+
     try:
         raw_symbols = _fetch_all_symbols(conn)
     except Exception:
@@ -614,16 +621,15 @@ def build_structure(
     # --scope src/` and the MCP `path="src/"` both mean "<root>/src" regardless of the
     # process working directory. An absolute scope is honoured as-is.
     #
-    # We compare LEXICALLY (os.path.normpath — pure string, no filesystem access) rather
-    # than Path.resolve(): resolve() would (a) cost a stat() syscall per symbol row —
-    # O(rows) on a large index, stalling the MCP hot path — and (b) symlink-resolve the
-    # scope while the stored file paths are not symlink-resolved, breaking the match on
-    # platforms where the temp/root prefix is a symlink (e.g. macOS /var -> /private/var).
+    # The scope is resolved ONCE (it's a single path, not per-row), so it lands in the
+    # same symlink-resolved space as `root` and the stored file paths. The per-row
+    # comparison is then a pure STRING prefix — no Path.resolve() per symbol, which would
+    # be an O(rows) stat() storm on the MCP hot path for a large index.
     scope_abs: Path | None
     if path is not None:
-        scope_abs = path if path.is_absolute() else root / path
-        scope_str = os.path.normpath(str(scope_abs))
-        root_str = os.path.normpath(str(root))
+        scope_abs = (path if path.is_absolute() else root / path).resolve()
+        scope_str = str(scope_abs)
+        root_str = str(root)
         if scope_str != root_str and not scope_str.startswith(root_str + os.sep):
             # Out-of-tree path — degrade to empty tree, never raise. WARNING (not DEBUG):
             # a mistyped --scope returns an empty tree, which is silent without this log.
@@ -637,10 +643,8 @@ def build_structure(
             scope_prefix = scope_str + os.sep
             raw_symbols = [
                 r for r in raw_symbols
-                if os.path.normpath(r[0]) == scope_str
-                or os.path.normpath(r[0]).startswith(scope_prefix)
+                if r[0] == scope_str or r[0].startswith(scope_prefix)
             ]
-            scope_abs = Path(scope_str)
     else:
         scope_abs = None
 
