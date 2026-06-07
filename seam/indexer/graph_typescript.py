@@ -37,6 +37,7 @@ from seam.indexer.graph_common import (
 )
 from seam.indexer.graph_scope_infer import (
     _TS_SELF_NAMES,
+    collect_composition_types_typescript,
     record_ts_local_types,
     record_ts_param_types,
     resolve_receiver_type,
@@ -244,6 +245,7 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
     file_stem = filepath.stem
     emit_inheritance = config.SEAM_INHERITANCE_EDGES == "on"
     type_inference_on = config.SEAM_TYPE_INFERENCE == "on"
+    composition_on = config.SEAM_COMPOSITION_EDGES == "on"
 
     def _emit_ts_inheritance(node: Node) -> None:
         name_node = node.child_by_field_name("name")
@@ -476,6 +478,22 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
         class_fields: dict[str, str] = {}
         if type_inference_on and cls_name:
             class_fields = scan_class_fields_typescript(class_node)
+
+        # Slice #77: emit composition (holds) edges for this TS class.
+        # Mirrors the Python approach: collect deduped (type, line) pairs and emit
+        # one holds edge per unique held type. The collector handles dedup so both
+        # a field declaration and a ctor parameter of the same type produce one edge.
+        if composition_on and cls_name:
+            for held_type, held_line in collect_composition_types_typescript(class_node):
+                edges.append(Edge(
+                    source=cls_name,
+                    target=held_type,
+                    kind="holds",
+                    file=file_str,
+                    line=held_line,
+                    confidence="INFERRED",
+                    receiver=None,
+                ))
 
         body = class_node.child_by_field_name("body")
         if body is None:

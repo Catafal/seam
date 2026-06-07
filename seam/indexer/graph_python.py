@@ -38,6 +38,7 @@ from seam.indexer.graph_common import (
 from seam.indexer.graph_scope_infer import (
     _PY_BUILTIN_TYPES,
     _PY_SELF_NAMES,
+    collect_composition_types_python,
     record_py_local_types,
     record_py_param_types,
     resolve_receiver_type,
@@ -233,6 +234,7 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
 
     emit_inheritance = config.SEAM_INHERITANCE_EDGES == "on"
     type_inference_on = config.SEAM_TYPE_INFERENCE == "on"
+    composition_on = config.SEAM_COMPOSITION_EDGES == "on"
 
     def _emit_import_edges(node: Node) -> None:
         if node.type == "import_statement":
@@ -442,6 +444,23 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
         class_fields: dict[str, str] = {}
         if type_inference_on and cls_name:
             class_fields = scan_class_fields_python(class_node)
+
+        # Slice #77: emit composition (holds) edges.
+        # WHY here: this is the single natural place where we have both the class name
+        # (cls_name) and the full class AST node. The collector handles dedup internally
+        # so we don't risk double-emitting even if the same type appears as both a class
+        # field and an __init__ parameter.
+        if composition_on and cls_name:
+            for held_type, held_line in collect_composition_types_python(class_node):
+                edges.append(Edge(
+                    source=cls_name,
+                    target=held_type,
+                    kind="holds",
+                    file=file_str,
+                    line=held_line,
+                    confidence="INFERRED",
+                    receiver=None,
+                ))
 
         body = class_node.child_by_field_name("body")
         if body is None:

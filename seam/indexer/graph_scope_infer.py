@@ -627,3 +627,202 @@ def _ts_record_single_declarator(decl: Node, var_types: dict[str, str]) -> None:
                 var_types[var_name] = cls
     except Exception as exc:  # noqa: BLE001
         logger.debug("_ts_record_single_declarator: failed: %r", exc)
+
+
+# ── Slice #77: Composition (holds) collectors ────────────────────────────────
+#
+# These functions return deduped (held_type_name, line) pairs for a class node.
+# They REUSE the existing scan_class_fields_* helpers (Layer 1 field pre-scan) for
+# the stored-field half, and add a constructor/init-parameter pass using the SAME
+# plain-type extractors (_py_plain_type_from_annotation, _ts_plain_type_from_annotation).
+#
+# CONSERVATISM CONTRACT (same as receiver-type inference):
+#   NEVER emit a wrong type. Only plain user-type identifiers are accepted.
+#   Optionals, containers, generics, primitives, and dotted types are all refused.
+#   The existing scan_class_fields_* helpers already apply this filter for fields.
+#   Constructor/init params add the same filter on top.
+#
+# DEDUPE: a type name that appears as BOTH a field and a ctor/init param is emitted
+# only ONCE. Dedupe is per (source, target) — the set returned here is deduplicated.
+#
+# NEVER RAISES: all public functions have a backstop try/except and return [] on error.
+
+
+def collect_composition_types_python(class_node: Node) -> list[tuple[str, int]]:
+    """Collect (held_type_name, line) pairs from a Python class_definition node.
+
+    Two passes:
+      1. Field types: reuses scan_class_fields_python (annotated class attrs).
+      2. __init__ parameter types: scans parameters of __init__ with plain-type annotations.
+
+    Deduped: if the same type appears in both field and __init__ param, only one entry
+    is returned (first source wins — typically the field declaration wins since the class
+    body is scanned first, but dedup uses a set so order doesn't matter for correctness).
+
+    Returns [] on any error. Never raises.
+    """
+    try:
+        seen: set[str] = set()
+        result: list[tuple[str, int]] = []
+
+        # Pass 1: class-level field annotations.
+        # scan_class_fields_python returns name→type, but we need the LINE too.
+        # Walk the body directly to capture line numbers alongside types.
+        body = class_node.child_by_field_name("body")
+        if body is not None:
+            for stmt in body.children:
+                try:
+                    if stmt.type == "expression_statement" and stmt.children:
+                        inner = stmt.children[0]
+                        if inner.type in ("assignment", "annotated_assignment"):
+                            ann = inner.child_by_field_name("type")
+                            left = inner.child_by_field_name("left")
+                            if ann is not None and left is not None and left.type == "identifier":
+                                type_name = _py_plain_type_from_annotation(ann)
+                                if type_name and type_name not in seen:
+                                    seen.add(type_name)
+                                    result.append((type_name, stmt.start_point[0] + 1))
+                except Exception:  # noqa: BLE001
+                    pass
+
+        # Pass 2: __init__ parameter types.
+        if body is not None:
+            for stmt in body.children:
+                try:
+                    fn = _py_get_init_function(stmt)
+                    if fn is None:
+                        continue
+                    params = fn.child_by_field_name("parameters")
+                    if params is None:
+                        continue
+                    for param in params.children:
+                        if param.type not in ("typed_parameter", "typed_default_parameter"):
+                            continue
+                        ann = param.child_by_field_name("type")
+                        if ann is None:
+                            continue
+                        type_name = _py_plain_type_from_annotation(ann)
+                        if type_name and type_name not in seen:
+                            seen.add(type_name)
+                            result.append((type_name, param.start_point[0] + 1))
+                except Exception:  # noqa: BLE001
+                    pass
+
+        return result
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("collect_composition_types_python: failed: %r", exc)
+        return []
+
+
+def _py_get_init_function(stmt: Node) -> Node | None:
+    """Return the function_definition node if stmt is a Python __init__ method.
+
+    Handles plain `def __init__(...)` and `@decorator def __init__(...)`.
+    Returns None for all other nodes.
+    """
+    if stmt.type == "function_definition":
+        name = _text(stmt.child_by_field_name("name") or stmt)
+        if name == "__init__":
+            return stmt
+    elif stmt.type == "decorated_definition":
+        inner = stmt.child_by_field_name("definition")
+        if inner is not None and inner.type == "function_definition":
+            name = _text(inner.child_by_field_name("name") or inner)
+            if name == "__init__":
+                return inner
+    return None
+
+
+def collect_composition_types_typescript(class_node: Node) -> list[tuple[str, int]]:
+    """Collect (held_type_name, line) pairs from a TypeScript class_declaration node.
+
+    Two passes:
+      1. Field types: scan public_field_definition/field_definition nodes with a plain
+         type_annotation — reuses _ts_plain_type_from_annotation (same as scan_class_fields_ts).
+      2. Constructor parameter types: scan required_parameter and optional_parameter nodes
+         in the constructor method, including parameter-property forms
+         (e.g. constructor(private svc: Service)).
+
+    Deduped: same type from both field and ctor param → one entry.
+    Returns [] on any error. Never raises.
+    """
+    try:
+        seen: set[str] = set()
+        result: list[tuple[str, int]] = []
+
+        body = class_node.child_by_field_name("body")
+        if body is None:
+            return result
+
+        # Pass 1: field declarations.
+        for child in body.children:
+            try:
+                if child.type not in ("public_field_definition", "field_definition"):
+                    continue
+                type_node = child.child_by_field_name("type")
+                if type_node is None:
+                    continue
+                type_name = _ts_plain_type_from_annotation(type_node)
+                if type_name and type_name not in seen:
+                    seen.add(type_name)
+                    result.append((type_name, child.start_point[0] + 1))
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Pass 2: constructor parameters (including parameter-property DI).
+        for child in body.children:
+            try:
+                if child.type != "method_definition":
+                    continue
+                name_node = child.child_by_field_name("name")
+                if name_node is None or _text(name_node) != "constructor":
+                    continue
+                # Found the constructor — scan its parameters.
+                params = child.child_by_field_name("parameters")
+                if params is None:
+                    continue
+                for param in params.children:
+                    type_name = _ts_param_plain_type(param)
+                    if type_name and type_name not in seen:
+                        seen.add(type_name)
+                        result.append((type_name, param.start_point[0] + 1))
+            except Exception:  # noqa: BLE001
+                pass
+
+        return result
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("collect_composition_types_typescript: failed: %r", exc)
+        return []
+
+
+def _ts_param_plain_type(param: Node) -> str | None:
+    """Extract a plain user type from a TS constructor parameter node.
+
+    Handles:
+      required_parameter(x: Type)              — normal param
+      optional_parameter(x?: Type)             — optional param name (still has a type)
+      required_parameter with access_modifier   — parameter property (private/public/protected)
+        e.g. constructor(private svc: Service)
+      public_field_definition used as param     — some grammars model param-props as fields
+
+    Conservative: only plain type_identifier annotations bind. Never raises.
+    """
+    try:
+        # Standard required/optional parameter.
+        if param.type in ("required_parameter", "optional_parameter"):
+            type_node = param.child_by_field_name("type")
+            if type_node is not None:
+                return _ts_plain_type_from_annotation(type_node)
+
+        # Parameter property: tree-sitter models `constructor(private svc: Service)` as
+        # a required_parameter whose FIRST child is an accessibility_modifier ("private",
+        # "public", "protected"), followed by the identifier and type_annotation.
+        # Some grammar versions emit `public_field_definition` inside the parameter list.
+        if param.type == "public_field_definition":
+            type_node = param.child_by_field_name("type")
+            if type_node is not None:
+                return _ts_plain_type_from_annotation(type_node)
+
+        return None
+    except Exception:  # noqa: BLE001
+        return None
