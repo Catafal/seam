@@ -49,6 +49,7 @@ from seam.indexer.graph_common import (
 from seam.indexer.graph_scope_infer_ext import resolve_receiver_type_ext
 from seam.indexer.graph_scope_infer_ext2 import (
     _RUBY_SELF_NAMES,
+    collect_composition_types_ruby,
     record_ruby_local_types,
     scan_class_fields_ruby,
 )
@@ -377,9 +378,10 @@ def _extract_edges_ruby(root: Node, filepath: Path) -> list[Edge]:
     file_str = str(filepath)
     file_stem = filepath.stem
     infer = config.SEAM_TYPE_INFERENCE == "on"
+    composition_on = config.SEAM_COMPOSITION_EDGES == "on"
 
     try:
-        _walk_ruby_edges(root, file_str, file_stem, edges, infer, None, {}, {})
+        _walk_ruby_edges(root, file_str, file_stem, edges, infer, composition_on, None, {}, {})
     except Exception as exc:  # noqa: BLE001
         logger.debug("_extract_edges_ruby: unexpected error for %s: %r", filepath, exc)
 
@@ -392,6 +394,7 @@ def _walk_ruby_edges(
     file_stem: str,
     edges: list[Edge],
     infer: bool,
+    composition_on: bool,
     class_name: str | None,
     class_fields: dict[str, str],
     var_types: dict[str, str],
@@ -400,6 +403,7 @@ def _walk_ruby_edges(
 
     Threads class_name + class_fields (ivar types from initialize) + var_types
     (local var types from constructor calls in the current method body).
+    composition_on gates holds edge emission (Slice #79).
     """
     ntype = node.type
 
@@ -409,12 +413,16 @@ def _walk_ruby_edges(
         name_node = node.child_by_field_name("name")
         if name_node is not None:
             new_class = _text(name_node).strip() or None
+        # Slice #79: emit holds edges for Ruby class ivar assignments in initialize.
+        if composition_on and new_class:
+            _handle_ruby_class_holds(node, new_class, file_str, edges)
         new_fields = scan_class_fields_ruby(node) if infer else {}
         body = node.child_by_field_name("body")
         if body is not None:
             for child in body.children:
                 _walk_ruby_edges(
-                    child, file_str, file_stem, edges, infer, new_class, new_fields, dict(new_fields)
+                    child, file_str, file_stem, edges, infer, composition_on,
+                    new_class, new_fields, dict(new_fields)
                 )
         return
 
@@ -425,7 +433,8 @@ def _walk_ruby_edges(
         if body is not None:
             for child in body.children:
                 _walk_ruby_edges(
-                    child, file_str, file_stem, edges, infer, class_name, class_fields, new_types
+                    child, file_str, file_stem, edges, infer, composition_on,
+                    class_name, class_fields, new_types
                 )
         return
 
@@ -438,7 +447,10 @@ def _walk_ruby_edges(
         # Still recurse — calls can be nested
 
     for child in node.children:
-        _walk_ruby_edges(child, file_str, file_stem, edges, infer, class_name, class_fields, var_types)
+        _walk_ruby_edges(
+            child, file_str, file_stem, edges, infer, composition_on,
+            class_name, class_fields, var_types
+        )
 
 
 def _handle_ruby_call(
@@ -605,6 +617,31 @@ def _ruby_string_content(string_node: Node) -> str | None:
     # Fallback: strip surrounding quotes from full text
     raw = _text(string_node)
     return raw.strip("'\"")
+
+
+def _handle_ruby_class_holds(
+    class_node: Node, class_name: str, file_str: str, edges: list[Edge]
+) -> None:
+    """Emit holds edges for a Ruby class based on initialize ivar assignments.
+
+    Delegates to collect_composition_types_ruby for (held_type, line) pairs and
+    emits one Edge per unique pair. Never raises (backstop try/except).
+    """
+    try:
+        for held_type, held_line in collect_composition_types_ruby(class_node):
+            edges.append(
+                Edge(
+                    source=class_name,
+                    target=held_type,
+                    kind="holds",
+                    file=file_str,
+                    line=held_line,
+                    confidence="INFERRED",
+                    receiver=None,
+                )
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_handle_ruby_class_holds: failed: %r", exc)
 
 
 # ── Ruby comment extraction ────────────────────────────────────────────────────

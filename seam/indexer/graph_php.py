@@ -55,6 +55,7 @@ from seam.indexer.graph_common import (
 from seam.indexer.graph_scope_infer_ext import resolve_receiver_type_ext
 from seam.indexer.graph_scope_infer_ext2 import (
     _PHP_SELF_NAMES,
+    collect_composition_types_php,
     record_php_local_types,
     record_php_param_types,
     scan_class_fields_php,
@@ -368,9 +369,10 @@ def _extract_edges_php(root: Node, filepath: Path) -> list[Edge]:
     file_str = str(filepath)
     file_stem = filepath.stem
     infer = config.SEAM_TYPE_INFERENCE == "on"
+    composition_on = config.SEAM_COMPOSITION_EDGES == "on"
 
     try:
-        _walk_php_edges(root, file_str, file_stem, edges, infer, None, {}, {})
+        _walk_php_edges(root, file_str, file_stem, edges, infer, composition_on, None, {}, {})
     except Exception as exc:  # noqa: BLE001
         logger.debug("_extract_edges_php: unexpected error for %s: %r", filepath, exc)
 
@@ -383,11 +385,14 @@ def _walk_php_edges(
     file_stem: str,
     edges: list[Edge],
     infer: bool,
+    composition_on: bool,
     class_name: str | None,
     class_fields: dict[str, str],
     var_types: dict[str, str],
 ) -> None:
-    """Recursive walker for PHP edge extraction with type-inference context threading."""
+    """Recursive walker for PHP edge extraction with type-inference context threading.
+    composition_on gates holds edge emission (Slice #79).
+    """
     ntype = node.type
 
     if ntype == "namespace_use_declaration":
@@ -400,12 +405,16 @@ def _walk_php_edges(
         cn = node.child_by_field_name("name")
         if cn is not None:
             new_class = _text(cn).strip() or None
+        # Slice #79: emit holds edges for PHP class properties + ctor params.
+        if composition_on and new_class:
+            _handle_php_class_holds(node, new_class, file_str, edges)
         new_fields = scan_class_fields_php(node) if infer else {}
         body = node.child_by_field_name("body")
         if body is not None:
             for child in body.children:
                 _walk_php_edges(
-                    child, file_str, file_stem, edges, infer, new_class, new_fields, dict(new_fields)
+                    child, file_str, file_stem, edges, infer, composition_on,
+                    new_class, new_fields, dict(new_fields)
                 )
         return
 
@@ -418,7 +427,8 @@ def _walk_php_edges(
         if body is not None:
             for child in body.children:
                 _walk_php_edges(
-                    child, file_str, file_stem, edges, infer, class_name, class_fields, new_types
+                    child, file_str, file_stem, edges, infer, composition_on,
+                    class_name, class_fields, new_types
                 )
         return
 
@@ -433,7 +443,10 @@ def _walk_php_edges(
         _handle_php_new_expression(node, file_str, edges)
         # Recurse to catch nested news in constructor arguments.
         for child in node.children:
-            _walk_php_edges(child, file_str, file_stem, edges, infer, class_name, class_fields, var_types)
+            _walk_php_edges(
+                child, file_str, file_stem, edges, infer, composition_on,
+                class_name, class_fields, var_types
+            )
         return  # already recursed above
 
     if ntype == "function_call_expression":
@@ -451,7 +464,10 @@ def _walk_php_edges(
         # Still recurse for nested calls
 
     for child in node.children:
-        _walk_php_edges(child, file_str, file_stem, edges, infer, class_name, class_fields, var_types)
+        _walk_php_edges(
+            child, file_str, file_stem, edges, infer, composition_on,
+            class_name, class_fields, var_types
+        )
 
 
 def _handle_php_new_expression(
@@ -749,6 +765,31 @@ def _handle_php_scoped_call(
             )
     except Exception:  # noqa: BLE001
         pass  # never raise from the extractor
+
+
+def _handle_php_class_holds(
+    class_node: Node, class_name: str, file_str: str, edges: list[Edge]
+) -> None:
+    """Emit holds edges for each typed property/ctor-param in a PHP class.
+
+    Delegates to collect_composition_types_php for (held_type, line) pairs and
+    emits one Edge per unique pair. Never raises (backstop try/except).
+    """
+    try:
+        for held_type, held_line in collect_composition_types_php(class_node):
+            edges.append(
+                Edge(
+                    source=class_name,
+                    target=held_type,
+                    kind="holds",
+                    file=file_str,
+                    line=held_line,
+                    confidence="INFERRED",
+                    receiver=None,
+                )
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_handle_php_class_holds: failed: %r", exc)
 
 
 # ── PHP comment extraction ─────────────────────────────────────────────────────
