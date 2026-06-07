@@ -37,6 +37,7 @@ from seam.indexer.graph_common import (
 )
 from seam.indexer.graph_scope_infer_ext import (
     _RUST_SELF_NAMES,
+    collect_composition_types_rust,
     record_rust_local_types,
     record_rust_param_types,
     resolve_receiver_type_ext,
@@ -286,7 +287,7 @@ def _extract_symbols_rust(root: Node, filepath: Path) -> list[Symbol]:
 
 
 def _extract_edges_rust(root: Node, filepath: Path) -> list[Edge]:
-    """Extract import and call edges from a Rust AST.
+    """Extract import, call, and holds edges from a Rust AST.
 
     Import heuristic:
         use std::io::Write        → target = 'Write'
@@ -301,11 +302,15 @@ def _extract_edges_rust(root: Node, filepath: Path) -> list[Edge]:
     Tier B B5: when SEAM_TYPE_INFERENCE is on, field_expression calls are resolved to
     'Type.method' qualified targets by looking up the receiver in the per-function scope
     (params + let_declarations). Also handles self.method() → 'Type.method'.
+
+    Slice #78: when SEAM_COMPOSITION_EDGES is on, struct_item nodes emit holds edges
+    for each plain user-type field. Happens alongside the Tier B field pre-scan.
     """
     edges: list[Edge] = []
     file_str = str(filepath)
     file_stem = filepath.stem
     infer = config.SEAM_TYPE_INFERENCE == "on"
+    composition_on = config.SEAM_COMPOSITION_EDGES == "on"
 
     # struct_fields: struct name → field type map; pre-scanned so impl methods can see them.
     struct_fields: dict[str, dict[str, str]] = {}
@@ -321,12 +326,31 @@ def _extract_edges_rust(root: Node, filepath: Path) -> list[Edge]:
             _handle_rust_use(node, file_str, file_stem, edges)
             return
 
-        if ntype == "struct_item" and infer:
+        if ntype == "struct_item":
             name_node = node.child_by_field_name("name")
             if name_node:
                 sname = _text(name_node).strip()
                 if sname:
-                    struct_fields[sname] = scan_class_fields_rust(node)
+                    if infer:
+                        struct_fields[sname] = scan_class_fields_rust(node)
+                    # Slice #78: emit holds edges for each plain user-type field.
+                    # WHY here: struct_item is where field declarations live in Rust
+                    # (unlike Python/TS where fields are in the class body that is also
+                    # walked for method edges). struct_item is a top-level item — safe
+                    # to emit here without worrying about nested scopes.
+                    if composition_on:
+                        for held_type, held_line in collect_composition_types_rust(node):
+                            edges.append(
+                                Edge(
+                                    source=sname,
+                                    target=held_type,
+                                    kind="holds",
+                                    file=file_str,
+                                    line=held_line,
+                                    confidence="INFERRED",
+                                    receiver=None,
+                                )
+                            )
 
         if ntype == "impl_item":
             # _rust_impl_type_name returns None when the type field is absent — no guard needed.

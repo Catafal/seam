@@ -555,3 +555,124 @@ def scan_class_fields_rust(impl_node: Node) -> dict[str, str]:
         logger.debug("scan_class_fields_rust: failed: %r", exc)
     return out
 
+
+# ── Slice #78: Composition (holds) collectors for Go and Rust ─────────────────
+#
+# These functions return deduped (held_type_name, line) pairs for a struct node.
+# They REUSE scan_class_fields_go and scan_class_fields_rust for the stored-field
+# half (no constructor/init-parameter pass in Go/Rust — struct fields ARE the
+# composition declaration for these languages).
+#
+# CONSERVATISM CONTRACT (same as Python/TS collectors and receiver-type inference):
+#   NEVER emit a wrong type. Only plain user-type identifiers are accepted.
+#   Slices, maps, generics, primitives, and lowercase names are all refused by
+#   the existing _strip_ref_wrapper + PascalCase guard in scan_class_fields_go,
+#   and by _rust_plain_type in scan_class_fields_rust.
+#
+# DEDUPE: a type name that appears in multiple fields is emitted only ONCE.
+#   Dedupe is per target type name — the set returned here is deduplicated.
+#
+# NEVER RAISES: all public functions have a backstop try/except, return [] on error.
+
+
+def collect_composition_types_go(struct_node: Node) -> list[tuple[str, int]]:
+    """Collect (held_type_name, line) pairs from a Go struct_type node.
+
+    Single pass: iterates the field_declaration_list, accepting only PascalCase
+    plain-type fields (pointer fields have the pointer stripped). Deduped by type name.
+
+    Go does not have constructors in the same sense as Python/__init__ — the struct
+    field declarations ARE the composition declaration. No constructor param pass needed.
+
+    WHY struct_node is the struct_type node (not the type_spec or type_declaration):
+      scan_class_fields_go takes the struct_type node directly. The emission site in
+      graph_go.py has the type_spec; it passes type_spec.child 'type' (the struct_type)
+      to this collector.
+
+    Returns [] on any error. Never raises.
+    """
+    try:
+        seen: set[str] = set()
+        result: list[tuple[str, int]] = []
+
+        # struct_type has a field_declaration_list child
+        for child in struct_node.children:
+            if child.type != "field_declaration_list":
+                continue
+            for field in child.named_children:
+                if field.type != "field_declaration":
+                    continue
+                try:
+                    type_node = field.child_by_field_name("type")
+                    if type_node is None:
+                        continue
+                    type_text = _text(type_node).strip()
+                    # _strip_ref_wrapper handles *Type → Type (and refuses slices/generics).
+                    type_name = _strip_ref_wrapper(type_text) or type_text
+                    # Require PascalCase (user-defined type) and non-empty.
+                    if not type_name or not type_name[0].isupper():
+                        continue
+                    # Refuse types that still contain pointer/ref chars after strip
+                    # (double-pointer or slice after strip → residual * or [).
+                    if "*" in type_name or "[" in type_name or "<" in type_name:
+                        continue
+                    if type_name not in seen:
+                        seen.add(type_name)
+                        result.append((type_name, field.start_point[0] + 1))
+                except Exception:  # noqa: BLE001
+                    pass
+            break  # Only one field_declaration_list per struct
+
+        return result
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("collect_composition_types_go: failed: %r", exc)
+        return []
+
+
+def collect_composition_types_rust(struct_node: Node) -> list[tuple[str, int]]:
+    """Collect (held_type_name, line) pairs from a Rust struct_item node.
+
+    Single pass: iterates the field_declaration_list, accepting only PascalCase
+    plain-type fields (reference types &T have the ref stripped via _rust_plain_type).
+    Deduped by type name.
+
+    Rust has no constructor-as-composition pattern that is statically visible in the
+    struct AST (::new() is an associated function, not a struct declaration), so
+    only struct field declarations are scanned. This mirrors how scan_class_fields_rust
+    works, but also captures the line number for the Edge.
+
+    WHY struct_node is the struct_item node:
+      The emission site in graph_rust.py has the struct_item node directly available
+      at the point where we index the struct symbol.
+
+    Returns [] on any error. Never raises.
+    """
+    try:
+        seen: set[str] = set()
+        result: list[tuple[str, int]] = []
+
+        for child in struct_node.children:
+            if child.type != "field_declaration_list":
+                continue
+            for field in child.named_children:
+                if field.type != "field_declaration":
+                    continue
+                try:
+                    type_node = field.child_by_field_name("type")
+                    if type_node is None:
+                        continue
+                    type_name = _rust_plain_type(type_node)
+                    if not type_name:
+                        continue
+                    if type_name not in seen:
+                        seen.add(type_name)
+                        result.append((type_name, field.start_point[0] + 1))
+                except Exception:  # noqa: BLE001
+                    pass
+            break  # Only one field_declaration_list per struct
+
+        return result
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("collect_composition_types_rust: failed: %r", exc)
+        return []
+

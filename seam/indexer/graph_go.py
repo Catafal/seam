@@ -18,6 +18,7 @@ All extractor functions follow the same contract:
   - Edges carry confidence='INFERRED' by default.
 """
 
+import logging
 from pathlib import Path
 
 from tree_sitter import Node
@@ -36,11 +37,14 @@ from seam.indexer.graph_common import (
     _text,
 )
 from seam.indexer.graph_scope_infer_ext import (
+    collect_composition_types_go,
     record_go_local_types,
     record_go_param_types,
     resolve_receiver_type_ext,
 )
 from seam.indexer.signatures import extract_node_fields
+
+logger = logging.getLogger(__name__)
 
 # ── Doc-comment helper ─────────────────────────────────────────────────────────
 
@@ -254,7 +258,7 @@ def _handle_go_type_spec(
 
 
 def _extract_edges_go(root: Node, filepath: Path) -> list[Edge]:
-    """Extract import and call edges from a Go AST.
+    """Extract import, call, and holds edges from a Go AST.
 
     Import heuristic:
         import "pkg/path"         → target = last path segment ('path')
@@ -268,14 +272,29 @@ def _extract_edges_go(root: Node, filepath: Path) -> list[Edge]:
     Tier B B5: when SEAM_TYPE_INFERENCE is on, selector-expression calls are resolved to
     'Type.method' qualified targets by looking up the receiver identifier in the per-function
     scope map (params + locals). The scope map is rebuilt at each function/method entry.
+
+    Slice #78: when SEAM_COMPOSITION_EDGES is on, struct_type declarations emit
+    holds edges for each plain user-type field (pointer fields have * stripped).
     """
     edges: list[Edge] = []
     file_str = str(filepath)
     file_stem = filepath.stem
     infer = config.SEAM_TYPE_INFERENCE == "on"
+    composition_on = config.SEAM_COMPOSITION_EDGES == "on"
 
     def _walk(node: Node, var_types: dict[str, str]) -> None:
         ntype = node.type
+
+        # Slice #78: emit composition (holds) edges for Go structs.
+        # WHY here: type_declaration wraps type_spec which contains the struct_type.
+        # We handle it at type_declaration level to get the struct name from the
+        # type_spec.name field, then pass the struct_type node to the collector.
+        if ntype == "type_declaration" and composition_on:
+            _handle_go_struct_holds(node, file_str, edges)
+            # Still recurse into children so nested composites are also visited.
+            for child in node.children:
+                _walk(child, var_types)
+            return
 
         if ntype == "import_declaration":
             _handle_go_import(node, file_str, file_stem, edges)
@@ -381,6 +400,51 @@ def _extract_edges_go(root: Node, filepath: Path) -> list[Edge]:
         _walk(child, {})
 
     return edges
+
+
+def _handle_go_struct_holds(
+    type_decl_node: Node, file_str: str, edges: list[Edge]
+) -> None:
+    """Emit holds edges for each plain user-type field in a Go struct_type.
+
+    Walks the type_declaration's type_spec children. For each type_spec whose
+    'type' field is a struct_type, collects (held_type, line) pairs from
+    collect_composition_types_go and emits one holds edge per unique held type.
+
+    WHY a separate helper (not inline in _walk):
+      Keeps _walk lean and mirrors the Python/TS pattern of a dedicated _handle_*
+      function for each edge kind. Also called for nested type declarations inside
+      function bodies if they arise (defensive programming).
+
+    Never raises (backstop try/except).
+    """
+    try:
+        for child in type_decl_node.children:
+            if child.type != "type_spec":
+                continue
+            name_node = child.child_by_field_name("name")
+            type_node = child.child_by_field_name("type")
+            if name_node is None or type_node is None:
+                continue
+            if type_node.type != "struct_type":
+                continue
+            struct_name = _text(name_node).strip()
+            if not struct_name:
+                continue
+            for held_type, held_line in collect_composition_types_go(type_node):
+                edges.append(
+                    Edge(
+                        source=struct_name,
+                        target=held_type,
+                        kind="holds",
+                        file=file_str,
+                        line=held_line,
+                        confidence="INFERRED",
+                        receiver=None,
+                    )
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_handle_go_struct_holds: failed: %r", exc)
 
 
 def _handle_go_import(decl_node: Node, file_str: str, file_stem: str, edges: list[Edge]) -> None:
