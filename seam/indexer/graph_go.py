@@ -1,9 +1,11 @@
 """Go symbol, edge, and comment extraction from tree-sitter ASTs.
 
-LAYER: imports from graph_common (leaf) and graph_scope_infer_ext (leaf) — never from graph.py.
+LAYER: imports from graph_common (leaf), graph_scope_infer_ext (leaf), field_access (leaf) —
+never from graph.py.
 
 LAYERING:
     graph_common       (leaf — no seam deps)
+    field_access       (leaf — field-access read/write classification + field symbols)
          ↑
     graph_go           (this file)
          ↑
@@ -24,6 +26,10 @@ from pathlib import Path
 from tree_sitter import Node
 
 import seam.config as config
+from seam.indexer.field_access import (
+    collect_field_symbols_go,
+    extract_field_accesses_go,
+)
 from seam.indexer.graph_common import (
     Comment,
     Edge,
@@ -85,9 +91,9 @@ def _go_doc_comment(decl_node: Node) -> str | None:
 
 
 def _extract_symbols_go(root: Node, filepath: Path) -> list[Symbol]:
-    """Walk a Go AST and extract function, method, struct, interface, and type symbols.
+    """Walk a Go AST and extract function, method, struct, interface, type, and field symbols.
 
-    Kind mapping (per spec, existing 5 kinds only):
+    Kind mapping (per spec, existing 5 kinds only for non-field symbols):
         function_declaration  → function
         method_declaration    → method  (qualified as 'Recv.Name', *T normalized to T,
                                          generic receivers Repo[T] → Repo)
@@ -95,9 +101,13 @@ def _extract_symbols_go(root: Node, filepath: Path) -> list[Symbol]:
         type_spec interface_type → interface
         type_spec other       → type
         type_alias            → type
+
+    A3 Slice 3: when SEAM_FIELD_ACCESS_EDGES='on', also emits kind='field' symbols
+    for each struct_type field_declaration, using collect_field_symbols_go.
     """
     symbols: list[Symbol] = []
     file_str = str(filepath)
+    field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
 
     def _walk(node: Node) -> None:
         if node.type == "function_declaration":
@@ -176,6 +186,10 @@ def _extract_symbols_go(root: Node, filepath: Path) -> list[Symbol]:
             for child in node.named_children:
                 if child.type == "type_spec":
                     _handle_go_type_spec(child, node, file_str, symbols)
+                    # A3: emit field symbols for struct types when feature is on.
+                    # WHY here: type_spec holds both the name and the struct_type node.
+                    if field_access_on:
+                        _go_emit_field_symbols(child, file_str, symbols)
                 elif child.type == "type_alias":
                     name_node = child.child_by_field_name("name")
                     if name_node:
@@ -210,6 +224,52 @@ def _extract_symbols_go(root: Node, filepath: Path) -> list[Symbol]:
         _walk(child)
 
     return symbols
+
+
+def _go_emit_field_symbols(
+    type_spec: Node,
+    file_str: str,
+    symbols: list[Symbol],
+) -> None:
+    """Emit kind='field' symbols for all fields in a Go struct type_spec.
+
+    Called when SEAM_FIELD_ACCESS_EDGES='on'. Walks the type_spec's 'type' child
+    (which must be a struct_type) and calls collect_field_symbols_go to get the
+    (qualified_field, line) pairs, then appends Symbol entries.
+
+    Never raises (backstop try/except).
+    """
+    try:
+        name_node = type_spec.child_by_field_name("name")
+        type_node = type_spec.child_by_field_name("type")
+        if name_node is None or type_node is None:
+            return
+        if type_node.type != "struct_type":
+            # WHY skip non-struct type_specs: interface_type and other named types
+            # have no stored fields — only struct_type has a field_declaration_list.
+            # Interfaces define method signatures, not data, so no field symbols.
+            return
+
+        struct_name = _text(name_node).strip()
+        if not struct_name:
+            return
+
+        for qualified_field, field_line in collect_field_symbols_go(type_node, struct_name):
+            symbols.append(Symbol(
+                name=qualified_field,
+                kind="field",
+                file=file_str,
+                start_line=field_line,
+                end_line=field_line,
+                docstring=None,
+                signature=None,
+                decorators=[],
+                is_exported=None,
+                visibility=None,
+                qualified_name=qualified_field,
+            ))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_go_emit_field_symbols: failed: %r", exc)
 
 
 def _handle_go_type_spec(
@@ -258,7 +318,7 @@ def _handle_go_type_spec(
 
 
 def _extract_edges_go(root: Node, filepath: Path) -> list[Edge]:
-    """Extract import, call, and holds edges from a Go AST.
+    """Extract import, call, holds, reads, and writes edges from a Go AST.
 
     Import heuristic:
         import "pkg/path"         → target = last path segment ('path')
@@ -275,12 +335,16 @@ def _extract_edges_go(root: Node, filepath: Path) -> list[Edge]:
 
     Slice #78: when SEAM_COMPOSITION_EDGES is on, struct_type declarations emit
     holds edges for each plain user-type field (pointer fields have * stripped).
+
+    A3 Slice 3: when SEAM_FIELD_ACCESS_EDGES is on, selector_expression nodes that are
+    NOT in call position emit reads/writes edges for struct field accesses.
     """
     edges: list[Edge] = []
     file_str = str(filepath)
     file_stem = filepath.stem
     infer = config.SEAM_TYPE_INFERENCE == "on"
     composition_on = config.SEAM_COMPOSITION_EDGES == "on"
+    field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
 
     def _walk(node: Node, var_types: dict[str, str]) -> None:
         ntype = node.type
@@ -309,8 +373,21 @@ def _extract_edges_go(root: Node, filepath: Path) -> list[Edge]:
             new_types: dict[str, str] = {}
             if infer:
                 record_go_param_types(node, new_types)
+            # A3: Also record param types for field-access resolution even when
+            # SEAM_TYPE_INFERENCE is off. WHY: field-access receiver resolution
+            # uses the same var_types dict; we need the receiver param to be bound
+            # (e.g. 'r' → 'Account') for qualified target emission.
+            if field_access_on and not infer:
+                record_go_param_types(node, new_types)
             for child in node.children:
                 _walk(child, new_types)
+            # A3: emit field-access (reads/writes) edges for this function body.
+            # Done AFTER the body walk so that record_go_local_types has accumulated
+            # all local bindings into new_types (incremental during the walk above).
+            # WHY separate pass: same reasoning as Python/TS — fully-populated
+            # var_types gives better receiver resolution.
+            if field_access_on:
+                _go_emit_field_access_edges(node, file_str, new_types, edges)
             return
 
         if infer and ntype in (
@@ -487,6 +564,113 @@ def _handle_go_import(decl_node: Node, file_str: str, file_stem: str, edges: lis
             for spec in child.children:
                 if spec.type == "import_spec":
                     _emit_from_spec(spec)
+
+
+def _go_extract_receiver_binding(method_node: Node) -> tuple[str | None, str | None]:
+    """Extract (receiver_var_name, receiver_type_name) from a Go method_declaration.
+
+    Returns (None, None) when the receiver list is absent or unexpected shape.
+    The receiver is in the 'receiver' field of the method_declaration node
+    (NOT the 'parameters' field, which holds regular function parameters).
+
+    Example: func (r *Account) M() → ('r', 'Account')
+    """
+    try:
+        recv = method_node.child_by_field_name("receiver")
+        if recv is None:
+            return None, None
+        for pd in recv.named_children:
+            if pd.type == "parameter_declaration":
+                # Find the variable name (identifier child)
+                for child in pd.children:
+                    if child.type == "identifier":
+                        var_name = _text(child).strip()
+                        # Get the type from _go_recv_type_name logic
+                        recv_type = _go_recv_type_name(method_node)
+                        return var_name if var_name else None, recv_type
+        return None, None
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+def _go_emit_field_access_edges(
+    func_node: Node,
+    file_str: str,
+    var_types: dict[str, str],
+    edges: list[Edge],
+) -> None:
+    """Emit reads/writes edges for field accesses in a Go function/method body.
+
+    Called after the main body walk so that var_types is fully populated.
+    Determines the qualified source name and impl_type from the function/method node,
+    then delegates to extract_field_accesses_go.
+
+    For method_declaration:
+      - source_fn = 'RecvType.MethodName'
+      - impl_type = 'RecvType' (for receiver resolution of 'r.Field' patterns)
+      - Also binds the receiver var (e.g. 'r') → 'Account' in var_types so that
+        _go_classify_selector can resolve 'r.Balance' → 'Account.Balance'.
+    For function_declaration:
+      - source_fn = 'FunctionName'
+      - impl_type = None
+
+    WHY bind receiver var: Go has no universal self/this keyword. The receiver
+    parameter (e.g. 'r' in 'func (r *Account) M()') is a regular variable binding.
+    We must add r → Account to var_types so that resolve_receiver_type_ext can
+    resolve it. record_go_param_types only handles the regular function parameters
+    (the second parameter_list), NOT the receiver (in the 'receiver' field).
+
+    Never raises (extract_field_accesses_go is backstopped).
+    """
+    ntype = func_node.type
+    if ntype == "method_declaration":
+        method_name = _node_name(func_node)
+        recv_name = _go_recv_type_name(func_node)
+        if not method_name:
+            return
+        source_fn = f"{recv_name}.{method_name}" if recv_name else method_name
+        impl_type = recv_name
+
+        # Bind the receiver variable to the receiver type.
+        # WHY: var_types is populated by record_go_param_types for REGULAR params,
+        # but the Go receiver is in a separate 'receiver' field and is NOT covered
+        # by record_go_param_types. Without this binding, 'r.Balance' where r is
+        # the method receiver cannot be resolved to 'Account.Balance'.
+        if recv_name:
+            recv_var, recv_type = _go_extract_receiver_binding(func_node)
+            if recv_var and recv_type and recv_var not in var_types:
+                var_types[recv_var] = recv_type
+
+    elif ntype == "function_declaration":
+        func_name = _node_name(func_node)
+        if not func_name:
+            return
+        source_fn = func_name
+        impl_type = None
+    else:
+        return
+
+    # Find the body block node.
+    body = None
+    for child in func_node.children:
+        if child.type == "block":
+            body = child
+            break
+    if body is None:
+        return
+
+    for _src, target_field, mode, fa_line in extract_field_accesses_go(
+        body, source_fn, impl_type, var_types
+    ):
+        edges.append(Edge(
+            source=source_fn,
+            target=target_field,
+            kind=mode,
+            file=file_str,
+            line=fa_line,
+            confidence="INFERRED",
+            receiver=None,
+        ))
 
 
 def _extract_comments_go(root: Node, filepath: Path) -> list[Comment]:

@@ -37,21 +37,29 @@ from tree_sitter import Node
 
 import seam.config as config
 
+# A3 Slice 5: Swift field-access edges + field symbols.
+# The emission helpers (emit_swift_field_access_edges / emit_swift_field_symbols) are
+# in field_access_php_swift (moved there in the A3 refactor to keep graph_swift.py
+# under the 1000-line limit).  field_access_ext2 re-exports the core functions.
+from seam.indexer.field_access_php_swift import (
+    emit_swift_field_access_edges,
+    emit_swift_field_symbols,
+)
+
 # All shared types, constants, and helpers from the leaf module.
 from seam.indexer.graph_common import (
-    Comment,
     Edge,
     Symbol,
-    _block_comment_lines,
     _find_enclosing_function,
     _make_symbol,
-    _match_marker,
     _text,
 )
 
-# Pure receiver-type inference helpers live in a leaf module to keep this file under
-# the 1000-line limit (see graph_swift_infer for the layering rationale).
+# Pure receiver-type inference + comment extraction helpers live in a leaf module to
+# keep this file under the 1000-line limit (see graph_swift_infer for the rationale).
+# _extract_comments_swift was moved to graph_swift_infer in the A3 refactor.
 from seam.indexer.graph_swift_infer import (
+    _extract_comments_swift,  # noqa: F401 — re-exported for graph.py
     _record_param_types,
     _record_var_binding,
     _resolve_navigation_target,
@@ -436,6 +444,10 @@ def _handle_class_like(
             )
         )
 
+        # A3 Slice 5: emit field symbols for Swift stored var/let properties.
+        if config.SEAM_FIELD_ACCESS_EDGES == "on":
+            symbols.extend(emit_swift_field_symbols(node, class_name, file_str))
+
         # Recurse into class_body for methods
         body = node.child_by_field_name("body")
         if body is None:
@@ -677,6 +689,7 @@ def _extract_edges_swift(root: Node, filepath: Path) -> list[Edge]:
     file_stem = filepath.stem
     infer = config.SEAM_SWIFT_TYPE_INFERENCE == "on"
     composition_on = config.SEAM_COMPOSITION_EDGES == "on"
+    field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
 
     try:
         # Slice #80: emit holds edges for class/struct/actor declarations.
@@ -691,6 +704,7 @@ def _extract_edges_swift(root: Node, filepath: Path) -> list[Edge]:
             file_stem,
             edges,
             infer,
+            field_access_on,
             class_name=None,
             var_types={},
             class_var_types={},
@@ -771,6 +785,7 @@ def _walk_edges(
     file_stem: str,
     edges: list[Edge],
     infer: bool,
+    field_access_on: bool,
     class_name: str | None,
     var_types: dict[str, str],
     class_var_types: dict[str, str],
@@ -792,6 +807,7 @@ def _walk_edges(
     Class-level stored `property_declaration`s are NOT recorded during the walk (they are
     already in class_var_types via the pre-scan); recording them here would mutate the
     shared class-scope dict in place and make resolution depend on source order.
+    field_access_on gates A3 Slice 5 reads/writes edge emission.
     """
     node_type = node.type
 
@@ -816,6 +832,10 @@ def _walk_edges(
             var_types = dict(class_var_types)
             _record_param_types(node, var_types)
 
+        # A3 Slice 5: emit reads/writes field-access edges for self.prop accesses.
+        if field_access_on and class_name is not None:
+            edges.extend(emit_swift_field_access_edges(node, file_str, class_name, var_types))
+
     elif infer and node_type == "property_declaration":
         # Record ONLY function-scope locals. A class-level stored property (direct child
         # of class_body) is already in class_var_types; skipping it here keeps the
@@ -829,9 +849,9 @@ def _walk_edges(
 
     for child in node.children:
         _walk_edges(
-            child, file_str, file_stem, edges, infer, class_name, var_types, class_var_types
+            child, file_str, file_stem, edges, infer, field_access_on,
+            class_name, var_types, class_var_types
         )
-
 
 def _handle_import(node: Node, file_str: str, file_stem: str, edges: list[Edge]) -> None:
     """Extract import edge from a Swift import_declaration node.
@@ -948,53 +968,3 @@ def _emit_call(
             )
         )
 
-
-# ── Swift comment extraction ───────────────────────────────────────────────────
-
-
-def _extract_comments_swift(root: Node, filepath: Path) -> list[Comment]:
-    """Walk a Swift AST and extract semantic comment markers.
-
-    Swift comment node types (verified against tree-sitter-swift 0.7.3):
-        'comment'           — // and /// lines (both kinds are the same node type)
-        'multiline_comment' — /* */ blocks
-
-    For // and /// nodes: strip the '//' prefix (and any additional slashes),
-    then match the marker. For multiline_comment, scan every line with
-    _block_comment_lines.
-
-    Never raises — outer try/except wraps the walk.
-    """
-    comments: list[Comment] = []
-
-    try:
-        _walk_comments(root, comments)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("_extract_comments_swift: unhandled exception for %s: %r", filepath, exc)
-
-    return comments
-
-
-def _walk_comments(node: Node, comments: list[Comment]) -> None:
-    """Recursively collect semantic comment markers from the AST."""
-    if node.type == "comment":
-        raw = _text(node)
-        base_row = node.start_point[0] + 1
-        # Strip '//' prefix and any additional slashes (covers // and ///)
-        body = raw.lstrip("/").strip()
-        result = _match_marker(body)
-        if result is not None:
-            marker, text = result
-            comments.append(Comment(marker=marker, text=text, line=base_row))
-
-    elif node.type == "multiline_comment":
-        raw = _text(node)
-        base_row = node.start_point[0] + 1
-        for offset, body in _block_comment_lines(raw):
-            result = _match_marker(body)
-            if result is not None:
-                marker, text = result
-                comments.append(Comment(marker=marker, text=text, line=base_row + offset))
-
-    for child in node.children:
-        _walk_comments(child, comments)

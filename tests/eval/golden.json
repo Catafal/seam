@@ -11,13 +11,13 @@
         "validate_data",
         "DataPipeline",
         "DataPipeline.run",
+        "DataPipeline.stages",
         "DataPipeline.__init__",
         "DataPipeline.add_stage",
         "EventBus.process_data",
         "on_data_received_handler",
         "normalize_stage",
-        "enrich_stage",
-        "build_pipeline"
+        "enrich_stage"
       ]
     },
     {
@@ -36,7 +36,7 @@
         "OrderService",
         "StripeProcessor.process_payment",
         "PayPalProcessor.process_payment",
-        "OrderService.checkout"
+        "OrderService.processor"
       ]
     },
     {
@@ -46,14 +46,15 @@
       "k": 10,
       "note": "locate DataPipeline and pipeline functions",
       "expected_symbols": [
+        "DataPipeline.add_stage",
+        "DataPipeline.stages",
+        "DataPipeline.run",
+        "DataPipeline.__init__",
         "build_pipeline",
         "DataPipeline",
         "run_pipeline",
-        "DataPipeline.add_stage",
         "normalize_stage",
-        "enrich_stage",
-        "DataPipeline.run",
-        "DataPipeline.__init__"
+        "enrich_stage"
       ]
     },
     {
@@ -64,9 +65,10 @@
       "note": "locate EventBus and its subscribe/emit methods",
       "expected_symbols": [
         "EventBus.subscribe",
+        "EventBus._handlers",
+        "EventBus.__init__",
         "EventBus",
         "EventBus.emit",
-        "EventBus.__init__",
         "EventBus.process_data",
         "on_error_handler",
         "on_data_received_handler",
@@ -135,6 +137,52 @@
       "expected_symbols": [
         "PayPalProcessor.refund",
         "StripeProcessor.refund"
+      ]
+    },
+    {
+      "id": "context-field-readers-stages",
+      "tool": "context_field_readers",
+      "symbol": "DataPipeline.stages",
+      "k": 10,
+      "note": "A3: who reads DataPipeline.stages (run, add_stage, build_pipeline)",
+      "expected_symbols": [
+        "DataPipeline.add_stage",
+        "DataPipeline.run",
+        "build_pipeline"
+      ]
+    },
+    {
+      "id": "context-field-writers-stages",
+      "tool": "context_field_writers",
+      "symbol": "DataPipeline.stages",
+      "k": 10,
+      "note": "A3: who writes DataPipeline.stages (__init__ initialises it)",
+      "expected_symbols": [
+        "DataPipeline.__init__"
+      ]
+    },
+    {
+      "id": "context-field-writers-processor",
+      "tool": "context_field_writers",
+      "symbol": "OrderService.processor",
+      "k": 10,
+      "note": "A3: who writes OrderService.processor (dependency injection in __init__)",
+      "expected_symbols": [
+        "OrderService.__init__"
+      ]
+    },
+    {
+      "id": "impact-upstream-stages-field",
+      "tool": "impact_upstream",
+      "symbol": "DataPipeline.stages",
+      "k": 10,
+      "note": "A3: upstream blast radius of DataPipeline.stages as a field seed",
+      "expected_symbols": [
+        "DataPipeline.__init__",
+        "DataPipeline.add_stage",
+        "DataPipeline.run",
+        "build_pipeline",
+        "run_pipeline"
       ]
     }
   ]

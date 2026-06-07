@@ -153,11 +153,14 @@ def _run_query(
     """Run a single golden query and return the ranked list of returned symbol names.
 
     Dispatches based on query_spec['tool']:
-      search          → handle_seam_search → symbol names from result list
-      query           → handle_seam_query  → symbol names from result list
-      context_callers → handle_seam_context → callers list
-      impact_downstream → handle_seam_impact(direction='downstream') → all tier names
-      trace           → handle_seam_trace → callees of source
+      search               → handle_seam_search → symbol names from result list
+      query                → handle_seam_query  → symbol names from result list
+      context_callers      → handle_seam_context → callers list
+      context_field_readers → handle_seam_context → field_readers list (A3)
+      context_field_writers → handle_seam_context → field_writers list (A3)
+      impact_downstream    → handle_seam_impact(direction='downstream') → all tier names
+      impact_upstream      → handle_seam_impact(direction='upstream') → all tier names (A3)
+      trace                → handle_seam_trace → callees of source
 
     Never raises — returns [] on any error so a broken handler doesn't mask other tests.
     """
@@ -190,6 +193,18 @@ def _run_query(
             # callers are in order — preserves the rank order from the engine.
             return ctx.get("callers", [])
 
+        elif tool == "context_field_readers":
+            ctx = handle_seam_context(conn, query_spec["symbol"], FIXTURE_DIR)
+            if ctx is None or "error" in ctx:
+                return []
+            return ctx.get("field_readers", [])
+
+        elif tool == "context_field_writers":
+            ctx = handle_seam_context(conn, query_spec["symbol"], FIXTURE_DIR)
+            if ctx is None or "error" in ctx:
+                return []
+            return ctx.get("field_writers", [])
+
         elif tool == "impact_downstream":
             impact = handle_seam_impact(
                 conn,
@@ -204,6 +219,21 @@ def _run_query(
             # (WILL_BREAK first, then LIKELY_AFFECTED, then MAY_NEED_TESTING).
             names: list[str] = []
             for tier_entries in impact.get("downstream", {}).values():
+                names.extend(e["name"] for e in tier_entries)
+            return names
+
+        elif tool == "impact_upstream":
+            impact = handle_seam_impact(
+                conn,
+                query_spec["symbol"],
+                FIXTURE_DIR,
+                direction="upstream",
+                max_depth=3,
+                include_tests=True,
+                limit=0,  # unlimited — measure full coverage
+            )
+            names: list[str] = []
+            for tier_entries in impact.get("upstream", {}).values():
                 names.extend(e["name"] for e in tier_entries)
             return names
 
@@ -335,6 +365,70 @@ class TestPerQueryRegression:
         self._assert_query(
             indexed_conn, golden, "impact-downstream-interface-refund-synthesis"
         )
+
+    def test_context_field_readers_stages(
+        self, indexed_conn: Any, golden: dict[str, Any]
+    ) -> None:
+        """A3: field_readers of DataPipeline.stages (who reads the stages field)."""
+        self._assert_query(indexed_conn, golden, "context-field-readers-stages")
+
+    def test_context_field_writers_stages(
+        self, indexed_conn: Any, golden: dict[str, Any]
+    ) -> None:
+        """A3: field_writers of DataPipeline.stages (who writes the stages field)."""
+        self._assert_query(indexed_conn, golden, "context-field-writers-stages")
+
+    def test_context_field_writers_processor(
+        self, indexed_conn: Any, golden: dict[str, Any]
+    ) -> None:
+        """A3: field_writers of OrderService.processor (dependency injection site)."""
+        self._assert_query(indexed_conn, golden, "context-field-writers-processor")
+
+    def test_impact_upstream_stages_field(
+        self, indexed_conn: Any, golden: dict[str, Any]
+    ) -> None:
+        """A3: upstream impact of DataPipeline.stages as a field seed."""
+        self._assert_query(indexed_conn, golden, "impact-upstream-stages-field")
+
+
+# ── A3 field-access dedicated test class ──────────────────────────────────────
+
+
+class TestFieldAccessQueries:
+    """Gate-wired check that field-access queries in the golden meet recall 1.0.
+
+    A separate class (not sub-classed from TestPerQueryRegression) so the A3 delta
+    is visually grouped and filterable with -k TestFieldAccessQueries.
+    """
+
+    _FIELD_ACCESS_IDS = {
+        "context-field-readers-stages",
+        "context-field-writers-stages",
+        "context-field-writers-processor",
+        "impact-upstream-stages-field",
+    }
+
+    def test_field_access_queries_all_recall_1(
+        self, indexed_conn: Any, golden: dict[str, Any]
+    ) -> None:
+        """All A3 field-access queries must achieve recall@10 = 1.0."""
+        for query_spec in golden.get("queries", []):
+            if query_spec["id"] not in self._FIELD_ACCESS_IDS:
+                continue
+
+            actual = _run_query(indexed_conn, query_spec)
+            expected = query_spec["expected_symbols"]
+            k = query_spec.get("k", 10)
+
+            actual_recall = recall_at_k(expected, actual, k)
+            assert actual_recall >= 1.0 - _RECALL_TOLERANCE, (
+                f"Field-access query '{query_spec['id']}' REGRESSION:\n"
+                f"  recall@{k} = {actual_recall:.4f} (expected >= 1.0)\n"
+                f"  expected: {expected}\n"
+                f"  actual: {actual[:k]}\n"
+                f"  HINT: A3 field-access edges may be missing. "
+                f"Was SEAM_FIELD_ACCESS_EDGES disabled or seam init not re-run?"
+            )
 
 
 # ── Aggregate metric test ─────────────────────────────────────────────────────

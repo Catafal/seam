@@ -39,6 +39,12 @@ from tree_sitter import Node
 
 import seam.config as config
 
+# A3 Slice 5: PHP field-access edges + field symbols (sorts before graph_* imports).
+from seam.indexer.field_access_ext2 import (
+    collect_field_symbols_php,
+    extract_field_accesses_php,
+)
+
 # All shared types from the leaf module (no cycle — graph_common has no seam deps).
 from seam.indexer.graph_common import (
     Comment,
@@ -233,6 +239,23 @@ def _handle_php_class_like(
         )
     )
 
+    # A3 Slice 5: emit field symbols for PHP property_declaration nodes (classes only).
+    if ntype == "class_declaration" and config.SEAM_FIELD_ACCESS_EDGES == "on":
+        for qual_name, field_line in collect_field_symbols_php(node, name):
+            symbols.append(Symbol(
+                name=qual_name,
+                kind="field",
+                file=file_str,
+                start_line=field_line,
+                end_line=field_line,
+                docstring=None,
+                signature=None,
+                decorators=[],
+                is_exported=None,
+                visibility=None,
+                qualified_name=qual_name,
+            ))
+
     # Recurse into declaration_list body with this class name set.
     for child in node.children:
         _walk_php_symbols(child, file_str, symbols, class_name=name)
@@ -370,9 +393,13 @@ def _extract_edges_php(root: Node, filepath: Path) -> list[Edge]:
     file_stem = filepath.stem
     infer = config.SEAM_TYPE_INFERENCE == "on"
     composition_on = config.SEAM_COMPOSITION_EDGES == "on"
+    field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
 
     try:
-        _walk_php_edges(root, file_str, file_stem, edges, infer, composition_on, None, {}, {})
+        _walk_php_edges(
+            root, file_str, file_stem, edges, infer, composition_on, field_access_on,
+            None, {}, {}
+        )
     except Exception as exc:  # noqa: BLE001
         logger.debug("_extract_edges_php: unexpected error for %s: %r", filepath, exc)
 
@@ -386,12 +413,14 @@ def _walk_php_edges(
     edges: list[Edge],
     infer: bool,
     composition_on: bool,
+    field_access_on: bool,
     class_name: str | None,
     class_fields: dict[str, str],
     var_types: dict[str, str],
 ) -> None:
     """Recursive walker for PHP edge extraction with type-inference context threading.
     composition_on gates holds edge emission (Slice #79).
+    field_access_on gates A3 Slice 5 reads/writes edge emission.
     """
     ntype = node.type
 
@@ -413,7 +442,7 @@ def _walk_php_edges(
         if body is not None:
             for child in body.children:
                 _walk_php_edges(
-                    child, file_str, file_stem, edges, infer, composition_on,
+                    child, file_str, file_stem, edges, infer, composition_on, field_access_on,
                     new_class, new_fields, dict(new_fields)
                 )
         return
@@ -425,9 +454,33 @@ def _walk_php_edges(
             record_php_param_types(node, new_types)
         body = node.child_by_field_name("body")
         if body is not None:
+            # A3 Slice 5: emit reads/writes field-access edges for $this->field accesses.
+            if field_access_on and class_name is not None:
+                method_name_node = node.child_by_field_name("name")
+                if method_name_node is None:
+                    for c in node.children:
+                        if c.type == "name":
+                            method_name_node = c
+                            break
+                if method_name_node is not None:
+                    method_name = _text(method_name_node)
+                    if method_name:
+                        source_fn = f"{class_name}.{method_name}"
+                        for src, tgt, mode, line in extract_field_accesses_php(
+                            body, source_fn, class_name, new_types
+                        ):
+                            edges.append(Edge(
+                                source=src,
+                                target=tgt,
+                                kind=mode,
+                                file=file_str,
+                                line=line,
+                                confidence="INFERRED",
+                                receiver=None,
+                            ))
             for child in body.children:
                 _walk_php_edges(
-                    child, file_str, file_stem, edges, infer, composition_on,
+                    child, file_str, file_stem, edges, infer, composition_on, field_access_on,
                     class_name, class_fields, new_types
                 )
         return
@@ -444,7 +497,7 @@ def _walk_php_edges(
         # Recurse to catch nested news in constructor arguments.
         for child in node.children:
             _walk_php_edges(
-                child, file_str, file_stem, edges, infer, composition_on,
+                child, file_str, file_stem, edges, infer, composition_on, field_access_on,
                 class_name, class_fields, var_types
             )
         return  # already recursed above
@@ -465,7 +518,7 @@ def _walk_php_edges(
 
     for child in node.children:
         _walk_php_edges(
-            child, file_str, file_stem, edges, infer, composition_on,
+            child, file_str, file_stem, edges, infer, composition_on, field_access_on,
             class_name, class_fields, var_types
         )
 

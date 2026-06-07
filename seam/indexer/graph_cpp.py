@@ -37,6 +37,10 @@ from pathlib import Path
 from tree_sitter import Node
 
 import seam.config as config
+from seam.indexer.field_access_ext import (
+    collect_field_symbols_cpp,
+    extract_field_accesses_cpp,
+)
 from seam.indexer.graph_c import (
     _c_doc_comment,
     _extract_comments_c,
@@ -246,6 +250,22 @@ def _handle_cpp_class(
                 qualified_name=cls_name,
             )
         )
+        # A3 Slice 4: emit field symbols for C++ class/struct fields.
+        if config.SEAM_FIELD_ACCESS_EDGES == "on":
+            for qual_name, field_line in collect_field_symbols_cpp(node, cls_name):
+                symbols.append(Symbol(
+                    name=qual_name,
+                    kind="field",
+                    file=file_str,
+                    start_line=field_line,
+                    end_line=field_line,
+                    docstring=None,
+                    signature=None,
+                    decorators=[],
+                    is_exported=None,
+                    visibility=None,
+                    qualified_name=qual_name,
+                ))
         body = node.child_by_field_name("body")
         if body is not None:
             for child in body.children:
@@ -402,6 +422,7 @@ def _extract_edges_cpp(root: Node, filepath: Path) -> list[Edge]:
         file_stem = filepath.stem
         infer = config.SEAM_TYPE_INFERENCE == "on"
         composition_on = config.SEAM_COMPOSITION_EDGES == "on"
+        field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
 
         def _walk(
             node: Node,
@@ -433,6 +454,32 @@ def _extract_edges_cpp(root: Node, filepath: Path) -> list[Edge]:
                     record_cpp_param_types(node, new_types)
                 body = node.child_by_field_name("body")
                 if body is not None:
+                    # A3 Slice 4: emit reads/writes field-access edges for C++ methods.
+                    if field_access_on:
+                        func_name = _cpp_function_name(node)
+                        if func_name:
+                            # For in-class methods (field_identifier declarator),
+                            # qualify with enclosing class.
+                            if "." not in func_name and class_name:
+                                source_fn = f"{class_name}.{func_name}"
+                            else:
+                                source_fn = func_name
+                            # Determine class context: use dotted prefix if out-of-line.
+                            ctx_class = class_name
+                            if "." in source_fn:
+                                ctx_class = source_fn.split(".")[0]
+                            for src, tgt, mode, ln in extract_field_accesses_cpp(
+                                body, source_fn, ctx_class, new_types
+                            ):
+                                edges.append(Edge(
+                                    source=src,
+                                    target=tgt,
+                                    kind=mode,
+                                    file=file_str,
+                                    line=ln,
+                                    confidence="INFERRED",
+                                    receiver=None,
+                                ))
                     for child in body.children:
                         _walk(child, class_name, class_fields, new_types)
                     return

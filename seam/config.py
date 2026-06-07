@@ -391,6 +391,20 @@ SEAM_SYNTHESIS_MAX_SOURCE_BYTES: int = int(
 )
 
 
+# ── A3: Field-access edges (reads/writes) + fields as first-class symbols ────
+
+# Master switch for field-access edge extraction. When "on" (default), the extractor
+# emits an Edge(kind="reads"|"writes") for each attribute access that is NOT in call
+# position. Attribute accesses in call position (obj.method()) remain 'call' edges and
+# are unchanged. Field/property declarations and first self.x = ... assignments become
+# Symbol(kind="field", qualified_name="Type.field") when this is "on".
+# When "off", the extractor produces a graph byte-identical to pre-A3 behavior:
+# no 'field' symbols, no 'reads'/'writes' edges. Extraction-time only — toggling
+# requires a full `seam init` re-index to take effect (same contract as
+# SEAM_COMPOSITION_EDGES / SEAM_TYPE_INFERENCE).
+SEAM_FIELD_ACCESS_EDGES: str = os.getenv("SEAM_FIELD_ACCESS_EDGES", "on")
+
+
 def get_db_path(project_root: Path) -> Path:
     """Resolve the database path relative to the project root."""
     return project_root / SEAM_DB_PATH

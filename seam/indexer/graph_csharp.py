@@ -24,6 +24,10 @@ from pathlib import Path
 from tree_sitter import Node
 
 import seam.config as config
+from seam.indexer.field_access_ext import (
+    collect_field_symbols_csharp,
+    extract_field_accesses_csharp,
+)
 from seam.indexer.graph_common import (
     Comment,
     Edge,
@@ -140,6 +144,7 @@ def _extract_symbols_csharp(root: Node, filepath: Path) -> list[Symbol]:
     """
     symbols: list[Symbol] = []
     file_str = str(filepath)
+    field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
 
     def _walk_body(body_node: Node, class_name: str | None = None) -> None:
         """Walk declaration_list children, tracking class context."""
@@ -180,6 +185,22 @@ def _extract_symbols_csharp(root: Node, filepath: Path) -> list[Symbol]:
                             qualified_name=name,
                         )
                     )
+                    # A3 Slice 4: emit field symbols for C# class/struct fields and properties.
+                    if field_access_on:
+                        for qual_name, field_line in collect_field_symbols_csharp(node, name):
+                            symbols.append(Symbol(
+                                name=qual_name,
+                                kind="field",
+                                file=file_str,
+                                start_line=field_line,
+                                end_line=field_line,
+                                docstring=None,
+                                signature=None,
+                                decorators=[],
+                                is_exported=None,
+                                visibility=None,
+                                qualified_name=qual_name,
+                            ))
                     body = node.child_by_field_name("body")
                     if body is not None:
                         _walk_body(body, class_name=name)
@@ -304,6 +325,7 @@ def _extract_edges_csharp(root: Node, filepath: Path) -> list[Edge]:
     emit_inheritance = config.SEAM_INHERITANCE_EDGES == "on"
     infer = config.SEAM_TYPE_INFERENCE == "on"
     composition_on = config.SEAM_COMPOSITION_EDGES == "on"
+    field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
 
     def _walk(
         node: Node,
@@ -351,6 +373,23 @@ def _extract_edges_csharp(root: Node, filepath: Path) -> list[Edge]:
                     record_cs_param_types(node, new_types)
                 body = node.child_by_field_name("body")
                 if body is not None:
+                    # A3 Slice 4: emit reads/writes field-access edges.
+                    if field_access_on and class_name is not None:
+                        method_name = _node_name_cs(node)
+                        if method_name:
+                            source_fn = f"{class_name}.{method_name}"
+                            for src, tgt, mode, line in extract_field_accesses_csharp(
+                                body, source_fn, class_name, new_types
+                            ):
+                                edges.append(Edge(
+                                    source=src,
+                                    target=tgt,
+                                    kind=mode,
+                                    file=file_str,
+                                    line=line,
+                                    confidence="INFERRED",
+                                    receiver=None,
+                                ))
                     for child in body.named_children:
                         _walk(child, class_name, class_fields, new_types)
                 return

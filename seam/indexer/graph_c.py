@@ -35,6 +35,10 @@ from pathlib import Path
 from tree_sitter import Node
 
 import seam.config as config
+from seam.indexer.field_access_ext import (
+    collect_field_symbols_c,
+    extract_field_accesses_c,
+)
 from seam.indexer.graph_common import (
     Comment,
     Edge,
@@ -196,6 +200,7 @@ def _extract_symbols_c(root: Node, filepath: Path) -> list[Symbol]:
     try:
         symbols: list[Symbol] = []
         file_str = str(filepath)
+        field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
 
         def _walk(node: Node) -> None:
             if node.type == "function_definition":
@@ -203,6 +208,9 @@ def _extract_symbols_c(root: Node, filepath: Path) -> list[Symbol]:
 
             elif node.type == "struct_specifier":
                 _handle_c_aggregate(node, "class", file_str, symbols)
+                # A3 Slice 4: emit field symbols for C struct fields.
+                if field_access_on:
+                    _c_emit_field_symbols(node, file_str, symbols)
 
             elif node.type == "union_specifier":
                 _handle_c_aggregate(node, "class", file_str, symbols)
@@ -334,6 +342,44 @@ def _handle_c_typedef(node: Node, file_str: str, symbols: list[Symbol]) -> None:
         logger.debug("_handle_c_typedef: failed for node at row %d", node.start_point[0])
 
 
+def _c_emit_field_symbols(
+    struct_node: Node,
+    file_str: str,
+    symbols: list[Symbol],
+) -> None:
+    """Emit kind='field' symbols for all fields in a C struct_specifier.
+
+    Called when SEAM_FIELD_ACCESS_EDGES='on'. Uses collect_field_symbols_c to get
+    (qualified_field, line) pairs and appends Symbol entries.
+
+    Never raises (backstop try/except).
+    """
+    try:
+        name_node = struct_node.child_by_field_name("name")
+        if name_node is None:
+            return
+        struct_name = _text(name_node).strip()
+        if not struct_name:
+            return
+
+        for qualified_field, field_line in collect_field_symbols_c(struct_node, struct_name):
+            symbols.append(Symbol(
+                name=qualified_field,
+                kind="field",
+                file=file_str,
+                start_line=field_line,
+                end_line=field_line,
+                docstring=None,
+                signature=None,
+                decorators=[],
+                is_exported=None,
+                visibility=None,
+                qualified_name=qualified_field,
+            ))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_c_emit_field_symbols: failed: %r", exc)
+
+
 def _extract_edges_c(root: Node, filepath: Path) -> list[Edge]:
     """Extract import and call edges from a C AST.
 
@@ -349,11 +395,31 @@ def _extract_edges_c(root: Node, filepath: Path) -> list[Edge]:
         edges: list[Edge] = []
         file_str = str(filepath)
         file_stem = filepath.stem
+        field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
 
         def _walk(node: Node) -> None:
             if node.type == "preproc_include":
                 _handle_c_include(node, file_str, file_stem, edges)
                 return
+
+            elif node.type == "function_definition":
+                # A3 Slice 4: emit reads/writes field-access edges from C function bodies.
+                if field_access_on:
+                    func_name = _c_function_name(node)
+                    body = node.child_by_field_name("body")
+                    if func_name and body is not None:
+                        for src, tgt, mode, line in extract_field_accesses_c(
+                            body, func_name, None, {}
+                        ):
+                            edges.append(Edge(
+                                source=src,
+                                target=tgt,
+                                kind=mode,
+                                file=file_str,
+                                line=line,
+                                confidence="INFERRED",
+                                receiver=None,
+                            ))
 
             elif node.type == "call_expression":
                 func_child = node.child_by_field_name("function")

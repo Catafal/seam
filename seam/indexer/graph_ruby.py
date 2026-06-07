@@ -34,6 +34,12 @@ from tree_sitter import Node
 
 import seam.config as config
 
+# A3 Slice 5: Ruby field-access edges + field symbols (sorts before graph_* imports).
+from seam.indexer.field_access_ext2 import (
+    collect_field_symbols_ruby,
+    extract_field_accesses_ruby,
+)
+
 # All shared types from the leaf module (no cycle — graph_common has no seam deps).
 from seam.indexer.graph_common import (
     Comment,
@@ -204,6 +210,23 @@ def _handle_ruby_class(
         )
     )
 
+    # A3 Slice 5: emit field symbols for Ruby @ivar first-assignment sites.
+    if config.SEAM_FIELD_ACCESS_EDGES == "on":
+        for qual_name, field_line in collect_field_symbols_ruby(node, name):
+            symbols.append(Symbol(
+                name=qual_name,
+                kind="field",
+                file=file_str,
+                start_line=field_line,
+                end_line=field_line,
+                docstring=None,
+                signature=None,
+                decorators=[],
+                is_exported=None,
+                visibility=None,
+                qualified_name=qual_name,
+            ))
+
     # Recurse into body with this class name as context.
     for child in node.children:
         _walk_ruby(child, filepath, file_str, symbols, class_name=name)
@@ -356,6 +379,28 @@ def _handle_ruby_singleton_method(
 # ── Ruby edge extraction ───────────────────────────────────────────────────────
 
 
+def _ruby_method_qualified_name(method_node: Node, class_name: str) -> str | None:
+    """Return the qualified method name ('ClassName.method') from a Ruby method/singleton_method.
+
+    For 'method' nodes: name is the first 'identifier' child.
+    For 'singleton_method' nodes: name is the identifier after the '.' separator.
+    Used by the field-access extractor to set source_fn on emitted edges.
+    Returns None if the name cannot be determined (graceful skip).
+    """
+    ntype = method_node.type
+    if ntype == "method":
+        for child in method_node.children:
+            if child.type == "identifier":
+                method_name = _text(child)
+                if method_name:
+                    return f"{class_name}.{method_name}"
+    elif ntype == "singleton_method":
+        singleton_name = _ruby_singleton_method_name(method_node)
+        if singleton_name:
+            return f"{class_name}.{singleton_name}"
+    return None
+
+
 def _extract_edges_ruby(root: Node, filepath: Path) -> list[Edge]:
     """Extract import and call edges from a Ruby AST.
 
@@ -379,9 +424,13 @@ def _extract_edges_ruby(root: Node, filepath: Path) -> list[Edge]:
     file_stem = filepath.stem
     infer = config.SEAM_TYPE_INFERENCE == "on"
     composition_on = config.SEAM_COMPOSITION_EDGES == "on"
+    field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
 
     try:
-        _walk_ruby_edges(root, file_str, file_stem, edges, infer, composition_on, None, {}, {})
+        _walk_ruby_edges(
+            root, file_str, file_stem, edges, infer, composition_on, field_access_on,
+            None, {}, {}
+        )
     except Exception as exc:  # noqa: BLE001
         logger.debug("_extract_edges_ruby: unexpected error for %s: %r", filepath, exc)
 
@@ -395,6 +444,7 @@ def _walk_ruby_edges(
     edges: list[Edge],
     infer: bool,
     composition_on: bool,
+    field_access_on: bool,
     class_name: str | None,
     class_fields: dict[str, str],
     var_types: dict[str, str],
@@ -404,6 +454,7 @@ def _walk_ruby_edges(
     Threads class_name + class_fields (ivar types from initialize) + var_types
     (local var types from constructor calls in the current method body).
     composition_on gates holds edge emission (Slice #79).
+    field_access_on gates A3 Slice 5 reads/writes edge emission.
     """
     ntype = node.type
 
@@ -421,7 +472,7 @@ def _walk_ruby_edges(
         if body is not None:
             for child in body.children:
                 _walk_ruby_edges(
-                    child, file_str, file_stem, edges, infer, composition_on,
+                    child, file_str, file_stem, edges, infer, composition_on, field_access_on,
                     new_class, new_fields, dict(new_fields)
                 )
         return
@@ -431,9 +482,25 @@ def _walk_ruby_edges(
         new_types: dict[str, str] = dict(class_fields)
         body = node.child_by_field_name("body")
         if body is not None:
+            # A3 Slice 5: emit reads/writes field-access edges for @ivar accesses.
+            if field_access_on and class_name is not None:
+                source_fn = _ruby_method_qualified_name(node, class_name)
+                if source_fn is not None:
+                    for src, tgt, mode, line in extract_field_accesses_ruby(
+                        body, source_fn, class_name
+                    ):
+                        edges.append(Edge(
+                            source=src,
+                            target=tgt,
+                            kind=mode,
+                            file=file_str,
+                            line=line,
+                            confidence="INFERRED",
+                            receiver=None,
+                        ))
             for child in body.children:
                 _walk_ruby_edges(
-                    child, file_str, file_stem, edges, infer, composition_on,
+                    child, file_str, file_stem, edges, infer, composition_on, field_access_on,
                     class_name, class_fields, new_types
                 )
         return
@@ -448,7 +515,7 @@ def _walk_ruby_edges(
 
     for child in node.children:
         _walk_ruby_edges(
-            child, file_str, file_stem, edges, infer, composition_on,
+            child, file_str, file_stem, edges, infer, composition_on, field_access_on,
             class_name, class_fields, var_types
         )
 

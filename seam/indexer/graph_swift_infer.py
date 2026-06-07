@@ -1,20 +1,23 @@
-"""Swift call-edge type inference — receiver-type resolution helpers.
+"""Swift call-edge type inference and comment extraction helpers.
 
-LAYER: imports from graph_common (leaf) only — never from graph_swift or graph.py.
+LAYER: imports from graph_common (leaf) and seam.analysis.builtins only — never
+from graph_swift or graph.py.
 
 LAYERING:
     graph_common       (leaf — no seam deps)
          ↑
-    graph_swift_infer  (this file — pure receiver-type inference)
+    graph_swift_infer  (this file — type inference + comment extraction)
          ↑
-    graph_swift        (imports these helpers for edge extraction)
+    graph_swift        (imports these helpers for edge extraction + comment walking)
          ↑
     graph.py
 
 WHY a separate module: graph_swift would exceed the 1000-line limit with the
 dependency-injection inference added inline. This file holds the cohesive, leaf-pure
 type-inference cluster (no Edge construction, no AST walking) so graph_swift keeps the
-orchestration (walk + Edge emit). Follows the Phase 9 per-family split precedent.
+orchestration (walk + Edge emit). Comment extraction is also here to keep graph_swift
+under the 1000-line limit (the _extract_comments_swift / _walk_comments functions moved
+here in the A3 refactor, since they only depend on graph_common).
 
 CONTRACT: every function is pure and never raises (the recording helpers wrap their
 body in a backstop). The Swift module NEVER emits a wrong edge — resolution returns
@@ -22,13 +25,73 @@ None on any uncertainty so the caller drops the edge rather than guess.
 """
 
 import logging
+from pathlib import Path
 
 from tree_sitter import Node
 
 from seam.analysis.builtins import is_builtin
-from seam.indexer.graph_common import _text
+from seam.indexer.graph_common import (
+    Comment,
+    _block_comment_lines,
+    _match_marker,
+    _text,
+)
 
 logger = logging.getLogger(__name__)
+
+
+# ── Swift comment extraction ──────────────────────────────────────────────────
+#
+# Moved here from graph_swift.py in the A3 refactor so graph_swift.py stays
+# under the 1000-line limit. Only depends on graph_common (leaf).
+
+
+def _extract_comments_swift(root: Node, filepath: Path) -> list[Comment]:
+    """Walk a Swift AST and extract semantic comment markers.
+
+    Swift comment node types (verified against tree-sitter-swift 0.7.3):
+        'comment'           — // and /// lines (both kinds are the same node type)
+        'multiline_comment' — /* */ blocks
+
+    For // and /// nodes: strip the '//' prefix (and any additional slashes),
+    then match the marker. For multiline_comment, scan every line with
+    _block_comment_lines.
+
+    Never raises — outer try/except wraps the walk.
+    """
+    comments: list[Comment] = []
+
+    try:
+        _walk_comments(root, comments)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_extract_comments_swift: unhandled exception for %s: %r", filepath, exc)
+
+    return comments
+
+
+def _walk_comments(node: Node, comments: list[Comment]) -> None:
+    """Recursively collect semantic comment markers from the AST."""
+    if node.type == "comment":
+        raw = _text(node)
+        base_row = node.start_point[0] + 1
+        # Strip '//' prefix and any additional slashes (covers // and ///)
+        body = raw.lstrip("/").strip()
+        result = _match_marker(body)
+        if result is not None:
+            marker, text = result
+            comments.append(Comment(marker=marker, text=text, line=base_row))
+
+    elif node.type == "multiline_comment":
+        raw = _text(node)
+        base_row = node.start_point[0] + 1
+        for offset, body in _block_comment_lines(raw):
+            result = _match_marker(body)
+            if result is not None:
+                marker, text = result
+                comments.append(Comment(marker=marker, text=text, line=base_row + offset))
+
+    for child in node.children:
+        _walk_comments(child, comments)
 
 
 def _swift_instantiated_class(value_node: Node) -> str | None:

@@ -2,6 +2,53 @@
 # Format: [x] = done, [>] = in progress, [ ] = not started
 # Update this EVERY session. It is the first thing the agent reads.
 #
+# 2026-06-07: A3 field-access edges + field symbols complete
+#   (branch feat/field-access-edges, all 12 languages, extraction-time, watcher-compatible).
+#   The visibility gap closed: field reads/writes were invisible to seam_impact — renaming a
+#   field or changing its type produced zero upstream results. A3 adds per-access-site edges
+#   so data-flow through stored fields is as visible as control-flow through calls.
+#   New edge kinds:
+#     'reads'  — field/property read (obj.field as rvalue)
+#     'writes' — field/property write or delete (LHS of assignment, augmented-assign, del)
+#   Edge kind vocabulary: 6 → 8: call|import|extends|implements|instantiates|holds|reads|writes
+#   All reads/writes edges carry confidence='INFERRED'.
+#   New symbol kind:
+#     'field' — first-class indexed field/property (qualified_name='Type.field', additive TEXT
+#     value; no schema migration required).
+#   New config knob: SEAM_FIELD_ACCESS_EDGES ("on"|"off", default "on"; extraction-time;
+#     "off" = byte-identical pre-A3; toggling requires seam init re-index).
+#   New read-path view (seam/query/context.py):
+#     field_readers — symbols with 'reads' edges to this symbol (typed complement to callers)
+#     field_writers — symbols with 'writes' edges to this symbol
+#     handle_seam_context in seam/server/tools.py surfaces both lists.
+#   New leaf modules (1000-line split across 7 files):
+#     seam/indexer/field_access.py           — Python extractor + facade re-exports
+#     seam/indexer/field_access_ts.py        — TypeScript/JS
+#     seam/indexer/field_access_go_rust.py   — Go/Rust
+#     seam/indexer/field_access_ext.py       — Java/C#
+#     seam/indexer/field_access_c_cpp.py     — C/C++
+#     seam/indexer/field_access_ext2.py      — Ruby/PHP
+#     seam/indexer/field_access_php_swift.py — PHP emission + Swift
+#   Conservatism contract: self/this/cls → enclosing class; typed receiver via
+#     resolve_receiver_type (Tier B inference, same leaf); unresolvable → bare name;
+#     NEVER emit a wrong edge; never raises.
+#   BFS traversal kind-agnostic → seam_impact/seam_trace/seam_context pick up reads/writes
+#     automatically (no per-tool change). MCP tool count stays 12.
+#   Known tradeoffs (documented in CLAUDE.md Known Gotchas):
+#     - impact/changes/affected verdicts WIDEN (one edge per access site — higher volume
+#       than holds); gate with SEAM_FIELD_ACCESS_EDGES=off for byte-stable verdicts.
+#     - requires seam init re-index; no migration (additive TEXT values).
+#     - 'field' is a new symbol kind — tooling assuming closed enum must be updated.
+#     - seam_context callers is a superset of field_readers ∪ field_writers (kind-agnostic).
+#     - reads/writes provenance NOT yet surfaced in seam_impact/seam_trace output
+#       (documented follow-up, same pattern as synthesized_by).
+#   Docs: CLAUDE.md (new Current Phase; package layout + SEAM_FIELD_ACCESS_EDGES knob;
+#     edge-kind vocabulary 6→8; symbols.kind +field; seam_context field_readers/field_writers;
+#     MCP Tools section; 5 new Known Gotchas), docs/ARCHITECTURE.md (new A3 section at end),
+#     docs/api-contracts/mcp-tools.yaml (header note; seam_context field_readers/field_writers
+#     + kind enum; seam_trace hop kind; seam_impact A3 note).
+# Next: surface reads/writes kind in seam_impact/seam_trace output (the documented follow-up).
+#
 # 2026-06-07: Edge-synthesis whole-graph post-pass + P1 recall harness complete
 #   (branch feat/edge-synthesis-recall, PRD #83, 4 commits). The recall gap closed: static
 #   extraction can't see runtime polymorphism, so seam_impact on an implementation/handler showed
