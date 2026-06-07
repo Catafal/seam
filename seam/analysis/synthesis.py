@@ -1,33 +1,44 @@
 """Edge-synthesis engine — pure function, no DB access, deterministic, never raises.
 
-LAYER: leaf — imports only stdlib. No seam deps (same leaf pattern as clustering.py).
+LAYER: leaf — imports only stdlib + synthesis_channels. No DB access.
 
 This module implements whole-graph edge synthesis: given the already-extracted symbols,
 edges, and per-file source text, it synthesizes additional edges that a parser cannot see
 (dynamic dispatch, interface dispatch, observer callbacks, etc.) and returns them as a list
 of edge-like dicts ready for persistence.
 
-Channels implemented in THIS module (Slice #1):
-  A2 — interface-override: for each concrete class C that has an extends/implements
-       edge to a base/interface B, link every method of B to every same-name method
-       of C as a synthesized 'call' edge. This is a deliberate OVER-APPROXIMATION —
-       all same-name implementations are linked; no MRO, no transitive base walk.
+Channels implemented:
+  A2 — interface-override (this module): for each concrete class C that has an
+       extends/implements edge to a base/interface B, link every method of B to every
+       same-name method of C as a synthesized 'call' edge. Deliberate OVER-APPROXIMATION.
        Direct subtypes only (one hop). Bounded by fanout_cap.
 
-Future channels (A1 closure-collection, EventEmitter/observer) will be added to this
-module and called from synthesize_edges() without changing the public signature.
+  A1a — closure-collection (synthesis_channels.py): collection field iterated + element
+        invoked, paired with sites that append a closure to the same field (cross-file).
+        Emit dispatcher → appended-callback as synthesized call edge.
+        CRITICAL NEGATIVE: iteration without element invocation → no edge emitted.
+
+  A1b — event-emitter (synthesis_channels.py): registrar verbs (on[A-Z][A-Za-z]*, subscribe,
+        addListener, addEventListener, register, watch, listen, addCallback) paired with
+        dispatcher verbs (emit, trigger, notify, dispatch, fire, publish, flush), keyed
+        by event-string literal. Only NAMED handlers produce edges.
 
 Design rules (shared with clustering.py):
   - Public function synthesize_edges() is PURE: no side effects, deterministic output.
   - Never raises: all internal errors degrade to "no edge emitted" (same contract as
     parsers: conservatism over explosions). The caller (synthesis_index.py) handles errors.
-  - Cap-bounded: fanout_cap limits edges per base-method to prevent graph explosions.
+  - Cap-bounded: fanout_cap limits edges per base-method/field/event to prevent explosions.
   - Pairing by string names only — no node IDs, no graph DB. Mirrors how the rest of
     Seam stores edges: source/target are plain symbol name strings.
 """
 
 import logging
 from typing import Any
+
+from seam.analysis.synthesis_channels import (
+    run_closure_collection_channel,
+    run_event_emitter_channel,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,17 +80,42 @@ def synthesize_edges(
     Never raises: any internal error degrades to returning whatever edges were built
     before the error occurred, and logs a warning.
     """
+    result: list[dict[str, Any]] = []
+
+    # A2: interface-override channel (symbol/edge-graph based, no source text needed).
     try:
-        return _run_a2_interface_override(symbols, edges, fanout_cap)
+        result.extend(_run_a2_interface_override(symbols, edges, fanout_cap))
     except Exception as exc:  # noqa: BLE001
-        # Never raise — degrade to empty list and log the error.
         logger.warning(
             "synthesis: A2 interface-override channel failed (%s: %s) — "
-            "returning partial results (no synthesized edges from this channel)",
+            "no edges from this channel",
             type(exc).__name__,
             exc,
         )
-        return []
+
+    # A1a: closure-collection channel (source-text based).
+    try:
+        result.extend(run_closure_collection_channel(symbols, file_sources, fanout_cap))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "synthesis: closure-collection channel failed (%s: %s) — "
+            "no edges from this channel",
+            type(exc).__name__,
+            exc,
+        )
+
+    # A1b: event-emitter channel (source-text based).
+    try:
+        result.extend(run_event_emitter_channel(symbols, file_sources, fanout_cap))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "synthesis: event-emitter channel failed (%s: %s) — "
+            "no edges from this channel",
+            type(exc).__name__,
+            exc,
+        )
+
+    return result
 
 
 def _run_a2_interface_override(

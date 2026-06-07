@@ -30,6 +30,7 @@ Design decisions:
 
 import logging
 import sqlite3
+from pathlib import Path
 
 from seam.analysis.synthesis import synthesize_edges
 
@@ -107,6 +108,53 @@ def index_synthesis(
         return -1
 
 
+def _load_file_sources(conn: sqlite3.Connection) -> dict[str, str]:
+    """Load source text for all real indexed files.
+
+    Reads the 'files' table for all non-synthetic paths, then reads each file from
+    disk. Silently skips files that are missing, unreadable, or exceed the size limit.
+
+    WHY here and not in the engine: the synthesis engine is a pure leaf (no DB/IO);
+    IO must happen in the bridge layer. We pass the loaded sources to synthesize_edges().
+
+    Returns a dict mapping file path string → source text (possibly empty if all failed).
+    Never raises.
+    """
+    from seam import config as cfg  # lazy import to keep leaf contract on synthesis.py
+
+    sources: dict[str, str] = {}
+    try:
+        path_rows = conn.execute(
+            "SELECT path FROM files WHERE path != ? ORDER BY path",
+            (_SYNTHESIS_FILE_PATH,),
+        ).fetchall()
+
+        for row in path_rows:
+            raw_path = row[0] if isinstance(row, (list, tuple)) else row["path"]
+            if not raw_path or raw_path == _SYNTHESIS_FILE_PATH:
+                continue
+            try:
+                p = Path(raw_path)
+                if not p.exists() or not p.is_file():
+                    continue
+                # Respect the max file size limit to avoid loading huge generated files.
+                if p.stat().st_size > cfg.SEAM_MAX_FILE_BYTES:
+                    continue
+                # Read with errors="replace" to handle encoding issues gracefully.
+                sources[raw_path] = p.read_text(encoding="utf-8", errors="replace")
+            except Exception:  # noqa: BLE001
+                # Missing / unreadable file — skip silently (never-raise contract).
+                continue
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "synthesis_index: failed to load file sources (%s: %s) — "
+            "source-text channels will have no input",
+            type(exc).__name__,
+            exc,
+        )
+    return sources
+
+
 def _index_synthesis_impl(conn: sqlite3.Connection, fanout_cap: int) -> int:
     """Inner implementation. May raise — outer function is the guard.
 
@@ -156,17 +204,23 @@ def _index_synthesis_impl(conn: sqlite3.Connection, fanout_cap: int) -> int:
         for row in edge_rows
     ]
 
-    # ── Step 3: Run the pure synthesis engine ────────────────────────────────
+    # ── Step 3: Load source text for source-text-based channels ─────────────
+    # The A1a/A1b channels (closure-collection, event-emitter) need the actual
+    # source text to scan for dispatch patterns. We read from the 'files' table —
+    # each row has a 'path' column with the on-disk path. We skip missing/unreadable
+    # files silently (never-raise contract), and skip the synthetic ':synthesis:' row.
+    file_sources: dict[str, str] = _load_file_sources(conn)
+
+    # ── Step 4: Run the pure synthesis engine ────────────────────────────────
     # synthesize_edges is pure and never raises (it degrades to [] on error).
-    # file_sources is empty — the A2 channel does not use source text.
     synth_edges = synthesize_edges(
         symbols,
         edges,
-        file_sources={},
+        file_sources=file_sources,
         fanout_cap=fanout_cap,
     )
 
-    # ── Step 4: Write in ONE transaction ─────────────────────────────────────
+    # ── Step 5: Write in ONE transaction ─────────────────────────────────────
     # DELETE all previous synthesized edges first (idempotency: second call same result).
     # Then INSERT fresh edges under the synthetic file row.
     with conn:
