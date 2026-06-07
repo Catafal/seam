@@ -31,11 +31,12 @@ from seam.analysis.changes import (
 )
 from seam.analysis.flows import EdgeHop, Hop
 from seam.analysis.processes import Flow, build_flow, list_entry_points
+from seam.analysis.relevance import order_by_relevance, owning_container, partition_self_refs
 from seam.query import engine
 from seam.query.clusters import cluster_members as query_cluster_members
 from seam.query.clusters import list_clusters as query_list_clusters
 from seam.query.comments import why as comments_why
-from seam.query.names import resolve_query_to_defs
+from seam.query.names import get_member_names, is_container_symbol, resolve_query_to_defs
 from seam.query.pack import ContextPack, NeighborRef
 from seam.query.pack import context_pack as run_context_pack
 from seam.query.structure import StructureResult
@@ -481,6 +482,99 @@ def _prioritize_tier_entries(entries: list[dict[str, Any]]) -> list[dict[str, An
     return sorted(entries, key=lambda e: e.get("is_test", False))
 
 
+def _compute_self_context(
+    conn: sqlite3.Connection,
+    target: str,
+) -> tuple[str | None, set[str]]:
+    """Resolve the target's container and own member-name set for self-ref ranking.
+
+    Returns (container, self_names) where:
+      - container  is the class/struct the target belongs to (the target itself when
+        it IS a container, or its owning container when it's a method like "Foo.bar").
+        None when the target is a free function / bare name with no container — such a
+        target has no self-references and ordering falls back to production-before-test.
+      - self_names is {container} ∪ {bare member names}. The owning_container() check in
+        classify_self_ref handles qualified member entries ("Foo.bar"); self_names
+        carries the container name and the BARE member entries ("bar") that
+        owning_container() cannot resolve.
+
+    WHY resolve the container even for a method target: querying impact on a single
+    method "Foo.bar" should still surface EXTERNAL callers ahead of "Foo"'s other
+    methods — those siblings live in the same file the developer is already editing,
+    so they are low-signal self-references just like in the class-level case.
+
+    Never raises (delegates to names.py helpers, which never raise).
+    """
+    if is_container_symbol(conn, target):
+        container: str | None = target
+    else:
+        # Method ("Foo.bar") -> "Foo"; bare function ("run") -> None (no container).
+        container = owning_container(target)
+
+    if container is None:
+        return None, set()
+
+    members = get_member_names(conn, container)  # bare names, capped by config
+    self_names = {container, *members}
+    return container, self_names
+
+
+def _shape_tier_group(
+    tier_group: dict[str, list[dict[str, Any]]],
+    root: Path,
+    *,
+    verbose: bool,
+    effective_limit: int | None,
+    relevance_on: bool,
+    self_ref_mode: str,
+    container: str | None,
+    self_names: set[str],
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int], int]:
+    """Order, cap, and serialize one direction's tier group (E2/E3 output shaping).
+
+    Returns (capped_tiers, dir_truncated, dir_hidden_self_refs):
+      - capped_tiers        — {tier: [serialized entries]} after ordering + cap.
+      - dir_truncated       — {tier: count omitted by the per-tier cap}.
+      - dir_hidden_self_refs — count of self-refs dropped in "hide" mode (else 0).
+
+    Ordering runs BEFORE the cap so the cap sheds the lowest-relevance entries first.
+    The analysis layer's ascending-distance order is preserved within each relevance
+    group by the stable sort, so entries[:N] keeps the closest, highest-signal dependents.
+    """
+    capped_tiers: dict[str, list[dict[str, Any]]] = {}
+    dir_truncated: dict[str, int] = {}
+    dir_hidden_self_refs = 0
+
+    for tier, entries in tier_group.items():
+        if not relevance_on:
+            # Relevance off: byte-identical revert to production-before-test.
+            entries = _prioritize_tier_entries(entries)
+        elif self_ref_mode == "hide":
+            # Drop the target's own members entirely; count them; order the remaining
+            # externals production-before-test. risk_summary (counted by the caller
+            # before this) still includes self-refs, so the blast radius stays honest —
+            # the dropped members surface as hidden_self_refs.
+            external, self_refs = partition_self_refs(entries, container, self_names)
+            dir_hidden_self_refs += len(self_refs)
+            entries = order_by_relevance(external, container, self_names)
+        else:
+            # "rank" (default) or "show": keep everything, externals/production first
+            # and self-references last (so the cap sheds them first).
+            entries = order_by_relevance(entries, container, self_names)
+
+        if effective_limit is not None and len(entries) > effective_limit:
+            kept = entries[:effective_limit]
+            dir_truncated[tier] = len(entries) - effective_limit
+        else:
+            kept = entries
+            dir_truncated[tier] = 0
+
+        # Serialize each kept entry: relativize paths + apply verbose stripping.
+        capped_tiers[tier] = [_serialize_tier_entry(entry, root, verbose) for entry in kept]
+
+    return capped_tiers, dir_truncated, dir_hidden_self_refs
+
+
 def handle_seam_impact(
     conn: sqlite3.Connection,
     target: str,
@@ -587,9 +681,26 @@ def handle_seam_impact(
     # Determine whether capping is active (limit <= 0 means unlimited).
     effective_limit = limit if limit > 0 else None
 
+    # E2/E3 output shaping (handler-layer only — seam_changes/seam_affected bypass this).
+    # relevance_on ranks EXTERNAL dependents ahead of the target's own members so the
+    # per-tier cap drops self-references first. self_ref_mode "hide" additionally drops
+    # self-refs entirely and surfaces hidden_self_refs (mirrors hidden_tests).
+    relevance_on = config.SEAM_IMPACT_RELEVANCE_SORT == "on"
+    self_ref_mode = config.SEAM_IMPACT_SELF_REF
+    # Resolve the self-ref context only when it can actually change ordering — i.e.
+    # relevance is on and the mode treats self-refs specially ("rank"/"hide"). "show"
+    # and relevance-off skip the lookup (container=None → no entry is a self-ref).
+    if relevance_on and self_ref_mode in ("rank", "hide"):
+        container, self_names = _compute_self_context(conn, target.strip())
+    else:
+        container, self_names = None, set()
+    hidden_self_refs = 0
+
     # Build risk_summary and capped tiers for each direction key present in raw.
     # WHY compute summary first: risk_summary must reflect the FULL pre-cap result
     # (story 15) — we count before slicing so truncation cannot hide the true total.
+    # In "hide" mode the summary still counts self-refs (the honest total); the dropped
+    # self-refs surface separately as hidden_self_refs.
     risk_summary: dict[str, dict[str, int]] = {}
     truncated: dict[str, dict[str, int]] = {}
 
@@ -599,35 +710,22 @@ def handle_seam_impact(
         tier_group = raw[dir_key]
 
         # ── 1. Count BEFORE capping (risk_summary denominator) ────────────────
+        # Counts the FULL pre-cap tier group including self-refs (the honest total).
         dir_summary = {tier: len(entries) for tier, entries in tier_group.items()}
         risk_summary[dir_key] = dir_summary
 
-        # ── 2. Apply per-tier cap + serialize ─────────────────────────────────
-        capped_tiers: dict[str, list[dict[str, Any]]] = {}
-        dir_truncated: dict[str, int] = {}
-
-        for tier, entries in tier_group.items():
-            # Production-first within the tier BEFORE slicing, so the cap drops test
-            # dependents before production callers (stable — keeps the analysis layer's
-            # ascending-distance order within each group). WHY ordering still matters
-            # after this sort: WILL_BREAK (d=1) and LIKELY_AFFECTED (d=2) are single-
-            # distance; MAY_NEED_TESTING spans d=3..max_depth, and the stable sort
-            # preserves walk()'s BFS order within the production and test groups, so
-            # entries[:N] keeps the closest production entries first.
-            entries = _prioritize_tier_entries(entries)
-            if effective_limit is not None and len(entries) > effective_limit:
-                kept = entries[:effective_limit]
-                dir_truncated[tier] = len(entries) - effective_limit
-            else:
-                kept = entries
-                dir_truncated[tier] = 0
-
-            # Serialize each kept entry: relativize paths + apply verbose stripping.
-            capped_tiers[tier] = [
-                _serialize_tier_entry(entry, root, verbose)
-                for entry in kept
-            ]
-
+        # ── 2. Order (E2/E3) + per-tier cap + serialize ───────────────────────
+        capped_tiers, dir_truncated, dir_hidden = _shape_tier_group(
+            tier_group,
+            root,
+            verbose=verbose,
+            effective_limit=effective_limit,
+            relevance_on=relevance_on,
+            self_ref_mode=self_ref_mode,
+            container=container,
+            self_names=self_names,
+        )
+        hidden_self_refs += dir_hidden
         response[dir_key] = capped_tiers
 
         # Only include truncated for directions where something was actually dropped.
@@ -647,6 +745,11 @@ def handle_seam_impact(
     # were hidden" — without it, the production-only default could read as a false-safe.
     if "hidden_tests" in raw:
         response["hidden_tests"] = raw["hidden_tests"]
+
+    # Surface hidden_self_refs whenever hide mode is active (even when 0), so agents
+    # can rely on its presence to reconcile risk_summary against the shown entries.
+    if relevance_on and self_ref_mode == "hide":
+        response["hidden_self_refs"] = hidden_self_refs
 
     return response
 
