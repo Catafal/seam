@@ -3,6 +3,25 @@
 Single public entry point:
     build_structure(conn, root, *, path=None, max_depth=..., max_nodes=...) -> StructureResult
 
+WHY THIS MODULE EXISTS (vs. seam_clusters)
+-------------------------------------------
+Seam has two complementary views of a codebase:
+
+  seam_clusters  — SEMANTIC community view: groups symbols that are functionally
+                   related regardless of where they live on disk. A cluster might
+                   span files in src/, lib/, and tests/ if they call each other.
+                   Useful for "what is logically coupled to X?".
+
+  seam_structure — PHYSICAL container map: shows the filesystem hierarchy as-is
+                   (dir → file → class → members). Area labels (from clusters) are
+                   annotated on each node, so the structural view is cluster-aware,
+                   but the primary organisation is always the filesystem. Useful for
+                   "where does X live, and what else is in that file/directory?".
+
+An agent answering "how is this repo structured?" needs the physical map first, then
+drills into clusters for semantic grouping. The two views complement rather than
+replace each other.
+
 Builds a directory -> file -> container tree by joining symbols to files in a
 single read query. The result carries:
   - dir nodes:       directories in the file-path hierarchy
@@ -31,10 +50,16 @@ Slice 3 — scoping and bounds:
   - path: optional Path to scope the tree to a subtree. Only files whose absolute
     path is under `path` are included. Unknown / out-of-tree paths degrade to an
     empty tree, never an error.
-  - max_depth: maximum nesting depth (root = depth 0). Dir/file nodes beyond this
-    depth are omitted; the omitted count is added to StructureResult.truncated.
+  - max_depth: maximum nesting depth (root = depth 0). IMPORTANT: depth counts
+    ALL tree levels — dir, file, AND container nodes each consume a level. A
+    file's containers are at depth ≥ 2 even when the file is a direct child of
+    root. This is intentional: the depth cap governs tree size, not directory
+    nesting alone. Use SEAM_STRUCTURE_MAX_DEPTH (default 8) to allow enough
+    levels for most repos (typical: 3–5 levels of dirs + 1 file + 1 container).
   - max_nodes: maximum total non-root nodes. Nodes are added BFS-order (closest
     to root first); excess nodes are omitted and their count added to truncated.
+    Set max_nodes <= 0 for UNLIMITED (matches the seam_impact limit=0 convention;
+    avoids the footgun where a negative value silently empties the tree).
 
 Container detection (kind vocabulary normalizes to class/interface/type):
   - kind in {'class', 'interface', 'type'} -> container node.
