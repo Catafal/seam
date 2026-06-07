@@ -237,13 +237,17 @@ class TestBuildStructure:
         assert "MyClass.do_thing" not in child_names
 
     def test_top_level_function_present_under_file(self, tmp_db) -> None:
-        """standalone_func and top_level appear under their respective file nodes."""
+        """standalone_func appears under its file node when include_functions=True.
+
+        (Standalone functions are suppressed in the overview default — see
+        TestOverviewDefault — so this asserts the detailed-view behaviour explicitly.)
+        """
         from seam.query.structure import build_structure
 
         conn, tmp_path, _ = tmp_db
         _seed_basic(conn, tmp_path)
 
-        result = build_structure(conn, tmp_path)
+        result = build_structure(conn, tmp_path, include_functions=True)
         file_node = _find_node_by_path_fragment(result["tree"], "app.py")
         assert file_node is not None
         child_names = [c["name"] for c in file_node.get("children", [])]
@@ -911,3 +915,68 @@ class TestReviewHardening:
 def _count_tree_nodes(node: dict) -> int:
     """Count all nodes in a tree including the root."""
     return 1 + sum(_count_tree_nodes(c) for c in node.get("children", []))
+
+
+# ── Overview default: module/area view suppresses standalone functions ──────────
+
+
+def _collect_kinds(node: dict) -> set:
+    """Collect the set of node kinds present in the tree."""
+    out = {node["kind"]}
+    for c in node.get("children", []):
+        out |= _collect_kinds(c)
+    return out
+
+
+class TestOverviewDefault:
+    """The DEFAULT structure view is a module/area overview: dir → file → container.
+
+    Standalone (module-level) functions are suppressed by default — they buried the
+    'main modules' answer (a function-heavy file dumped 33 nodes, hiding the module
+    breadth). `include_functions=True` (CLI --symbols / MCP symbols=True) restores them.
+    Classes/interfaces/types (structural landmarks) are always kept.
+    """
+
+    def test_default_suppresses_standalone_functions(self, tmp_db) -> None:
+        from seam.query.structure import build_structure
+
+        conn, tmp_path, _ = tmp_db
+        _seed_basic(conn, tmp_path)
+        tree = build_structure(conn, tmp_path)["tree"]
+        kinds = _collect_kinds(tree)
+        assert "function" not in kinds, "overview default must NOT list standalone functions"
+        assert "container" in kinds, "overview must keep classes/containers as landmarks"
+        assert "file" in kinds and "dir" in kinds
+
+    def test_default_file_count_still_includes_functions(self, tmp_db) -> None:
+        """Suppressing function NODES must not change the file's symbol_count."""
+        from seam.query.structure import build_structure
+
+        conn, tmp_path, _ = tmp_db
+        _seed_basic(conn, tmp_path)
+        tree = build_structure(conn, tmp_path)["tree"]
+        # app.py has MyClass + MyClass.do_thing + standalone_func = 3 rows total
+        app = _find_node_by_path_fragment(tree, "app.py")
+        assert app is not None and app["symbol_count"] == 3, (
+            "file symbol_count must still count the suppressed function"
+        )
+
+    def test_include_functions_true_restores_function_nodes(self, tmp_db) -> None:
+        from seam.query.structure import build_structure
+
+        conn, tmp_path, _ = tmp_db
+        _seed_basic(conn, tmp_path)
+        tree = build_structure(conn, tmp_path, include_functions=True)["tree"]
+        assert "function" in _collect_kinds(tree), (
+            "include_functions=True must restore standalone function nodes"
+        )
+
+    def test_mcp_tool_advertises_symbols_param(self, tmp_db) -> None:
+        from seam.server.mcp import create_server
+
+        conn, tmp_path, _ = tmp_db
+        server = create_server(conn, tmp_path)
+        conn.close()
+        tools = {t.name: t for t in server._tool_manager.list_tools()}
+        props = tools["seam_structure"].parameters.get("properties", {})
+        assert "symbols" in props, f"seam_structure must advertise 'symbols'; got {sorted(props)}"

@@ -1107,6 +1107,7 @@ def handle_seam_structure(
     path: Path | None = None,
     max_depth: int | None = None,
     max_nodes: int | None = None,
+    include_functions: bool = False,
 ) -> StructureResult:
     """Handler for the seam_structure MCP tool — whole-repo structure tree.
 
@@ -1141,4 +1142,7 @@ def handle_seam_structure(
     # Pass the scope path through unresolved: build_structure resolves a RELATIVE
     # path against `root` (not cwd), so MCP callers and the CLI get root-relative
     # scoping regardless of the server/process working directory.
-    return run_build_structure(conn, root, path=path, max_depth=max_depth, max_nodes=max_nodes)
+    return run_build_structure(
+        conn, root, path=path, max_depth=max_depth, max_nodes=max_nodes,
+        include_functions=include_functions,
+    )

@@ -371,8 +371,9 @@ def _build_file_tree(
     symbols_by_file: dict[str, list[tuple[str, str, int]]],
     file_cluster_counts: dict[str, dict[int, int]],
     cluster_labels: dict[int, str],
+    include_functions: bool,
 ) -> StructureNode:
-    """Build the dir -> file -> container/function tree from the symbol map.
+    """Build the dir -> file -> container(/function) tree from the symbol map.
 
     Args:
         root:                 Project root (for path relativization).
@@ -380,6 +381,12 @@ def _build_file_tree(
         file_cluster_counts:  {abs_file_path: {cluster_id: symbol_count}}
                               (empty dict when cluster data is unavailable)
         cluster_labels:       {cluster_id: label} for area annotation
+        include_functions:    when False (the overview default) standalone module-level
+                              functions are NOT emitted as nodes — they buried the
+                              "main modules" answer (a function-heavy file dumped dozens
+                              of nodes, hiding the module breadth). Their rows still
+                              count in the file's symbol_count. Classes/interfaces/types
+                              (structural landmarks) are always kept. True restores them.
 
     Returns:
         Root StructureNode (kind='dir') representing `root`.
@@ -438,8 +445,9 @@ def _build_file_tree(
                 # If owner not found (e.g. method extracted before its class row appears),
                 # the symbol is silently discarded — NOT added as a node — since a lone
                 # method node without a container parent would break the tree contract.
-            else:
-                # Top-level function (or other non-container, non-method kind)
+            elif include_functions:
+                # Top-level function (or other non-container, non-method kind).
+                # Suppressed in the overview default — see include_functions docstring.
                 func_node = _make_function_node(name)
                 file_node["children"].append(func_node)
 
@@ -598,6 +606,7 @@ def build_structure(
     path: Path | None = None,
     max_depth: int | None = None,
     max_nodes: int | None = None,
+    include_functions: bool = False,
 ) -> StructureResult:
     """Build a directory -> file -> container/function structure tree.
 
@@ -698,7 +707,9 @@ def build_structure(
         tree_root = scope_abs
 
     try:
-        tree = _build_file_tree(tree_root, symbols_by_file, file_cluster_counts, cluster_labels)
+        tree = _build_file_tree(
+            tree_root, symbols_by_file, file_cluster_counts, cluster_labels, include_functions
+        )
     except Exception:
         logger.warning("build_structure: _build_file_tree raised", exc_info=True)
         tree = _make_dir_node(tree_root.name or str(tree_root), None)
