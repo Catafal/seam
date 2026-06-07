@@ -330,3 +330,60 @@ def test_source_equals_target(seeded_trace_db: tuple[sqlite3.Connection, Path]) 
 
     assert result["found"] is True
     assert result["paths"] == [[]]
+
+
+# ── Bare->qualified source/target resolution (Tier D11 follow-up) ───────────────
+
+
+@pytest.fixture()
+def qualified_edge_db() -> tuple[sqlite3.Connection, Path]:
+    """Seed a graph whose edges are stored QUALIFIED (Tier B receiver inference):
+        Foo.bar -[call]-> Baz.qux
+    Symbols are the qualified methods. A bare trace ("bar" -> "qux") must resolve the
+    bare endpoints to their qualified forms and find the path.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp).resolve()
+        db_path = tmp_path / ".seam" / "seam.db"
+        db_path.parent.mkdir()
+        src = tmp_path / "m.py"
+        src.write_text("# stub\n")
+        conn = init_db(db_path)
+        upsert_file(
+            conn, src, "python", "h",
+            [
+                Symbol(name="Foo.bar", kind="method", file=str(src), start_line=1, end_line=2, docstring=None),
+                Symbol(name="Baz.qux", kind="method", file=str(src), start_line=3, end_line=4, docstring=None),
+            ],
+            [_edge("Foo.bar", "Baz.qux", str(src), CONFIDENCE_EXTRACTED)],
+        )
+        yield conn, tmp_path
+        conn.close()
+
+
+def test_bare_source_target_resolve_to_qualified(qualified_edge_db) -> None:
+    """trace('bar','qux') must find the path Foo.bar -> Baz.qux via bare->qualified resolution.
+
+    Regression: with Tier B qualified edges, a bare source matched no `from_name` and the
+    trace returned found=False, forcing agents to retry with fully-qualified names.
+    """
+    conn, root = qualified_edge_db
+    result = handle_seam_trace(conn, "bar", "qux", root)
+    assert result["found"] is True, f"bare endpoints should resolve; got {result}"
+    assert len(result["paths"]) >= 1
+    # Bare 'bar' must resolve to the qualified 'Foo.bar' the edge graph keys on;
+    # the echoed source reflects the resolved endpoint.
+    assert result["source"] == "Foo.bar"
+    hops = result["paths"][0]
+    assert hops[0]["from_name"] == "Foo.bar"
+    # Terminal hop reaches the qux symbol (flows bare-matches the target against the
+    # qualified edge end and echoes the queried name).
+    assert hops[-1]["to_name"].split(".")[-1] == "qux"
+
+
+def test_qualified_source_target_still_work(qualified_edge_db) -> None:
+    """No regression: fully-qualified endpoints still find the path directly."""
+    conn, root = qualified_edge_db
+    result = handle_seam_trace(conn, "Foo.bar", "Baz.qux", root)
+    assert result["found"] is True
+    assert len(result["paths"]) >= 1
