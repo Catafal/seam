@@ -2,6 +2,32 @@
 # Format: [x] = done, [>] = in progress, [ ] = not started
 # Update this EVERY session. It is the first thing the agent reads.
 #
+# 2026-06-07: E2/E3 seam_impact output relevance shaping complete
+#   (branch feat/impact-relevance-ranking, issue #93, PR pending).
+#   The usability gap closed: the 2026-06-07 neutral re-benchmark showed holds+synthesis+A3
+#   edges improved RECALL (CompanionManager upstream 8→21) but NOT usability — a class seed
+#   fans out to all members, so the upstream walk surfaced the class's OWN sibling methods as
+#   direct dependents. Alphabetical ordering floated these self-refs above EXTERNAL truth-
+#   dependents; under the byte cap only 1 of 5 externals survived. E2/E3 fix the SHAPE so the
+#   recall gains become usable output.
+#   E3 — relevance ranking BEFORE the per-tier cap: external dependents rank ahead of the
+#     target's own container-members (production ahead of test as secondary key), stable sort,
+#     so entries[:limit] keeps the closest/highest-signal externals.
+#   E2 — self-reference handling: default "rank" keeps self-refs but sorts them last (lossless;
+#     risk_summary still counts the full blast radius). Opt-in "hide" drops them + surfaces
+#     hidden_self_refs (mirrors hidden_tests).
+#   New deep leaf seam/analysis/relevance.py (pure, no DB, never raises): owning_container,
+#     classify_self_ref, relevance_key, order_by_relevance, partition_self_refs.
+#     Wired into handle_seam_impact via _compute_self_context + _shape_tier_group helpers.
+#   2 new config knobs: SEAM_IMPACT_RELEVANCE_SORT (on/off, default on; off = byte-identical
+#     revert), SEAM_IMPACT_SELF_REF (rank/hide/show, default rank).
+#   Handler-layer ONLY → seam_changes/seam_affected byte-stable (call analysis impact() directly).
+#   No schema change, no migration, no re-index. MCP tool count stays 12.
+#   Tests: tests/unit/test_relevance.py (16) + tests/integration/test_impact_relevance.py (7,
+#     incl. byte-stability + benchmark-shaped CompanionManager regression).
+#   GATE: ruff + mypy clean (91 files), 2859 tests pass.
+# Next: neutral re-benchmark the clicky impact-B cell to confirm the recall gains now surface.
+#
 # 2026-06-07: A3 field-access edges + field symbols complete
 #   (branch feat/field-access-edges, all 12 languages, extraction-time, watcher-compatible).
 #   The visibility gap closed: field reads/writes were invisible to seam_impact — renaming a

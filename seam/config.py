@@ -178,6 +178,25 @@ SEAM_BARREL_DEPTH: int = int(os.getenv("SEAM_BARREL_DEPTH", "3"))
 # Default 25 prevents the "hub symbol dumps 200+ entries" problem (issue #33).
 SEAM_IMPACT_MAX_RESULTS: int = int(os.getenv("SEAM_IMPACT_MAX_RESULTS", "25"))
 
+# ── E2/E3: seam_impact output relevance shaping ─────────────────────────────
+# Master switch for relevance ordering in seam_impact (handler-layer, read-path
+# only). "on" (default) ranks EXTERNAL dependents ahead of the target's own
+# container-members (self-references) BEFORE the per-tier cap, so the cap drops
+# self-refs first and external dependents survive truncation. "off" reverts to
+# the prior production-before-test ordering for byte-identical output.
+# Handler-only: seam_changes / seam_affected call the analysis layer directly and
+# are unaffected regardless of this setting.
+SEAM_IMPACT_RELEVANCE_SORT: str = os.getenv("SEAM_IMPACT_RELEVANCE_SORT", "on")
+
+# How seam_impact treats the target's own container-members (self-references):
+#   "rank" (default) — keep them, but sort last so the cap drops them first
+#                      (lossless: risk_summary still counts the full blast radius).
+#   "hide"           — drop self-refs from entry lists, surface a hidden_self_refs
+#                      count (mirrors hidden_tests); frees the most external budget.
+#   "show"           — legacy: no self-ref special treatment (ordering falls back to
+#                      production-before-test, same as RELEVANCE_SORT="off").
+SEAM_IMPACT_SELF_REF: str = os.getenv("SEAM_IMPACT_SELF_REF", "rank")
+
 
 # ── Phase 6: Context-Pack configuration ─────────────────────────────────────
 
