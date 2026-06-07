@@ -28,6 +28,7 @@ import logging
 
 from tree_sitter import Node
 
+from seam.analysis.builtins import is_builtin
 from seam.indexer.graph_common import _text
 
 logger = logging.getLogger(__name__)
@@ -623,7 +624,11 @@ def collect_composition_types_go(struct_node: Node) -> list[tuple[str, int]]:
                     pass
             break  # Only one field_declaration_list per struct
 
-        return result
+        # Post-filter: drop dotted qualified targets (e.g. 'pkg.Client' — would be a
+        # wrong/dangling edge since edges are bare-name-keyed) and language builtins
+        # (the PascalCase heuristic alone admits stdlib types). is_builtin is the
+        # authoritative source, mirroring graph_swift_infer.
+        return [(t, ln) for (t, ln) in result if "." not in t and not is_builtin(t, "go")]
     except Exception as exc:  # noqa: BLE001
         logger.debug("collect_composition_types_go: failed: %r", exc)
         return []
@@ -671,7 +676,9 @@ def collect_composition_types_rust(struct_node: Node) -> list[tuple[str, int]]:
                     pass
             break  # Only one field_declaration_list per struct
 
-        return result
+        # Post-filter builtins (e.g. Rust 'String', 'Box' used bare) via the
+        # authoritative is_builtin source — the PascalCase heuristic alone admits them.
+        return [(t, ln) for (t, ln) in result if not is_builtin(t, "rust")]
     except Exception as exc:  # noqa: BLE001
         logger.debug("collect_composition_types_rust: failed: %r", exc)
         return []

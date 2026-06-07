@@ -25,6 +25,7 @@ import logging
 
 from tree_sitter import Node
 
+from seam.analysis.builtins import is_builtin
 from seam.indexer.graph_common import _text
 
 logger = logging.getLogger(__name__)
@@ -726,7 +727,9 @@ def collect_composition_types_java(class_node: Node) -> list[tuple[str, int]]:
             except Exception:  # noqa: BLE001
                 pass
 
-        return result
+        # Post-filter builtins (String/Integer/List/Map/etc.) — the PascalCase guard
+        # admits them; is_builtin is the authoritative cross-language source.
+        return [(t, ln) for (t, ln) in result if not is_builtin(t, "java")]
     except Exception as exc:  # noqa: BLE001
         logger.debug("collect_composition_types_java: failed: %r", exc)
         return []
@@ -800,7 +803,8 @@ def collect_composition_types_cs(class_node: Node) -> list[tuple[str, int]]:
             except Exception:  # noqa: BLE001
                 pass
 
-        return result
+        # Post-filter builtins (String/Int32/List/etc.) via the authoritative source.
+        return [(t, ln) for (t, ln) in result if not is_builtin(t, "csharp")]
     except Exception as exc:  # noqa: BLE001
         logger.debug("collect_composition_types_cs: failed: %r", exc)
         return []
@@ -835,7 +839,9 @@ def collect_composition_types_cpp(class_node: Node) -> list[tuple[str, int]]:
             except Exception:  # noqa: BLE001
                 pass
 
-        return result
+        # Post-filter builtins (std::string surfaces as 'string'; PascalCase stdlib
+        # types) via the authoritative source.
+        return [(t, ln) for (t, ln) in result if not is_builtin(t, "cpp")]
     except Exception as exc:  # noqa: BLE001
         logger.debug("collect_composition_types_cpp: failed: %r", exc)
         return []
@@ -885,7 +891,9 @@ def collect_composition_types_ruby(class_node: Node) -> list[tuple[str, int]]:
             except Exception:  # noqa: BLE001
                 pass
 
-        return result
+        # Post-filter builtins (Array.new/Hash.new/String.new etc. are PascalCase
+        # constants but stdlib, not user composition) via the authoritative source.
+        return [(t, ln) for (t, ln) in result if not is_builtin(t, "ruby")]
     except Exception as exc:  # noqa: BLE001
         logger.debug("collect_composition_types_ruby: failed: %r", exc)
         return []
@@ -962,7 +970,9 @@ def collect_composition_types_php(class_node: Node) -> list[tuple[str, int]]:
             except Exception:  # noqa: BLE001
                 pass
 
-        return result
+        # Post-filter builtins via the authoritative source (PHP type hints can name
+        # built-in classes like 'DateTime'/'ArrayObject').
+        return [(t, ln) for (t, ln) in result if not is_builtin(t, "php")]
     except Exception as exc:  # noqa: BLE001
         logger.debug("collect_composition_types_php: failed: %r", exc)
         return []

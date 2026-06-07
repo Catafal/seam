@@ -273,6 +273,24 @@ class TestJavaRefusals:
         # array_type is not a plain type_identifier → refused
         assert "Repository" not in _holds_targets(edges), "Array field must not produce holds"
 
+    def test_builtin_class_field_refused(self) -> None:
+        """String/Integer fields → no holds edge.
+
+        These ARE plain type_identifier nodes (PascalCase), so the first-char-uppercase
+        heuristic alone would admit them — the collector post-filters them through
+        is_builtin(name, "java"). Composition surfaces user-type dependencies, not JDK
+        stdlib types, so String/Integer must not pollute the blast radius.
+        """
+        src = (
+            "class Owner {\n"
+            "    String name;\n"
+            "    Integer count;\n"
+            "}\n"
+        )
+        targets = _holds_targets(_parse_java(src))
+        assert "String" not in targets, "JDK String must be filtered as a builtin"
+        assert "Integer" not in targets, "JDK Integer must be filtered as a builtin"
+
 
 class TestJavaDedup:
     """JAVA-DEDUP: same type as field AND ctor param → one holds edge only."""

@@ -414,11 +414,11 @@ class TestRustRefusals:
         targets = _holds_targets(edges)
         assert "u32" not in targets
         assert "bool" not in targets
-        # String is PascalCase but it's a stdlib type; we check _rust_plain_type returns it
-        # (it's not in a builtin exclusion list for Rust). But the extractor conservatism
-        # only checks PascalCase and first char uppercase — String WILL be emitted.
-        # This is acceptable (String is unusual as a held dependency; not a false positive
-        # in practice since String is unlikely to be a user-defined type name conflict).
+        # String is PascalCase, so the first-char-uppercase heuristic alone would admit
+        # it — but the collector post-filters through is_builtin(name, "rust") (which
+        # lists String/Vec/Box/etc.), so a stdlib type held as a field produces NO holds
+        # edge. Composition is meant to surface user-type dependencies, not primitives.
+        assert "String" not in targets, "Rust stdlib String must be filtered as a builtin"
 
     def test_tuple_struct_field_refused(self) -> None:
         """Tuple type field ((A, B)) → no holds edge."""
