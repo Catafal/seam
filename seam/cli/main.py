@@ -1781,6 +1781,14 @@ def structure_cmd(
             "Default: use SEAM_STRUCTURE_MAX_DEPTH (8)."
         ),
     ),
+    symbols: bool = typer.Option(
+        False,
+        "--symbols",
+        help=(
+            "Also list standalone module-level functions under each file. "
+            "Default off = compact module/area overview (dirs, files, classes only)."
+        ),
+    ),
     json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
     quiet: bool = typer.Option(
         False,
@@ -1840,6 +1848,7 @@ def structure_cmd(
             root=project_root,
             path=scope_path,
             max_depth=max_depth_arg,
+            include_functions=symbols,
         )
     finally:
         conn.close()

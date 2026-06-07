@@ -417,18 +417,19 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         path: str | None = None,
         depth: int | None = None,
         nodes: int | None = None,
+        symbols: bool = False,
     ) -> Any:
         """Get the whole-repository directory/file/container structure tree.
 
-        Returns a nested tree of:
+        By default this is a MODULE/AREA OVERVIEW — a nested tree of:
           dir nodes       — directories in the repository hierarchy
           file nodes      — indexed source files under each directory
           container nodes — class/interface/type symbols within each file
-          function nodes  — top-level functions within each file
 
-        Method/member symbols are rolled up into their owning container's
-        `members` count and do NOT appear as separate nodes — this keeps the tree
-        compact and focused on the structural skeleton rather than every detail.
+        Standalone module-level functions and method/member symbols are rolled up into
+        counts rather than listed as nodes — this keeps the tree a compact "what are the
+        main modules?" skeleton instead of an exhaustive symbol dump. Pass symbols=True to
+        also list standalone functions under each file (for a detailed structural view).
 
         Each node carries:
           kind:         'dir' | 'file' | 'container' | 'function'
@@ -449,6 +450,9 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
           nodes: Maximum total non-root nodes. Excess nodes are dropped BFS-order (closest
                  to root survive) and counted in `truncated`. 0 = unlimited.
                  Defaults to SEAM_STRUCTURE_MAX_NODES (2000).
+          symbols: When true, also list standalone module-level functions as nodes under
+                 each file. Default false = compact module/area overview (dirs, files,
+                 classes only). Turn on for a detailed per-symbol structural view.
 
         Use this to get a structural overview before diving into a specific file or
         symbol, or to understand how files and containers are organized across the repo.
@@ -460,7 +464,8 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         # build_structure resolve a relative path against `root`, not the server cwd.
         scope_path = Path(path) if path else None
         result = handle_seam_structure(
-            conn, root, path=scope_path, max_depth=depth, max_nodes=nodes
+            conn, root, path=scope_path, max_depth=depth, max_nodes=nodes,
+            include_functions=symbols,
         )
         # Normalize a genuinely-empty (scoped) tree to the not-found sentinel so
         # _finalize emits {found: false} — matching every sibling read tool and the
