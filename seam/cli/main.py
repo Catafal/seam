@@ -65,6 +65,7 @@ from seam.indexer.db import connect, init_db
 from seam.indexer.embedding_index import index_embeddings
 from seam.indexer.pipeline import index_one_file, walk_project
 from seam.indexer.sync import sync as sync_project
+from seam.indexer.synthesis_index import index_synthesis
 from seam.query.clusters import cluster_members as query_cluster_members
 from seam.query.clusters import list_clusters as query_list_clusters
 from seam.query.comments import why as comments_why
@@ -190,6 +191,7 @@ def init(
     indexed_files = 0
     skipped_files = 0
     total_clusters = 0
+    total_synthesis: int | None = None  # None = not yet run; -1 = failed; >=0 = count
     total_embeddings: int | None = None  # None = not requested; 0 = skipped; >0 = count; -1 = failed
     llm_naming_summary: str | None = None
 
@@ -233,6 +235,19 @@ def init(
             if config.SEAM_CLUSTER_NAMING == "llm" and total_clusters > 0:
                 llm_naming_summary = get_llm_naming_summary(conn)
 
+            # Edge-synthesis post-pass (PRD #83): synthesize dynamic-dispatch edges
+            # that a parser cannot see (interface overrides, etc.). Runs after clustering
+            # because it reads the already-extracted call graph (not cluster assignments).
+            # Returns -1 on failure (never raises), 0 when SEAM_EDGE_SYNTHESIS=off.
+            # WHY after clustering: synthesis is whole-graph and needs the complete edge
+            # set (including all inheritance edges) — runs last in the post-pass chain.
+            progress.update(task, description="Synthesizing dispatch edges...")
+            total_synthesis = index_synthesis(
+                conn,
+                enabled=config.SEAM_EDGE_SYNTHESIS == "on",
+                fanout_cap=config.SEAM_SYNTHESIS_FANOUT_CAP,
+            )
+
             # --semantic: embed all symbols with the local fastembed model.
             # Returns 0 when fastembed absent (skip cleanly), -1 on error, >=0 on success.
             # WHY after clustering: embeddings are independent of cluster assignments
@@ -252,6 +267,15 @@ def init(
     # from "genuinely zero clusters." Display a visible yellow warning in that case.
     clustering_failed = total_clusters < 0
     display_clusters = str(total_clusters) if total_clusters >= 0 else "failed"
+
+    # Synthesis display: -1 = failed; 0 = off or no edges; >=1 = count of edges synthesized.
+    synthesis_failed = total_synthesis is not None and total_synthesis < 0
+    if total_synthesis is None or total_synthesis == 0:
+        display_synthesis: str | None = None  # not shown unless synthesis produced edges or failed
+    elif synthesis_failed:
+        display_synthesis = "failed"
+    else:
+        display_synthesis = str(total_synthesis)
 
     # Embedding display: None = not requested; 0 = skipped (fastembed absent);
     # -1 = embedding failed; >=1 = count of symbols embedded.
@@ -279,6 +303,8 @@ def init(
     table.add_row("symbols", str(total_symbols))
     table.add_row("edges", str(total_edges))
     table.add_row("clusters", display_clusters)
+    if display_synthesis is not None:
+        table.add_row("synth edges", display_synthesis)
     if display_embeddings is not None:
         table.add_row("embeddings", display_embeddings)
     table.add_row("elapsed", f"{elapsed:.2f}s")
@@ -290,6 +316,14 @@ def init(
         console.print(
             "[yellow]clusters: failed[/yellow] "
             "[dim](run with SEAM_LOG_LEVEL=DEBUG to see the error)[/dim]"
+        )
+
+    # Visible yellow warning when synthesis post-pass failed.
+    if synthesis_failed and total_symbols > 0:
+        console.print(
+            "[yellow]synth edges: failed[/yellow] "
+            "[dim](run with SEAM_LOG_LEVEL=DEBUG to see the error; "
+            "run 'seam init' again to retry)[/dim]"
         )
 
     # Visible yellow warning when embedding failed.
@@ -2227,6 +2261,15 @@ def sync_cmd(
             "(useful after the watcher already indexed your edits)."
         ),
     ),
+    force_synthesis: bool = typer.Option(
+        False,
+        "--force-synthesis",
+        help=(
+            "Re-run edge synthesis even when zero files changed "
+            "(useful after the watcher already indexed your edits). "
+            "Mirrors --force-clusters for the synthesis post-pass."
+        ),
+    ),
     semantic: bool = typer.Option(
         False,
         "--semantic",
@@ -2312,6 +2355,9 @@ def sync_cmd(
             llm_api_key=config.SEAM_LLM_API_KEY,
             llm_model=config.SEAM_LLM_MODEL,
             min_size=config.SEAM_CLUSTER_MIN_SIZE,
+            synthesis_enabled=config.SEAM_EDGE_SYNTHESIS == "on",
+            force_synthesis=force_synthesis,
+            fanout_cap=config.SEAM_SYNTHESIS_FANOUT_CAP,
         )
     except sqlite3.Error as exc:
         # A genuine database-layer failure (lock, corruption, disk full mid-write).
@@ -2363,7 +2409,7 @@ def sync_cmd(
         return
 
     # ── Quiet mode — key:value pairs, one per line, for hook use ─────────────
-    # WHY key:value (not bare values): with 8 mixed int/bool fields, bare positional
+    # WHY key:value (not bare values): with mixed int/bool fields, bare positional
     # values are ambiguous to parse. "key: value\n" lets hooks do `grep "^added:"`.
     if quiet:
         sys.stdout.write(f"added: {result['added']}\n")
@@ -2374,6 +2420,8 @@ def sync_cmd(
         sys.stdout.write(f"graph_changed: {result['graph_changed']}\n")
         sys.stdout.write(f"clusters_recomputed: {result['clusters_recomputed']}\n")
         sys.stdout.write(f"cluster_count: {result['cluster_count']}\n")
+        sys.stdout.write(f"synthesis_recomputed: {result['synthesis_recomputed']}\n")
+        sys.stdout.write(f"synthesis_count: {result['synthesis_count']}\n")
         return
 
     # ── Rich (default) mode — summary table ───────────────────────────────────
@@ -2389,6 +2437,16 @@ def sync_cmd(
     else:
         cluster_display = str(cluster_count)
 
+    # synthesis_count: None = pass skipped; -1 = failed; 0 = no synth edges; >= 1 = count.
+    sync_synthesis_count = result.get("synthesis_count")
+    synthesis_failed_sync = sync_synthesis_count is not None and sync_synthesis_count < 0
+    if sync_synthesis_count is None:
+        synthesis_display = "skipped"
+    elif synthesis_failed_sync:
+        synthesis_display = "failed"
+    else:
+        synthesis_display = str(sync_synthesis_count)
+
     table = Table(title="seam sync — complete", show_header=False, box=None)
     table.add_column("key", style="bold cyan", width=20)
     table.add_column("value")
@@ -2399,6 +2457,7 @@ def sync_cmd(
     table.add_row("unchanged", str(result["unchanged"]))
     table.add_row("skipped", str(result["skipped"]))
     table.add_row("clusters", cluster_display)
+    table.add_row("synth edges", synthesis_display)
     console.print(table)
 
     # Visible failure warning when the gated cluster recompute failed — without
@@ -2408,6 +2467,14 @@ def sync_cmd(
         console.print(
             "[yellow]clusters: recompute failed[/yellow] "
             "[dim](clusters may be stale — run 'seam init' to rebuild; "
+            "set SEAM_LOG_LEVEL=DEBUG to see the error)[/dim]"
+        )
+
+    # Visible failure warning when synthesis failed.
+    if synthesis_failed_sync:
+        console.print(
+            "[yellow]synth edges: recompute failed[/yellow] "
+            "[dim](synthesized edges may be stale — run 'seam init' to rebuild; "
             "set SEAM_LOG_LEVEL=DEBUG to see the error)[/dim]"
         )
 

@@ -1,4 +1,4 @@
--- Seam SQLite Schema (v10 — Tier B B1: edges.receiver for call-edge receiver capture)
+-- Seam SQLite Schema (v12 — edge-synthesis post-pass: edges.synthesized_by provenance)
 -- Run via db.py:init_db() — idempotent (CREATE TABLE IF NOT EXISTS).
 -- FTS5 is required; init_db() verifies availability before proceeding.
 -- Schema v2 adds: edges.confidence (DEFAULT 'INFERRED').
@@ -12,6 +12,10 @@
 -- Schema v9 adds: symbols.entry_score (P6b framework entry-point ranking multiplier).
 -- Schema v10 adds: edges.receiver (Tier B B1: raw receiver text for attribute calls;
 --                  NULL for import/bare-call edges and pre-v10 rows).
+-- Schema v11 adds: symbols.search_text (Tier D #12: camelCase/snake_case-split tokens;
+--                  FTS5 rebuilt to index (name, docstring, signature, search_text)).
+-- Schema v12 adds: edges.synthesized_by (edge-synthesis post-pass provenance;
+--                  NULL = parser-extracted; channel name = synthesized by post-pass).
 -- Migration from v1: db.py:_run_migration_v1_to_v2() (guarded ALTER TABLE).
 -- Migration from v2: db.py:_run_migration_v2_to_v3() (guards schema_version bump).
 -- Migration from v3: db.py:_run_migration_v3_to_v4() (adds clusters table + cluster_id).
@@ -21,6 +25,8 @@
 -- Migration from v7: db.py:_run_migration_v7_to_v8() (adds clusters.cohesion column).
 -- Migration from v8: db.py:_run_migration_v8_to_v9() (adds symbols.entry_score column).
 -- Migration from v9: db.py:_run_migration_v9_to_v10() (adds edges.receiver column).
+-- Migration from v10: db.py:_run_migration_v10_to_v11() (adds symbols.search_text + FTS column).
+-- Migration from v11: db.py:_run_migration_v11_to_v12() (adds edges.synthesized_by column).
 
 PRAGMA journal_mode = WAL;      -- Write-ahead logging for concurrent reads
 PRAGMA foreign_keys = ON;
@@ -89,7 +95,15 @@ CREATE TABLE IF NOT EXISTS edges (
     confidence  TEXT NOT NULL DEFAULT 'INFERRED',  -- EXTRACTED | INFERRED | AMBIGUOUS (DEFAULT is INFERRED: conservative)
     -- Tier B B1 (v10): receiver text from attribute call expressions (recv.method).
     -- NULL for import edges, bare calls, and pre-v10 rows (null-contract: same as Phase 4/5 fields).
-    receiver    TEXT
+    receiver    TEXT,
+    -- v12 (edge-synthesis post-pass): channel that synthesized this edge.
+    -- NULL = statically extracted by a parser (the default for all extractor-emitted edges).
+    -- A channel name string = synthesized by the post-pass, e.g. 'interface-override'.
+    -- Provenance is DERIVED: synthesized_by IS NOT NULL ⟹ heuristic edge.
+    -- Synthesized edges appear only after the next full 'seam init' (explicit backfill,
+    -- same null-contract as prior enrichment columns). The synthesis pass stores these
+    -- under a permanent ':synthesis:' file row (not a real on-disk file).
+    synthesized_by TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_name);
@@ -203,9 +217,9 @@ CREATE TABLE IF NOT EXISTS metadata (
 );
 
 -- NOTE: INSERT OR IGNORE does not update existing rows. Fresh DBs are seeded at
--- the CURRENT schema version ('10') so a brand-new `seam init` is born current and
+-- the CURRENT schema version ('12') so a brand-new `seam init` is born current and
 -- does NOT trigger any migration advisory.
 -- Existing older DBs keep their stored version; db.py migrations bump them in place.
 INSERT OR IGNORE INTO metadata(key, value) VALUES
-    ('schema_version', '11'),
+    ('schema_version', '12'),
     ('seam_version',   '0.2.0');

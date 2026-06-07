@@ -117,9 +117,10 @@ class TestV10ToV11Migration:
     def test_migration_idempotent(self) -> None:
         from seam.indexer.migrations import _run_migration_v10_to_v11
 
-        conn = init_db(Path(":memory:"))  # already v11
+        conn = init_db(Path(":memory:"))  # already at current schema version (>= 11)
         # Running again must be a no-op (version guard), not raise.
         _run_migration_v10_to_v11(conn)
         ver = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()["value"]
         conn.close()
-        assert ver == "11"
+        # Version must be >= 11 (not exactly 11 — subsequent migrations may have bumped it).
+        assert int(ver) >= 11

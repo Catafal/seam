@@ -629,6 +629,76 @@ def _run_migration_v9_to_v10(conn: sqlite3.Connection) -> None:
         ) from exc
 
 
+def _run_migration_v11_to_v12(conn: sqlite3.Connection) -> None:
+    """Guarded migration: add edges.synthesized_by column (v11 → v12).
+
+    Edge-synthesis post-pass addition: captures which synthesis channel produced an
+    edge (e.g. 'interface-override'). NULL = statically extracted by a parser;
+    a channel name string = synthesized by the post-pass. Provenance is derived:
+    synthesized_by IS NOT NULL ⟹ heuristic. No separate provenance column needed.
+
+    Additive-only: adds a nullable TEXT column to the edges table if absent.
+    Does NOT backfill — synthesized_by stays NULL on existing rows. Synthesized
+    edges appear only after the next full `seam init` (explicit backfill, same
+    null-contract as prior enrichment columns). Toggling SEAM_EDGE_SYNTHESIS
+    requires a re-index to take effect.
+
+    Steps:
+      1. ALTER TABLE edges ADD COLUMN synthesized_by TEXT (guarded by table_info).
+      2. Bump schema_version to '12'.
+
+    Guarded: runs only when stored version < 12.
+    Idempotent: the PRAGMA table_info check skips the ALTER when the column
+                already exists; the version guard prevents double-bumping.
+    Fresh-DB-safe: a brand-new DB seeded with schema_version='12' returns early.
+    Uses BEGIN IMMEDIATE / COMMIT for atomicity (consistent with v9→v10 pattern).
+    Raises RuntimeError on failure so caller knows the DB is in a bad state.
+    """
+    try:
+        row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
+        version = int(row["value"]) if row else 0
+
+        if version >= 12:
+            return  # Already at v12 or newer — no-op.
+
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # Step 1: add the nullable synthesized_by column if it does not already exist.
+            # Guarded by table_info to make repeated calls safe (idempotent).
+            col_names = {
+                r["name"] for r in conn.execute("PRAGMA table_info(edges)").fetchall()
+            }
+            if "synthesized_by" not in col_names:
+                conn.execute("ALTER TABLE edges ADD COLUMN synthesized_by TEXT")
+
+            # Step 2: bump schema_version to '12' as the last step before commit.
+            # Placing this last guarantees the version is only advanced when the
+            # structural change has succeeded.
+            conn.execute("UPDATE metadata SET value = '12' WHERE key = 'schema_version'")
+            conn.execute("COMMIT")
+
+            logger.info(
+                "Migrated Seam index v%d->v12 (added edges.synthesized_by column for "
+                "edge-synthesis post-pass provenance). Run 'seam init' to populate "
+                "synthesized_by for synthesized edges.",
+                version,
+            )
+        except Exception as exc:  # noqa: BLE001
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(
+                "Seam DB migration v11->v12 failed; run 'seam init' to rebuild the index"
+            ) from exc
+    except RuntimeError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "Seam DB migration v11->v12 failed; run 'seam init' to rebuild the index"
+        ) from exc
+
+
 def _run_migration_v10_to_v11(conn: sqlite3.Connection) -> None:
     """Guarded migration: add symbols.search_text + a 4th symbols_fts column (v10 → v11).
 
