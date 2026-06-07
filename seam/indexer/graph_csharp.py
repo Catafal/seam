@@ -387,7 +387,7 @@ def _extract_edges_csharp(root: Node, filepath: Path) -> list[Edge]:
                                     kind=mode,
                                     file=file_str,
                                     line=line,
-                                    confidence="EXTRACTED",
+                                    confidence="INFERRED",
                                     receiver=None,
                                 ))
                     for child in body.named_children:

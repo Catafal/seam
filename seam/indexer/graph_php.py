@@ -475,7 +475,7 @@ def _walk_php_edges(
                                 kind=mode,
                                 file=file_str,
                                 line=line,
-                                confidence="EXTRACTED",
+                                confidence="INFERRED",
                                 receiver=None,
                             ))
             for child in body.children:

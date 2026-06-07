@@ -910,12 +910,13 @@ def _emit_swift_field_accesses(
                 kind=mode,
                 file=file_str,
                 line=line,
-                confidence="EXTRACTED",
+                confidence="INFERRED",
                 receiver=None,
             ))
     except Exception as exc:  # noqa: BLE001
-        import logging as _logging
-        _logging.getLogger(__name__).debug(
+        # Use the module-level logger — imports stay at top of file (project rule),
+        # and the error path must not do import work that could itself raise.
+        logger.debug(
             "_emit_swift_field_accesses: failed for class=%r: %r", class_name, exc
         )
 

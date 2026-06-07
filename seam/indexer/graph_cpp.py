@@ -477,7 +477,7 @@ def _extract_edges_cpp(root: Node, filepath: Path) -> list[Edge]:
                                     kind=mode,
                                     file=file_str,
                                     line=ln,
-                                    confidence="EXTRACTED",
+                                    confidence="INFERRED",
                                     receiver=None,
                                 ))
                     for child in body.children:

@@ -28,9 +28,9 @@ A3 addition: build_context_result and build_merged_context_result now include
 import logging
 import sqlite3
 
+from seam import config
 from seam.query.clusters import cluster_peers as _cluster_peers
 from seam.query.names import edge_match_names as _edge_match_names
-from seam.query.names import get_member_names as _get_member_names
 from seam.query.names import is_container_symbol as _is_container_symbol
 
 logger = logging.getLogger(__name__)
@@ -99,14 +99,22 @@ def collect_field_access_split(
             return readers, writers
 
         if _is_container_symbol(conn, symbol_name):
-            # Class/interface/struct seed: aggregate across all member fields.
-            # get_member_names returns bare member names; we also check qualified forms
-            # via collect_field_access_for_names (which calls edge_match_names internally).
-            member_names = _get_member_names(conn, symbol_name)
-            # Build qualified field names from member names to query field-access edges.
-            # member_names are bare (e.g. 'balance'); prefix with class_name to get
-            # 'Account.balance' — the form stored as field symbols and read target.
-            qualified_members = [f"{symbol_name}.{m}" for m in member_names]
+            # Class/interface/struct seed: aggregate readers/writers across ALL the
+            # class's field symbols.
+            #
+            # WHY query symbols (kind='field') directly instead of get_member_names:
+            # get_member_names is derived from the CALL graph (edge targets), so a field
+            # that is only written in __init__ and never appears as a call-edge target
+            # would be silently dropped from the class-level field_readers/field_writers.
+            # Field symbols are stored as 'Class.field', so a LIKE 'Class.%' scan over
+            # kind='field' rows returns every field of the class — including call-graph-
+            # invisible ones. Bounded by SEAM_NAME_EXPANSION_CAP (same cap as the read-path
+            # class fan-out) so a class with hundreds of fields can't blow up the query.
+            field_rows = conn.execute(
+                "SELECT name FROM symbols WHERE kind='field' AND name LIKE ? LIMIT ?",
+                (f"{symbol_name}.%", config.SEAM_NAME_EXPANSION_CAP),
+            ).fetchall()
+            qualified_members = [r["name"] for r in field_rows]
 
             readers_set: set[str] = set()
             writers_set: set[str] = set()
