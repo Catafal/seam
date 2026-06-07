@@ -70,6 +70,13 @@ class ContextResult(TypedDict):
     is_exported: bool | None
     visibility: str | None
     qualified_name: str | None
+    # A3: field-access split. For kind='field' seeds, these list the functions that
+    # read/write this field via reads/writes edges. For class seeds, aggregated across
+    # all fields. For function/method seeds, both are [] (no reads/writes edges target
+    # a function; the field only has access sites from methods).
+    # Always present ([] not absent) so agents can check without key-existence guards.
+    field_readers: list[str]
+    field_writers: list[str]
 
 
 class SearchResult(TypedDict):

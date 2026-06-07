@@ -24,6 +24,10 @@ from pathlib import Path
 from tree_sitter import Node
 
 import seam.config as config
+from seam.indexer.field_access import (
+    collect_field_symbols_python,
+    extract_field_accesses_python,
+)
 from seam.indexer.graph_common import (
     Comment,
     Edge,
@@ -75,9 +79,14 @@ def _py_docstring(func_or_class_node: Node) -> str | None:
 
 
 def _extract_symbols_python(root: Node, filepath: Path) -> list[Symbol]:
-    """Walk a Python AST and extract function, class, and method symbols."""
+    """Walk a Python AST and extract function, class, and method symbols.
+
+    A3: Also emits kind='field' symbols for class-level annotated fields and
+    first self.x = ... assignments in __init__, when SEAM_FIELD_ACCESS_EDGES='on'.
+    """
     symbols: list[Symbol] = []
     file_str = str(filepath)
+    field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
 
     def _walk(node: Node, class_name: str | None = None) -> None:
         """Recursively walk AST, tracking class context for method qualification."""
@@ -197,6 +206,30 @@ def _extract_symbols_python(root: Node, filepath: Path) -> list[Symbol]:
                         qualified_name=name,
                     )
                 )
+
+                # A3: Emit field symbols for this class when feature is on.
+                # Collects annotated class-level fields (x: Type) and first
+                # self.x = ... assignments in __init__. Deduped by (class, field).
+                if field_access_on:
+                    for qualified_field, field_line in collect_field_symbols_python(node, name):
+                        # Use a sentinel node with the right line numbers.
+                        # _make_symbol needs a Node for start/end lines, but we have
+                        # explicit line numbers from collect_field_symbols_python.
+                        # We build the Symbol manually to avoid needing a dummy node.
+                        symbols.append(Symbol(
+                            name=qualified_field,
+                            kind="field",
+                            file=file_str,
+                            start_line=field_line,
+                            end_line=field_line,
+                            docstring=None,
+                            signature=None,
+                            decorators=[],
+                            is_exported=None,
+                            visibility=None,
+                            qualified_name=qualified_field,
+                        ))
+
                 body = node.child_by_field_name("body")
                 if body:
                     for child in body.children:
@@ -235,6 +268,7 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
     emit_inheritance = config.SEAM_INHERITANCE_EDGES == "on"
     type_inference_on = config.SEAM_TYPE_INFERENCE == "on"
     composition_on = config.SEAM_COMPOSITION_EDGES == "on"
+    field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
 
     def _emit_import_edges(node: Node) -> None:
         if node.type == "import_statement":
@@ -387,6 +421,34 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
         for stmt in body.children:
             record_py_local_types(stmt, var_types)
             _walk_stmt(stmt, class_name, var_types, class_fields)
+
+        # A3: Emit reads/writes edges for field accesses in this function body.
+        # Done AFTER the main stmt walk so that var_types is fully populated
+        # (record_py_local_types runs incrementally during the stmt walk above).
+        # WHY separate pass: fully-populated var_types gives higher-quality receiver
+        # resolution than an interleaved walk.
+        if field_access_on:
+            # Build the qualified source name from the function's own name field.
+            # WHY not _find_enclosing_function: that walks UP the parent chain from a
+            # child node, which would land on the function itself — identical result
+            # but needs a child node as input. Computing directly from the name field
+            # is simpler and avoids passing an arbitrary child node.
+            name_node = func_node.child_by_field_name("name")
+            if name_node is not None:
+                fn_name = _text(name_node)
+                source_fn = f"{class_name}.{fn_name}" if class_name else fn_name
+                for _src, target_field, mode, fa_line in extract_field_accesses_python(
+                    body, source_fn, class_name, var_types
+                ):
+                    edges.append(Edge(
+                        source=source_fn,
+                        target=target_field,
+                        kind=mode,
+                        file=file_str,
+                        line=fa_line,
+                        confidence="INFERRED",
+                        receiver=None,
+                    ))
 
     def _walk_stmt(
         node: Node,

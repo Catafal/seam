@@ -17,6 +17,12 @@ Context:
   Seam stores method symbol names as "Class.method" (qualified) but stores call-edge
   target_name as bare "method". These helpers bridge that asymmetry so callers/callees
   are correctly merged even when the edge key and the symbol key don't join directly.
+
+A3 addition: build_context_result and build_merged_context_result now include
+  field_readers / field_writers in the returned dict. These are populated by
+  collect_field_access_for_names(), which queries edges WHERE kind IN ('reads','writes')
+  targeting the symbol (for field seeds) or its member fields (for class seeds).
+  For non-field, non-class seeds both lists are [].
 """
 
 import logging
@@ -24,8 +30,104 @@ import sqlite3
 
 from seam.query.clusters import cluster_peers as _cluster_peers
 from seam.query.names import edge_match_names as _edge_match_names
+from seam.query.names import get_member_names as _get_member_names
+from seam.query.names import is_container_symbol as _is_container_symbol
 
 logger = logging.getLogger(__name__)
+
+
+def collect_field_access_for_names(
+    conn: sqlite3.Connection,
+    symbol_name: str,
+    kind: str,
+) -> list[sqlite3.Row] | list:
+    """Return all edges of kind='reads' or 'writes' targeting the given symbol name.
+
+    For a field seed 'Type.field': queries edges.target_name = 'Type.field' OR bare 'field'.
+    Returns source_name values (the methods that read/write this field).
+    Returns [] on error.
+
+    WHY: field access edges store target_name as the qualified 'Type.field' (when the
+    receiver type was inferred) OR as the bare 'field' (when the receiver was unresolvable).
+    We query both forms to be consistent with how callers/callees edges are looked up.
+    """
+    if not symbol_name:
+        return []
+    match_names = _edge_match_names(conn, symbol_name)
+    if not match_names:
+        return []
+    try:
+        ph = ",".join("?" * len(match_names))
+        rows = conn.execute(
+            f"SELECT DISTINCT source_name FROM edges WHERE kind=? AND target_name IN ({ph})",
+            [kind] + match_names,
+        ).fetchall()
+        return rows
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "collect_field_access_for_names: DB error for %r kind=%r", symbol_name, kind,
+            exc_info=True,
+        )
+        return []
+
+
+def collect_field_access_split(
+    conn: sqlite3.Connection,
+    symbol_name: str,
+    symbol_kind: str,
+) -> tuple[list[str], list[str]]:
+    """Return (field_readers, field_writers) for a symbol.
+
+    For kind='field': returns functions that read/write this specific field.
+    For kind='class'/'interface'/'type' (container): aggregates readers/writers across
+      all member fields bounded by SEAM_NAME_EXPANSION_CAP.
+    For all other kinds (function, method): returns ([], []).
+
+    Never raises.
+    """
+    try:
+        if symbol_kind == "field":
+            # Direct field seed: query edges targeting this field.
+            readers = sorted({
+                r["source_name"]
+                for r in collect_field_access_for_names(conn, symbol_name, "reads")
+            })
+            writers = sorted({
+                r["source_name"]
+                for r in collect_field_access_for_names(conn, symbol_name, "writes")
+            })
+            return readers, writers
+
+        if _is_container_symbol(conn, symbol_name):
+            # Class/interface/struct seed: aggregate across all member fields.
+            # get_member_names returns bare member names; we also check qualified forms
+            # via collect_field_access_for_names (which calls edge_match_names internally).
+            member_names = _get_member_names(conn, symbol_name)
+            # Build qualified field names from member names to query field-access edges.
+            # member_names are bare (e.g. 'balance'); prefix with class_name to get
+            # 'Account.balance' — the form stored as field symbols and read target.
+            qualified_members = [f"{symbol_name}.{m}" for m in member_names]
+
+            readers_set: set[str] = set()
+            writers_set: set[str] = set()
+            for qname in qualified_members:
+                for r in collect_field_access_for_names(conn, qname, "reads"):
+                    readers_set.add(r["source_name"])
+                for r in collect_field_access_for_names(conn, qname, "writes"):
+                    writers_set.add(r["source_name"])
+            return sorted(readers_set), sorted(writers_set)
+
+        # Non-field, non-class seeds: no readers/writers
+        return [], []
+
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "collect_field_access_split: failed for %r kind=%r: %r",
+            symbol_name,
+            symbol_kind,
+            exc,
+        )
+        return [], []
 
 
 def collect_edges_for_names(
@@ -100,6 +202,11 @@ def build_merged_context_result(
     c_id, c_label, c_peers = cluster_info if cluster_info is not None else (None, None, [])
     decoded_decorators, is_exported = decode_enrichment_fields_fn(primary)
 
+    # A3: field_readers / field_writers — populated for field and class seeds.
+    field_readers, field_writers = collect_field_access_split(
+        conn, primary["name"], primary["kind"]
+    )
+
     return dict(
         symbol=primary["name"],
         file=primary["file"],
@@ -119,6 +226,8 @@ def build_merged_context_result(
         is_exported=is_exported,
         visibility=primary["visibility"],
         qualified_name=primary["qualified_name"],
+        field_readers=field_readers,
+        field_writers=field_writers,
     )
 
 
@@ -143,6 +252,11 @@ def build_context_result(
     c_id, c_label, c_peers = cluster_info if cluster_info is not None else (None, None, [])
     decoded_decorators, is_exported = decode_enrichment_fields_fn(row)
 
+    # A3: field_readers / field_writers — populated for field and class seeds.
+    field_readers, field_writers = collect_field_access_split(
+        conn, symbol_name, row["kind"]
+    )
+
     return dict(
         symbol=row["name"],
         file=row["file"],
@@ -161,4 +275,6 @@ def build_context_result(
         is_exported=is_exported,
         visibility=row["visibility"],
         qualified_name=row["qualified_name"],
+        field_readers=field_readers,
+        field_writers=field_writers,
     )

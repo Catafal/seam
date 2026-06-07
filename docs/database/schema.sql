@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS symbols (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     file_id        INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
     name           TEXT NOT NULL,          -- Fully-qualified when possible (Class.method)
-    kind           TEXT NOT NULL,          -- 'function' | 'class' | 'method' | 'interface' | 'type'
+    kind           TEXT NOT NULL,          -- 'function' | 'class' | 'method' | 'interface' | 'type' | 'field' [A3]
     start_line     INTEGER NOT NULL,
     end_line       INTEGER NOT NULL,
     docstring      TEXT,                   -- First docstring/JSDoc block if present; NULL otherwise
@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS edges (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     source_name TEXT NOT NULL,          -- Symbol name of the caller/importer
     target_name TEXT NOT NULL,          -- Symbol name of the callee/importee
-    kind        TEXT NOT NULL,          -- 'import' | 'call' | 'extends' | 'implements' | 'instantiates' | 'holds'
+    kind        TEXT NOT NULL,          -- 'import' | 'call' | 'extends' | 'implements' | 'instantiates' | 'holds' | 'reads' | 'writes' [A3]
     file_id     INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
     line        INTEGER NOT NULL,       -- Line where the relationship is expressed
     confidence  TEXT NOT NULL DEFAULT 'INFERRED',  -- EXTRACTED | INFERRED | AMBIGUOUS (DEFAULT is INFERRED: conservative)
