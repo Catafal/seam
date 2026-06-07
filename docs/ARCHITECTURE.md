@@ -141,9 +141,21 @@ cli / server → analysis → query → indexer / db
 4. Clustering post-pass (whole-graph, after all files indexed):
    a. cluster_index.index_clusters(conn, ...) — reads all symbols + edges
    b. clustering.detect_communities(nodes, edges) → {name: cluster_id}
+      — synthesized edges (synthesized_by IS NOT NULL) are EXCLUDED here to avoid
+        feedback pollution (synthesis runs AFTER clustering and its edges persist)
    c. cluster_naming.label_cluster(members, ...) → (label, naming_source) per community
    d. writes clusters table + symbols.cluster_id in one transaction
-5. seam.db committed, watcher starts
+5. Edge-synthesis post-pass (whole-graph, runs AFTER clustering — gated):
+   a. synthesis_index.index_synthesis(conn, ...) — reads all symbols + edges
+   b. synthesis.py (A2 interface→impl override fan-out) + synthesis_channels.py
+      (A1a closure-collection, A1b event-emitter) compute synthesized edges
+   c. writes them with kind='call', confidence='INFERRED', synthesized_by=<channel>
+      in ONE transaction under a synthetic ':synthesis:' files row (idempotent
+      delete-then-insert). Never raises; returns -1 on failure (surfaced as "failed").
+   — In `seam init` this always runs; in `seam sync` it is GATED on graph_changed
+     (or --force-synthesis), exactly like the cluster recompute. NOT run by the watcher.
+   — Master switch SEAM_EDGE_SYNTHESIS (default on); "off" skips this step entirely.
+6. seam.db committed, watcher starts
 ```
 
 ## Data Flow: Read Path (MCP tool call)

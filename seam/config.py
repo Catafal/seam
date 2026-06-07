@@ -354,6 +354,43 @@ SEAM_STRUCTURE_MAX_DEPTH: int = int(os.getenv("SEAM_STRUCTURE_MAX_DEPTH", "8"))
 SEAM_STRUCTURE_MAX_NODES: int = int(os.getenv("SEAM_STRUCTURE_MAX_NODES", "2000"))
 
 
+# ── Edge-synthesis post-pass (PRD #83, Slice #1) ─────────────────────────────
+
+# Master switch for the edge-synthesis post-pass. When "on" (default), the post-pass
+# runs after `seam init` and `seam sync` (gated on graph_changed or --force-synthesis)
+# and synthesizes dynamic-dispatch edges the parser cannot see: e.g. interface→
+# implementation method fan-out (A2 channel). Synthesized edges are stored as ordinary
+# call edges tagged with the channel that produced them and lower confidence (INFERRED),
+# so existing kind-agnostic traversal in seam_impact/seam_context/seam_trace picks them
+# up automatically — no read-path changes needed.
+#
+# When "off", the synthesis pass is completely skipped; the graph is byte-identical to
+# pre-synthesis behavior. This is an extraction-time knob: toggling it requires a full
+# `seam init` re-index to take effect (the edges are already stored; changing the knob
+# at read time has no retroactive effect).
+SEAM_EDGE_SYNTHESIS: str = os.getenv("SEAM_EDGE_SYNTHESIS", "on")
+
+# Per-channel fan-out cap for edge synthesis. For each base method that participates
+# in the interface-override channel (A2), at most this many synthesized call edges are
+# emitted. This bounds the graph explosion on a widely-implemented interface with many
+# concrete types — e.g. a logger interface with 100 implementations would produce at
+# most SEAM_SYNTHESIS_FANOUT_CAP edges per method, not 100. Conservative default of 40
+# matches the typical class hierarchy depth in a real codebase.
+# Set to 0 to disable the cap (emit all synthesized edges, potentially unbounded).
+SEAM_SYNTHESIS_FANOUT_CAP: int = int(os.getenv("SEAM_SYNTHESIS_FANOUT_CAP", "40"))
+
+# Total budget (bytes) of source text the synthesis pass loads into memory for the
+# source-text channels (closure-collection, event-emitter). The pass reads every
+# indexed file's text into one dict; on a very large monorepo that could exhaust
+# memory at the final init step (after clustering already succeeded). Once the
+# cumulative loaded size crosses this budget, no further files are read and a WARNING
+# is logged — synthesis under-produces rather than OOM-killing the indexer. Mirrors
+# the bounded-scan philosophy of SEAM_SEMANTIC_SCAN_CAP. Default 50 MB; 0 = unlimited.
+SEAM_SYNTHESIS_MAX_SOURCE_BYTES: int = int(
+    os.getenv("SEAM_SYNTHESIS_MAX_SOURCE_BYTES", str(50 * 1024 * 1024))
+)
+
+
 def get_db_path(project_root: Path) -> Path:
     """Resolve the database path relative to the project root."""
     return project_root / SEAM_DB_PATH

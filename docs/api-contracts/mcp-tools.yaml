@@ -9,6 +9,16 @@
 #     returned dict would leave isError=False, which an agent reads as success.)
 #   - "Not found" (handler null) is normalized to {"found": false} — structured, isError=False.
 #   - The CLI exposes the SAME code+message via its own envelope {"ok":false,"error":{...}}.
+#
+# Edge synthesis (edge-synthesis phase): a whole-graph post-pass writes synthesized edges
+# (kind='call', confidence='INFERRED', tagged in the v12 edges.synthesized_by column —
+# NULL = statically extracted, a channel-name string = synthesized). Because the read-path
+# traversal is KIND-AGNOSTIC, seam_impact / seam_context / seam_trace traverse synthesized
+# edges automatically (exactly like 'holds' edges) — an interface-method change surfaces all
+# implementations; an event-bus / closure-collection dispatch surfaces its handlers. NO new
+# tool is added — count stays 12. (synthesized_by is stored in the DB but is NOT yet surfaced
+# in tool OUTPUT — a documented follow-up; agents cannot yet distinguish a synthesized INFERRED
+# edge from a statically-extracted one in results.)
 
 tools:
 

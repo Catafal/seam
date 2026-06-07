@@ -1,0 +1,141 @@
+{
+  "fixture_hash": "63301e04429396b2",
+  "queries": [
+    {
+      "id": "search-validate-data",
+      "tool": "search",
+      "query": "validate data",
+      "k": 10,
+      "note": "locate validate_data function by search",
+      "expected_symbols": [
+        "validate_data",
+        "DataPipeline",
+        "DataPipeline.run",
+        "DataPipeline.__init__",
+        "DataPipeline.add_stage",
+        "EventBus.process_data",
+        "on_data_received_handler",
+        "normalize_stage",
+        "enrich_stage",
+        "build_pipeline"
+      ]
+    },
+    {
+      "id": "search-payment-processor",
+      "tool": "search",
+      "query": "payment processor",
+      "k": 10,
+      "note": "locate PaymentProcessor and implementations",
+      "expected_symbols": [
+        "PaymentProcessor",
+        "PaymentProcessor.process_payment",
+        "StripeProcessor",
+        "PayPalProcessor",
+        "PaymentProcessor.refund",
+        "OrderService.__init__",
+        "OrderService",
+        "StripeProcessor.process_payment",
+        "PayPalProcessor.process_payment",
+        "OrderService.checkout"
+      ]
+    },
+    {
+      "id": "query-pipeline-stage",
+      "tool": "query",
+      "query": "pipeline stage",
+      "k": 10,
+      "note": "locate DataPipeline and pipeline functions",
+      "expected_symbols": [
+        "build_pipeline",
+        "DataPipeline",
+        "run_pipeline",
+        "DataPipeline.add_stage",
+        "normalize_stage",
+        "enrich_stage",
+        "DataPipeline.run",
+        "DataPipeline.__init__"
+      ]
+    },
+    {
+      "id": "query-event-emitter",
+      "tool": "query",
+      "query": "event emitter subscribe",
+      "k": 10,
+      "note": "locate EventBus and its subscribe/emit methods",
+      "expected_symbols": [
+        "EventBus.subscribe",
+        "EventBus",
+        "EventBus.emit",
+        "EventBus.__init__",
+        "EventBus.process_data",
+        "on_error_handler",
+        "on_data_received_handler",
+        "validate_data"
+      ]
+    },
+    {
+      "id": "context-callers-format-result",
+      "tool": "context_callers",
+      "symbol": "format_result",
+      "k": 10,
+      "note": "callers of format_result via direct call edges",
+      "expected_symbols": [
+        "log_result",
+        "render_output"
+      ]
+    },
+    {
+      "id": "impact-downstream-event-emitter-synthesis",
+      "tool": "impact_downstream",
+      "symbol": "data_received",
+      "k": 10,
+      "note": "synthesized event-emitter edge: data_received fires on_data_received_handler",
+      "expected_symbols": [
+        "on_data_received_handler"
+      ]
+    },
+    {
+      "id": "impact-downstream-interface-override-synthesis",
+      "tool": "impact_downstream",
+      "symbol": "PaymentProcessor.process_payment",
+      "k": 10,
+      "note": "synthesized interface-override edges: PaymentProcessor.process_payment impls",
+      "expected_symbols": [
+        "PayPalProcessor.process_payment",
+        "StripeProcessor.process_payment"
+      ]
+    },
+    {
+      "id": "trace-render-to-format",
+      "tool": "trace",
+      "source": "render_output",
+      "target": "format_result",
+      "k": 10,
+      "note": "trace: render_output calls format_result (direct call path)",
+      "expected_symbols": [
+        "format_result"
+      ]
+    },
+    {
+      "id": "context-callers-validate-data",
+      "tool": "context_callers",
+      "symbol": "validate_data",
+      "k": 10,
+      "note": "callers of validate_data via direct call edge from EventBus.process_data",
+      "expected_symbols": [
+        "EventBus.process_data"
+      ]
+    },
+    {
+      "id": "impact-downstream-interface-refund-synthesis",
+      "tool": "impact_downstream",
+      "symbol": "PaymentProcessor.refund",
+      "k": 10,
+      "note": "synthesized interface-override: PaymentProcessor.refund has 2 impls",
+      "expected_symbols": [
+        "PayPalProcessor.refund",
+        "StripeProcessor.refund"
+      ]
+    }
+  ]
+}

@@ -29,6 +29,7 @@ from typing import TypedDict
 from seam.indexer.cluster_index import index_clusters
 from seam.indexer.db import delete_file
 from seam.indexer.pipeline import index_one_file, sha1, walk_project
+from seam.indexer.synthesis_index import index_synthesis
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class SyncResult(TypedDict):
 
     Keys mirror the PRD §Implementation Decisions shape exactly.
     cluster_count is None when clusters were NOT recomputed this sync.
+    synthesis_count is None when synthesis was NOT run this sync.
     """
 
     added: int              # files present on disk, absent from index → indexed
@@ -48,6 +50,8 @@ class SyncResult(TypedDict):
     graph_changed: bool     # (added + modified + removed) > 0
     clusters_recomputed: bool  # whether index_clusters ran this sync
     cluster_count: int | None  # result of index_clusters when it ran, else None
+    synthesis_recomputed: bool  # whether index_synthesis ran this sync
+    synthesis_count: int | None  # result of index_synthesis when it ran, else None
 
 
 def _load_tracked(conn: sqlite3.Connection) -> dict[str, tuple[float, str]]:
@@ -56,8 +60,14 @@ def _load_tracked(conn: sqlite3.Connection) -> dict[str, tuple[float, str]]:
     WHY: one bulk read at reconcile start is cheaper than per-file queries.
     Returns absolute string paths as keys so comparison with walk_project output
     (which also returns absolute paths) is direct.
+
+    Excludes synthetic file rows (path starting with ':') used by post-passes
+    like index_synthesis to store non-file-scoped edges. These rows are not real
+    files on disk and must never be treated as "removed" by the reconcile loop.
     """
-    rows = conn.execute("SELECT path, mtime, file_hash FROM files").fetchall()
+    rows = conn.execute(
+        "SELECT path, mtime, file_hash FROM files WHERE path NOT LIKE ':%'"
+    ).fetchall()
     return {row["path"]: (float(row["mtime"]), row["file_hash"]) for row in rows}
 
 
@@ -71,6 +81,9 @@ def sync(
     llm_api_key: str | None,
     llm_model: str | None,
     min_size: int,
+    synthesis_enabled: bool = True,
+    force_synthesis: bool = False,
+    fanout_cap: int = 40,
 ) -> SyncResult:
     """Reconcile the existing index against the current on-disk state.
 
@@ -94,11 +107,14 @@ def sync(
         conn:               Open write-access SQLite connection.
         root:               Project root to reconcile against.
         recompute_clusters: Master switch — when False, clusters are never recomputed.
-        force_clusters:     Override gate — recompute even when graph_changed is False.
+        force_clusters:     Override gate — recompute clusters even when graph_changed is False.
         naming_mode:        Passed verbatim to index_clusters (from config).
         llm_api_key:        Passed verbatim to index_clusters (from config).
         llm_model:          Passed verbatim to index_clusters (from config).
         min_size:           Passed verbatim to index_clusters (from config).
+        synthesis_enabled:  When False, synthesis pass is skipped (SEAM_EDGE_SYNTHESIS=off).
+        force_synthesis:    Override gate — rerun synthesis even when graph_changed is False.
+        fanout_cap:         Per-channel fan-out cap for index_synthesis.
 
     Returns:
         SyncResult with counts and gate outcomes.
@@ -217,9 +233,34 @@ def sync(
         # (mirroring `seam init`'s clustering_failed guard).
         clusters_recomputed = cluster_count >= 0
 
+    # ── Step 6: Gate synthesis recompute ──────────────────────────────────────
+    # Run synthesis iff synthesis_enabled AND (graph_changed OR force_synthesis).
+    # Mirrors the cluster-recompute gate exactly: a full-graph pass is needed
+    # whenever the edge graph has changed (a new interface or new implementation
+    # may affect the override fan-out). --force-synthesis handles the watcher-
+    # already-indexed-edits case (same as --force-clusters).
+    synthesis_recomputed = False
+    synthesis_count: int | None = None
+
+    if synthesis_enabled and (graph_changed or force_synthesis):
+        logger.debug(
+            "sync: running index_synthesis (graph_changed=%s, force=%s)",
+            graph_changed,
+            force_synthesis,
+        )
+        synthesis_count = index_synthesis(
+            conn,
+            enabled=synthesis_enabled,
+            fanout_cap=fanout_cap,
+        )
+        # index_synthesis returns -1 on failure (it never raises), 0 when disabled.
+        # synthesis_recomputed=True only when the pass actually succeeded (>=0).
+        synthesis_recomputed = synthesis_count >= 0
+
     logger.info(
         "sync: added=%d modified=%d removed=%d unchanged=%d skipped=%d "
-        "graph_changed=%s clusters_recomputed=%s cluster_count=%s",
+        "graph_changed=%s clusters_recomputed=%s cluster_count=%s "
+        "synthesis_recomputed=%s synthesis_count=%s",
         added,
         modified,
         removed,
@@ -228,6 +269,8 @@ def sync(
         graph_changed,
         clusters_recomputed,
         cluster_count,
+        synthesis_recomputed,
+        synthesis_count,
     )
 
     return SyncResult(
@@ -239,4 +282,6 @@ def sync(
         graph_changed=graph_changed,
         clusters_recomputed=clusters_recomputed,
         cluster_count=cluster_count,
+        synthesis_recomputed=synthesis_recomputed,
+        synthesis_count=synthesis_count,
     )

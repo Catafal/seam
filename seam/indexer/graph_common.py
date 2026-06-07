@@ -105,6 +105,16 @@ class Edge(TypedDict):
     # Edges remain string-name-keyed (source/target are names, not node IDs) as required
     # for independent re-indexing.
     receiver: NotRequired[str | None]
+    # v12: synthesis channel that produced this edge. None for parser-extracted edges;
+    # a channel name string (e.g. 'interface-override') for edges emitted by the
+    # post-pass synthesis engine (seam/analysis/synthesis.py).
+    #
+    # WHY NotRequired: same rationale as receiver — all 12 extractors construct Edge()
+    # dicts without this field, and synthesis adds it only on its own output.
+    # upsert_file uses edge.get("synthesized_by") defaulting to None, so absent ≡ NULL.
+    # Provenance is DERIVED: synthesized_by IS NOT NULL ⟹ heuristic edge. This avoids
+    # a separate boolean column and keeps the schema additive.
+    synthesized_by: NotRequired[str | None]
 
 
 class Comment(TypedDict):

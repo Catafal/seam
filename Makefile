@@ -1,4 +1,4 @@
-.PHONY: gate lint typecheck test install install-dev build-web bench-semantic clean
+.PHONY: gate lint typecheck test install install-dev build-web bench-semantic eval eval-generate clean
 
 # Gate — must pass before every commit (no exceptions)
 gate: lint typecheck test
@@ -40,6 +40,18 @@ build-web:
 # NOT part of `make gate` (needs fastembed + network for first run).
 bench-semantic:
 	uv run python benchmarks/semantic_recall.py
+
+# Deterministic offline recall@K + MRR harness over the eval fixture repo.
+# Prints per-query recall and aggregate recall@10 / MRR. Fully offline, no LLM.
+# The same queries run in `make gate` (via `make test`) — this target just prints the
+# numbers in a human-readable format WITHOUT running lint/typecheck.
+eval:
+	uv run python -m tests.eval.eval_report
+
+# Regenerate tests/eval/golden.json from the current fixture + live index.
+# Run this after changing fixture files to update the SHA-stamp and expected symbols.
+eval-generate:
+	uv run python tests/eval/gen_golden.py
 
 # Remove build artifacts
 clean:

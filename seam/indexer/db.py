@@ -8,7 +8,8 @@ Key design decisions:
 - init_db runs guarded migrations: v1->v2 (edges.confidence), v2->v3 (comments table),
   v3->v4 (clusters + cluster_id), v4->v5 (Phase 4 node enrichment fields),
   v5->v6 (Phase 5 import_mappings table), v6->v7 (semantic embeddings table),
-  v9->v10 (Tier B B1: edges.receiver column for call-edge receiver capture).
+  v9->v10 (Tier B B1: edges.receiver column for call-edge receiver capture),
+  v11->v12 (edge-synthesis post-pass: edges.synthesized_by column).
 - upsert_file is a single transaction: INSERT OR REPLACE the file row,
   DELETE old symbols/edges/comments, then re-insert. Triggers handle FTS sync.
 - delete_file DELETE FROM files cascades to symbols/edges/comments via FK; FTS
@@ -48,6 +49,7 @@ from seam.indexer.migrations import (
     _run_migration_v8_to_v9,
     _run_migration_v9_to_v10,
     _run_migration_v10_to_v11,
+    _run_migration_v11_to_v12,
 )
 from seam.indexer.tokenize import build_search_text
 
@@ -150,10 +152,10 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
         row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
         version = int(row["value"]) if row else 0
 
-        if version >= 11:
+        if version >= 12:
             return  # Already up to date — no-op.
 
-        # Version is < 11: run pending migrations in order.
+        # Version is < 12: run pending migrations in order.
         # Each migration is guarded by its own version check — safe to call
         # when already at or above that version (they become no-ops).
         if version < 2:
@@ -183,6 +185,9 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
         # v10→v11: Tier D #12 identifier split tokens (adds symbols.search_text + FTS column).
         if version < 11:
             _run_migration_v10_to_v11(conn)
+        # v11→v12: Edge-synthesis post-pass (adds edges.synthesized_by column).
+        if version < 12:
+            _run_migration_v11_to_v12(conn)
 
     except Exception as exc:  # noqa: BLE001
         # Do NOT raise here — failing to auto-migrate should not crash a read-only
@@ -254,6 +259,9 @@ def init_db(db_path: Path) -> sqlite3.Connection:
 
     # Run v10->v11 migration guard (adds symbols.search_text + 4th FTS column — Tier D #12).
     _run_migration_v10_to_v11(conn)
+
+    # Run v11->v12 migration guard (adds edges.synthesized_by column — edge-synthesis post-pass).
+    _run_migration_v11_to_v12(conn)
 
     return conn
 
@@ -369,10 +377,17 @@ def upsert_file(
         #                             Edge['target'] -> target_name
         #                             Edge['confidence'] -> confidence (schema v2)
         #                             Edge['receiver'] -> receiver (schema v10, nullable)
+        #                             Edge['synthesized_by'] -> synthesized_by (schema v12, nullable)
+        #
+        # synthesized_by: NULL for statically extracted edges (the default for all
+        # parser-emitted edges); a channel name string for synthesis post-pass edges.
+        # upsert_file is only called for file-scoped extraction — synthesized_by is
+        # always None here. index_synthesis writes its own edges directly (not via
+        # upsert_file) because synthesized edges are not file-scoped.
         conn.executemany(
             """
-            INSERT INTO edges (source_name, target_name, kind, file_id, line, confidence, receiver)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO edges (source_name, target_name, kind, file_id, line, confidence, receiver, synthesized_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -383,6 +398,7 @@ def upsert_file(
                     edge["line"],
                     edge["confidence"],         # required field — fail loud if missing
                     edge.get("receiver"),       # nullable: None for import/bare-call edges
+                    edge.get("synthesized_by"),  # nullable: None for parser-extracted edges
                 )
                 for edge in edges
             ],

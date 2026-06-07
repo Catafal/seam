@@ -2,6 +2,52 @@
 # Format: [x] = done, [>] = in progress, [ ] = not started
 # Update this EVERY session. It is the first thing the agent reads.
 #
+# 2026-06-07: Edge-synthesis whole-graph post-pass + P1 recall harness complete
+#   (branch feat/edge-synthesis-recall, PRD #83, 4 commits). The recall gap closed: static
+#   extraction can't see runtime polymorphism, so seam_impact on an implementation/handler showed
+#   empty upstream. Synthesis is a deliberate OVER-APPROXIMATION run once over the whole indexed
+#   graph that writes the edges parsing structurally can't infer (false-positive edge << missed dep).
+#   New leaf modules:
+#     seam/analysis/synthesis.py          — A2 interface→implementation override fan-out: link every
+#       base/interface method to EVERY same-name impl as a synthesized 'call' edge (NOT MRO — fans
+#       out to all candidates, bounded by fanout cap). Pure; never raises.
+#     seam/analysis/synthesis_channels.py — A1a closure-collection (collection iterated AND element
+#       invoked, paired by field name to append sites) + A1b event-emitter (registrar verbs ↔
+#       dispatcher verbs keyed by event-string literal). Pairs field-names/event-keys GLOBALLY
+#       (cross-file) → bounded by fanout cap + requires both invocation and append/registration sites.
+#   New bridge:
+#     seam/indexer/synthesis_index.py     — mirrors cluster_index.py/embedding_index.py: reads
+#       symbols+edges, runs the engine, writes synthesized edges in ONE transaction under a synthetic
+#       ':synthesis:' files row. Idempotent (delete-then-insert). Never raises; -1 on error.
+#   Schema v11 → v12: additive edges.synthesized_by TEXT NULL (_run_migration_v11_to_v12; auto-runs
+#     on connect(); idempotent; never raises). NULL = statically extracted; channel-name = synthesized;
+#     provenance derived (synthesized_by IS NOT NULL ⟹ heuristic). NOT backfilled — needs re-index.
+#   Synthesized edges: kind='call', confidence='INFERRED', synthesized_by=<channel>. Read-path
+#     traversal is KIND-AGNOSTIC → seam_impact/seam_context/seam_trace traverse them automatically
+#     (like 'holds'). NO new MCP tool — count stays 12.
+#   Gated like clusters: runs in `seam init` (always) + `seam sync` (on graph_changed or
+#     --force-synthesis); NOT the per-file watcher.
+#   P1 recall harness (tests/eval/): fixture repo + SHA-stamped golden.json + recall@K/MRR metric;
+#     gate-wired test_recall_regression.py; `make eval` + `make eval-generate`.
+#   3 new config knobs: SEAM_EDGE_SYNTHESIS (on/off, default on; off=byte-identical pre-synthesis),
+#     SEAM_SYNTHESIS_FANOUT_CAP (default 40), SEAM_SYNTHESIS_MAX_SOURCE_BYTES (default 50MB; 0=unlimited).
+#   REVIEW/TASTE fixes (commit 20bcde7) — documented as Known Gotchas in CLAUDE.md:
+#     - Clustering EXCLUDES synthesized edges (synthesized_by IS NOT NULL) to avoid feedback pollution
+#       (synthesis runs after clustering; its edges persist across runs).
+#     - Synthesized edges go STALE after watcher edits (recomputed only by init/sync) — same trade-off
+#       as clusters, but higher-stakes (a stale synthesized 'call' edge feeds seam_impact/seam_changes).
+#     - seam_changes/seam_affected risk verdicts WIDEN after a synthesis-enabled re-index (more edges);
+#       gate with SEAM_EDGE_SYNTHESIS=off for byte-stable verdicts.
+#     - FANOUT_CAP semantics diverge per channel: A2/closure-collection TRUNCATE to N; event-emitter
+#       SKIPS the whole event when handlers > N (generic high-fanout event = likely false-positive).
+#     - synthesized_by stored in DB but NOT YET surfaced in seam_impact/seam_trace OUTPUT (agents can't
+#       yet tell synthesized INFERRED from real) — documented follow-up; the DB tag is delivered.
+#     - status-accuracy + total source-load cap (SEAM_SYNTHESIS_MAX_SOURCE_BYTES) added in the same fix.
+#   Docs: CLAUDE.md (Current Phase replaced; Tier B → Prior phase; package layout + 3 knobs + MCP note +
+#     Known Gotchas), docs/ARCHITECTURE.md (synthesis post-pass in write-path data-flow, after clustering),
+#     docs/api-contracts/mcp-tools.yaml (header note: synthesized edges traversed; no new tool).
+#   No new deps. MCP tool count stays 12. Test count: 2498. Gate green.
+# Next: surface synthesized_by in seam_impact/seam_trace output (the documented follow-up).
 # 2026-06-02: Phase 8 — Lean output + seam_impact summary tier complete
 #   (branch feat/phase8-lean-output, issue #33, PR #34). Implemented via a Sonnet-agent
 #   WORKFLOW (2 sequential TDD impl agents → parallel /review + /backend-taste).
