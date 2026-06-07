@@ -59,10 +59,20 @@ def benchmark_shaped_db() -> tuple[sqlite3.Connection, Path]:
     """Seed the clicky-CompanionManager shape.
 
     Class "AAAWidget" (name alphabetically BEFORE the externals, so without
-    relevance ordering its members sort first and push externals past the cap)
-    with members m1..m10. Members m2..m10 all call m1 → 9 SELF-REF callers of m1.
-    Two EXTERNAL methods (Zexternal*) also call m1. All 11 callers land in
-    WILL_BREAK (d=1) of an upstream impact on the class.
+    relevance ordering its self-refs sort first and push externals past the cap)
+    with one member m1 as the shared call target. Nine SELF-REF callers
+    "AAAWidget.onboard1..9" call m1 — these are intra-class call sources that are
+    NOT member symbols (modelling residual self-refs: members beyond the
+    SEAM_NAME_EXPANSION_CAP, or call sources whose qualified symbol wasn't
+    extracted), so they survive the walk as reached entries rather than being
+    excluded as seeds. Two EXTERNAL methods (Zexternal*) also call m1. All 11
+    callers land in WILL_BREAK (d=1) of an upstream impact on the class.
+
+    WHY not "AAAWidget.m{i}" symbols as the self-ref callers: with the qualified-seed
+    fix, within-cap member symbols become walk seeds and are excluded from their own
+    blast radius. classify_self_ref still flags "AAAWidget.onboardK" as a self-ref via
+    owning_container == target, so this fixture exercises E2/E3 ranking on the residual
+    self-refs that the seed exclusion does not catch.
     """
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -74,12 +84,13 @@ def benchmark_shaped_db() -> tuple[sqlite3.Connection, Path]:
         ext = tmp_path / "ext.py"
         ext.write_text("# stub\n")
 
-        members = [f"AAAWidget.m{i}" for i in range(1, 11)]
-        widget_syms = [_sym("AAAWidget", str(widget), kind="class")]
-        widget_syms += [_sym(m, str(widget), kind="method") for m in members]
-
-        # m2..m10 call m1 (bare target so it matches the expand_impact_seeds bare member).
-        self_edges = [_edge(f"AAAWidget.m{i}", "m1", str(widget)) for i in range(2, 11)]
+        # Class + one member symbol (m1) that everything calls.
+        widget_syms = [
+            _sym("AAAWidget", str(widget), kind="class"),
+            _sym("AAAWidget.m1", str(widget), kind="method"),
+        ]
+        # 9 intra-class self-ref callers of m1 (NOT member symbols → not seeds → reached).
+        self_edges = [_edge(f"AAAWidget.onboard{i}", "m1", str(widget)) for i in range(1, 10)]
         assert len(self_edges) == _N_SELF
 
         ext_syms = [_sym(e, str(ext), kind="method") for e in _EXTERNALS]

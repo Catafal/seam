@@ -616,7 +616,12 @@ class TestExpandImpactSeeds:
             conn.close()
 
     def test_cap_respected_for_large_container(self) -> None:
-        """S6: container with many members stays bounded by SEAM_NAME_EXPANSION_CAP."""
+        """S6: container with many members stays bounded by SEAM_NAME_EXPANSION_CAP.
+
+        Each member now contributes TWO seeds (bare + qualified), so the bound is the
+        class name (1) + up to 2*cap member-form seeds. The cap still governs MEMBER
+        count (via get_member_names), not the raw seed-string count.
+        """
         import seam.config as cfg
 
         cap = cfg.SEAM_NAME_EXPANSION_CAP
@@ -626,10 +631,23 @@ class TestExpandImpactSeeds:
         conn = _seed_db_with_kinds(symbols)
         result = expand_impact_seeds(conn, "BigClass")
         conn.close()
-        # class name (1) + up to cap member bare names = at most cap + 1
-        assert len(result) <= cap + 1, (
-            f"expand_impact_seeds returned {len(result)} > cap+1 ({cap + 1})"
+        # class name (1) + up to cap members × 2 forms (bare + qualified).
+        assert len(result) <= 2 * cap + 1, (
+            f"expand_impact_seeds returned {len(result)} > 2*cap+1 ({2 * cap + 1})"
         )
+
+    def test_container_emits_both_bare_and_qualified_member_forms(self) -> None:
+        """S7 (Tier-B asymmetry fix): a container seed includes BOTH 'method' and
+        'Class.method' so Tier-B-qualified call edges (target='Class.method') match at d=1.
+        """
+        conn = _seed_db_with_kinds([
+            ("Parser", "class", 1, 50),
+            ("Parser.parse", "method", 10, 20),
+        ])
+        result = expand_impact_seeds(conn, "Parser")
+        conn.close()
+        assert "parse" in result, "bare member form must be present (pre-Tier-B edges)"
+        assert "Parser.parse" in result, "qualified member form must be present (Tier-B edges)"
 
     def test_qualified_name_no_member_expansion(self) -> None:
         """S3 guard: a qualified method name (has dot) is NOT a container, no fan-out."""

@@ -408,13 +408,27 @@ def expand_impact_seeds(conn: sqlite3.Connection, name: str) -> list[str]:
     member_names = get_member_names(conn, name) if is_container_symbol(conn, name) else []
 
     if member_names:
-        # Container: [class_name] + member bare names (bounded by cap, deduped).
+        # Container: [class_name] + BOTH bare and qualified member forms (deduped).
+        #
+        # WHY both forms (Tier-B asymmetry fix): pre-Tier-B, member-call edges stored a
+        # BARE target_name ("method"), so the bare member seed matched at the walk's first
+        # hop. Tier B's receiver-type inference made many member-call edge targets QUALIFIED
+        # ("Class.method") — so the bare seed alone now MISSES those edges at d=1, and a
+        # genuine direct caller (e.g. an injector calling Class.start) is pushed to d=2 or
+        # dropped. This is the exact qualified<->bare asymmetry edge_match_names already
+        # bridges for context(); the impact/trace seed path needs the same bridge. Emitting
+        # the qualified "Class.method" form alongside the bare "method" restores d=1 matching
+        # for Tier-B-qualified call edges WITHOUT losing the pre-Tier-B bare matches.
+        #
+        # member_names is already bounded by SEAM_NAME_EXPANSION_CAP inside get_member_names,
+        # so the seed list is at most 1 + 2*cap — the cap governs MEMBER count, not raw seeds.
         result = [name]
         seen: set[str] = {name}
         for m in member_names:
-            if m not in seen and len(result) <= SEAM_NAME_EXPANSION_CAP:
-                result.append(m)
-                seen.add(m)
+            for cand in (m, f"{name}.{m}"):
+                if cand and cand not in seen:
+                    result.append(cand)
+                    seen.add(cand)
         logger.debug(
             "expand_impact_seeds: container '%s' -> %d seed(s): %s",
             name,
