@@ -37,6 +37,12 @@ from tree_sitter import Node
 
 import seam.config as config
 
+# A3 Slice 5: Swift field-access edges + field symbols (field_access_ext2 sorts before graph_*).
+from seam.indexer.field_access_ext2 import (
+    collect_field_symbols_swift,
+    extract_field_accesses_swift,
+)
+
 # All shared types, constants, and helpers from the leaf module.
 from seam.indexer.graph_common import (
     Comment,
@@ -436,6 +442,23 @@ def _handle_class_like(
             )
         )
 
+        # A3 Slice 5: emit field symbols for Swift stored var/let properties.
+        if config.SEAM_FIELD_ACCESS_EDGES == "on":
+            for qual_name, field_line in collect_field_symbols_swift(node, class_name):
+                symbols.append(Symbol(
+                    name=qual_name,
+                    kind="field",
+                    file=file_str,
+                    start_line=field_line,
+                    end_line=field_line,
+                    docstring=None,
+                    signature=None,
+                    decorators=[],
+                    is_exported=None,
+                    visibility=None,
+                    qualified_name=qual_name,
+                ))
+
         # Recurse into class_body for methods
         body = node.child_by_field_name("body")
         if body is None:
@@ -677,6 +700,7 @@ def _extract_edges_swift(root: Node, filepath: Path) -> list[Edge]:
     file_stem = filepath.stem
     infer = config.SEAM_SWIFT_TYPE_INFERENCE == "on"
     composition_on = config.SEAM_COMPOSITION_EDGES == "on"
+    field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
 
     try:
         # Slice #80: emit holds edges for class/struct/actor declarations.
@@ -691,6 +715,7 @@ def _extract_edges_swift(root: Node, filepath: Path) -> list[Edge]:
             file_stem,
             edges,
             infer,
+            field_access_on,
             class_name=None,
             var_types={},
             class_var_types={},
@@ -771,6 +796,7 @@ def _walk_edges(
     file_stem: str,
     edges: list[Edge],
     infer: bool,
+    field_access_on: bool,
     class_name: str | None,
     var_types: dict[str, str],
     class_var_types: dict[str, str],
@@ -792,6 +818,7 @@ def _walk_edges(
     Class-level stored `property_declaration`s are NOT recorded during the walk (they are
     already in class_var_types via the pre-scan); recording them here would mutate the
     shared class-scope dict in place and make resolution depend on source order.
+    field_access_on gates A3 Slice 5 reads/writes edge emission.
     """
     node_type = node.type
 
@@ -816,6 +843,12 @@ def _walk_edges(
             var_types = dict(class_var_types)
             _record_param_types(node, var_types)
 
+        # A3 Slice 5: emit reads/writes field-access edges for self.prop accesses.
+        if field_access_on and class_name is not None:
+            _emit_swift_field_accesses(
+                node, file_str, class_name, var_types, edges
+            )
+
     elif infer and node_type == "property_declaration":
         # Record ONLY function-scope locals. A class-level stored property (direct child
         # of class_body) is already in class_var_types; skipping it here keeps the
@@ -829,7 +862,61 @@ def _walk_edges(
 
     for child in node.children:
         _walk_edges(
-            child, file_str, file_stem, edges, infer, class_name, var_types, class_var_types
+            child, file_str, file_stem, edges, infer, field_access_on,
+            class_name, var_types, class_var_types
+        )
+
+
+def _emit_swift_field_accesses(
+    func_node: Node,
+    file_str: str,
+    class_name: str,
+    var_types: dict[str, str],
+    edges: list[Edge],
+) -> None:
+    """Emit reads/writes field-access edges for a Swift function_declaration.
+
+    Finds the function_body child and runs extract_field_accesses_swift on it.
+    The source_fn is derived from the function's simple_identifier child.
+    Never raises.
+    """
+    try:
+        # Get the function name from the first simple_identifier child.
+        func_name = None
+        for child in func_node.children:
+            if child.type == "simple_identifier":
+                func_name = _text(child)
+                break
+        if not func_name:
+            return
+
+        source_fn = f"{class_name}.{func_name}"
+
+        # Find the function_body child.
+        func_body = None
+        for child in func_node.children:
+            if child.type == "function_body":
+                func_body = child
+                break
+        if func_body is None:
+            return
+
+        for src, tgt, mode, line in extract_field_accesses_swift(
+            func_body, source_fn, class_name, var_types
+        ):
+            edges.append(Edge(
+                source=src,
+                target=tgt,
+                kind=mode,
+                file=file_str,
+                line=line,
+                confidence="EXTRACTED",
+                receiver=None,
+            ))
+    except Exception as exc:  # noqa: BLE001
+        import logging as _logging
+        _logging.getLogger(__name__).debug(
+            "_emit_swift_field_accesses: failed for class=%r: %r", class_name, exc
         )
 
 
