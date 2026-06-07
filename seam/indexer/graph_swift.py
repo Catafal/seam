@@ -65,6 +65,7 @@ from seam.indexer.graph_swift_infer import (
     _resolve_navigation_target,
     _scan_class_properties,
     collect_composition_types_swift,
+    collect_param_types_swift,
 )
 
 # signatures.py is a leaf (no seam deps) so importing it here does not create a cycle.
@@ -690,6 +691,7 @@ def _extract_edges_swift(root: Node, filepath: Path) -> list[Edge]:
     infer = config.SEAM_SWIFT_TYPE_INFERENCE == "on"
     composition_on = config.SEAM_COMPOSITION_EDGES == "on"
     field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
+    param_edges_on = config.SEAM_PARAM_EDGES == "on"
 
     try:
         # Slice #80: emit holds edges for class/struct/actor declarations.
@@ -705,6 +707,7 @@ def _extract_edges_swift(root: Node, filepath: Path) -> list[Edge]:
             edges,
             infer,
             field_access_on,
+            param_edges_on,
             class_name=None,
             var_types={},
             class_var_types={},
@@ -786,6 +789,7 @@ def _walk_edges(
     edges: list[Edge],
     infer: bool,
     field_access_on: bool,
+    param_edges_on: bool,
     class_name: str | None,
     var_types: dict[str, str],
     class_var_types: dict[str, str],
@@ -836,6 +840,12 @@ def _walk_edges(
         if field_access_on and class_name is not None:
             edges.extend(emit_swift_field_access_edges(node, file_str, class_name, var_types))
 
+        # 'uses' edges: this function references plain user types as parameters.
+        # Source is the qualified function name (Class.method or bare top-level function),
+        # matching how call edges are sourced.
+        if param_edges_on:
+            _emit_swift_param_uses(node, file_str, class_name, edges)
+
     elif infer and node_type == "property_declaration":
         # Record ONLY function-scope locals. A class-level stored property (direct child
         # of class_body) is already in class_var_types; skipping it here keeps the
@@ -849,9 +859,43 @@ def _walk_edges(
 
     for child in node.children:
         _walk_edges(
-            child, file_str, file_stem, edges, infer, field_access_on,
+            child, file_str, file_stem, edges, infer, field_access_on, param_edges_on,
             class_name, var_types, class_var_types
         )
+
+
+def _emit_swift_param_uses(
+    node: Node,
+    file_str: str,
+    class_name: str | None,
+    edges: list[Edge],
+) -> None:
+    """Emit kind='uses' edges from a function_declaration to each plain user-typed param.
+
+    Source qualification matches the symbol/call-edge convention: 'Class.method' inside a
+    type body, bare function name at top level. Delegates plain-type extraction to
+    collect_param_types_swift (same conservatism as holds). Never raises.
+    """
+    try:
+        name_node = next((c for c in node.children if c.type == "simple_identifier"), None)
+        if name_node is None:
+            return
+        fname = _text(name_node)
+        if not fname:
+            return
+        source = f"{class_name}.{fname}" if class_name else fname
+        for ptype, pline in collect_param_types_swift(node):
+            edges.append(Edge(
+                source=source,
+                target=ptype,
+                kind="uses",
+                file=file_str,
+                line=pline,
+                confidence="INFERRED",
+                receiver=None,
+            ))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_emit_swift_param_uses: failed at %r: %r", node.start_point, exc)
 
 def _handle_import(node: Node, file_str: str, file_stem: str, edges: list[Edge]) -> None:
     """Extract import edge from a Swift import_declaration node.

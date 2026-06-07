@@ -44,6 +44,7 @@ from seam.indexer.graph_common import (
 from seam.indexer.graph_scope_infer import (
     _TS_SELF_NAMES,
     collect_composition_types_typescript,
+    collect_param_types_typescript,
     record_ts_local_types,
     record_ts_param_types,
     resolve_receiver_type,
@@ -285,6 +286,7 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
     type_inference_on = config.SEAM_TYPE_INFERENCE == "on"
     composition_on = config.SEAM_COMPOSITION_EDGES == "on"
     field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
+    param_edges_on = config.SEAM_PARAM_EDGES == "on"
 
     def _emit_ts_inheritance(node: Node) -> None:
         name_node = node.child_by_field_name("name")
@@ -461,6 +463,30 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
         # class_fields is immutable from the caller's perspective (Layer 1 pre-scan).
         var_types: dict[str, str] = dict(class_fields)
         record_ts_param_types(func_node, var_types)
+
+        # 'uses' edges: this function references plain user types as parameters.
+        # source_fn derived exactly like the field-access block below (named function →
+        # qualified Class.method; anonymous arrow/expression → enclosing-function lookup).
+        if param_edges_on:
+            uses_source: str | None
+            uses_name_node = func_node.child_by_field_name("name")
+            if uses_name_node is not None:
+                uses_fn = _text(uses_name_node)
+                uses_source = f"{class_name}.{uses_fn}" if class_name else uses_fn
+            else:
+                uses_source = _find_enclosing_function(func_node, language)
+            if uses_source is not None:
+                for ptype, pline in collect_param_types_typescript(func_node):
+                    edges.append(Edge(
+                        source=uses_source,
+                        target=ptype,
+                        kind="uses",
+                        file=file_str,
+                        line=pline,
+                        confidence="INFERRED",
+                        receiver=None,
+                    ))
+
         body = func_node.child_by_field_name("body")
         if body is None:
             return

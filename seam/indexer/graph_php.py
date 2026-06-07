@@ -58,7 +58,7 @@ from seam.indexer.graph_common import (
 )
 
 # Scope-inference: shared resolver from ext, PHP helpers from ext2.
-from seam.indexer.graph_scope_infer_ext import resolve_receiver_type_ext
+from seam.indexer.graph_scope_infer_ext import param_types_via_recorder, resolve_receiver_type_ext
 from seam.indexer.graph_scope_infer_ext2 import (
     _PHP_SELF_NAMES,
     collect_composition_types_php,
@@ -452,6 +452,23 @@ def _walk_php_edges(
         new_types: dict[str, str] = dict(class_fields)
         if infer:
             record_php_param_types(node, new_types)
+        # 'uses' edges: method references plain user types as params. Config is read
+        # inline (not threaded) because _walk_php_edges recurses through many call sites.
+        if config.SEAM_PARAM_EDGES == "on" and class_name is not None:
+            _mn = node.child_by_field_name("name") or next(
+                (c for c in node.children if c.type == "name"), None
+            )
+            if _mn is not None:
+                _m = _text(_mn)
+                if _m:
+                    _src = f"{class_name}.{_m}"
+                    for ptype, pline in param_types_via_recorder(
+                        node, record_php_param_types, "php"
+                    ):
+                        edges.append(Edge(
+                            source=_src, target=ptype, kind="uses",
+                            file=file_str, line=pline, confidence="INFERRED", receiver=None,
+                        ))
         body = node.child_by_field_name("body")
         if body is not None:
             # A3 Slice 5: emit reads/writes field-access edges for $this->field accesses.

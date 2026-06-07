@@ -312,6 +312,20 @@ SEAM_BARE_RESOLVE_CAP: int = int(os.getenv("SEAM_BARE_RESOLVE_CAP", "25"))
 # and the produced edge set is byte-identical to pre-Slice-#77 behavior.
 SEAM_COMPOSITION_EDGES: str = os.getenv("SEAM_COMPOSITION_EDGES", "on")
 
+# ── Method-param composition: 'uses' edges ──────────────────────────────────
+# When "on" (default), the extractor emits an Edge(kind="uses", confidence="INFERRED")
+# from a function/method to every plain user type it references as a PARAMETER in its
+# signature — e.g. `func showOverlay(companionManager: CompanionManager)` emits
+# showOverlay -> CompanionManager. This makes a param-injected dependency a DIRECT (d=1)
+# upstream dependent of the type, complementing `holds` (which captures only STORED
+# composition — fields and constructor params). Conservatism contract is identical to
+# SEAM_COMPOSITION_EDGES: only plain user type names bind (optionals/generics/containers/
+# primitives/dotted expressions rejected via the same per-language plain-type helpers).
+# Higher-volume than `holds` (most typed functions have ≥1 user-typed param) → impact/
+# changes/affected verdicts WIDEN. Extraction-time only; "off" = byte-identical to
+# pre-feature; requires `seam init` re-index to populate.
+SEAM_PARAM_EDGES: str = os.getenv("SEAM_PARAM_EDGES", "on")
+
 
 # ── Tier B B4: Receiver-type inference (Python + TypeScript/JS) ──────────────
 
