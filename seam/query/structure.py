@@ -429,19 +429,23 @@ def _build_file_tree(
                 containers[name] = container_node
                 file_node["children"].append(container_node)
             elif _is_method_or_member(name, kind):
-                # Determine owner: the part before the first '.'
+                # Extract owner from the qualified name to find the container to credit —
+                # qualified method names ('Owner.method') carry their owner as the prefix.
                 owner = name.split(".")[0] if "." in name else None
                 if owner and owner in containers:
                     containers[owner]["members"] += 1
                     containers[owner]["symbol_count"] += 1
-                # If owner not found (e.g. extracted before its class), count as orphan.
-                # Still NOT added as a separate node — rolled up silently.
+                # If owner not found (e.g. method extracted before its class row appears),
+                # the symbol is silently discarded — NOT added as a node — since a lone
+                # method node without a container parent would break the tree contract.
             else:
                 # Top-level function (or other non-container, non-method kind)
                 func_node = _make_function_node(name)
                 file_node["children"].append(func_node)
 
-        # symbol_count on the file node = total symbol rows (including methods)
+        # Methods are NOT separate nodes but their rows ARE part of the file's total —
+        # using len(syms) (not just containers+functions) keeps the file symbol count
+        # consistent with what `seam status` and the index report.
         file_node["symbol_count"] = len(syms)
 
         current_dir_node["children"].append(file_node)
