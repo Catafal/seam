@@ -72,6 +72,7 @@ from seam.query.comments import why as comments_why
 # NOTE: seam.server.mcp (and the `mcp` package it needs) is imported LAZILY inside the
 # `start` command — see _load_create_server(). This keeps the entire CLI usable with the
 # `mcp` extra UNINSTALLED (pure-CLI install): only `seam start` requires it.
+from seam.query.structure import StructureNode
 from seam.server.tools import (
     handle_seam_affected,
     handle_seam_changes,
@@ -79,6 +80,7 @@ from seam.server.tools import (
     handle_seam_context_pack,
     handle_seam_flows,
     handle_seam_impact,
+    handle_seam_structure,
     handle_seam_trace,
     handle_seam_why,
 )
@@ -1684,6 +1686,106 @@ def flows_cmd(
     footer = " · [yellow]truncated[/yellow]" if result["truncated"] else ""
     console.print(f"[dim]{result['total_steps']} steps{footer}[/dim]")
     _print_flow_tree(result["steps"])
+
+
+# ── seam structure ────────────────────────────────────────────────────────────
+
+
+def _render_structure_quiet(node: StructureNode, depth: int = 0) -> None:
+    """Render the structure tree as an indented plain-text tree (quiet mode).
+
+    WHY a separate helper: keeps the command body readable and matches the
+    _print_flow_tree pattern established by seam flows.
+    """
+    indent = "  " * depth
+    kind = node["kind"]
+    name = node["name"]
+    path = node.get("path") or ""
+    sym = node.get("symbol_count", 0)
+    members = node.get("members", 0)
+
+    # One line per node: indent + kind marker + name + counts
+    if kind == "dir":
+        sys.stdout.write(f"{indent}[{kind}] {name}/  ({sym} symbols)\n")
+    elif kind == "file":
+        sys.stdout.write(f"{indent}[{kind}] {path}  ({sym} symbols)\n")
+    elif kind == "container":
+        sys.stdout.write(f"{indent}[{kind}] {name}  ({members} members)\n")
+    else:
+        sys.stdout.write(f"{indent}[{kind}] {name}\n")
+
+    for child in node.get("children", []):
+        _render_structure_quiet(child, depth + 1)
+
+
+@app.command(name="structure")
+def structure_cmd(
+    path: str = typer.Argument(".", help="Project root to inspect (default: current directory)"),
+    db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        help="Print indented tree (one node per line) without the JSON envelope.",
+    ),
+) -> None:
+    """Show the whole-repository directory/file/container structure tree.
+
+    Reads the index and renders a compact skeleton of the codebase:
+      - directory nodes (dir)
+      - file nodes with symbol counts
+      - container nodes (class/interface/type) with member counts
+      - top-level function nodes
+
+    Examples:
+      seam structure               -- Rich indented tree (default)
+      seam structure --json        -- structured JSON envelope
+      seam structure --quiet       -- plain indented text (one node per line)
+      seam structure /path/to/repo -- inspect a specific project
+    """
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
+    project_root = Path(path).resolve()
+    db_root = Path(db_dir).resolve() if db_dir else project_root
+    db_path = config.get_db_path(db_root)
+
+    if not db_path.exists():
+        if json_:
+            emit_json_error("NO_INDEX", "No index found. Run 'seam init' first.")
+        console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
+        raise typer.Exit(code=1)
+
+    try:
+        conn = connect(db_path)
+    except sqlite3.Error as exc:
+        if json_:
+            emit_json_error("DB_ERROR", f"Failed to open database: {exc}")
+        console.print(f"[red]Failed to open database:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        result = handle_seam_structure(conn, root=project_root)
+    finally:
+        conn.close()
+
+    # ── JSON mode ─────────────────────────────────────────────────────────────
+    if json_:
+        emit_json(result)
+        return
+
+    # ── Quiet mode — indented plain-text tree ─────────────────────────────────
+    if quiet:
+        _render_structure_quiet(result["tree"])
+        return
+
+    # ── Rich (default) mode — indented Rich tree ──────────────────────────────
+    tree = result["tree"]
+    total = tree.get("symbol_count", 0)
+    console.print(f"\n[bold cyan]Repository structure[/bold cyan]  [dim]({total} total symbols)[/dim]")
+    _render_structure_quiet(tree)
 
 
 # ── seam affected ─────────────────────────────────────────────────────────────

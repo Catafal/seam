@@ -1,4 +1,4 @@
-"""MCP server setup — FastMCP stdio transport, eleven tools registered.
+"""MCP server setup — FastMCP stdio transport, twelve tools registered.
 
 Creates and configures the MCP server instance.
 Tool handlers in tools.py are thin adapters; this module wires them to FastMCP.
@@ -7,7 +7,7 @@ Usage (from cli/main.py):
     server = create_server(conn, root)
     server.run(transport="stdio")
 
-Tools registered (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3 + Phase 6):
+Tools registered (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3 + Phase 6 + Tier D11):
     seam_query        — FTS5 + 1-hop graph expansion search
     seam_context      — 360-degree symbol view (callers, callees, location, cluster)
     seam_search       — full-text search (FTS5 BM25)
@@ -19,6 +19,7 @@ Tools registered (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3 + Phase 6):
     seam_affected     — changed files → impacted test files via reverse-dependency BFS (Phase 3)
     seam_context_pack — enriched context bundle: target + neighbors + WHY + peers (Phase 6)
     seam_flows        — execution flows: entry points + forward call-chain expansion
+    seam_structure    — whole-repo directory/file/container structure tree (Tier D11)
 
 Design:
 - One FastMCP instance per process; connection is injected at creation time.
@@ -47,6 +48,7 @@ from seam.server.tools import (
     handle_seam_impact,
     handle_seam_query,
     handle_seam_search,
+    handle_seam_structure,
     handle_seam_trace,
     handle_seam_why,
 )
@@ -90,7 +92,7 @@ def _finalize(result: Any) -> Any:
 
 
 def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
-    """Configure and return a FastMCP server with all eleven Seam tools registered.
+    """Configure and return a FastMCP server with all twelve Seam tools registered.
 
     Phase 0:  seam_query, seam_context, seam_search
     Phase 1:  seam_impact, seam_trace, seam_changes
@@ -99,6 +101,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
     Phase 3:  seam_affected
     Phase 6:  seam_context_pack
     Flows:    seam_flows
+    Tier D11: seam_structure
 
     Args:
         conn: Open SQLite connection to the Seam index DB.
@@ -408,5 +411,35 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         promoted confidence. Returns {found: false} when the entry name is unknown.
         """
         return _finalize(handle_seam_flows(conn, root, entry=entry))
+
+    @mcp.tool()
+    def seam_structure() -> Any:
+        """Get the whole-repository directory/file/container structure tree.
+
+        Returns a nested tree of:
+          dir nodes       — directories in the repository hierarchy
+          file nodes      — indexed source files under each directory
+          container nodes — class/interface/type symbols within each file
+          function nodes  — top-level functions within each file
+
+        Method/member symbols are rolled up into their owning container's
+        `members` count and do NOT appear as separate nodes — this keeps the tree
+        compact and focused on the structural skeleton rather than every detail.
+
+        Each node carries:
+          kind:         'dir' | 'file' | 'container' | 'function'
+          name:         display name (dir basename, file name, symbol name)
+          path:         repo-root-relative path; null for container and function nodes
+          symbol_count: total symbol rows in this subtree
+          area:         functional-area label (null — populated in a future slice)
+          children:     child nodes
+          members:      count of method/member rows rolled into this container (0 for non-containers)
+
+        Use this to get a structural overview before diving into a specific file or
+        symbol, or to understand how files and containers are organized across the repo.
+
+        Returns {found: false} when the index has no symbols (empty repo or not yet indexed).
+        """
+        return _finalize(handle_seam_structure(conn, root))
 
     return mcp

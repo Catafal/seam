@@ -37,6 +37,8 @@ from seam.query.clusters import list_clusters as query_list_clusters
 from seam.query.comments import why as comments_why
 from seam.query.pack import ContextPack, NeighborRef
 from seam.query.pack import context_pack as run_context_pack
+from seam.query.structure import StructureResult
+from seam.query.structure import build_structure as run_build_structure
 
 logger = logging.getLogger(__name__)
 
@@ -1096,3 +1098,33 @@ def handle_seam_context_pack(
         "cluster_peers": pack["cluster_peers"],
         "truncated": pack["truncated"],
     }
+
+
+def handle_seam_structure(
+    conn: sqlite3.Connection,
+    root: Path,
+) -> StructureResult:
+    """Handler for the seam_structure MCP tool — whole-repo structure tree.
+
+    Returns a directory -> file -> container/function tree built from the index.
+    Container nodes (class/interface/type) aggregate method/member rows into a
+    `members` count rather than emitting separate child nodes. Top-level functions
+    appear as 'function' children of their file node.
+
+    File paths in the tree are relativized to `root` (no absolute paths leak).
+    Container nodes carry path=None (they are logical, not file-backed).
+
+    This is a pure read; never raises — degrades to an empty safe tree on any error.
+
+    Args:
+        conn: Open SQLite connection to the Seam index (read-only).
+        root: Project root Path — used to relativize file paths.
+
+    Returns:
+        StructureResult dict with keys:
+            tree:      Root 'dir' StructureNode representing `root`.
+            truncated: Count of omitted nodes (Slice 1: always 0).
+    """
+    # Delegate to the query layer — the handler's sole job here is path relativization,
+    # but build_structure already relativizes (root is passed to it directly).
+    return run_build_structure(conn, root)
