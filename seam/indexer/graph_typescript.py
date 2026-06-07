@@ -1,10 +1,12 @@
 """TypeScript/JavaScript symbol and edge extraction from tree-sitter ASTs.
 
-LAYER: imports from graph_common (leaf), graph_scope_infer (leaf), signatures (leaf) — never from graph.py.
+LAYER: imports from graph_common (leaf), graph_scope_infer (leaf), field_access (leaf),
+signatures (leaf) — never from graph.py.
 
 LAYERING:
     graph_common       (leaf — no seam deps)
     graph_scope_infer  (leaf — Python+TS receiver-type inference)
+    field_access       (leaf — field-access read/write classification + field symbols)
          ↑
     graph_typescript   (this file — TS/JS symbol/edge extraction)
          ↑
@@ -24,6 +26,10 @@ from pathlib import Path
 from tree_sitter import Node
 
 import seam.config as config
+from seam.indexer.field_access import (
+    collect_field_symbols_typescript,
+    extract_field_accesses_typescript,
+)
 from seam.indexer.graph_common import (
     Comment,
     Edge,
@@ -67,9 +73,15 @@ def _ts_jsdoc(symbol_node: Node) -> str | None:
 
 
 def _extract_symbols_typescript(root: Node, filepath: Path) -> list[Symbol]:
-    """Walk a TypeScript/TSX AST and extract all symbol types."""
+    """Walk a TypeScript/TSX AST and extract all symbol types.
+
+    A3 Slice 2: when SEAM_FIELD_ACCESS_EDGES='on', also emits kind='field' symbols
+    for each class using collect_field_symbols_typescript (field declarations +
+    constructor this.x= + parameter properties).
+    """
     symbols: list[Symbol] = []
     file_str = str(filepath)
+    field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
 
     def _walk(node: Node, class_name: str | None = None) -> None:
         if node.type == "function_declaration":
@@ -156,6 +168,32 @@ def _extract_symbols_typescript(root: Node, filepath: Path) -> list[Symbol]:
                         qualified_name=cls_name,
                     )
                 )
+
+                # A3 Slice 2: emit field symbols for this TS class.
+                # Mirrors the Python approach: collect (qualified_field, line) pairs
+                # from field declarations, constructor assignments, and param properties.
+                # Dedup is handled by collect_field_symbols_typescript.
+                # WHY Symbol(...) not _make_symbol: _make_symbol derives start/end lines
+                # from the node start_point, but field lines come from the collector.
+                # Using Symbol directly (as graph_python.py does) avoids a sentinel node.
+                if field_access_on and cls_name:
+                    for qualified_field, field_line in collect_field_symbols_typescript(
+                        node, cls_name
+                    ):
+                        symbols.append(Symbol(
+                            name=qualified_field,
+                            kind="field",
+                            file=file_str,
+                            start_line=field_line,
+                            end_line=field_line,
+                            docstring=None,
+                            signature=None,
+                            decorators=[],
+                            is_exported=None,
+                            visibility=None,
+                            qualified_name=qualified_field,
+                        ))
+
                 body = node.child_by_field_name("body")
                 if body:
                     for child in body.children:
@@ -246,6 +284,7 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
     emit_inheritance = config.SEAM_INHERITANCE_EDGES == "on"
     type_inference_on = config.SEAM_TYPE_INFERENCE == "on"
     composition_on = config.SEAM_COMPOSITION_EDGES == "on"
+    field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
 
     def _emit_ts_inheritance(node: Node) -> None:
         name_node = node.child_by_field_name("name")
@@ -431,6 +470,34 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
             # see that declaration (e.g. `const e = new Engine(); e.start()`).
             record_ts_local_types(stmt, var_types)
             _walk_ts_stmt(stmt, class_name, var_types, class_fields, language)
+
+        # A3 Slice 2: emit reads/writes edges for field accesses in this function body.
+        # Done AFTER the main stmt walk so var_types is fully populated (record_ts_local_types
+        # runs incrementally during the stmt walk above). WHY separate pass: fully-populated
+        # var_types gives higher-quality receiver resolution than an interleaved walk.
+        # Mirrors graph_python.py's identical two-pass design for extract_field_accesses_python.
+        if field_access_on:
+            source_fn: str | None = None
+            name_node = func_node.child_by_field_name("name")
+            if name_node is not None:
+                fn_name = _text(name_node)
+                source_fn = f"{class_name}.{fn_name}" if class_name else fn_name
+            else:
+                # Anonymous function (arrow/expression) — use enclosing-function lookup.
+                source_fn = _find_enclosing_function(func_node, language)
+            if source_fn is not None and body is not None:
+                for _src, target_field, mode, fa_line in extract_field_accesses_typescript(
+                    body, source_fn, class_name, var_types
+                ):
+                    edges.append(Edge(
+                        source=source_fn,
+                        target=target_field,
+                        kind=mode,
+                        file=file_str,
+                        line=fa_line,
+                        confidence="INFERRED",
+                        receiver=None,
+                    ))
 
     def _walk_ts_stmt(
         node: Node,

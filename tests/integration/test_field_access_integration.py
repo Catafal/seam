@@ -1,8 +1,8 @@
-"""Integration tests for A3 Slice 1: field-access edges + field symbols end-to-end.
+"""Integration tests for A3 Slice 1+2: field-access edges + field symbols end-to-end.
 
 TDD: Tests written alongside implementation to verify DB persistence.
 
-Coverage:
+Python coverage (Slice 1):
   INT-FIELD-SYM: field symbols in DB (kind='field', qualified_name='Type.field')
   INT-READS-EDGES: reads edges in DB (kind='reads')
   INT-WRITES-EDGES: writes edges in DB (kind='writes')
@@ -10,6 +10,13 @@ Coverage:
   INT-CONTEXT-FIELD: context() returns field_readers / field_writers
   INT-CONTEXT-CLASS: context() on a class aggregates its fields' readers/writers
   INT-CONTEXT-FUNCTION-NOREG: function-seed context() callers/callees unchanged (no regression)
+
+TypeScript coverage (Slice 2):
+  INT-TS-FIELD-SYM: TS field symbols in DB with kind='field', qualified_name='Type.field'
+  INT-TS-READS: TS reads edges in DB
+  INT-TS-WRITES: TS writes edges in DB
+  INT-TS-OFF: SEAM_FIELD_ACCESS_EDGES=off → no TS field symbols/edges in DB
+  INT-TS-CONTEXT: context('Type.field') returns field_readers/field_writers for TS fixture
 """
 
 import hashlib
@@ -36,6 +43,27 @@ def _make_db(source: str, tmp_path: Path) -> tuple[sqlite3.Connection, Path]:
     edges = extract_edges(root, "python", src_path, symbols)
     file_hash = hashlib.sha1(source.encode()).hexdigest()
     upsert_file(conn, src_path, "python", file_hash, symbols, edges)
+    conn.commit()
+    return conn, src_path
+
+
+def _make_ts_db(source: str, tmp_path: Path) -> tuple[sqlite3.Connection, Path]:
+    """Index a TypeScript source snippet into a fresh DB and return (conn, src_path)."""
+    from seam.indexer.db import init_db, upsert_file
+    from seam.indexer.graph import extract_edges, extract_symbols
+    from seam.indexer.parser import parse_typescript
+
+    src_path = tmp_path / "sample.ts"
+    src_path.write_text(source)
+
+    conn = init_db(Path(":memory:"))
+    root = parse_typescript(src_path)
+    assert root is not None
+
+    symbols = extract_symbols(root, "typescript", src_path)
+    edges = extract_edges(root, "typescript", src_path, symbols)
+    file_hash = hashlib.sha1(source.encode()).hexdigest()
+    upsert_file(conn, src_path, "typescript", file_hash, symbols, edges)
     conn.commit()
     return conn, src_path
 
@@ -398,3 +426,300 @@ class Foo:
         field_writers = result.get("field_writers", [])
         assert isinstance(field_readers, list), "field_readers should be list"
         assert isinstance(field_writers, list), "field_writers should be list"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TypeScript integration tests (A3 Slice 2)
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+# ── INT-TS-FIELD-SYM ──────────────────────────────────────────────────────────
+
+
+class TestTSFieldSymbolsInDB:
+    """TS field symbols persisted with kind='field' and qualified_name='Type.field'."""
+
+    def test_ts_field_definition_creates_field_symbol(self, tmp_path: Path) -> None:
+        """class Account { balance: number; } → field symbol Account.balance in DB."""
+        src = """\
+class Account {
+    balance: number;
+    name: string;
+}
+"""
+        conn, _ = _make_ts_db(src, tmp_path)
+        fields = _field_symbols(conn)
+        names = [r["name"] for r in fields]
+        assert "Account.balance" in names, (
+            f"Expected Account.balance field symbol; got {names}"
+        )
+
+    def test_ts_field_symbol_kind_is_field(self, tmp_path: Path) -> None:
+        """TS field symbol in DB has kind='field'."""
+        src = """\
+class Foo {
+    x: number;
+}
+"""
+        conn, _ = _make_ts_db(src, tmp_path)
+        fields = _field_symbols(conn)
+        for r in fields:
+            assert r["kind"] == "field", f"Expected kind='field'; got {r['kind']}"
+
+    def test_ts_field_symbol_qualified_name(self, tmp_path: Path) -> None:
+        """TS field symbol qualified_name is 'Type.field'."""
+        src = """\
+class Account {
+    balance: number;
+}
+"""
+        conn, _ = _make_ts_db(src, tmp_path)
+        fields = _field_symbols(conn)
+        bal = [r for r in fields if r["name"] == "Account.balance"]
+        assert bal, f"Expected Account.balance; got {[r['name'] for r in fields]}"
+        assert bal[0]["qualified_name"] == "Account.balance", (
+            f"Expected qualified_name='Account.balance'; got {bal[0]['qualified_name']}"
+        )
+
+    def test_ts_constructor_this_assignment_creates_field_symbol(self, tmp_path: Path) -> None:
+        """this.count = 0 in constructor → field symbol Counter.count in DB."""
+        src = """\
+class Counter {
+    constructor() {
+        this.count = 0;
+    }
+}
+"""
+        conn, _ = _make_ts_db(src, tmp_path)
+        fields = _field_symbols(conn)
+        assert any(r["name"] == "Counter.count" for r in fields), (
+            f"Expected Counter.count field symbol; got {[r['name'] for r in fields]}"
+        )
+
+    def test_ts_param_property_creates_field_symbol(self, tmp_path: Path) -> None:
+        """constructor(private repo: Repository) → field symbol MyService.repo in DB."""
+        src = """\
+class MyService {
+    constructor(private repo: Repository) {
+    }
+}
+"""
+        conn, _ = _make_ts_db(src, tmp_path)
+        fields = _field_symbols(conn)
+        assert any(r["name"] == "MyService.repo" for r in fields), (
+            f"Expected MyService.repo; got {[r['name'] for r in fields]}"
+        )
+
+    def test_ts_field_symbol_dedup_in_db(self, tmp_path: Path) -> None:
+        """Field declaration + constructor assignment → ONE symbol in DB."""
+        src = """\
+class Account {
+    balance: number;
+    constructor() {
+        this.balance = 0;
+    }
+}
+"""
+        conn, _ = _make_ts_db(src, tmp_path)
+        fields = _field_symbols(conn)
+        bal = [r for r in fields if r["name"] == "Account.balance"]
+        assert len(bal) == 1, f"Expected exactly 1 Account.balance; got {bal}"
+
+
+# ── INT-TS-READS ───────────────────────────────────────────────────────────────
+
+
+class TestTSReadsEdgesInDB:
+    """TS reads edges stored in the edges table."""
+
+    def test_ts_this_attr_read_creates_reads_edge(self, tmp_path: Path) -> None:
+        """this.balance in a method → reads edge kind='reads' in DB."""
+        src = """\
+class Account {
+    balance: number;
+    get(): number {
+        return this.balance;
+    }
+}
+"""
+        conn, _ = _make_ts_db(src, tmp_path)
+        reads = _edges_of_kind(conn, "reads")
+        assert any(
+            r["target_name"] == "Account.balance" and r["source_name"] == "Account.get"
+            for r in reads
+        ), f"Expected reads edge Account.get->Account.balance; got {[(r['source_name'], r['target_name']) for r in reads]}"
+
+    def test_ts_reads_edge_in_expression(self, tmp_path: Path) -> None:
+        """this.value used in arithmetic produces reads edge."""
+        src = """\
+class Calc {
+    value: number;
+    doubled(): number {
+        return this.value * 2;
+    }
+}
+"""
+        conn, _ = _make_ts_db(src, tmp_path)
+        reads = _edges_of_kind(conn, "reads")
+        assert any(r["target_name"] == "Calc.value" for r in reads), (
+            f"Expected reads edge for Calc.value; got {[(r['source_name'], r['target_name']) for r in reads]}"
+        )
+
+
+# ── INT-TS-WRITES ──────────────────────────────────────────────────────────────
+
+
+class TestTSWritesEdgesInDB:
+    """TS writes edges stored in the edges table."""
+
+    def test_ts_assign_creates_writes_edge(self, tmp_path: Path) -> None:
+        """this.balance = v → writes edge in DB."""
+        src = """\
+class Account {
+    balance: number;
+    set(v: number): void {
+        this.balance = v;
+    }
+}
+"""
+        conn, _ = _make_ts_db(src, tmp_path)
+        writes = _edges_of_kind(conn, "writes")
+        assert any(
+            r["target_name"] == "Account.balance"
+            for r in writes
+        ), f"Expected writes edge to Account.balance; got {[(r['source_name'], r['target_name']) for r in writes]}"
+
+    def test_ts_aug_assign_creates_writes_edge(self, tmp_path: Path) -> None:
+        """this.balance += amount → writes edge in DB."""
+        src = """\
+class Account {
+    balance: number;
+    deposit(amount: number): void {
+        this.balance += amount;
+    }
+}
+"""
+        conn, _ = _make_ts_db(src, tmp_path)
+        writes = _edges_of_kind(conn, "writes")
+        assert any(r["target_name"] == "Account.balance" for r in writes), (
+            f"Expected writes edge for +=; got {[(r['source_name'], r['target_name']) for r in writes]}"
+        )
+
+    def test_ts_constructor_this_assign_creates_writes_edge(self, tmp_path: Path) -> None:
+        """this.balance = 0 in constructor → writes edge in DB."""
+        src = """\
+class Account {
+    balance: number;
+    constructor() {
+        this.balance = 0;
+    }
+}
+"""
+        conn, _ = _make_ts_db(src, tmp_path)
+        writes = _edges_of_kind(conn, "writes")
+        assert any(r["target_name"] == "Account.balance" for r in writes), (
+            f"Expected writes edge from constructor; got {[(r['source_name'], r['target_name']) for r in writes]}"
+        )
+
+
+# ── INT-TS-OFF ─────────────────────────────────────────────────────────────────
+
+
+class TestTSFieldAccessEdgesOff:
+    """SEAM_FIELD_ACCESS_EDGES=off → no TS field symbols/edges in DB."""
+
+    def test_ts_off_no_field_symbols(self, tmp_path: Path, monkeypatch) -> None:
+        """When feature is off, no TS field symbols in DB."""
+        import seam.config as config
+        monkeypatch.setattr(config, "SEAM_FIELD_ACCESS_EDGES", "off")
+
+        src = """\
+class Account {
+    balance: number;
+    constructor() {
+        this.balance = 0;
+    }
+}
+"""
+        conn, _ = _make_ts_db(src, tmp_path)
+        fields = _field_symbols(conn)
+        assert not fields, f"Expected no field symbols when feature off; got {fields}"
+
+    def test_ts_off_no_reads_edges(self, tmp_path: Path, monkeypatch) -> None:
+        """When feature is off, no TS reads edges in DB."""
+        import seam.config as config
+        monkeypatch.setattr(config, "SEAM_FIELD_ACCESS_EDGES", "off")
+
+        src = """\
+class Account {
+    balance: number;
+    get(): number {
+        return this.balance;
+    }
+}
+"""
+        conn, _ = _make_ts_db(src, tmp_path)
+        reads = _edges_of_kind(conn, "reads")
+        assert not reads, f"Expected no reads edges when feature off; got {reads}"
+
+    def test_ts_off_no_writes_edges(self, tmp_path: Path, monkeypatch) -> None:
+        """When feature is off, no TS writes edges in DB."""
+        import seam.config as config
+        monkeypatch.setattr(config, "SEAM_FIELD_ACCESS_EDGES", "off")
+
+        src = """\
+class Account {
+    balance: number;
+    set(v: number): void {
+        this.balance = v;
+    }
+}
+"""
+        conn, _ = _make_ts_db(src, tmp_path)
+        writes = _edges_of_kind(conn, "writes")
+        assert not writes, f"Expected no writes edges when feature off; got {writes}"
+
+
+# ── INT-TS-CONTEXT ─────────────────────────────────────────────────────────────
+
+
+class TestTSContextFieldView:
+    """context('Type.field') returns field_readers/field_writers for TS fixture."""
+
+    def test_ts_context_field_returns_readers(self, tmp_path: Path) -> None:
+        """context('Account.balance') includes the reading method from TS code."""
+        src = """\
+class Account {
+    balance: number;
+    getBalance(): number {
+        return this.balance;
+    }
+}
+"""
+        conn, _ = _make_ts_db(src, tmp_path)
+        from seam.query.engine import context
+        result = context(conn, "Account.balance")
+        assert result is not None, "Expected context result for Account.balance"
+        assert "field_readers" in result, f"Expected field_readers key; got {list(result.keys())}"
+        assert "Account.getBalance" in result["field_readers"], (
+            f"Expected Account.getBalance in field_readers; got {result['field_readers']}"
+        )
+
+    def test_ts_context_field_returns_writers(self, tmp_path: Path) -> None:
+        """context('Account.balance') includes the writing method from TS code."""
+        src = """\
+class Account {
+    balance: number;
+    setBalance(v: number): void {
+        this.balance = v;
+    }
+}
+"""
+        conn, _ = _make_ts_db(src, tmp_path)
+        from seam.query.engine import context
+        result = context(conn, "Account.balance")
+        assert result is not None, "Expected context result for Account.balance"
+        assert "field_writers" in result, f"Expected field_writers key; got {list(result.keys())}"
+        assert "Account.setBalance" in result["field_writers"], (
+            f"Expected Account.setBalance in field_writers; got {result['field_writers']}"
+        )
