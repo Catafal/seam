@@ -41,7 +41,7 @@ from seam.indexer.graph_common import (
     _match_marker,
     _text,
 )
-from seam.indexer.graph_scope_infer_ext import resolve_receiver_type_ext
+from seam.indexer.graph_scope_infer_ext import param_types_via_recorder, resolve_receiver_type_ext
 from seam.indexer.graph_scope_infer_ext2 import (
     _JAVA_SELF_NAMES,
     collect_composition_types_java,
@@ -388,6 +388,7 @@ def _extract_edges_java(root: Node, filepath: Path) -> list[Edge]:
     infer = config.SEAM_TYPE_INFERENCE == "on"
     composition_on = config.SEAM_COMPOSITION_EDGES == "on"
     field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
+    param_edges_on = config.SEAM_PARAM_EDGES == "on"
 
     def _walk(
         node: Node,
@@ -427,6 +428,18 @@ def _extract_edges_java(root: Node, filepath: Path) -> list[Edge]:
                 new_types: dict[str, str] = dict(class_fields)
                 if infer:
                     record_java_param_types(node, new_types)
+                # 'uses' edges: method references plain user types as params.
+                if param_edges_on and class_name is not None:
+                    _m = _node_name(node)
+                    if _m:
+                        _src = f"{class_name}.{_m}"
+                        for ptype, pline in param_types_via_recorder(
+                            node, record_java_param_types, "java"
+                        ):
+                            edges.append(Edge(
+                                source=_src, target=ptype, kind="uses",
+                                file=file_str, line=pline, confidence="INFERRED", receiver=None,
+                            ))
                 body = node.child_by_field_name("body")
                 if body is not None:
                     # A3 Slice 4: emit reads/writes field-access edges.

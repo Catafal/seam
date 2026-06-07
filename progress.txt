@@ -2,6 +2,32 @@
 # Format: [x] = done, [>] = in progress, [ ] = not started
 # Update this EVERY session. It is the first thing the agent reads.
 #
+# 2026-06-07: method-param composition edges ('uses') — all 12 languages complete
+#   (branch feat/param-uses-edges). Edge-kind vocab 8 -> 9: +uses.
+#   Closes the last clicky impact-B miss: OverlayWindowManager.showOverlay sat at d=2
+#   because it RECEIVES companionManager as a method PARAM (not a stored field), so holds
+#   never captured it. 'uses' = function/method -> every plain user type referenced as a
+#   parameter, making param-injected deps DIRECT (d=1) upstream dependents of the type.
+#   Per-language collectors reuse the receiver-inference machinery (record_<lang>_param_types
+#   / plain-type helpers) so 'uses' and 'holds' share identical conservatism:
+#     - Swift/Python/TS+JS: dedicated collect_param_types_* (precise per-param lines).
+#     - Go/Rust/Java/C#/C++/PHP: shared param_types_via_recorder over each recorder.
+#     - C: small local typedef/named-struct param extractor (no recorder exists).
+#     - Ruby: untyped -> naturally emits none.
+#   Conservatism (= holds): only plain user types bind; optionals/generics/containers/
+#   builtins/pointers-stripped refused. Never a wrong edge; never raises.
+#   New knob SEAM_PARAM_EDGES (on/off, default on; off = byte-identical). Extraction-time;
+#   requires seam init re-index. Kind-agnostic traversal -> impact/context/trace auto-pick-up.
+#   Higher-volume than holds -> impact/changes/affected verdicts widen (documented gotcha).
+#   DETERMINISTIC clicky impact-B: showOverlay promoted d=2 -> d=1; ALL 5 truth-dependents
+#   now d=1. Campaign: 1/5 -> 3/5 (E2/E3) -> 4/5 (qualified seeds) -> 5/5 (lean window).
+#   Default-verbose window holds 4/5 — residual is now PURELY the E1 byte-ceiling lever
+#   (--lean already shows 5/5). Edge-recall/structure for this cell is fully solved.
+#   Tests: tests/unit/test_param_uses_edges.py (13: 10 langs + ruby no-op + knob-off +
+#   free-fn). GATE: ruff + mypy clean (91 files), 2873 tests pass.
+# Next: E1 byte-ceiling / leaner default output is the only remaining lever for impact-B
+#   default-window 5/5. Or move to the structure cells (qualitative naming floor).
+#
 # 2026-06-07: impact qualified-member seeds (Tier-B asymmetry fix) complete
 #   (branch feat/impact-qualified-seeds). Follow-on from the E2/E3 cell verification.
 #   Root cause found by digging into why clicky impact-B truth-dependents landed at d=2:

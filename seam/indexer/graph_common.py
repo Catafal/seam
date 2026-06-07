@@ -85,6 +85,9 @@ class Edge(TypedDict):
     #   'instantiates' — object construction (new Foo(), Foo(), Foo::new(), Foo{}) [Tier B B6]
     #   'holds'        — composition: a class stores a plain user type as a typed field/property
     #                    OR receives one as a typed constructor/init parameter [Slice #77]
+    #   'uses'         — a function/method references a plain user type as a PARAMETER in its
+    #                    signature (e.g. f(x: T) → f uses T). Complements 'holds' (stored
+    #                    composition) with signature-level coupling. Gated by SEAM_PARAM_EDGES.
     kind: str
     file: str
     line: int

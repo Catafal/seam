@@ -45,6 +45,7 @@ from seam.indexer.graph_common import (
 from seam.indexer.graph_scope_infer_ext import (
     _RUST_SELF_NAMES,
     collect_composition_types_rust,
+    collect_param_types_rust,
     record_rust_local_types,
     record_rust_param_types,
     resolve_receiver_type_ext,
@@ -346,6 +347,7 @@ def _extract_edges_rust(root: Node, filepath: Path) -> list[Edge]:
     infer = config.SEAM_TYPE_INFERENCE == "on"
     composition_on = config.SEAM_COMPOSITION_EDGES == "on"
     field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
+    param_edges_on = config.SEAM_PARAM_EDGES == "on"
 
     # struct_fields: struct name → field type map; pre-scanned so impl methods can see them.
     struct_fields: dict[str, dict[str, str]] = {}
@@ -422,6 +424,16 @@ def _extract_edges_rust(root: Node, filepath: Path) -> list[Edge]:
                 if impl_type and impl_type in struct_fields:
                     new_types.update(struct_fields[impl_type])
                 record_rust_param_types(node, new_types)
+            # 'uses' edges: function/method references plain user types as params.
+            if param_edges_on:
+                _uses_fn = _node_name(node)
+                if _uses_fn:
+                    _uses_src = f"{impl_type}.{_uses_fn}" if impl_type else _uses_fn
+                    for ptype, pline in collect_param_types_rust(node):
+                        edges.append(Edge(
+                            source=_uses_src, target=ptype, kind="uses",
+                            file=file_str, line=pline, confidence="INFERRED", receiver=None,
+                        ))
             body = node.child_by_field_name("body")
             if body is not None:
                 for child in body.children:

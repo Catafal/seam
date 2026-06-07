@@ -839,3 +839,64 @@ def _ts_param_plain_type(param: Node) -> str | None:
         return None
     except Exception:  # noqa: BLE001
         return None
+
+
+def collect_param_types_python(func_node: Node) -> list[tuple[str, int]]:
+    """Collect (param_type_name, line) pairs from a Python function_definition node.
+
+    Walks the function's `parameters` and applies _py_plain_type_from_annotation — the
+    SAME plain-type extraction used for __init__ holds param collection — so a param
+    annotated with a plain user type (x: Service) is captured while Optional[T]/list[T]/
+    dict[K,V]/generics/builtins are refused (builtins via _PY_BUILTIN_TYPES inside the
+    helper). Deduped within the signature.
+
+    Returns [] on any error. Never raises.
+    """
+    try:
+        seen: set[str] = set()
+        result: list[tuple[str, int]] = []
+        params = func_node.child_by_field_name("parameters")
+        if params is None:
+            return result
+        for param in params.children:
+            if param.type not in ("typed_parameter", "typed_default_parameter"):
+                continue
+            ann = param.child_by_field_name("type")
+            if ann is None:
+                continue
+            type_name = _py_plain_type_from_annotation(ann)
+            if type_name and type_name not in seen:
+                seen.add(type_name)
+                result.append((type_name, param.start_point[0] + 1))
+        return result
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("collect_param_types_python: failed: %r", exc)
+        return []
+
+
+def collect_param_types_typescript(func_node: Node) -> list[tuple[str, int]]:
+    """Collect (param_type_name, line) pairs from a TS/JS function-like node.
+
+    Works for function_declaration, method_definition, arrow_function, and
+    function_expression — all carry a `parameters` (formal_parameters) field. Applies
+    _ts_param_plain_type per parameter (same helper as constructor holds), so plain
+    user-typed params bind while optionals/generics/builtins are refused. Plain JS has
+    no type annotations → returns [] naturally. Deduped within the signature.
+
+    Returns [] on any error. Never raises.
+    """
+    try:
+        seen: set[str] = set()
+        result: list[tuple[str, int]] = []
+        params = func_node.child_by_field_name("parameters")
+        if params is None:
+            return result
+        for param in params.children:
+            type_name = _ts_param_plain_type(param)
+            if type_name and type_name not in seen:
+                seen.add(type_name)
+                result.append((type_name, param.start_point[0] + 1))
+        return result
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("collect_param_types_typescript: failed: %r", exc)
+        return []

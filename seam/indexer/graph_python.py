@@ -43,6 +43,7 @@ from seam.indexer.graph_scope_infer import (
     _PY_BUILTIN_TYPES,
     _PY_SELF_NAMES,
     collect_composition_types_python,
+    collect_param_types_python,
     record_py_local_types,
     record_py_param_types,
     resolve_receiver_type,
@@ -275,6 +276,7 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
     type_inference_on = config.SEAM_TYPE_INFERENCE == "on"
     composition_on = config.SEAM_COMPOSITION_EDGES == "on"
     field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
+    param_edges_on = config.SEAM_PARAM_EDGES == "on"
 
     def _emit_import_edges(node: Node) -> None:
         if node.type == "import_statement":
@@ -421,6 +423,26 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
         # var_types is the per-function Layer 2 scope that adds params and locals on top.
         var_types: dict[str, str] = dict(class_fields)
         record_py_param_types(func_node, var_types)
+
+        # 'uses' edges: this function references plain user types as parameters.
+        # Hooked here (not in the body walk) because the function node carries the
+        # full signature; source is qualified Class.method (or bare top-level fn).
+        if param_edges_on:
+            name_node = func_node.child_by_field_name("name")
+            if name_node is not None:
+                fn_name = _text(name_node)
+                source_fn = f"{class_name}.{fn_name}" if class_name else fn_name
+                for ptype, pline in collect_param_types_python(func_node):
+                    edges.append(Edge(
+                        source=source_fn,
+                        target=ptype,
+                        kind="uses",
+                        file=file_str,
+                        line=pline,
+                        confidence="INFERRED",
+                        receiver=None,
+                    ))
+
         body = func_node.child_by_field_name("body")
         if body is None:
             return

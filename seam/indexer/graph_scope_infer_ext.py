@@ -683,3 +683,41 @@ def collect_composition_types_rust(struct_node: Node) -> list[tuple[str, int]]:
         logger.debug("collect_composition_types_rust: failed: %r", exc)
         return []
 
+
+def param_types_via_recorder(func_node: Node, recorder, language: str) -> list[tuple[str, int]]:
+    """Shared 'uses'-collector: run a record_<lang>_param_types recorder and return its
+    bound (plain-user-type, function-line) pairs, deduped and builtin-filtered.
+
+    The receiver-inference recorders already bind only plain user types (refusing
+    builtins/optionals/generics/containers/pointers-stripped) — exactly the conservatism
+    `uses` needs — so reusing them keeps `uses` and receiver inference byte-aligned. The
+    recorder maps param-name → type; we discard names and keep distinct types. The edge
+    line is the function's start line (the recorder does not track per-param lines).
+
+    Never raises (recorders never raise; this wraps defensively anyway).
+    """
+    try:
+        tmp: dict[str, str] = {}
+        recorder(func_node, tmp)
+        line = func_node.start_point[0] + 1
+        seen: set[str] = set()
+        out: list[tuple[str, int]] = []
+        for t in tmp.values():
+            if t and t not in seen and not is_builtin(t, language):
+                seen.add(t)
+                out.append((t, line))
+        return out
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("param_types_via_recorder(%s): failed: %r", language, exc)
+        return []
+
+
+def collect_param_types_go(func_node: Node) -> list[tuple[str, int]]:
+    """(param_type, line) pairs for a Go function/method — reuses record_go_param_types."""
+    return param_types_via_recorder(func_node, record_go_param_types, "go")
+
+
+def collect_param_types_rust(func_node: Node) -> list[tuple[str, int]]:
+    """(param_type, line) pairs for a Rust function — reuses record_rust_param_types."""
+    return param_types_via_recorder(func_node, record_rust_param_types, "rust")
+

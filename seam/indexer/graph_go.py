@@ -44,6 +44,7 @@ from seam.indexer.graph_common import (
 )
 from seam.indexer.graph_scope_infer_ext import (
     collect_composition_types_go,
+    collect_param_types_go,
     record_go_local_types,
     record_go_param_types,
     resolve_receiver_type_ext,
@@ -345,6 +346,7 @@ def _extract_edges_go(root: Node, filepath: Path) -> list[Edge]:
     infer = config.SEAM_TYPE_INFERENCE == "on"
     composition_on = config.SEAM_COMPOSITION_EDGES == "on"
     field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
+    param_edges_on = config.SEAM_PARAM_EDGES == "on"
 
     def _walk(node: Node, var_types: dict[str, str]) -> None:
         ntype = node.type
@@ -379,6 +381,20 @@ def _extract_edges_go(root: Node, filepath: Path) -> list[Edge]:
             # (e.g. 'r' → 'Account') for qualified target emission.
             if field_access_on and not infer:
                 record_go_param_types(node, new_types)
+            # 'uses' edges: function/method references plain user types as params.
+            if param_edges_on:
+                if ntype == "function_declaration":
+                    uses_src: str | None = _node_name(node) or None
+                else:
+                    _mname = _node_name(node)
+                    _recv = _go_recv_type_name(node)
+                    uses_src = f"{_recv}.{_mname}" if (_mname and _recv) else None
+                if uses_src:
+                    for ptype, pline in collect_param_types_go(node):
+                        edges.append(Edge(
+                            source=uses_src, target=ptype, kind="uses",
+                            file=file_str, line=pline, confidence="INFERRED", receiver=None,
+                        ))
             for child in node.children:
                 _walk(child, new_types)
             # A3: emit field-access (reads/writes) edges for this function body.

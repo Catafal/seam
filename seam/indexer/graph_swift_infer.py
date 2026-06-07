@@ -409,6 +409,33 @@ def _swift_collect_single_param_holds(
         )
 
 
+def collect_param_types_swift(func_node: Node) -> list[tuple[str, int]]:
+    """Collect (param_type_name, line) pairs from a Swift function_declaration node.
+
+    Walks the function's `parameter` children and applies the SAME plain-type extraction
+    (_swift_collect_single_param_holds → _plain_user_type_name) used for init-param holds,
+    so a param typed with a plain user type (svc: Service) is captured while optional/
+    array/dictionary/generic shapes are refused and builtins are filtered. Deduped within
+    the signature.
+
+    WHY reuse the init-param helper: a method parameter and an init parameter are the same
+    AST shape (`parameter` node); the only difference is the enclosing declaration. Sharing
+    the helper guarantees `uses` and `holds` apply identical conservatism to param types.
+
+    Returns [] on any error. Never raises.
+    """
+    try:
+        seen: set[str] = set()
+        result: list[tuple[str, int]] = []
+        for child in func_node.children:
+            if child.type == "parameter":
+                _swift_collect_single_param_holds(child, seen, result)
+        return result
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("collect_param_types_swift: failed: %r", exc)
+        return []
+
+
 def _resolve_navigation_target(
     nav: Node,
     class_name: str | None,

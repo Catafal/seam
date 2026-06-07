@@ -35,6 +35,7 @@ from pathlib import Path
 from tree_sitter import Node
 
 import seam.config as config
+from seam.analysis.builtins import is_builtin
 from seam.indexer.field_access_ext import (
     collect_field_symbols_c,
     extract_field_accesses_c,
@@ -173,6 +174,47 @@ def _c_function_name(func_def: Node) -> str | None:
     except Exception:  # noqa: BLE001
         pass
     return None
+
+
+def _c_param_types(func_def: Node) -> list[tuple[str, int]]:
+    """Return (plain_user_type, line) pairs from a C function_definition's parameters.
+
+    A C parameter_declaration's `type` field is a type_identifier (a typedef'd user type,
+    e.g. `Engine e`) or a struct_specifier (`struct Engine *e`). Primitive params
+    (int/char/…) parse as primitive_type and are skipped naturally. Pointer/array shapes
+    live in the declarator, so the type field is the pointed-to type regardless of `*`.
+    Builtins filtered via is_builtin. Deduped within the signature. Never raises.
+    """
+    try:
+        declarator = func_def.child_by_field_name("declarator")
+        if declarator is None:
+            return []
+        params = declarator.child_by_field_name("parameters")
+        if params is None:
+            return []
+        line = func_def.start_point[0] + 1
+        seen: set[str] = set()
+        out: list[tuple[str, int]] = []
+        for p in params.named_children:
+            if p.type != "parameter_declaration":
+                continue
+            tnode = p.child_by_field_name("type")
+            if tnode is None:
+                continue
+            name: str | None = None
+            if tnode.type == "type_identifier":
+                name = _text(tnode)
+            elif tnode.type == "struct_specifier":
+                nm = tnode.child_by_field_name("name")
+                if nm is not None:
+                    name = _text(nm)
+            if name and not is_builtin(name, "c") and name not in seen:
+                seen.add(name)
+                out.append((name, line))
+        return out
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_c_param_types: failed: %r", exc)
+        return []
 
 
 def _c_is_static(func_def: Node) -> bool:
@@ -403,6 +445,16 @@ def _extract_edges_c(root: Node, filepath: Path) -> list[Edge]:
                 return
 
             elif node.type == "function_definition":
+                # 'uses' edges: function references plain user types as params. C functions
+                # are top-level → source is the bare function name.
+                if config.SEAM_PARAM_EDGES == "on":
+                    _fn = _c_function_name(node)
+                    if _fn:
+                        for ptype, pline in _c_param_types(node):
+                            edges.append(Edge(
+                                source=_fn, target=ptype, kind="uses",
+                                file=file_str, line=pline, confidence="INFERRED", receiver=None,
+                            ))
                 # A3 Slice 4: emit reads/writes field-access edges from C function bodies.
                 if field_access_on:
                     func_name = _c_function_name(node)
