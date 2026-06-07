@@ -1728,6 +1728,23 @@ def _render_structure_quiet(node: StructureNode, depth: int = 0) -> None:
 def structure_cmd(
     path: str = typer.Argument(".", help="Project root to inspect (default: current directory)"),
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+    scope: str = typer.Option(
+        "",
+        "--scope",
+        help=(
+            "Scope the tree to a subdirectory (absolute or relative path). "
+            "Only files under this path are included. Unknown paths yield an empty tree."
+        ),
+    ),
+    depth: int = typer.Option(
+        -1,
+        "--depth",
+        help=(
+            "Maximum nesting depth of the tree (root=0). "
+            "Nodes beyond this depth are omitted and counted in 'truncated'. "
+            "Default: use SEAM_STRUCTURE_MAX_DEPTH (8)."
+        ),
+    ),
     json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
     quiet: bool = typer.Option(
         False,
@@ -1744,10 +1761,12 @@ def structure_cmd(
       - top-level function nodes
 
     Examples:
-      seam structure               -- Rich indented tree (default)
-      seam structure --json        -- structured JSON envelope
-      seam structure --quiet       -- plain indented text (one node per line)
-      seam structure /path/to/repo -- inspect a specific project
+      seam structure                    -- Rich indented tree (default)
+      seam structure --json             -- structured JSON envelope
+      seam structure --quiet            -- plain indented text (one node per line)
+      seam structure /path/to/repo      -- inspect a specific project
+      seam structure --scope src/       -- scope to the src/ subdirectory
+      seam structure --depth 3          -- limit tree to 3 nesting levels
     """
     try:
         check_mutual_exclusion(json_=json_, quiet=quiet)
@@ -1772,8 +1791,18 @@ def structure_cmd(
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
+    # Slice 3: resolve optional scope path and depth override.
+    # scope="" means no scoping; depth=-1 means use config default.
+    scope_path: Path | None = Path(scope).resolve() if scope else None
+    max_depth_arg: int | None = depth if depth >= 0 else None
+
     try:
-        result = handle_seam_structure(conn, root=project_root)
+        result = handle_seam_structure(
+            conn,
+            root=project_root,
+            path=scope_path,
+            max_depth=max_depth_arg,
+        )
     finally:
         conn.close()
 
@@ -1785,6 +1814,8 @@ def structure_cmd(
     # ── Quiet mode — indented plain-text tree ─────────────────────────────────
     if quiet:
         _render_structure_quiet(result["tree"])
+        if result.get("truncated", 0) > 0:
+            sys.stdout.write(f"[truncated: {result['truncated']} nodes omitted]\n")
         return
 
     # ── Rich (default) mode — indented Rich tree ──────────────────────────────
@@ -1792,6 +1823,8 @@ def structure_cmd(
     total = tree.get("symbol_count", 0)
     console.print(f"\n[bold cyan]Repository structure[/bold cyan]  [dim]({total} total symbols)[/dim]")
     _render_structure_quiet(tree)
+    if result.get("truncated", 0) > 0:
+        console.print(f"[dim yellow]({result['truncated']} nodes omitted by depth/node caps)[/dim yellow]")
 
 
 # ── seam affected ─────────────────────────────────────────────────────────────

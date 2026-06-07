@@ -565,6 +565,199 @@ class TestAreaAnnotation:
         assert "core" in result.output, f"Expected 'core' in output:\n{result.output}"
 
 
+# ── S5: Slice 3 — scoping (path) + bounds (depth/caps/truncation) ─────────────
+
+
+def _seed_deep(conn: sqlite3.Connection, tmp_path: Path) -> None:
+    """Seed a deep nested structure: root/a/b/c/deep.py with one function.
+
+    Layout:
+        app.py          : standalone_func
+        a/mid.py        : mid_func
+        a/b/inner.py    : inner_func
+        a/b/c/deep.py   : deep_func
+    """
+    app = str(tmp_path / "app.py")
+    mid = str(tmp_path / "a" / "mid.py")
+    inner = str(tmp_path / "a" / "b" / "inner.py")
+    deep = str(tmp_path / "a" / "b" / "c" / "deep.py")
+
+    (tmp_path / "a").mkdir(exist_ok=True)
+    (tmp_path / "a" / "b").mkdir(exist_ok=True)
+    (tmp_path / "a" / "b" / "c").mkdir(exist_ok=True)
+    for fp in [app, mid, inner, deep]:
+        Path(fp).write_text("# stub\n")
+
+    upsert_file(conn, Path(app), "python", "h_app", [_sym("standalone_func", app)], [])
+    upsert_file(conn, Path(mid), "python", "h_mid", [_sym("mid_func", mid)], [])
+    upsert_file(conn, Path(inner), "python", "h_inner", [_sym("inner_func", inner)], [])
+    upsert_file(conn, Path(deep), "python", "h_deep", [_sym("deep_func", deep)], [])
+
+
+class TestSlice3Bounds:
+    """S5: Slice 3 — depth cap, node cap, truncation reporting."""
+
+    def test_max_depth_collapses_deep_nesting(self, tmp_db) -> None:
+        """max_depth=1 means only the root dir and its DIRECT children are kept."""
+        from seam.query.structure import build_structure
+
+        conn, tmp_path, _ = tmp_db
+        _seed_deep(conn, tmp_path)
+
+        # depth=1: root node (depth 0) + its direct children (depth 1); deeper cut.
+        result = build_structure(conn, tmp_path, max_depth=1)
+        tree = result["tree"]
+        assert tree["kind"] == "dir"
+
+        # All children of root should be depth 1 — none should have children themselves
+        # (except that file children of a dir at depth 1 may still be present, but
+        # no dir at depth >= 2 should appear).
+        def _max_dir_depth(node: dict, cur: int = 0) -> int:
+            if node["kind"] == "dir" and node.get("children"):
+                return max(_max_dir_depth(c, cur + 1) for c in node["children"])
+            return cur
+
+        # With max_depth=1 the deepest dir we reach is depth 1 — no nested dirs beyond.
+        assert _max_dir_depth(tree) <= 1
+
+    def test_max_nodes_truncates_and_reports_count(self, tmp_db) -> None:
+        """max_nodes=2 limits nodes emitted; truncated reflects omitted count."""
+        from seam.query.structure import build_structure
+
+        conn, tmp_path, _ = tmp_db
+        _seed_basic(conn, tmp_path)
+
+        # With max_nodes=2 we should get exactly 2 nodes and truncated > 0
+        result = build_structure(conn, tmp_path, max_nodes=2)
+        assert result["truncated"] > 0
+
+        def _count_nodes(node: dict) -> int:
+            return 1 + sum(_count_nodes(c) for c in node.get("children", []))
+
+        # Total nodes (excluding root which is always present) should be <= max_nodes
+        node_count = _count_nodes(result["tree"])
+        # truncated + node_count should equal the total without caps
+        full_result = build_structure(conn, tmp_path)
+        full_count = _count_nodes(full_result["tree"])
+        assert result["truncated"] + node_count == full_count
+
+    def test_truncated_zero_when_no_cap_exceeded(self, tmp_db) -> None:
+        """truncated=0 when max_nodes is large enough to hold the full tree."""
+        from seam.query.structure import build_structure
+
+        conn, tmp_path, _ = tmp_db
+        _seed_basic(conn, tmp_path)
+
+        result = build_structure(conn, tmp_path, max_nodes=99999)
+        assert result["truncated"] == 0
+
+    def test_path_scopes_to_subdirectory(self, tmp_db) -> None:
+        """path=subdir scopes the tree to that subtree only."""
+        from seam.query.structure import build_structure
+
+        conn, tmp_path, _ = tmp_db
+        _seed_basic(conn, tmp_path)
+
+        subdir = tmp_path / "subdir"
+        result = build_structure(conn, tmp_path, path=subdir)
+        tree = result["tree"]
+
+        # Only subdir content should appear — app.py and utils.py should NOT be present
+        all_paths = _collect_all_paths(tree)
+        assert not any("app.py" in (p or "") for p in all_paths), (
+            "app.py should not appear when scoped to subdir"
+        )
+        assert not any("utils.py" in (p or "") for p in all_paths), (
+            "utils.py should not appear when scoped to subdir"
+        )
+        # helper.py IS in subdir, so it should appear
+        assert any("helper.py" in (p or "") for p in all_paths), (
+            "helper.py should appear when scoped to subdir"
+        )
+
+    def test_unknown_path_returns_empty_tree(self, tmp_db) -> None:
+        """A path that doesn't exist in the index returns an empty (safe) tree."""
+        from seam.query.structure import build_structure
+
+        conn, tmp_path, _ = tmp_db
+        _seed_basic(conn, tmp_path)
+
+        nonexistent = tmp_path / "does_not_exist"
+        result = build_structure(conn, tmp_path, path=nonexistent)
+        assert "tree" in result
+        assert "truncated" in result
+        # The tree may be empty (no files under the unknown path)
+        tree = result["tree"]
+        assert tree["kind"] == "dir"
+        # No file children
+        all_paths = _collect_all_paths(tree)
+        # Filter out None and the root dir path (which is also None)
+        non_none = [p for p in all_paths if p is not None]
+        assert len(non_none) == 0, f"Expected empty tree, found paths: {non_none}"
+
+    def test_out_of_tree_path_degrades_cleanly(self, tmp_db) -> None:
+        """An out-of-tree path (outside repo root) does not crash."""
+        from seam.query.structure import build_structure
+
+        conn, tmp_path, _ = tmp_db
+        _seed_basic(conn, tmp_path)
+
+        out_of_tree = Path("/tmp/completely_outside_repo")
+        try:
+            result = build_structure(conn, tmp_path, path=out_of_tree)
+        except Exception as exc:
+            pytest.fail(f"build_structure raised on out-of-tree path: {exc}")
+        assert "tree" in result
+
+
+class TestSlice3CLI:
+    """S5: CLI --depth flag and path argument for seam structure."""
+
+    def test_depth_flag_via_cli_json(self, tmp_db) -> None:
+        """seam structure --depth 1 --json limits tree depth."""
+        from seam.cli.main import app
+
+        conn, tmp_path, db_path = tmp_db
+        _seed_deep(conn, tmp_path)
+        conn.close()
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["structure", str(tmp_path), "--depth", "1", "--json"])
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+        data = json.loads(result.output)
+        assert data["ok"] is True
+        tree = data["data"]["tree"]
+
+        # No dir node should have depth > 1 (only direct children of root)
+        def _max_dir_depth(node: dict, cur: int = 0) -> int:
+            if node["kind"] == "dir" and node.get("children"):
+                return max(_max_dir_depth(c, cur + 1) for c in node["children"])
+            return cur
+
+        assert _max_dir_depth(tree) <= 1, "depth=1 should prevent dirs at depth>=2"
+
+    def test_path_scoping_via_cli_json(self, tmp_db) -> None:
+        """seam structure <subdir> --json scopes to that subdirectory."""
+        from seam.cli.main import app
+
+        conn, tmp_path, db_path = tmp_db
+        _seed_basic(conn, tmp_path)
+        conn.close()
+
+        subdir = str(tmp_path / "subdir")
+        runner = CliRunner()
+        result = runner.invoke(app, ["structure", str(tmp_path), "--scope", subdir, "--json"])
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+        data = json.loads(result.output)
+        assert data["ok"] is True
+        tree = data["data"]["tree"]
+
+        # Only subdir content visible
+        all_paths = _collect_all_paths(tree)
+        assert not any("app.py" in (p or "") for p in all_paths)
+        assert any("helper.py" in (p or "") for p in all_paths)
+
+
 # ── Tree-walking helpers ───────────────────────────────────────────────────────
 
 

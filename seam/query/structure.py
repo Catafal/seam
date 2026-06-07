@@ -1,7 +1,7 @@
 """Whole-repository structure view — Tier D11.
 
 Single public entry point:
-    build_structure(conn, root) -> StructureResult
+    build_structure(conn, root, *, path=None, max_depth=..., max_nodes=...) -> StructureResult
 
 Builds a directory -> file -> container tree by joining symbols to files in a
 single read query. The result carries:
@@ -27,6 +27,15 @@ Slice 2 — functional-area annotation:
   - When no cluster data exists (cluster_id all NULL, or clusters table absent),
     area stays None for all nodes — graceful degradation, never an error.
 
+Slice 3 — scoping and bounds:
+  - path: optional Path to scope the tree to a subtree. Only files whose absolute
+    path is under `path` are included. Unknown / out-of-tree paths degrade to an
+    empty tree, never an error.
+  - max_depth: maximum nesting depth (root = depth 0). Dir/file nodes beyond this
+    depth are omitted; the omitted count is added to StructureResult.truncated.
+  - max_nodes: maximum total non-root nodes. Nodes are added BFS-order (closest
+    to root first); excess nodes are omitted and their count added to truncated.
+
 Container detection (kind vocabulary normalizes to class/interface/type):
   - kind in {'class', 'interface', 'type'} -> container node.
   - kind == 'method'  -> rolled into parent container's `members` count.
@@ -44,6 +53,8 @@ import logging
 import sqlite3
 from pathlib import Path
 from typing import TypedDict
+
+import seam.config as config
 
 logger = logging.getLogger(__name__)
 
@@ -447,10 +458,112 @@ def _propagate_dir_areas(node: StructureNode) -> str | None:
     return node["area"]
 
 
+# ── Slice 3: depth + node caps ───────────────────────────────────────────────
+
+
+def _apply_depth_cap(node: StructureNode, max_depth: int, cur_depth: int = 0) -> int:
+    """Recursively drop children beyond max_depth; return count of dropped nodes.
+
+    WHY recursive (not BFS): depth is a per-path property — recursion gives
+    each path its own depth counter without a separate queue.
+
+    Nodes at depth == max_depth have their children list cleared; all descendants
+    of those cut nodes are counted as truncated.
+
+    Args:
+        node:      The current StructureNode (mutated in-place).
+        max_depth: Maximum allowed depth (root = 0).
+        cur_depth: Current depth (starts at 0 for the root node passed in).
+
+    Returns:
+        Number of nodes dropped by this operation.
+    """
+    if cur_depth >= max_depth:
+        # Drop all children of this node and count them (including their descendants).
+        dropped = _count_all_nodes(node["children"])
+        node["children"] = []
+        return dropped
+
+    total_dropped = 0
+    for child in node["children"]:
+        total_dropped += _apply_depth_cap(child, max_depth, cur_depth + 1)
+    return total_dropped
+
+
+def _count_all_nodes(nodes: list) -> int:
+    """Count all nodes in a list of subtrees (non-recursive BFS for speed)."""
+    total = 0
+    stack = list(nodes)
+    while stack:
+        n = stack.pop()
+        total += 1
+        stack.extend(n.get("children", []))
+    return total
+
+
+def _apply_node_cap(root: StructureNode, max_nodes: int) -> int:
+    """Cap total non-root nodes to max_nodes using BFS order; return dropped count.
+
+    BFS ensures nodes closest to the root (highest-value structural info) survive.
+    When a parent is included but its children would exceed the cap, all of that
+    parent's children are dropped together (partial-children creates confusing gaps).
+
+    WHY drop whole sibling groups: including 3 of 5 containers in a file would
+    imply the file has fewer symbols than it does. Better to drop the whole file's
+    containers than show a misleading partial view.
+
+    Args:
+        root:      Root StructureNode (never itself dropped — always returned).
+        max_nodes: Maximum number of non-root nodes to include.
+
+    Returns:
+        Number of nodes removed by the cap.
+    """
+    if max_nodes <= 0:
+        # Drop all children of root
+        dropped = _count_all_nodes(root["children"])
+        root["children"] = []
+        return dropped
+
+    # BFS: process level by level. A node's children are included only if
+    # there is room for ALL of them; otherwise, that node's children are cleared
+    # and the count is accumulated as truncated.
+    included = 0
+    queue: list[StructureNode] = [root]
+    truncated = 0
+
+    while queue:
+        next_queue: list[StructureNode] = []
+        for node in queue:
+            children = node["children"]
+            if not children:
+                continue
+            child_count = len(children)
+            if included + child_count <= max_nodes:
+                # All children fit — keep them and queue for next level.
+                included += child_count
+                next_queue.extend(children)
+            else:
+                # Not enough room for this node's children — drop all of them.
+                # WHY whole group: see docstring above.
+                truncated += _count_all_nodes(children)
+                node["children"] = []
+        queue = next_queue
+
+    return truncated
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
-def build_structure(conn: sqlite3.Connection, root: Path) -> StructureResult:
+def build_structure(
+    conn: sqlite3.Connection,
+    root: Path,
+    *,
+    path: Path | None = None,
+    max_depth: int | None = None,
+    max_nodes: int | None = None,
+) -> StructureResult:
     """Build a directory -> file -> container/function structure tree.
 
     Reads the index in one JOIN query (files + symbols), then builds the tree
@@ -461,20 +574,54 @@ def build_structure(conn: sqlite3.Connection, root: Path) -> StructureResult:
     of their children's areas. When no cluster data exists (pre-v4 index or
     no clustering run), area stays None for all nodes.
 
+    Slice 3: Scoping (path) and bounds (max_depth, max_nodes):
+      - path: when provided, only files under this path are included. An unknown
+        or out-of-tree path yields an empty tree (no crash, no error).
+      - max_depth: nodes at depth > max_depth are dropped; truncated += count.
+      - max_nodes: total non-root nodes capped BFS-order; truncated += excess.
+      Defaults come from config (SEAM_STRUCTURE_MAX_DEPTH, SEAM_STRUCTURE_MAX_NODES).
+
     Args:
-        conn: Open SQLite connection to the Seam index (read-only).
-        root: Project root (Path) — used to relativize file paths.
+        conn:      Open SQLite connection to the Seam index (read-only).
+        root:      Project root (Path) — used to relativize file paths.
+        path:      Optional scope path. Only files under this dir are included.
+        max_depth: Maximum nesting depth (root=0). None uses config default.
+        max_nodes: Maximum total non-root nodes. None uses config default.
 
     Returns:
         StructureResult with:
-          tree:      Root 'dir' node representing `root`.
-          truncated: Always 0 (no per-dir/file caps applied yet).
+          tree:      Root 'dir' node representing `root` (or `path` if scoped).
+          truncated: Count of nodes omitted by depth/node caps.
     """
+    # Resolve effective caps from config defaults when not explicitly supplied.
+    effective_max_depth: int = max_depth if max_depth is not None else config.SEAM_STRUCTURE_MAX_DEPTH
+    effective_max_nodes: int = max_nodes if max_nodes is not None else config.SEAM_STRUCTURE_MAX_NODES
+
     try:
         raw_symbols = _fetch_all_symbols(conn)
     except Exception:
         logger.warning("build_structure: _fetch_all_symbols raised", exc_info=True)
         raw_symbols = []
+
+    # Slice 3 path scoping: filter symbols to only those in the requested subtree.
+    # Resolve the scope path to an absolute Path for reliable prefix comparison.
+    if path is not None:
+        scope_abs = path.resolve()
+        try:
+            # Validate the scope is under (or equal to) the repo root.
+            scope_abs.relative_to(root.resolve())
+        except ValueError:
+            # Out-of-tree path — degrade to empty tree, never raise.
+            logger.debug("build_structure: scope path %s is outside root %s", scope_abs, root)
+            raw_symbols = []
+        else:
+            # Keep only symbols whose file is under scope_abs.
+            raw_symbols = [
+                r for r in raw_symbols
+                if Path(r[0]).resolve() == scope_abs or _is_under(Path(r[0]).resolve(), scope_abs)
+            ]
+    else:
+        scope_abs = None
 
     # Group symbols by file path.
     # {abs_file_path: [(name, kind, start_line), ...]}
@@ -490,11 +637,39 @@ def build_structure(conn: sqlite3.Connection, root: Path) -> StructureResult:
         cluster_labels = _fetch_cluster_labels(conn)
         file_cluster_counts = _fetch_file_cluster_counts(conn)
 
+    # Choose the tree root: when scoped, root at the scope dir (rel to repo root).
+    # WHY: if path=subdir, the tree should show "subdir/" as root, not the full repo.
+    tree_root = root
+    if scope_abs is not None:
+        tree_root = scope_abs
+
     try:
-        tree = _build_file_tree(root, symbols_by_file, file_cluster_counts, cluster_labels)
+        tree = _build_file_tree(tree_root, symbols_by_file, file_cluster_counts, cluster_labels)
     except Exception:
         logger.warning("build_structure: _build_file_tree raised", exc_info=True)
-        # Return a minimal valid tree rather than propagating the exception.
-        tree = _make_dir_node(root.name or str(root), None)
+        tree = _make_dir_node(tree_root.name or str(tree_root), None)
 
-    return StructureResult(tree=tree, truncated=0)
+    # Slice 3 bounds enforcement — applied AFTER tree build so propagated counts
+    # are correct on the surviving nodes. Track total truncated across both caps.
+    truncated = 0
+
+    # 1. Depth cap: drop nodes beyond effective_max_depth.
+    truncated += _apply_depth_cap(tree, effective_max_depth, cur_depth=0)
+
+    # 2. Node cap: BFS-order trim to effective_max_nodes non-root nodes.
+    truncated += _apply_node_cap(tree, effective_max_nodes)
+
+    return StructureResult(tree=tree, truncated=truncated)
+
+
+def _is_under(child: Path, parent: Path) -> bool:
+    """Return True when child is strictly under parent (not equal).
+
+    WHY a helper: Path.is_relative_to() was added in Python 3.9 but we want to
+    be explicit and handle the equality case separately from _fetch_all_symbols.
+    """
+    try:
+        child.relative_to(parent)
+        return True
+    except ValueError:
+        return False

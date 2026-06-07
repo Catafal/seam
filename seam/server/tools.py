@@ -1103,6 +1103,10 @@ def handle_seam_context_pack(
 def handle_seam_structure(
     conn: sqlite3.Connection,
     root: Path,
+    *,
+    path: Path | None = None,
+    max_depth: int | None = None,
+    max_nodes: int | None = None,
 ) -> StructureResult:
     """Handler for the seam_structure MCP tool — whole-repo structure tree.
 
@@ -1114,17 +1118,28 @@ def handle_seam_structure(
     File paths in the tree are relativized to `root` (no absolute paths leak).
     Container nodes carry path=None (they are logical, not file-backed).
 
+    Slice 3 params:
+      path:      When set, scopes the tree to this subdirectory.
+      max_depth: Maximum nesting depth. None uses the config default.
+      max_nodes: Maximum total non-root nodes. None uses the config default.
+
     This is a pure read; never raises — degrades to an empty safe tree on any error.
 
     Args:
-        conn: Open SQLite connection to the Seam index (read-only).
-        root: Project root Path — used to relativize file paths.
+        conn:      Open SQLite connection to the Seam index (read-only).
+        root:      Project root Path — used to relativize file paths.
+        path:      Optional scope path (absolute or relative to cwd).
+        max_depth: Optional depth cap override.
+        max_nodes: Optional node-count cap override.
 
     Returns:
         StructureResult dict with keys:
-            tree:      Root 'dir' StructureNode representing `root`.
-            truncated: Count of omitted nodes (Slice 1: always 0).
+            tree:      Root 'dir' StructureNode representing `root` (or scoped path).
+            truncated: Count of omitted nodes (0 when nothing was trimmed).
     """
-    # Delegate to the query layer — the handler's sole job here is path relativization,
-    # but build_structure already relativizes (root is passed to it directly).
-    return run_build_structure(conn, root)
+    # Resolve path to an absolute Path if provided.
+    abs_path: Path | None = None
+    if path is not None:
+        abs_path = Path(path).resolve()
+
+    return run_build_structure(conn, root, path=abs_path, max_depth=max_depth, max_nodes=max_nodes)

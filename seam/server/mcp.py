@@ -413,7 +413,10 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         return _finalize(handle_seam_flows(conn, root, entry=entry))
 
     @mcp.tool()
-    def seam_structure() -> Any:
+    def seam_structure(
+        path: str | None = None,
+        depth: int | None = None,
+    ) -> Any:
         """Get the whole-repository directory/file/container structure tree.
 
         Returns a nested tree of:
@@ -431,15 +434,23 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
           name:         display name (dir basename, file name, symbol name)
           path:         repo-root-relative path; null for container and function nodes
           symbol_count: total symbol rows in this subtree
-          area:         functional-area label (null — populated in a future slice)
+          area:         functional-area label from cluster data (null if no clustering)
           children:     child nodes
           members:      count of method/member rows rolled into this container (0 for non-containers)
+          truncated:    count of nodes omitted by depth/node caps (0 = nothing trimmed)
+
+        Optional scoping and bounds (Slice 3):
+          path:  Scope the tree to a subdirectory (absolute or repo-root-relative).
+                 An unknown or out-of-tree path degrades to an empty tree — never an error.
+          depth: Maximum nesting depth (root=0). Nodes beyond this depth are dropped
+                 and counted in `truncated`. Defaults to SEAM_STRUCTURE_MAX_DEPTH (8).
 
         Use this to get a structural overview before diving into a specific file or
         symbol, or to understand how files and containers are organized across the repo.
 
         Returns {found: false} when the index has no symbols (empty repo or not yet indexed).
         """
-        return _finalize(handle_seam_structure(conn, root))
+        scope_path = Path(path).resolve() if path else None
+        return _finalize(handle_seam_structure(conn, root, path=scope_path, max_depth=depth))
 
     return mcp
