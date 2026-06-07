@@ -73,6 +73,12 @@ def _run_query(conn: Any, query_spec: dict[str, Any]) -> list[str]:
         elif tool == "context_callers":
             ctx = handle_seam_context(conn, query_spec["symbol"], FIXTURE_DIR)
             return ctx.get("callers", []) if ctx and "error" not in ctx else []
+        elif tool == "context_field_readers":
+            ctx = handle_seam_context(conn, query_spec["symbol"], FIXTURE_DIR)
+            return ctx.get("field_readers", []) if ctx and "error" not in ctx else []
+        elif tool == "context_field_writers":
+            ctx = handle_seam_context(conn, query_spec["symbol"], FIXTURE_DIR)
+            return ctx.get("field_writers", []) if ctx and "error" not in ctx else []
         elif tool == "impact_downstream":
             impact = handle_seam_impact(
                 conn,
@@ -85,6 +91,20 @@ def _run_query(conn: Any, query_spec: dict[str, Any]) -> list[str]:
             )
             names: list[str] = []
             for tier_entries in impact.get("downstream", {}).values():
+                names.extend(e["name"] for e in tier_entries)
+            return names
+        elif tool == "impact_upstream":
+            impact = handle_seam_impact(
+                conn,
+                query_spec["symbol"],
+                FIXTURE_DIR,
+                direction="upstream",
+                max_depth=3,
+                include_tests=True,
+                limit=0,
+            )
+            names: list[str] = []
+            for tier_entries in impact.get("upstream", {}).values():
                 names.extend(e["name"] for e in tier_entries)
             return names
         elif tool == "trace":

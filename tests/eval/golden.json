@@ -138,6 +138,52 @@
         "PayPalProcessor.refund",
         "StripeProcessor.refund"
       ]
+    },
+    {
+      "id": "context-field-readers-stages",
+      "tool": "context_field_readers",
+      "symbol": "DataPipeline.stages",
+      "k": 10,
+      "note": "A3: who reads DataPipeline.stages (run, add_stage, build_pipeline)",
+      "expected_symbols": [
+        "DataPipeline.add_stage",
+        "DataPipeline.run",
+        "build_pipeline"
+      ]
+    },
+    {
+      "id": "context-field-writers-stages",
+      "tool": "context_field_writers",
+      "symbol": "DataPipeline.stages",
+      "k": 10,
+      "note": "A3: who writes DataPipeline.stages (__init__ initialises it)",
+      "expected_symbols": [
+        "DataPipeline.__init__"
+      ]
+    },
+    {
+      "id": "context-field-writers-processor",
+      "tool": "context_field_writers",
+      "symbol": "OrderService.processor",
+      "k": 10,
+      "note": "A3: who writes OrderService.processor (dependency injection in __init__)",
+      "expected_symbols": [
+        "OrderService.__init__"
+      ]
+    },
+    {
+      "id": "impact-upstream-stages-field",
+      "tool": "impact_upstream",
+      "symbol": "DataPipeline.stages",
+      "k": 10,
+      "note": "A3: upstream blast radius of DataPipeline.stages as a field seed",
+      "expected_symbols": [
+        "DataPipeline.__init__",
+        "DataPipeline.add_stage",
+        "DataPipeline.run",
+        "build_pipeline",
+        "run_pipeline"
+      ]
     }
   ]
 }

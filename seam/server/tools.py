@@ -385,6 +385,9 @@ def handle_seam_context(
         "is_exported": result["is_exported"],
         "visibility": result["visibility"],
         "qualified_name": result["qualified_name"],
+        # A3: field-access split — always [] for non-field/non-class seeds.
+        "field_readers": result["field_readers"],
+        "field_writers": result["field_writers"],
     }
     return _apply_verbosity(record, verbose)
 
