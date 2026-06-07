@@ -408,9 +408,23 @@ def status(
         raise typer.Exit(code=1) from exc
 
     try:
-        file_count = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+        # Exclude synthetic file rows (path starting ':', e.g. ':synthesis:') from the
+        # file count — they are post-pass bookkeeping rows, not real indexed files.
+        file_count = conn.execute(
+            "SELECT COUNT(*) FROM files WHERE path NOT LIKE ':%'"
+        ).fetchone()[0]
         symbol_count = conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
         edge_count = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+
+        # Synthesized-edge count (edge-synthesis post-pass). Guard for pre-v12 indexes
+        # that lack the synthesized_by column. Lets an operator see how much of the
+        # graph is heuristic (synthesized) vs statically extracted.
+        try:
+            synth_edge_count = conn.execute(
+                "SELECT COUNT(*) FROM edges WHERE synthesized_by IS NOT NULL"
+            ).fetchone()[0]
+        except Exception:
+            synth_edge_count = 0
 
         # Cluster count (Phase 2). Guard for pre-v4 indexes (no clusters table).
         try:
@@ -446,7 +460,9 @@ def status(
 
         # Check on-disk mtimes for files we know about
         disk_newest_mtime = 0.0
-        paths_rows = conn.execute("SELECT path FROM files").fetchall()
+        paths_rows = conn.execute(
+            "SELECT path FROM files WHERE path NOT LIKE ':%'"
+        ).fetchall()
         for row in paths_rows:
             p = Path(row["path"])
             try:
@@ -478,6 +494,9 @@ def status(
             "files": file_count,
             "symbols": symbol_count,
             "edges": edge_count,
+            # Synthesized (heuristic, INFERRED) edges added by the edge-synthesis
+            # post-pass; subset of "edges". 0 when synthesis is off or found nothing.
+            "synth_edges": synth_edge_count,
             "clusters": cluster_count,
             "last_indexed": last_indexed_str,
             "watcher": watcher_status,
@@ -507,6 +526,10 @@ def status(
     table.add_row("files", str(file_count))
     table.add_row("symbols", str(symbol_count))
     table.add_row("edges", str(edge_count))
+    # Only show the synthesized-edge row when the pass produced any — keeps the
+    # default status compact on indexes without synthesis.
+    if synth_edge_count > 0:
+        table.add_row("synth edges", f"{synth_edge_count} (heuristic, INFERRED)")
     table.add_row("clusters", str(cluster_count))
     # Semantic embeddings row — always shown so staleness is visible.
     # "0" means embeddings not yet built; run `seam init --semantic` to populate.

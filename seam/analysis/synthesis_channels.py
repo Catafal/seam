@@ -171,16 +171,8 @@ def run_closure_collection_channel(
 
     result: list[dict[str, Any]] = []
     try:
-        # Build a set of bare symbol names (both qualified 'Class.method' and bare parts).
-        known_names: set[str] = set()
-        for sym in symbols:
-            name = sym.get("name", "") if isinstance(sym, dict) else ""
-            if not name:
-                continue
-            known_names.add(name)
-            # Also add bare name (after last dot) for matching against simple identifiers.
-            if "." in name:
-                known_names.add(name.split(".")[-1])
+        # Build the set of names the index knows (qualified + bare parts).
+        known_names = _build_known_names(symbols)
 
         # Step 1: Find all dispatcher-side collection fields.
         dispatch_fields = _find_iteration_fields(file_sources)
@@ -207,7 +199,7 @@ def run_closure_collection_channel(
                     "kind": "call",
                     "confidence": "INFERRED",
                     "synthesized_by": CHANNEL_CLOSURE_COLLECTION,
-                    "file": ":synthesis:",
+                    # Not file-scoped — the bridge supplies file_id + line at persist time.
                     "line": 0,
                 })
     except Exception as exc:  # noqa: BLE001
@@ -326,15 +318,8 @@ def run_event_emitter_channel(
 
     result: list[dict[str, Any]] = []
     try:
-        # Build known symbol name set (qualified + bare parts).
-        known_names: set[str] = set()
-        for sym in symbols:
-            name = sym.get("name", "") if isinstance(sym, dict) else ""
-            if not name:
-                continue
-            known_names.add(name)
-            if "." in name:
-                known_names.add(name.split(".")[-1])
+        # Build the set of names the index knows (qualified + bare parts).
+        known_names = _build_known_names(symbols)
 
         # Step 1: Collect registrations.
         event_to_handlers = _collect_registrations(file_sources)
@@ -381,7 +366,7 @@ def run_event_emitter_channel(
                     "kind": "call",
                     "confidence": "INFERRED",
                     "synthesized_by": CHANNEL_EVENT_EMITTER,
-                    "file": ":synthesis:",
+                    # Not file-scoped — the bridge supplies file_id + line at persist time.
                     "line": 0,
                 })
     except Exception as exc:  # noqa: BLE001
@@ -396,6 +381,25 @@ def run_event_emitter_channel(
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def _build_known_names(symbols: list[dict[str, Any]]) -> set[str]:
+    """Return all indexed symbol names plus their bare (post-last-dot) forms.
+
+    Both source-text channels filter synthesized targets to names the index
+    actually knows (conservatism: never emit an edge to an unknown identifier).
+    Adding the bare suffix lets a simple identifier in source ('myHandler') match
+    a qualified symbol ('Class.myHandler').
+    """
+    known: set[str] = set()
+    for sym in symbols:
+        name = sym.get("name", "") if isinstance(sym, dict) else ""
+        if not name:
+            continue
+        known.add(name)
+        if "." in name:
+            known.add(name.split(".")[-1])
+    return known
 
 
 def _resolve_name(bare_name: str, symbols: list[dict[str, Any]]) -> str:

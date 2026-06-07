@@ -237,9 +237,9 @@ def _run_a2_interface_override(
                     "kind": "call",
                     "confidence": "INFERRED",
                     "synthesized_by": _CHANNEL_INTERFACE_OVERRIDE,
-                    # Synthesized edges are not file-scoped; use sentinel values.
-                    # index_synthesis stores these under a special synthetic file row.
-                    "file": ":synthesis:",
+                    # Synthesized edges are not file-scoped. The bridge (index_synthesis)
+                    # stores them under the synthetic ':synthesis:' file row and supplies
+                    # file_id + line at persist time — the leaf emits neither sentinel.
                     "line": 0,
                 })
 

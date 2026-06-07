@@ -379,6 +379,17 @@ SEAM_EDGE_SYNTHESIS: str = os.getenv("SEAM_EDGE_SYNTHESIS", "on")
 # Set to 0 to disable the cap (emit all synthesized edges, potentially unbounded).
 SEAM_SYNTHESIS_FANOUT_CAP: int = int(os.getenv("SEAM_SYNTHESIS_FANOUT_CAP", "40"))
 
+# Total budget (bytes) of source text the synthesis pass loads into memory for the
+# source-text channels (closure-collection, event-emitter). The pass reads every
+# indexed file's text into one dict; on a very large monorepo that could exhaust
+# memory at the final init step (after clustering already succeeded). Once the
+# cumulative loaded size crosses this budget, no further files are read and a WARNING
+# is logged — synthesis under-produces rather than OOM-killing the indexer. Mirrors
+# the bounded-scan philosophy of SEAM_SEMANTIC_SCAN_CAP. Default 50 MB; 0 = unlimited.
+SEAM_SYNTHESIS_MAX_SOURCE_BYTES: int = int(
+    os.getenv("SEAM_SYNTHESIS_MAX_SOURCE_BYTES", str(50 * 1024 * 1024))
+)
+
 
 def get_db_path(project_root: Path) -> Path:
     """Resolve the database path relative to the project root."""

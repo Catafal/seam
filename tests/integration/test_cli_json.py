@@ -291,6 +291,52 @@ def test_status_json_success_envelope(seeded_db: tuple[Path, Path]) -> None:
     assert "edges" in data
 
 
+# ── J13b: status excludes synthetic file row + reports synth_edges ────────────
+
+
+def test_status_json_excludes_synthetic_row_and_reports_synth_edges(
+    seeded_db: tuple[Path, Path],
+) -> None:
+    """status file count must exclude the ':synthesis:' row, and report synth_edges.
+
+    Regression: the edge-synthesis post-pass stores synthesized edges under a
+    synthetic ':synthesis:' file row. That row is bookkeeping, not a real file —
+    it must not inflate the reported file count, and synthesized edges must be
+    surfaced under their own `synth_edges` key.
+    """
+    db_dir, _ = seeded_db
+    db_path = db_dir / ".seam" / "seam.db"
+
+    # The fixture seeded exactly one real file (src.py). Add the synthetic row + a
+    # synthesized edge as the synthesis post-pass would.
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO files (path, language, file_hash, mtime, indexed_at)"
+        " VALUES (':synthesis:', '', '', 0.0, 0.0)"
+    )
+    synth_file_id = conn.execute(
+        "SELECT id FROM files WHERE path = ':synthesis:'"
+    ).fetchone()[0]
+    conn.execute(
+        "INSERT INTO edges (source_name, target_name, kind, file_id, line, confidence,"
+        " synthesized_by) VALUES ('IBase.run', 'Impl.run', 'call', ?, 0, 'INFERRED',"
+        " 'interface-override')",
+        (synth_file_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    result = runner.invoke(
+        app, ["status", "--json", "--db-dir", str(db_dir), str(db_dir)]
+    )
+    assert result.exit_code == 0, f"Unexpected: {result.output}"
+    data = json.loads(result.output)["data"]
+    # Only the one real file counts — the ':synthesis:' row is excluded.
+    assert data["files"] == 1, f"synthetic row leaked into file count: {data['files']}"
+    # Synthesized edges are surfaced under their own key.
+    assert data["synth_edges"] == 1, f"expected 1 synth edge, got {data.get('synth_edges')}"
+
+
 # ── J14: status --json on missing index exits 1 with NO_INDEX ─────────────────
 
 

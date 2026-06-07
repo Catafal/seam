@@ -545,3 +545,63 @@ class TestClusterIndexFailureSignal:
         # No symbols seeded
         result = index_clusters(conn, naming_mode="deterministic")
         assert result == 0, f"Empty graph should return 0, got {result}"
+
+
+# ── CI10: Synthesized edges must NOT pollute clustering (regression) ───────────
+
+
+class TestSynthesizedEdgesExcludedFromClustering:
+    """CI10: index_clusters ignores synthesized edges (synthesized_by IS NOT NULL).
+
+    Regression guard for the feedback bug: the edge-synthesis post-pass runs AFTER
+    clustering and its over-approximated edges persist across runs. If clustering
+    consumed them, two unrelated modules densely bridged by synthesized dispatch
+    edges would collapse into one community on every re-cluster.
+    """
+
+    def test_synthesized_bridge_does_not_merge_communities(self) -> None:
+        from seam.indexer.cluster_index import index_clusters
+        from seam.indexer.db import init_db
+
+        conn = init_db(Path(":memory:"))
+
+        # Two disjoint triangles (real edges only): a-side and b-side.
+        symbols = [
+            {"name": "a1"}, {"name": "a2"}, {"name": "a3"},
+            {"name": "b1"}, {"name": "b2"}, {"name": "b3"},
+        ]
+        real_edges = [
+            {"source": "a1", "target": "a2"}, {"source": "a2", "target": "a3"},
+            {"source": "a3", "target": "a1"},
+            {"source": "b1", "target": "b2"}, {"source": "b2", "target": "b3"},
+            {"source": "b3", "target": "b1"},
+        ]
+        _seed_db(conn, symbols, real_edges)
+
+        # Densely bridge the two triangles with SYNTHESIZED edges. If these were
+        # fed to Louvain they would merge a-side and b-side into one community.
+        file_id = conn.execute("SELECT id FROM files LIMIT 1").fetchone()[0]
+        for a in ("a1", "a2", "a3"):
+            for b in ("b1", "b2", "b3"):
+                conn.execute(
+                    "INSERT INTO edges (source_name, target_name, kind, file_id, line,"
+                    " confidence, synthesized_by) VALUES (?, ?, 'call', ?, 0, 'INFERRED',"
+                    " 'interface-override')",
+                    (a, b, file_id),
+                )
+        conn.commit()
+
+        index_clusters(conn, naming_mode="deterministic", min_size=1)
+
+        a1_cluster = conn.execute(
+            "SELECT cluster_id FROM symbols WHERE name = 'a1'"
+        ).fetchone()[0]
+        b1_cluster = conn.execute(
+            "SELECT cluster_id FROM symbols WHERE name = 'b1'"
+        ).fetchone()[0]
+
+        assert a1_cluster is not None and b1_cluster is not None
+        assert a1_cluster != b1_cluster, (
+            "Synthesized edges leaked into clustering — a-side and b-side were merged "
+            "by the synthetic bridge (clustering must filter synthesized_by IS NOT NULL)"
+        )

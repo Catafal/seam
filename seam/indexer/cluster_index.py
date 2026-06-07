@@ -199,8 +199,18 @@ def _index_clusters_impl(
     # noisy edges before community detection on large graphs. The unfiltered set
     # is always kept for the cohesion computation (Step 8b) so cohesion reflects
     # the REAL connectivity, not the filtered view.
+    #
+    # Exclude SYNTHESIZED edges (synthesized_by IS NOT NULL): they are a heuristic
+    # over-approximation produced by the post-pass that runs AFTER clustering, and
+    # they survive across runs (stored under the ':synthesis:' file row). Feeding
+    # them into Louvain would re-cluster the codebase against last run's guessed
+    # dispatch edges — merging unrelated modules on every re-cluster. The synthesis
+    # engine already excludes them from its own input for the same anti-feedback
+    # reason; clustering must too. Guarded for pre-v12 indexes lacking the column.
+    _edge_cols = {r["name"] for r in conn.execute("PRAGMA table_info(edges)").fetchall()}
+    _synth_filter = "WHERE synthesized_by IS NULL" if "synthesized_by" in _edge_cols else ""
     edge_rows = conn.execute(
-        "SELECT DISTINCT source_name, target_name, kind, confidence FROM edges"
+        f"SELECT DISTINCT source_name, target_name, kind, confidence FROM edges {_synth_filter}"
     ).fetchall()
     all_edges = [(row["source_name"], row["target_name"]) for row in edge_rows]
 

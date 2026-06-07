@@ -123,11 +123,19 @@ def _load_file_sources(conn: sqlite3.Connection) -> dict[str, str]:
     from seam import config as cfg  # lazy import to keep leaf contract on synthesis.py
 
     sources: dict[str, str] = {}
+    # Total-corpus budget: stop loading once cumulative source size crosses the cap so
+    # a huge monorepo cannot OOM the final init step. 0 = unlimited (see config knob).
+    max_total = cfg.SEAM_SYNTHESIS_MAX_SOURCE_BYTES
+    total_bytes = 0
+    loaded = 0
+    tracked = 0
+    capped = False
     try:
         path_rows = conn.execute(
             "SELECT path FROM files WHERE path != ? ORDER BY path",
             (_SYNTHESIS_FILE_PATH,),
         ).fetchall()
+        tracked = len(path_rows)
 
         for row in path_rows:
             raw_path = row[0] if isinstance(row, (list, tuple)) else row["path"]
@@ -138,13 +146,40 @@ def _load_file_sources(conn: sqlite3.Connection) -> dict[str, str]:
                 if not p.exists() or not p.is_file():
                     continue
                 # Respect the max file size limit to avoid loading huge generated files.
-                if p.stat().st_size > cfg.SEAM_MAX_FILE_BYTES:
+                size = p.stat().st_size
+                if size > cfg.SEAM_MAX_FILE_BYTES:
                     continue
+                # Stop before crossing the total-corpus budget (bounded memory).
+                if max_total > 0 and total_bytes + size > max_total:
+                    capped = True
+                    break
                 # Read with errors="replace" to handle encoding issues gracefully.
                 sources[raw_path] = p.read_text(encoding="utf-8", errors="replace")
+                total_bytes += size
+                loaded += 1
             except Exception:  # noqa: BLE001
                 # Missing / unreadable file — skip silently (never-raise contract).
                 continue
+
+        # Observability: never silently under-produce. A capped scan is a WARNING
+        # (synthesis will be partial); a complete scan logs a DEBUG summary so an
+        # operator can see how many of the tracked files actually fed the channels.
+        if capped:
+            logger.warning(
+                "synthesis_index: source-load budget reached (%d bytes, %d/%d files) — "
+                "source-text channels see a PARTIAL corpus; raise "
+                "SEAM_SYNTHESIS_MAX_SOURCE_BYTES to scan more",
+                total_bytes,
+                loaded,
+                tracked,
+            )
+        else:
+            logger.debug(
+                "synthesis_index: loaded %d/%d source files (%d bytes) for synthesis",
+                loaded,
+                tracked,
+                total_bytes,
+            )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "synthesis_index: failed to load file sources (%s: %s) — "
@@ -162,12 +197,6 @@ def _index_synthesis_impl(conn: sqlite3.Connection, fanout_cap: int) -> int:
     them to -1. Having a clean inner function makes the logic easier to reason
     about and test (tests can call the inner function directly if needed).
     """
-    # ── Step 0: Ensure the synthetic file row exists ──────────────────────────
-    # Must happen before the transaction since it is its own upsert.
-    # The ':synthesis:' row is permanent — it is NOT deleted between runs.
-    with conn:
-        synth_file_id = _ensure_synthesis_file_row(conn)
-
     # ── Step 1: Read all symbols ──────────────────────────────────────────────
     # We need: name (for qualified method lookup), kind (to identify methods vs classes).
     symbol_rows = conn.execute(
@@ -221,9 +250,13 @@ def _index_synthesis_impl(conn: sqlite3.Connection, fanout_cap: int) -> int:
     )
 
     # ── Step 5: Write in ONE transaction ─────────────────────────────────────
-    # DELETE all previous synthesized edges first (idempotency: second call same result).
-    # Then INSERT fresh edges under the synthetic file row.
+    # Upsert the synthetic file row, DELETE all previous synthesized edges, then
+    # INSERT the fresh ones — atomically. Folding the synthetic-row upsert in here
+    # (rather than a separate earlier transaction) keeps the whole write a single
+    # consistent unit: a crash can't leave the ':synthesis:' row with no edges.
+    # Idempotent: the DELETE makes a second call produce the same result.
     with conn:
+        synth_file_id = _ensure_synthesis_file_row(conn)
         # Clear all previous synthesized edges (from ALL channels) so this pass
         # is idempotent: running index_synthesis twice produces the same result.
         conn.execute("DELETE FROM edges WHERE synthesized_by IS NOT NULL")
