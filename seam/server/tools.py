@@ -35,6 +35,7 @@ from seam.query import engine
 from seam.query.clusters import cluster_members as query_cluster_members
 from seam.query.clusters import list_clusters as query_list_clusters
 from seam.query.comments import why as comments_why
+from seam.query.names import resolve_query_to_defs
 from seam.query.pack import ContextPack, NeighborRef
 from seam.query.pack import context_pack as run_context_pack
 from seam.query.structure import StructureResult
@@ -91,6 +92,10 @@ _IMPACT_DIRECTION_DEFAULT = "upstream"
 _TRACE_DEPTH_MIN = 1
 _TRACE_DEPTH_MAX = 10
 _TRACE_DEPTH_DEFAULT = 10
+# Max bare->qualified candidates tried per trace endpoint on a path miss. Bounds the
+# candidate-pair retry loop to CAP×CAP traces. A bare method name usually resolves to
+# 1–2 qualified symbols; this caps the pathological common-name case ("run", "get").
+_TRACE_ENDPOINT_CAND_CAP = 5
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -148,6 +153,37 @@ def _trace_not_found(source: str, target: str) -> dict[str, Any]:
         "callers_target": [],
         "callees_target": [],
     }
+
+
+def _qualified_trace_candidates(conn: sqlite3.Connection, name: str) -> list[str]:
+    """Resolve a BARE trace endpoint to its qualified symbol form(s).
+
+    WHY: with Tier B receiver inference, method call edges store qualified names
+    ('Class.method') on both ends, so a bare endpoint matches no edge and trace
+    returns nothing. This bridges bare -> qualified (the opposite direction from
+    expand_impact_seeds, which bridges qualified -> bare for impact's upstream walk).
+
+    Returns the qualified symbol names whose last dotted segment equals `name`
+    (e.g. 'bar' -> ['Foo.bar']). Returns [] for an already-qualified name (the caller
+    has already tried it) or when nothing resolves. Bounded by _TRACE_ENDPOINT_CAND_CAP
+    to keep the candidate-pair retry loop small. Never raises.
+    """
+    if "." in name:
+        return []  # already qualified — caller tried it directly
+    try:
+        rows = resolve_query_to_defs(conn, name)
+    except Exception:  # noqa: BLE001 — read path never raises
+        logger.debug("_qualified_trace_candidates: resolve failed for %r", name, exc_info=True)
+        return []
+    out: list[str] = []
+    for row in rows:
+        qn = row["name"]
+        # Keep only the QUALIFIED forms (skip an exact bare match — already attempted).
+        if qn != name and qn not in out:
+            out.append(qn)
+        if len(out) >= _TRACE_ENDPOINT_CAND_CAP:
+            break
+    return out
 
 
 def _relativize(abs_path: str, root: Path) -> str:
@@ -695,13 +731,38 @@ def handle_seam_trace(
     # Thread root as repo_root for Phase 5 import-promotion (root is the project root).
     paths = flows_module.trace(conn, clean_source, clean_target,
                                max_depth=safe_depth, repo_root=root)
+    resolved_source, resolved_target = clean_source, clean_target
+
+    # Bare->qualified fallback (Tier D11): with Tier B receiver inference, method call
+    # edges are stored QUALIFIED ('Class.method'), so a bare source/target matches no
+    # edge `from_name`/`to_name` and trace returns nothing — an agent typing the natural
+    # bare identifier gets found:false and must retry fully-qualified. ONLY on a genuine
+    # miss (paths == []; self-trace returns [[]] and is left alone), resolve the bare
+    # endpoints to their qualified symbol forms and retry the candidate pairs. Zero
+    # regression: endpoints that already connect (top-level functions, qualified names)
+    # never enter this branch.
+    if not paths:
+        src_cands = [clean_source, *_qualified_trace_candidates(conn, clean_source)]
+        tgt_cands = [clean_target, *_qualified_trace_candidates(conn, clean_target)]
+        for s in src_cands:
+            for t in tgt_cands:
+                if s == clean_source and t == clean_target:
+                    continue  # the exact pair was already tried above
+                cand = flows_module.trace(conn, s, t, max_depth=safe_depth, repo_root=root)
+                if cand:
+                    paths, resolved_source, resolved_target = cand, s, t
+                    break
+            if paths:
+                break
 
     # Gather one-hop neighborhood for both symbols — useful context for the agent.
+    # Use the RESOLVED endpoints so the neighborhood reflects the symbols the path
+    # actually connected (identical to the inputs when no resolution was needed).
     # Thread repo_root so callers/callees also surface import-promotion provenance.
-    callers_source = flows_module.callers(conn, clean_source, repo_root=root)
-    callees_source = flows_module.callees(conn, clean_source, repo_root=root)
-    callers_target = flows_module.callers(conn, clean_target, repo_root=root)
-    callees_target = flows_module.callees(conn, clean_target, repo_root=root)
+    callers_source = flows_module.callers(conn, resolved_source, repo_root=root)
+    callees_source = flows_module.callees(conn, resolved_source, repo_root=root)
+    callers_target = flows_module.callers(conn, resolved_target, repo_root=root)
+    callees_target = flows_module.callees(conn, resolved_target, repo_root=root)
 
     # Serialize paths: each Path is list[Hop]; Hop is already a plain TypedDict.
     # Convert to plain dicts for JSON-safety.
@@ -718,8 +779,10 @@ def handle_seam_trace(
 
     return {
         "found": len(paths) > 0,
-        "source": clean_source,
-        "target": clean_target,
+        # Echo the RESOLVED endpoints so the agent sees what the path connected (e.g. a
+        # bare 'bar' that resolved to 'Foo.bar'); identical to the input when unchanged.
+        "source": resolved_source,
+        "target": resolved_target,
         "paths": serialized_paths,
         "callers_source": [_apply_verbosity(_serialize_edge_hop(h, root), verbose) for h in callers_source],
         "callees_source": [_apply_verbosity(_serialize_edge_hop(h, root), verbose) for h in callees_source],
