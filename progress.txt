@@ -2,6 +2,31 @@
 # Format: [x] = done, [>] = in progress, [ ] = not started
 # Update this EVERY session. It is the first thing the agent reads.
 #
+# 2026-06-07: E1 — leaner default seam_impact output (omit null best_candidate) complete
+#   (branch feat/e1-lean-impact-output). The FINAL clicky impact-B lever — campaign done.
+#   After 'uses' edges, all 5 truth-dependents resolve at d=1 and --lean showed 5/5, but the
+#   DEFAULT (verbose) 1500-char window held only 4/5. MEASURED cause on the re-indexed clicky
+#   index: every WILL_BREAK entry has best_candidate=null (the AMBIGUOUS proximity pick — null
+#   for all EXTRACTED/INFERRED entries) and resolved_by non-null. The ', "best_candidate": null'
+#   suffix (~25 B/entry) was the only thing pushing the 5th truth-dependent past the window.
+#   FIX (lossless, NOT a byte-ceiling): drop best_candidate from impact entries when null
+#   (null == absent per the contract). A non-null best_candidate (AMBIGUOUS entries) is kept.
+#   resolved_by kept ALWAYS (genuine provenance; several tests rely on it). A token-budget /
+#   byte-ceiling machine was deliberately NOT built — field omission already hits 5/5.
+#   New knob SEAM_IMPACT_OMIT_NULL_CANDIDATE (on/off, default on; off = byte-identical revert
+#   keeping best_candidate:null). Handler-layer only (_serialize_tier_entry threaded through
+#   _shape_tier_group); no schema change, no re-index. seam_changes/affected byte-stable (they
+#   never carried best_candidate); /api/impact already lean -> unaffected; trace out of scope.
+#   DETERMINISTIC clicky impact-B (default, no --lean): 4/5 -> 5/5 (6379 B -> 5803 B). Campaign
+#   COMPLETE: 1/5 (A3) -> 3/5 (E2/E3) -> 4/5 (qualified seeds) -> 4/5-default/5/5-lean (uses)
+#   -> 5/5 DEFAULT (E1).
+#   Tests: tests/unit/test_impact_omit_null_candidate.py (4: omit-default, non-null-kept,
+#   knob-off-revert, lean-no-op) + updated test_impact_summary.py::test_verbose_mode_with_cap.
+#   GATE: ruff + mypy clean (91 files), 2877 tests pass.
+# Next: campaign on impact-B is done at structure+output level. Open levers — structure cells
+#   (qualitative naming floor, untouched by edges) or a full blind-panel re-benchmark for fresh
+#   LLM usability numbers post-campaign. Await direction before starting either.
+#
 # 2026-06-07: method-param composition edges ('uses') — all 12 languages complete
 #   (branch feat/param-uses-edges). Edge-kind vocab 8 -> 9: +uses.
 #   Closes the last clicky impact-B miss: OverlayWindowManager.showOverlay sat at d=2

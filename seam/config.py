@@ -197,6 +197,16 @@ SEAM_IMPACT_RELEVANCE_SORT: str = os.getenv("SEAM_IMPACT_RELEVANCE_SORT", "on")
 #                      production-before-test, same as RELEVANCE_SORT="off").
 SEAM_IMPACT_SELF_REF: str = os.getenv("SEAM_IMPACT_SELF_REF", "rank")
 
+# E1 — drop `best_candidate` from seam_impact entries when it is null. best_candidate
+# is meaningful only for AMBIGUOUS entries (it is the proximity pick); for every
+# EXTRACTED/INFERRED entry it is null and carries no signal. Omitting null is lossless
+# (null ≡ absent per the established null-contract) and reclaims ~25 B/entry so more
+# high-signal dependents survive an agent's byte/context budget under the per-tier cap.
+# "off" = byte-identical revert (keeps `best_candidate: null`). Handler-layer, read-path
+# only — no schema change, no re-index. seam_changes/seam_affected are unaffected (they
+# call the analysis layer directly). resolved_by is always kept (genuine provenance).
+SEAM_IMPACT_OMIT_NULL_CANDIDATE: str = os.getenv("SEAM_IMPACT_OMIT_NULL_CANDIDATE", "on")
+
 
 # ── Phase 6: Context-Pack configuration ─────────────────────────────────────
 

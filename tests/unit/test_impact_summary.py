@@ -326,7 +326,12 @@ def test_lean_mode_with_cap(tmp_path: Path) -> None:
 
 
 def test_verbose_mode_with_cap(tmp_path: Path) -> None:
-    """verbose=True (default) keeps resolved_by/best_candidate in capped entries."""
+    """verbose=True (default) keeps resolved_by; best_candidate is omitted when null (E1).
+
+    resolved_by is always present (genuine provenance). best_candidate is dropped when
+    null under the default SEAM_IMPACT_OMIT_NULL_CANDIDATE=on (these hub entries are
+    EXTRACTED → best_candidate is null → absent). null ≡ absent per the contract.
+    """
     db_path = _make_hub_db(tmp_path, n_direct=5, n_indirect=0)
     conn = _connect(db_path)
     try:
@@ -335,9 +340,9 @@ def test_verbose_mode_with_cap(tmp_path: Path) -> None:
         conn.close()
 
     for entry in result["upstream"]["WILL_BREAK"]:
-        # resolved_by and best_candidate are nullable — they can be None but must be PRESENT
-        assert "resolved_by" in entry
-        assert "best_candidate" in entry
+        assert "resolved_by" in entry  # always present (may be None)
+        # E1: non-AMBIGUOUS entries have null best_candidate → key omitted by default.
+        assert "best_candidate" not in entry
 
 
 # ── IS8: config default ────────────────────────────────────────────────────────

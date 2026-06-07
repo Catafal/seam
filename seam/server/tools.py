@@ -440,13 +440,24 @@ def handle_seam_search(
     ]
 
 
-def _serialize_tier_entry(entry: dict[str, Any], root: Path, verbose: bool) -> dict[str, Any]:
+def _serialize_tier_entry(
+    entry: dict[str, Any],
+    root: Path,
+    verbose: bool,
+    omit_null_candidate: bool = False,
+) -> dict[str, Any]:
     """Serialize a single TieredEntry dict from the analysis layer.
 
     Relativizes file paths, includes Phase 5 provenance fields, and applies
     verbosity stripping. Extracted to keep the main handler readable.
+
+    E1: when omit_null_candidate is True, the `best_candidate` key is DROPPED
+    when its value is null. best_candidate is only meaningful for AMBIGUOUS
+    entries; for EXTRACTED/INFERRED it is always null and carries no signal, so
+    omitting it is lossless (null ≡ absent) and reclaims ~25 B/entry. In lean
+    mode (_apply_verbosity already stripped it) this is a no-op.
     """
-    return _apply_verbosity({
+    record = _apply_verbosity({
         "name": entry["name"],
         "distance": entry["distance"],
         "confidence": entry["confidence"],
@@ -465,6 +476,9 @@ def _serialize_tier_entry(entry: dict[str, Any], root: Path, verbose: bool) -> d
             else None
         ),
     }, verbose)
+    if omit_null_candidate and record.get("best_candidate") is None:
+        record.pop("best_candidate", None)
+    return record
 
 
 def _prioritize_tier_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -529,6 +543,7 @@ def _shape_tier_group(
     self_ref_mode: str,
     container: str | None,
     self_names: set[str],
+    omit_null_candidate: bool = False,
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int], int]:
     """Order, cap, and serialize one direction's tier group (E2/E3 output shaping).
 
@@ -569,8 +584,11 @@ def _shape_tier_group(
             kept = entries
             dir_truncated[tier] = 0
 
-        # Serialize each kept entry: relativize paths + apply verbose stripping.
-        capped_tiers[tier] = [_serialize_tier_entry(entry, root, verbose) for entry in kept]
+        # Serialize each kept entry: relativize paths + apply verbose stripping +
+        # E1 null-best_candidate omission.
+        capped_tiers[tier] = [
+            _serialize_tier_entry(entry, root, verbose, omit_null_candidate) for entry in kept
+        ]
 
     return capped_tiers, dir_truncated, dir_hidden_self_refs
 
@@ -687,6 +705,9 @@ def handle_seam_impact(
     # self-refs entirely and surfaces hidden_self_refs (mirrors hidden_tests).
     relevance_on = config.SEAM_IMPACT_RELEVANCE_SORT == "on"
     self_ref_mode = config.SEAM_IMPACT_SELF_REF
+    # E1: drop null best_candidate per entry (lossless; null ≡ absent) to keep the
+    # default output lean so more high-signal dependents survive the per-tier cap.
+    omit_null_candidate = config.SEAM_IMPACT_OMIT_NULL_CANDIDATE == "on"
     # Resolve the self-ref context only when it can actually change ordering — i.e.
     # relevance is on and the mode treats self-refs specially ("rank"/"hide"). "show"
     # and relevance-off skip the lookup (container=None → no entry is a self-ref).
@@ -724,6 +745,7 @@ def handle_seam_impact(
             self_ref_mode=self_ref_mode,
             container=container,
             self_names=self_names,
+            omit_null_candidate=omit_null_candidate,
         )
         hidden_self_refs += dir_hidden
         response[dir_key] = capped_tiers
