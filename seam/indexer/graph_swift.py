@@ -56,6 +56,7 @@ from seam.indexer.graph_swift_infer import (
     _record_var_binding,
     _resolve_navigation_target,
     _scan_class_properties,
+    collect_composition_types_swift,
 )
 
 # signatures.py is a leaf (no seam deps) so importing it here does not create a cycle.
@@ -646,7 +647,7 @@ def _handle_protocol_method(
 
 
 def _extract_edges_swift(root: Node, filepath: Path) -> list[Edge]:
-    """Extract import and call edges from a Swift AST.
+    """Extract import, call, and composition (holds) edges from a Swift AST.
 
     Import heuristic:
         import Foundation         → target = 'Foundation' (sole simple_identifier)
@@ -663,14 +664,27 @@ def _extract_edges_swift(root: Node, filepath: Path) -> list[Edge]:
           When inference is off → ALL navigation-expression calls are SKIPPED
           (byte-identical to pre-P5 behavior).
 
+    Composition heuristic (Slice #80, SEAM_COMPOSITION_EDGES=on):
+        For each class/struct/actor declaration, emit Edge(kind='holds', source=TypeName,
+        target=HeldTypeName) for each plain user-type stored property (including
+        @ObservedObject/@StateObject/@EnvironmentObject-wrapped ones) and each plain
+        user-type init parameter. Deduped per (source, target) within the collector.
+
     Never raises — outer try/except wraps the walk.
     """
     edges: list[Edge] = []
     file_str = str(filepath)
     file_stem = filepath.stem
     infer = config.SEAM_SWIFT_TYPE_INFERENCE == "on"
+    composition_on = config.SEAM_COMPOSITION_EDGES == "on"
 
     try:
+        # Slice #80: emit holds edges for class/struct/actor declarations.
+        # We walk the top-level children here (not recursively via _walk_edges)
+        # because holds edges are class-scoped (one pass per class_declaration).
+        if composition_on:
+            _collect_swift_holds(root, file_str, edges)
+
         _walk_edges(
             root,
             file_str,
@@ -685,6 +699,51 @@ def _extract_edges_swift(root: Node, filepath: Path) -> list[Edge]:
         logger.debug("_extract_edges_swift: unhandled exception for %s: %r", filepath, exc)
 
     return edges
+
+
+def _collect_swift_holds(root: Node, file_str: str, edges: list[Edge]) -> None:
+    """Walk top-level nodes and emit holds edges for class/struct/actor declarations.
+
+    For each class_declaration with keyword 'class', 'struct', or 'actor',
+    calls collect_composition_types_swift and emits one Edge(kind='holds') per
+    (held_type, line) pair. Extensions are skipped (they don't own stored properties
+    in the same compositional sense — they extend an existing type).
+
+    Never raises (backstop try/except). Called only when SEAM_COMPOSITION_EDGES=on.
+    """
+    try:
+        for child in root.children:
+            if child.type != "class_declaration":
+                continue
+            keyword = _swift_class_keyword(child)
+            # Only class/struct/actor own stored properties; extension does not.
+            if keyword not in ("class", "struct", "actor"):
+                continue
+            # Extract the type name (same as _handle_class_like uses).
+            name_node = child.child_by_field_name("name")
+            if name_node is None:
+                for gc in child.children:
+                    if gc.type == "type_identifier":
+                        name_node = gc
+                        break
+            if name_node is None:
+                continue
+            class_name = _text(name_node)
+            if not class_name:
+                continue
+            # Emit one holds edge per collected (held_type, line) pair.
+            for held_type, held_line in collect_composition_types_swift(child):
+                edges.append(Edge(
+                    source=class_name,
+                    target=held_type,
+                    kind="holds",
+                    file=file_str,
+                    line=held_line,
+                    confidence="INFERRED",
+                    receiver=None,
+                ))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_collect_swift_holds: failed: %r", exc)
 
 
 def _swift_decl_type_name(node: Node) -> str | None:
