@@ -335,6 +335,8 @@ SEAM_STRUCTURE_MAX_DEPTH: int = int(os.getenv("SEAM_STRUCTURE_MAX_DEPTH", "8"))
 # to root survive) and StructureResult.truncated reports how many were omitted.
 # Default 2000: sufficient for most repos; prevents MCP token-budget explosions on
 # giant codebases with thousands of files and containers.
+# 0 (or any value <= 0) = UNLIMITED — no node cap (matches the seam_impact limit=0
+# convention; avoids the footgun where a negative value silently empties the tree).
 SEAM_STRUCTURE_MAX_NODES: int = int(os.getenv("SEAM_STRUCTURE_MAX_NODES", "2000"))
 
 

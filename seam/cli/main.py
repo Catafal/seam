@@ -1724,6 +1724,42 @@ def _render_structure_quiet(node: StructureNode, depth: int = 0) -> None:
         _render_structure_quiet(child, depth + 1)
 
 
+def _render_structure_rich(node: StructureNode, prefix: str = "", is_root: bool = True) -> None:
+    """Render the structure tree with Rich ├─/└─ branch chars + colour (default mode).
+
+    WHY separate from _render_structure_quiet: the quiet helper is plain-text for
+    pipes/scripts; this one mirrors _print_flow_tree (seam flows) so the interactive
+    default view gets branch glyphs and colour, matching the project's CLI convention.
+    The root node prints flush-left; children recurse under ├─/└─ connectors.
+    """
+    area = node.get("area")
+    area_suffix = f"  [dim]\\[{area}][/dim]" if area else ""
+    kind = node["kind"]
+
+    if is_root:
+        sym = node.get("symbol_count", 0)
+        console.print(f"[bold cyan]{node['name']}/[/bold cyan] [dim]({sym} symbols)[/dim]{area_suffix}")
+    else:
+        # Connector is supplied by the parent via `prefix`; render this node's label.
+        if kind == "dir":
+            label = f"[cyan]{node['name']}/[/cyan] [dim]({node.get('symbol_count', 0)} symbols)[/dim]{area_suffix}"
+        elif kind == "file":
+            label = f"{node['name']} [dim]({node.get('symbol_count', 0)} symbols)[/dim]{area_suffix}"
+        elif kind == "container":
+            label = f"[green]{node['name']}[/green] [dim]({node.get('members', 0)} members)[/dim]"
+        else:  # function
+            label = f"[yellow]{node['name']}[/yellow]"
+        console.print(f"{prefix}{label}")
+
+    children = node.get("children", [])
+    # Child indent: root's children start fresh; deeper levels extend the parent prefix.
+    child_base = "" if is_root else prefix.replace("├─ ", "│  ").replace("└─ ", "   ")
+    for i, child in enumerate(children):
+        last = i == len(children) - 1
+        connector = "└─ " if last else "├─ "
+        _render_structure_rich(child, child_base + connector, is_root=False)
+
+
 @app.command(name="structure")
 def structure_cmd(
     path: str = typer.Argument(".", help="Project root to inspect (default: current directory)"),
@@ -1791,9 +1827,11 @@ def structure_cmd(
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
-    # Slice 3: resolve optional scope path and depth override.
-    # scope="" means no scoping; depth=-1 means use config default.
-    scope_path: Path | None = Path(scope).resolve() if scope else None
+    # Slice 3: optional scope path + depth override. scope="" means no scoping;
+    # depth=-1 means use the config default. Pass the scope UNRESOLVED — build_structure
+    # resolves a relative scope against the project root (NOT cwd), so
+    # `seam structure /repo --scope src/` correctly means "/repo/src", not "$CWD/src".
+    scope_path: Path | None = Path(scope) if scope else None
     max_depth_arg: int | None = depth if depth >= 0 else None
 
     try:
@@ -1818,11 +1856,11 @@ def structure_cmd(
             sys.stdout.write(f"[truncated: {result['truncated']} nodes omitted]\n")
         return
 
-    # ── Rich (default) mode — indented Rich tree ──────────────────────────────
+    # ── Rich (default) mode — indented Rich tree with branch glyphs + colour ──
     tree = result["tree"]
     total = tree.get("symbol_count", 0)
-    console.print(f"\n[bold cyan]Repository structure[/bold cyan]  [dim]({total} total symbols)[/dim]")
-    _render_structure_quiet(tree)
+    console.print(f"\n[dim]Repository structure ({total} total symbols)[/dim]")
+    _render_structure_rich(tree)
     if result.get("truncated", 0) > 0:
         console.print(f"[dim yellow]({result['truncated']} nodes omitted by depth/node caps)[/dim yellow]")
 

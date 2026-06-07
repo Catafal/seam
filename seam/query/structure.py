@@ -50,6 +50,7 @@ Never raises on a partial/empty/garbage index — returns an empty but valid tre
 """
 
 import logging
+import os
 import sqlite3
 from pathlib import Path
 from typing import TypedDict
@@ -183,6 +184,11 @@ def _fetch_cluster_labels(conn: sqlite3.Connection) -> dict[int, str]:
         rows = conn.execute("SELECT id, label FROM clusters").fetchall()
         return {r["id"]: r["label"] for r in rows}
     except Exception:
+        # Log: a swallowed failure here makes every node's area silently None,
+        # indistinguishable from a healthy unclustered index — undebuggable otherwise.
+        logger.warning(
+            "build_structure: failed to fetch cluster labels; area will be None", exc_info=True
+        )
         return {}
 
 
@@ -520,10 +526,10 @@ def _apply_node_cap(root: StructureNode, max_nodes: int) -> int:
         Number of nodes removed by the cap.
     """
     if max_nodes <= 0:
-        # Drop all children of root
-        dropped = _count_all_nodes(root["children"])
-        root["children"] = []
-        return dropped
+        # 0 or negative = UNLIMITED (no cap), matching the seam_impact `limit=0`
+        # convention. WHY: an operator setting MAX_NODES=-1/0 expects "no bound",
+        # not a silently-emptied tree (the previous behaviour was a footgun).
+        return 0
 
     # BFS: process level by level. A node's children are included only if
     # there is room for ALL of them; otherwise, that node's children are cleared
@@ -604,22 +610,37 @@ def build_structure(
         raw_symbols = []
 
     # Slice 3 path scoping: filter symbols to only those in the requested subtree.
-    # Resolve the scope path to an absolute Path for reliable prefix comparison.
+    # A RELATIVE scope is resolved against `root` (NOT cwd) so `seam structure /repo
+    # --scope src/` and the MCP `path="src/"` both mean "<root>/src" regardless of the
+    # process working directory. An absolute scope is honoured as-is.
+    #
+    # We compare LEXICALLY (os.path.normpath — pure string, no filesystem access) rather
+    # than Path.resolve(): resolve() would (a) cost a stat() syscall per symbol row —
+    # O(rows) on a large index, stalling the MCP hot path — and (b) symlink-resolve the
+    # scope while the stored file paths are not symlink-resolved, breaking the match on
+    # platforms where the temp/root prefix is a symlink (e.g. macOS /var -> /private/var).
+    scope_abs: Path | None
     if path is not None:
-        scope_abs = path.resolve()
-        try:
-            # Validate the scope is under (or equal to) the repo root.
-            scope_abs.relative_to(root.resolve())
-        except ValueError:
-            # Out-of-tree path — degrade to empty tree, never raise.
-            logger.debug("build_structure: scope path %s is outside root %s", scope_abs, root)
+        scope_abs = path if path.is_absolute() else root / path
+        scope_str = os.path.normpath(str(scope_abs))
+        root_str = os.path.normpath(str(root))
+        if scope_str != root_str and not scope_str.startswith(root_str + os.sep):
+            # Out-of-tree path — degrade to empty tree, never raise. WARNING (not DEBUG):
+            # a mistyped --scope returns an empty tree, which is silent without this log.
+            logger.warning(
+                "build_structure: scope path %s is outside root %s; returning empty tree",
+                scope_str, root_str,
+            )
             raw_symbols = []
+            scope_abs = None
         else:
-            # Keep only symbols whose file is under scope_abs.
+            scope_prefix = scope_str + os.sep
             raw_symbols = [
                 r for r in raw_symbols
-                if Path(r[0]).resolve() == scope_abs or _is_under(Path(r[0]).resolve(), scope_abs)
+                if os.path.normpath(r[0]) == scope_str
+                or os.path.normpath(r[0]).startswith(scope_prefix)
             ]
+            scope_abs = Path(scope_str)
     else:
         scope_abs = None
 
@@ -660,16 +681,3 @@ def build_structure(
     truncated += _apply_node_cap(tree, effective_max_nodes)
 
     return StructureResult(tree=tree, truncated=truncated)
-
-
-def _is_under(child: Path, parent: Path) -> bool:
-    """Return True when child is strictly under parent (not equal).
-
-    WHY a helper: Path.is_relative_to() was added in Python 3.9 but we want to
-    be explicit and handle the equality case separately from _fetch_all_symbols.
-    """
-    try:
-        child.relative_to(parent)
-        return True
-    except ValueError:
-        return False

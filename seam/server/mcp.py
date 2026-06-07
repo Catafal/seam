@@ -416,6 +416,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
     def seam_structure(
         path: str | None = None,
         depth: int | None = None,
+        nodes: int | None = None,
     ) -> Any:
         """Get the whole-repository directory/file/container structure tree.
 
@@ -440,17 +441,33 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
           truncated:    count of nodes omitted by depth/node caps (0 = nothing trimmed)
 
         Optional scoping and bounds (Slice 3):
-          path:  Scope the tree to a subdirectory (absolute or repo-root-relative).
-                 An unknown or out-of-tree path degrades to an empty tree — never an error.
+          path:  Scope the tree to a subdirectory. A relative path resolves against the
+                 repo root (NOT the server cwd); an absolute path is honoured as-is.
+                 An unknown or out-of-tree path degrades to {found: false} — never an error.
           depth: Maximum nesting depth (root=0). Nodes beyond this depth are dropped
                  and counted in `truncated`. Defaults to SEAM_STRUCTURE_MAX_DEPTH (8).
+          nodes: Maximum total non-root nodes. Excess nodes are dropped BFS-order (closest
+                 to root survive) and counted in `truncated`. 0 = unlimited.
+                 Defaults to SEAM_STRUCTURE_MAX_NODES (2000).
 
         Use this to get a structural overview before diving into a specific file or
         symbol, or to understand how files and containers are organized across the repo.
 
-        Returns {found: false} when the index has no symbols (empty repo or not yet indexed).
+        Returns {found: false} when the (scoped) tree has no symbols — an empty/not-yet
+        indexed repo, or a scope path that matches no indexed files.
         """
-        scope_path = Path(path).resolve() if path else None
-        return _finalize(handle_seam_structure(conn, root, path=scope_path, max_depth=depth))
+        # Pass the scope path string straight through: handle_seam_structure /
+        # build_structure resolve a relative path against `root`, not the server cwd.
+        scope_path = Path(path) if path else None
+        result = handle_seam_structure(
+            conn, root, path=scope_path, max_depth=depth, max_nodes=nodes
+        )
+        # Normalize a genuinely-empty (scoped) tree to the not-found sentinel so
+        # _finalize emits {found: false} — matching every sibling read tool and the
+        # docstring contract. The CLI keeps rendering the (possibly empty) tree itself.
+        tree = result["tree"]
+        if not tree["children"] and tree["symbol_count"] == 0:
+            return _finalize(None)
+        return _finalize(result)
 
     return mcp

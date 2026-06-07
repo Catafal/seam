@@ -65,7 +65,12 @@ def _edge(source: str, target: str, file: str) -> Edge:
 def tmp_db():
     """Yield (conn, tmp_path) with an initialized DB + stub source files."""
     with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
+        # Resolve to mirror production: `seam init` stores symlink-resolved paths
+        # (it does Path(path).resolve() before walking), and every read command
+        # resolves project_root too. On macOS the temp dir is under a /var -> /private/var
+        # symlink, so an unresolved tmp_path would not match the resolved paths the CLI
+        # builds — resolving here keeps the fixture faithful to the real index.
+        tmp_path = Path(tmp).resolve()
         db_path = tmp_path / ".seam" / "seam.db"
         db_path.parent.mkdir()
         conn = init_db(db_path)
@@ -798,3 +803,111 @@ def _collect_all_paths(node: dict) -> list[str | None]:
     for child in node.get("children", []):
         result.extend(_collect_all_paths(child))
     return result
+
+
+# ── Post-review hardening: scope semantics, found:false, unlimited cap ──────────
+
+
+class TestReviewHardening:
+    """Behaviours added/changed during /review + /backend-taste of Tier D11.
+
+    Covers: root-relative (not cwd-relative) scope resolution, the {found:false}
+    MCP contract on an empty/out-of-tree scope, the `nodes` MCP cap param, and the
+    `max_nodes <= 0 == unlimited` convention.
+    """
+
+    def test_relative_scope_resolves_against_root_not_cwd(self, tmp_db) -> None:
+        """A RELATIVE scope path joins to `root`, not the process cwd.
+
+        Regression: the original code did Path(scope).resolve() (cwd-relative), so
+        `seam structure /repo --scope src/` silently scoped to $CWD/src and returned
+        an empty tree whenever the inspected repo was not the working directory.
+        """
+        from seam.query.structure import build_structure
+
+        conn, tmp_path, _ = tmp_db
+        _seed_basic(conn, tmp_path)
+
+        # Relative scope "subdir" must resolve under tmp_path regardless of cwd.
+        result = build_structure(conn, tmp_path, path=Path("subdir"))
+        all_paths = _collect_all_paths(result["tree"])
+        assert any("helper.py" in (p or "") for p in all_paths), (
+            "relative scope 'subdir' should resolve against root and include helper.py"
+        )
+        assert not any("app.py" in (p or "") for p in all_paths), (
+            "files outside the scoped subdir must be excluded"
+        )
+
+    def test_handler_relative_scope_resolves_against_root(self, tmp_db) -> None:
+        """handle_seam_structure forwards a relative scope to be root-joined."""
+        from seam.server.tools import handle_seam_structure
+
+        conn, tmp_path, _ = tmp_db
+        _seed_basic(conn, tmp_path)
+
+        result = handle_seam_structure(conn, tmp_path, path=Path("subdir"))
+        all_paths = _collect_all_paths(result["tree"])
+        assert any("helper.py" in (p or "") for p in all_paths)
+        assert not any("app.py" in (p or "") for p in all_paths)
+
+    def test_max_nodes_zero_is_unlimited(self, tmp_db) -> None:
+        """max_nodes=0 means UNLIMITED (no cap), not 'drop everything'.
+
+        Regression: the previous `if max_nodes <= 0: drop all` branch silently
+        emptied the tree when an operator set MAX_NODES=0/-1 expecting no bound.
+        """
+        from seam.query.structure import build_structure
+
+        conn, tmp_path, _ = tmp_db
+        _seed_basic(conn, tmp_path)
+
+        full = build_structure(conn, tmp_path, max_nodes=999999)
+        unlimited = build_structure(conn, tmp_path, max_nodes=0)
+
+        assert unlimited["truncated"] == 0, "max_nodes=0 must not truncate"
+        # Same node population as an effectively-uncapped run.
+        assert _count_tree_nodes(unlimited["tree"]) == _count_tree_nodes(full["tree"])
+        assert _count_tree_nodes(unlimited["tree"]) > 1, "tree must be non-empty"
+
+    def test_negative_max_nodes_is_unlimited(self, tmp_db) -> None:
+        """A negative max_nodes is also treated as unlimited (no silent empty)."""
+        from seam.query.structure import build_structure
+
+        conn, tmp_path, _ = tmp_db
+        _seed_basic(conn, tmp_path)
+
+        result = build_structure(conn, tmp_path, max_nodes=-1)
+        assert result["truncated"] == 0
+        assert _count_tree_nodes(result["tree"]) > 1
+
+    def test_mcp_tool_advertises_nodes_param(self, tmp_db) -> None:
+        """The seam_structure MCP tool exposes the `nodes` cap param (parity with depth)."""
+        from seam.server.mcp import create_server
+
+        conn, tmp_path, _ = tmp_db
+        server = create_server(conn, tmp_path)
+        conn.close()
+
+        tools = {t.name: t for t in server._tool_manager.list_tools()}
+        props = tools["seam_structure"].parameters.get("properties", {})
+        assert "nodes" in props, f"seam_structure must advertise 'nodes'; got {sorted(props)}"
+        assert "depth" in props and "path" in props
+
+    def test_mcp_empty_scope_returns_found_false(self, tmp_db) -> None:
+        """An out-of-tree scope yields {found: false} at the MCP boundary (not an empty tree)."""
+        from seam.server.mcp import create_server
+
+        conn, tmp_path, _ = tmp_db
+        _seed_basic(conn, tmp_path)
+        server = create_server(conn, tmp_path)
+
+        tools = {t.name: t for t in server._tool_manager.list_tools()}
+        # A path outside the repo root must normalize to the not-found sentinel.
+        out = tools["seam_structure"].fn(path="/definitely/not/in/this/repo")
+        conn.close()
+        assert out == {"found": False}, f"expected found:false sentinel, got {out!r}"
+
+
+def _count_tree_nodes(node: dict) -> int:
+    """Count all nodes in a tree including the root."""
+    return 1 + sum(_count_tree_nodes(c) for c in node.get("children", []))

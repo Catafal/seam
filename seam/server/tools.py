@@ -1128,7 +1128,8 @@ def handle_seam_structure(
     Args:
         conn:      Open SQLite connection to the Seam index (read-only).
         root:      Project root Path — used to relativize file paths.
-        path:      Optional scope path (absolute or relative to cwd).
+        path:      Optional scope path. Absolute paths are honoured as-is; a relative
+                   path is resolved against `root` (NOT cwd) by build_structure.
         max_depth: Optional depth cap override.
         max_nodes: Optional node-count cap override.
 
@@ -1137,9 +1138,7 @@ def handle_seam_structure(
             tree:      Root 'dir' StructureNode representing `root` (or scoped path).
             truncated: Count of omitted nodes (0 when nothing was trimmed).
     """
-    # Resolve path to an absolute Path if provided.
-    abs_path: Path | None = None
-    if path is not None:
-        abs_path = Path(path).resolve()
-
-    return run_build_structure(conn, root, path=abs_path, max_depth=max_depth, max_nodes=max_nodes)
+    # Pass the scope path through unresolved: build_structure resolves a RELATIVE
+    # path against `root` (not cwd), so MCP callers and the CLI get root-relative
+    # scoping regardless of the server/process working directory.
+    return run_build_structure(conn, root, path=path, max_depth=max_depth, max_nodes=max_nodes)
