@@ -55,7 +55,10 @@ CHANNEL_EVENT_EMITTER = "event-emitter"
 #   forEach { it.process() }  — it.method() is a method call on the element, not element()
 #   map { $0.value }          — field access, no invocation
 
-# Regex for Swift/Kotlin: <fieldName>.forEach { $0() } or { it() }
+# Swift/Kotlin: <fieldName>.forEach { $0() } or { it() }
+# The trailing `()` is the load-bearing gate: it requires the element to be INVOKED,
+# not merely referenced. `forEach { print($0) }` passes $0 as an argument (no `()`
+# directly after it) and so emits nothing — only genuine element invocation is dispatch.
 _RE_CC_INVOKE_SWIFT_KT = re.compile(
     r"(?<!\w)([\w]+)\s*\.\s*forEach\s*\{\s*(?:\$0|it)\s*\(\s*\)",
     re.MULTILINE,
@@ -84,7 +87,9 @@ _RE_CC_APPEND = re.compile(
     re.MULTILINE,
 )
 
-# Additional: direct field access for Python  callbacks.append(fn)
+# Companion to _RE_CC_APPEND for the bare `field.append(fn)` form (no `obj.` prefix).
+# The negative lookbehind `(?<!\.)` ensures we don't double-match the tail of an
+# `obj.field.append(...)` expression already captured by _RE_CC_APPEND above.
 _RE_CC_APPEND_BARE = re.compile(
     r"(?<!\.)(\w+)\s*\.\s*(?:append|push|add|insert)\s*\(\s*([A-Za-z_]\w*)\s*\)",
     re.MULTILINE,
@@ -187,6 +192,10 @@ def run_closure_collection_channel(
         # Step 3: Emit edges, deduplicated, cap-bounded.
         for field_name in sorted(field_callbacks):
             callbacks = sorted(set(field_callbacks[field_name]))  # dedup + determinism
+            # Cap by TRUNCATING (vs the event-emitter channel, which drops the whole
+            # event): an over-subscribed collection still has a few genuine dispatch
+            # targets worth keeping, whereas a 100-handler event key is more likely a
+            # false-positive string collision. Different precision/recall trade per channel.
             if fanout_cap > 0:
                 callbacks = callbacks[:fanout_cap]
 
@@ -252,7 +261,6 @@ def _collect_registrations(sources: dict[str, str]) -> dict[str, list[str]]:
             for m in _RE_EE_REGISTRAR.finditer(source_text):
                 event_key = m.group(1)
                 handler = m.group(2)
-                # Skip if handler looks like an anonymous/inline expression (contains parens etc.)
                 if _is_anonymous(handler):
                     continue
                 event_to_handlers.setdefault(event_key, []).append(handler)

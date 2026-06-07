@@ -98,6 +98,17 @@ seam/config.py               ← all settings (env vars with defaults)
                                 SEAM_COMPOSITION_EDGES: "on" | "off" — emit 'holds' edges for typed stored
                                   fields/properties and typed constructor/init parameters (default: on).
                                   Extraction-time only; toggling requires seam init re-index.
+                                SEAM_EDGE_SYNTHESIS: "on" | "off" — master switch for the whole-graph
+                                  edge-synthesis post-pass (A2 override fan-out + A1 dynamic-dispatch
+                                  channels; default: on). "off" = byte-identical pre-synthesis (no
+                                  synthesized edges written). Post-pass-time only; toggling requires
+                                  seam init / sync to take effect.
+                                SEAM_SYNTHESIS_FANOUT_CAP: max synthesized edges per source in a channel
+                                  (default: 40). Per-channel semantics differ — see Known Gotchas:
+                                  A2 + closure-collection TRUNCATE to N; event-emitter SKIPS the whole
+                                  event when handler count > N (likely a generic false-positive event).
+                                SEAM_SYNTHESIS_MAX_SOURCE_BYTES: total source-load budget for the
+                                  synthesis pass in bytes (default: 50MB; 0 = unlimited).
 seam/analysis/embeddings.py  ← LEAF: fastembed wrapper for semantic search (Semantic phase)
                                 is_available() → bool (lazy, cached; never raises)
                                 symbol_text(name, signature, docstring) → str (canonical embed input)
@@ -220,6 +231,21 @@ seam/indexer/db.py           ← SQLite write (init_db, upsert_file, delete_file
 seam/analysis/clustering.py  ← LEAF: pure-Python Louvain community detection (Phase 2)
                                 detect_communities(nodes, edges) → {name: cluster_id}
 seam/analysis/cluster_naming.py ← LEAF: deterministic + opt-in LLM cluster labeling (Phase 2)
+seam/analysis/synthesis.py   ← LEAF: edge-synthesis engine — A2 interface→implementation override
+                                fan-out (link every base method to every same-name impl as a
+                                synthesized 'call' edge; deliberate OVER-APPROXIMATION, not MRO).
+                                Pure; never raises; bounded by SEAM_SYNTHESIS_FANOUT_CAP.
+seam/analysis/synthesis_channels.py ← LEAF: A1 dynamic-dispatch channels —
+                                A1a closure-collection (collection iterated AND element invoked,
+                                  paired by field name to append sites) +
+                                A1b event-emitter (registrar verbs ↔ dispatcher verbs keyed by
+                                  event-string literal). Pairs field-names/event-keys GLOBALLY
+                                  (cross-file); INFERRED, bounded by fanout cap.
+seam/indexer/synthesis_index.py ← edge-synthesis orchestration bridge (mirrors cluster_index.py)
+                                index_synthesis(conn, ...) → int: -1=error, ≥0=count of synthesized
+                                edges. Reads symbols+edges, runs engine, writes synthesized edges in
+                                ONE transaction under a synthetic ':synthesis:' files row. Idempotent
+                                (delete-then-insert). Called by seam init/sync only; NOT the watcher.
 seam/query/engine.py         ← query(), context(), search() — read path
                                 context() enriched with cluster_id/label/peers (Phase 2)
                                 all three return signature/decorators/is_exported/visibility/qualified_name (Phase 4)
@@ -249,6 +275,11 @@ seam/server/web.py           ← FastAPI app factory: create_web_app(db_path, ro
                                 127.0.0.1-only enforced by CLI; requires [web] extra (lazy import pattern)
 seam/watcher/daemon.py       ← watchdog daemon (debounced re-index)
 tests/fixtures/              ← sample.py, sample.ts, sample.go, sample.rs
+tests/eval/                  ← P1 recall harness (edge-synthesis phase): fixture repo +
+                                SHA-stamped golden.json + recall@K/MRR metric (recall_harness.py,
+                                eval_report.py, gen_golden.py). test_recall_regression.py is
+                                gate-wired. `make eval` runs it; `make eval-generate` regenerates
+                                golden.json.
 ```
 
 ## Coding Conventions
@@ -268,6 +299,21 @@ tests/fixtures/              ← sample.py, sample.ts, sample.go, sample.rs
 - **Edges use string names** (not symbol IDs) — required for independent re-indexing
 
 ## Current Phase
+Edge-synthesis whole-graph post-pass + gate-able recall harness (PRD #83, schema v11 → v12).
+- **Why (the recall gap this closes):** static extraction never sees runtime polymorphism. A call to a base/interface method, an element invoked out of a collection, or a handler fired by an event-bus has no statically-resolvable call edge — so `seam_impact` on the *implementation* showed empty upstream. Edge synthesis is a deliberate **over-approximation** that runs once over the whole indexed graph and writes the edges that static parsing structurally cannot infer. Cost of a false-positive synthesized edge (slightly wider blast radius) is accepted as far cheaper than a missed dependency.
+- **A2 — interface→implementation override fan-out** (`seam/analysis/synthesis.py`): links every base/interface method to **every** same-name implementation as a synthesized `call` edge. Deliberately NOT MRO/type-resolved — it fans out to all candidates (bounded by the fanout cap). When a base method changes, all implementors surface upstream.
+- **A1a — closure-collection dispatch** (`seam/analysis/synthesis_channels.py`): when a collection is both iterated AND has its elements invoked, the collected callables (paired to their append/registration sites by field name) are linked to the invocation site.
+- **A1b — event-emitter dispatch** (`seam/analysis/synthesis_channels.py`): registrar verbs (`on`/`subscribe`/`addListener`…) are matched to dispatcher verbs (`emit`/`dispatch`/`publish`…) keyed by the event-string literal, linking handler ↔ emit site.
+- **Bridge `seam/indexer/synthesis_index.py`** (mirrors `cluster_index.py` / `embedding_index.py`): reads all symbols + edges, runs the synthesis engine, writes synthesized edges in **one transaction** under a synthetic `:synthesis:` row in `files`. Idempotent (delete-then-insert that synthetic file's edges each run). Never raises; returns `-1` on error (CLI surfaces "failed", exit still 0).
+- **Schema v11 → v12:** single additive migration (`_run_migration_v11_to_v12`) adds `edges.synthesized_by TEXT NULL`. Auto-runs on `connect()`; idempotent; never raises. `synthesized_by IS NULL` ⟹ statically extracted; a channel-name string ⟹ synthesized. Provenance is derived: `synthesized_by IS NOT NULL` ⟹ heuristic. Pre-v12 rows keep `synthesized_by=NULL`; a full `seam init` re-index is needed to populate synthesized edges.
+- **Synthesized edges** carry `kind='call'`, `confidence='INFERRED'`, `synthesized_by=<channel>`. The read-path traversal is **kind-agnostic**, so `seam_impact` / `seam_context` / `seam_trace` traverse them automatically (exactly like `holds` edges) — no per-tool change.
+- **Gated like clusters:** runs in `seam init` (always) and `seam sync` (gated on `graph_changed`, or `--force-synthesis`). NOT run by the per-file watcher.
+- **P1 recall harness** (`tests/eval/`): fixture repo + SHA-stamped `golden.json` + recall@K / MRR metric, wired into the gate via `test_recall_regression.py`. `make eval` runs it; `make eval-generate` regenerates the golden file.
+- **3 new config knobs:** `SEAM_EDGE_SYNTHESIS` (`"on"`/`"off"`, default `on`; off = byte-identical pre-synthesis), `SEAM_SYNTHESIS_FANOUT_CAP` (default 40), `SEAM_SYNTHESIS_MAX_SOURCE_BYTES` (default 50 MB total source-load budget; 0 = unlimited).
+- **MCP tool count stays 12.** No new tools. Gate: all tests pass (2498).
+See `progress.txt`.
+
+### Prior phase (Tier B receiver capture + receiver-type inference)
 Tier B receiver capture + extraction-time receiver-type inference (schema v9 → v10).
 - **Root cause (the real fix):** Tier A bridged the qualified/bare asymmetry at read time. Tier B fixes it at the source: the extractor now captures the raw receiver expression in `edges.receiver` (v9→v10 migration) AND infers its type to emit a qualified `Type.method` target on the edge itself. Once a call is stored as `Client.send`, it joins the symbol row `Client.send` exactly — no read-time bridging needed for that edge.
 - **Schema v9 → v10:** single additive migration (`_run_migration_v9_to_v10`) adds `edges.receiver TEXT NULL`. Auto-runs on `connect()`; idempotent; never raises. Pre-v10 rows keep `receiver=NULL` (same null-contract as Phase 4/5 fields) — a full `seam init` re-index is needed to backfill receiver + qualified targets.
@@ -279,7 +325,6 @@ Tier B receiver capture + extraction-time receiver-type inference (schema v9 →
 - **B6 — instantiates edges across all 12 languages:** `new_expression` / struct-literal / composite-literal nodes now emit `kind="instantiates"` edges (e.g. `new Foo()`, `Foo{}`, `Foo { ... }`, PascalCase bare call in Swift). The `instantiates` kind is now part of the closed edge-kind vocabulary alongside `call`, `import`, `extends`, `implements`.
 - **1 new config knob:** `SEAM_TYPE_INFERENCE: "on" | "off"` (default `"on"`) — master switch for extraction-time receiver-type inference in Python and TS/JS. Set to `"off"` to revert to bare-identifier-only targets (byte-identical to pre-Tier-B). Swift uses its own independent `SEAM_SWIFT_TYPE_INFERENCE` knob.
 - **MCP tool count stays 11.** No new tools. Read path (Tier A names.py) consumes qualified targets automatically — no per-tool changes. Gate: all tests pass.
-See `progress.txt`.
 
 ### Prior phase (Tier A name-resolution)
 Tier A name-resolution (read-path-only bridge between qualified symbol names and bare call-edge targets).
@@ -418,6 +463,8 @@ There are **twelve MCP tools** (`seam_structure` is the newest — Tier D11). Th
 
 **Tier B edge enrichment:** The edge kind vocabulary now includes `instantiates` (added in Tier B B6) and `holds` (composition edges, added in the composition feature) alongside `call`, `import`, `extends`, `implements`. `seam_impact`, `seam_context`, and `seam_trace` traverse all edge kinds including `instantiates` and `holds`. `seam_trace` hop `kind` may be `instantiates` or `holds`. Edges with a confidently inferred receiver type now carry a qualified `Type.method` target directly in the DB — `seam_context` and `seam_impact` resolve these with higher confidence (EXTRACTED when unique, no read-time bridging needed for those hops). The raw receiver text is stored in `edges.receiver` (v10 column, NULL for pre-v10 rows and for bare/import/holds edges).
 
+**Edge synthesis (edge-synthesis phase):** the whole-graph synthesis post-pass writes synthesized edges with `kind='call'` and `confidence='INFERRED'`, tagged in the v12 `edges.synthesized_by TEXT NULL` column (NULL = statically extracted; a channel-name string = synthesized; provenance is heuristic when `synthesized_by IS NOT NULL`). Because the read-path traversal is **kind-agnostic**, `seam_impact`, `seam_context`, and `seam_trace` traverse synthesized edges automatically (exactly like `holds` edges) — so an interface-method change surfaces all implementations, and an event-bus / closure-collection dispatch surfaces its handlers. No new MCP tool; tool count stays 12. NOTE (follow-up): `synthesized_by` is stored in the DB but is **not yet surfaced in the `seam_impact` / `seam_trace` output** — an agent cannot currently distinguish a synthesized INFERRED edge from a statically-extracted one in results. The DB tag is delivered (it enables future output filtering); surfacing it is a documented follow-up.
+
 **Semantic hybrid (Semantic phase):** `seam_search` and `seam_query` auto-merge FTS5 candidates with semantic (cosine) candidates via Reciprocal Rank Fusion (RRF, k=60) when BOTH conditions hold: `SEAM_SEMANTIC=on` AND embeddings exist for the configured model. A keyword-only index behaves byte-identically to pre-Semantic. The `semantic` param (default `true`) can be passed to force keyword-only from a tool call.
 
 **Phase 8 lean output:** `seam_context`, `seam_trace`, `seam_impact`, `seam_context_pack` accept `verbose: bool = True`. With `verbose=False` the 6 heavy fields (decorators, is_exported, visibility, qualified_name, resolved_by, best_candidate) are **absent** (not null) — `signature` + core fields are always kept. `verbose=True` is byte-identical to pre-Phase-8 (EXCEPT `seam_impact`, which always adds `risk_summary`/`truncated` and caps by default). `seam_query` and `seam_search` carry no enrichment → no `verbose` flag.
@@ -427,6 +474,13 @@ There are **twelve MCP tools** (`seam_structure` is the newest — Tier D11). Th
 `seam_context_pack` returns `truncated: {callers, callees, comments}` counts of entries dropped by caps. When a neighbor name has no indexed declaration it is silently skipped (not an error). Use `seam_impact` for the full blast radius when the pack is truncated.
 
 ## Known Gotchas
+- **Clustering EXCLUDES synthesized edges**: cluster detection filters out edges with `synthesized_by IS NOT NULL` to avoid feedback pollution. The synthesis post-pass runs **after** clustering and its edges persist in the `edges` table across runs — feeding them back into the next Louvain pass would let synthesized over-approximations re-partition communities. Clusters therefore reflect only statically-extracted coupling.
+- **Synthesized edges go STALE after watcher edits**: like clusters, synthesized edges are NOT recomputed per-file by the watcher — they are written only by `seam init` / `seam sync`. After live edits, run `seam init` or `seam sync` (or `seam sync --force-synthesis`) to refresh. This is the **same accepted trade-off as stale cluster labels, but slightly higher-stakes**: a stale synthesized `call` edge feeds `seam_impact` / `seam_changes`, so a stale edge can over- or under-report blast radius, not merely mislabel a cluster.
+- **`seam_changes` / `seam_affected` risk verdicts WIDEN after a synthesis-enabled re-index**: synthesis adds edges, so blast-radius and change-risk verdicts grow — the same effect inheritance (`extends`/`implements`) and `holds` edges have. If you need verdicts to stay byte-stable across an upgrade, gate the index with `SEAM_EDGE_SYNTHESIS=off`.
+- **`SEAM_SYNTHESIS_FANOUT_CAP` semantics differ per channel**: for A2 (interface→impl) and closure-collection channels the cap **TRUNCATES** to N synthesized edges (you get the first N). For the event-emitter channel the cap **SKIPS the entire event** when the handler count exceeds N — a generic high-fanout event (e.g. a global `change` bus with hundreds of listeners) is treated as a likely false-positive and dropped rather than truncated. Divergence is deliberate: truncating a fan-out keeps signal; truncating a suspect mega-event keeps noise.
+- **`synthesized_by` is stored but NOT YET surfaced in `seam_impact` / `seam_trace` output**: an agent reading impact/trace results currently cannot distinguish a synthesized INFERRED edge from a statically-extracted one. The DB tag is delivered (it enables future filtering); surfacing it in tool output is a documented follow-up. Until then, treat any INFERRED edge in a synthesis-enabled index as possibly synthesized.
+- **A1 channels pair field-names / event-keys GLOBALLY (cross-file)**: closure-collection pairs collection field names to append sites, and event-emitter pairs registrar→dispatcher by event-string literal, **across the whole repo** — so generic names like `handlers` or a `change` event can produce false-positive links. The risk is bounded by `SEAM_SYNTHESIS_FANOUT_CAP` and by requiring BOTH an invocation/dispatch site AND an append/registration site; all such edges are tagged `INFERRED`.
+- **`edges.synthesized_by` is NULL until a synthesis-enabled `seam init` / `sync` re-index**: the v11→v12 migration (auto-run on `connect()`) adds the `edges.synthesized_by` column but does NOT populate it — synthesized edges are written only by the post-pass. On a pre-v12 (or `SEAM_EDGE_SYNTHESIS=off`) index, no rows carry a synthesized tag and impact/context/trace behave byte-identically to pre-synthesis.
 - **`edges.receiver` is NULL until `seam init` re-index after upgrading to v10**: the v9→v10 migration (auto-run on `connect()`) adds the `edges.receiver` column with `NULL` as the default. Existing edge rows keep `receiver=NULL` — same null-contract as the Phase 4/5 enrichment fields. Only a full `seam init` re-index populates `receiver` and upgrades bare call targets to qualified `Type.method` targets. Until then, qualified-target edges are absent and Tier A read-time bridging remains the only disambiguation.
 - **Tier B inference is extraction-time only — changing `SEAM_TYPE_INFERENCE` requires re-index**: `SEAM_TYPE_INFERENCE=off` skips inference during extraction; switching it later has no retroactive effect. Run `seam init` to rebuild the index with the new setting. Toggling the knob at read time has no effect (the edges are already stored).
 - **Conservatism contract — Tier B NEVER emits a wrong edge**: `resolve_receiver_type()` returns `None` (→ bare target kept) for optionals (`Foo | None`, `Foo?`, `Optional[Foo]`), containers (`list[T]`, `dict[K,V]`, `[Foo]`), generics (`Array<T>`, `Set<T>`), chained receivers (`a.b.c()`), and any identifier not found in the current scope. Only a plain user-type name that appears exactly in the class-field/param/local scope gets a qualified edge. The cost of a false negative (missed edge) is always lower than a false positive (wrong target).
