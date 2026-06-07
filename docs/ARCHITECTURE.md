@@ -933,3 +933,90 @@ The MCP server section now has a 12th tool:
 |------|---------|---------|
 | `SEAM_STRUCTURE_MAX_DEPTH` | `8` | Max tree depth (counts dir+file+container levels, not dirs only) |
 | `SEAM_STRUCTURE_MAX_NODES` | `2000` | Max non-root nodes; `<= 0` = unlimited |
+
+---
+
+## Composition ("holds") Edges
+
+> Shipped on branch `feat/composition-holds-edges`. **No schema migration** — `"holds"` is a new
+> value in the existing `edges.kind TEXT` column, not a new column or table. No read-path or
+> traversal code was changed. MCP tool count stays 12.
+
+### What "holds" captures
+
+A `holds` edge records **class composition**: a class or struct that stores a typed user-defined
+value as a named field/property, or receives one as a typed constructor/init parameter, emits:
+
+```
+Edge(source=OwningClass, target=HeldType, kind="holds", confidence="INFERRED")
+```
+
+Examples that produce a `holds` edge:
+- Python `self.client: Client = client` (typed field assignment)
+- TypeScript `private db: Database` (typed property declaration)
+- Go `type Server struct { store Store }` (typed struct field)
+- Java `private final UserRepo repo;` (typed class field)
+- Swift `var engine: Engine` (stored property declaration)
+
+Examples that do NOT produce a `holds` edge:
+- Method parameter types (transient; not stored composition)
+- Local variable type annotations (not stored on the class)
+- Return types
+- Optional/container/generic wrappers (`Client | None`, `list[Client]`, `Array<Client>`)
+- Primitive types and builtins (`int`, `string`, `bool`, filtered via `is_builtin()`)
+- Dotted-qualified type names (conservative: cross-package names not resolved)
+
+### Why this is useful
+
+Before composition edges, `seam_impact` on a data-model class showed only call-graph reach:
+"who calls methods of this class?" Composition adds the structural dimension: "who *is* this
+class, structurally?" — i.e., which owning classes embed it as a stored field. Changing the
+constructor signature or field layout of `Client` now surfaces `Server` (which holds a `Client`)
+in the blast radius at d=1, not just callers of `Client.send`.
+
+### Per-family collector design
+
+Composition scanning reuses the existing class-level pre-scans in the inference leaf modules —
+the same AST pass that builds the `var_types` dict for receiver-type inference also collects
+stored field/property types. No new AST traversal is added.
+
+| Leaf module | Languages | AST nodes scanned |
+|-------------|-----------|-------------------|
+| `graph_scope_infer.py` | Python, TypeScript/JS | class body attribute defs, property declarations |
+| `graph_scope_infer_ext.py` | Go, Rust | struct field declarations |
+| `graph_scope_infer_ext2.py` | Java, C#, C++, Ruby, PHP | field/member declarations |
+| `graph_swift_infer.py` | Swift | stored property declarations |
+
+Each collector returns `list[tuple[str, str]]` — `(field_name, type_name)` pairs. The extractor
+in the parent `graph_*.py` module converts each pair into a `holds` edge, applying the
+conservatism contract before emitting.
+
+### Conservatism contract
+
+`holds` edges apply the **same conservatism rules** as receiver-type inference (Tier B):
+
+- **Plain user type only**: `resolve_plain_type(type_text) → str | None` strips whitespace and
+  returns `None` for optionals (`X | None`, `X?`, `Optional[X]`), containers (`list[X]`,
+  `dict[K,V]`, `[X]`), generics (`Array<X>`, `Set<X>`), and dotted qualified names (`pkg.Type`).
+- **Builtin filter**: `is_builtin(type_name, language)` gates emission — no `Class holds int`
+  or `Class holds string` noise enters the graph.
+- **INFERRED confidence**: composition is a structural reference, not a resolved-import link.
+  `holds` edges always carry `confidence="INFERRED"`. This mirrors `extends`/`implements` edges
+  (P6a) which also express structural relationships at INFERRED confidence.
+- **Never raises**: any extraction failure silently returns an empty list; the extractor skips
+  gracefully (same contract as all parsers in the pipeline).
+
+### Traversal — automatic, no new code
+
+The traversal layer (`seam/analysis/traversal.py`) is **kind-agnostic**: it walks all edges
+regardless of `kind`. Adding `"holds"` to `edges.kind` therefore flows through `seam_impact`,
+`seam_context`, and `seam_trace` automatically — if you change `HeldType`, `OwningClass`
+appears upstream at d=1 with no traversal code changes.
+
+### Config knob
+
+`SEAM_COMPOSITION_EDGES: "on" | "off"` (default `"on"`) — master switch for composition-edge
+emission at extraction time. Set to `"off"` to suppress all `holds` edges; byte-identical to
+pre-composition behaviour. Like all other extraction-time knobs (`SEAM_TYPE_INFERENCE`,
+`SEAM_INHERITANCE_EDGES`), toggling takes effect only on the next `seam init` re-index —
+the existing stored edges are not retroactively removed.

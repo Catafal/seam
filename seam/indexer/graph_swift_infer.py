@@ -25,6 +25,7 @@ import logging
 
 from tree_sitter import Node
 
+from seam.analysis.builtins import is_builtin
 from seam.indexer.graph_common import _text
 
 logger = logging.getLogger(__name__)
@@ -184,6 +185,165 @@ def _navigation_method_name(nav: Node) -> str | None:
                 if gc.type == "simple_identifier":
                     return _text(gc)
     return None
+
+
+# ── Slice #80: Composition (holds) collector for Swift ───────────────────────
+#
+# collect_composition_types_swift returns deduped (held_type_name, line) pairs
+# for a class/struct/actor declaration node. Two passes:
+#   1. Stored properties (property_declaration with a plain type_annotation)
+#      — including @ObservedObject/@StateObject/@EnvironmentObject wrappers,
+#        which only affect the 'modifiers' child and do not change the type_annotation.
+#   2. init_declaration parameters with a plain user_type annotation.
+#
+# CONSERVATISM CONTRACT (same as receiver-type inference):
+#   ONLY emit for a bare TypeName (plain user_type with no type_arguments).
+#   REFUSE: Foo? (optional_type), [Foo] (array_type), [K:V] (dictionary_type),
+#            Foo<T> (user_type with type_arguments), and Swift builtins.
+#
+# Reuses _plain_user_type_name which already handles all refusals.
+# Dedup: a type appearing in BOTH a property and an init param → ONE entry.
+# NEVER RAISES: backstop try/except returns [] on any error.
+
+
+def collect_composition_types_swift(class_node: Node) -> list[tuple[str, int]]:
+    """Collect (held_type_name, line) pairs from a Swift class/struct/actor node.
+
+    Two passes over the class_body children:
+      1. property_declaration: captures the type from the type_annotation child.
+         @ObservedObject, @StateObject, @EnvironmentObject modifiers are transparent —
+         the type_annotation is still a direct child regardless of the wrapper attribute.
+      2. init_declaration: scans parameter children of the init, capturing each
+         parameter's plain user_type via _plain_user_type_name (same helper used for
+         receiver-type inference).
+
+    Returns [] on any error. Never raises.
+    """
+    try:
+        seen: set[str] = set()
+        result: list[tuple[str, int]] = []
+
+        # Find the class_body (first child of type 'class_body').
+        body: Node | None = None
+        for child in class_node.children:
+            if child.type == "class_body":
+                body = child
+                break
+        if body is None:
+            return result
+
+        # Pass 1: stored properties.
+        for child in body.children:
+            _swift_collect_property_holds(child, seen, result)
+
+        # Pass 2: init declaration parameters.
+        for child in body.children:
+            _swift_collect_init_holds(child, seen, result)
+
+        return result
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("collect_composition_types_swift: failed: %r", exc)
+        return []
+
+
+def _swift_collect_property_holds(
+    node: Node,
+    seen: set[str],
+    result: list[tuple[str, int]],
+) -> None:
+    """Capture a stored-property declaration's held type if it is a plain user type.
+
+    property_declaration structure (relevant path):
+        property_declaration
+          [modifiers]   ← optional; @ObservedObject/@StateObject/etc. live here
+          value_binding_pattern  ← 'var' or 'let' keyword
+          pattern         ← the variable name
+          type_annotation ← ': TypeName'  ← THIS is what we care about
+
+    The modifiers (wrapper attributes) are transparent: they only affect the
+    modifiers child, not the type_annotation. _plain_user_type_name rejects
+    optional_type / array_type / dictionary_type / generics automatically.
+
+    Never raises.
+    """
+    try:
+        if node.type != "property_declaration":
+            return
+        # Find the type_annotation child.
+        for child in node.children:
+            if child.type == "type_annotation":
+                type_name = _plain_user_type_name(child)
+                if type_name and not is_builtin(type_name, "swift") and type_name not in seen:
+                    seen.add(type_name)
+                    result.append((type_name, node.start_point[0] + 1))
+                break
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_swift_collect_property_holds: failed at %r: %r", node.start_point, exc)
+
+
+def _swift_collect_init_holds(
+    node: Node,
+    seen: set[str],
+    result: list[tuple[str, int]],
+) -> None:
+    """Capture an init_declaration's parameter types that are plain user types.
+
+    init_declaration structure (relevant path):
+        init_declaration
+          'init'
+          '('
+          parameter  ← one per init param
+            [simple_identifier]  ← external label (optional, e.g. 'with' or '_')
+            simple_identifier    ← internal name (always present)
+            ':'
+            [user_type | optional_type | array_type | dictionary_type | ...]
+          ')'
+          function_body
+
+    _plain_user_type_name applied to the parameter node extracts the type if plain,
+    refusing optional/array/dictionary/generic shapes. Dedup: a type already in
+    'seen' (added during the property pass) is skipped.
+
+    Never raises.
+    """
+    try:
+        if node.type != "init_declaration":
+            return
+        for child in node.children:
+            if child.type == "parameter":
+                _swift_collect_single_param_holds(child, seen, result)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_swift_collect_init_holds: failed at %r: %r", node.start_point, exc)
+
+
+def _swift_collect_single_param_holds(
+    param: Node,
+    seen: set[str],
+    result: list[tuple[str, int]],
+) -> None:
+    """Record one init parameter's plain type into the result if accepted.
+
+    Applies _plain_user_type_name to the parameter node, which handles:
+        svc: Service          → 'Service'
+        _ svc: Service        → 'Service'  (external '_' label)
+        with svc: Service     → 'Service'  (external label)
+        svc: Service?         → None       (optional — refused)
+        items: [Service]      → None       (array — refused)
+        map: [String: Svc]    → None       (dictionary — refused)
+        items: Array<Service> → None       (generic — refused)
+
+    Dedup: skip if the type was already seen from a property declaration.
+    Never raises.
+    """
+    try:
+        type_name = _plain_user_type_name(param)
+        if type_name and not is_builtin(type_name, "swift") and type_name not in seen:
+            seen.add(type_name)
+            result.append((type_name, param.start_point[0] + 1))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "_swift_collect_single_param_holds: failed at %r: %r", param.start_point, exc
+        )
 
 
 def _resolve_navigation_target(

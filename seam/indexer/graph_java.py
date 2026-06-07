@@ -40,6 +40,7 @@ from seam.indexer.graph_common import (
 from seam.indexer.graph_scope_infer_ext import resolve_receiver_type_ext
 from seam.indexer.graph_scope_infer_ext2 import (
     _JAVA_SELF_NAMES,
+    collect_composition_types_java,
     record_java_local_types,
     record_java_param_types,
     scan_class_fields_java,
@@ -363,6 +364,7 @@ def _extract_edges_java(root: Node, filepath: Path) -> list[Edge]:
     file_stem = filepath.stem
     emit_inheritance = config.SEAM_INHERITANCE_EDGES == "on"
     infer = config.SEAM_TYPE_INFERENCE == "on"
+    composition_on = config.SEAM_COMPOSITION_EDGES == "on"
 
     def _walk(
         node: Node,
@@ -388,6 +390,9 @@ def _extract_edges_java(root: Node, filepath: Path) -> list[Edge]:
                 name_node = node.child_by_field_name("name")
                 if name_node is not None:
                     new_class_name = _text(name_node).strip() or None
+                # Slice #79: emit holds edges for Java class fields + ctor params.
+                if composition_on and new_class_name:
+                    _handle_java_class_holds(node, new_class_name, file_str, edges)
                 new_fields: dict[str, str] = scan_class_fields_java(node) if infer else {}
                 body = node.child_by_field_name("body")
                 if body is not None:
@@ -475,6 +480,31 @@ def _extract_edges_java(root: Node, filepath: Path) -> list[Edge]:
         _walk(child, None, {}, {})
 
     return edges
+
+
+def _handle_java_class_holds(
+    class_node: Node, class_name: str, file_str: str, edges: list[Edge]
+) -> None:
+    """Emit holds edges for each plain user-type field/ctor-param in a Java class.
+
+    Delegates to collect_composition_types_java for (held_type, line) pairs and
+    emits one Edge per unique pair. Never raises (backstop try/except).
+    """
+    try:
+        for held_type, held_line in collect_composition_types_java(class_node):
+            edges.append(
+                Edge(
+                    source=class_name,
+                    target=held_type,
+                    kind="holds",
+                    file=file_str,
+                    line=held_line,
+                    confidence="INFERRED",
+                    receiver=None,
+                )
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_handle_java_class_holds: failed: %r", exc)
 
 
 def _handle_java_inheritance(decl_node: Node, file_str: str, edges: list[Edge]) -> None:

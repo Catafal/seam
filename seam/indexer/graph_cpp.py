@@ -53,6 +53,7 @@ from seam.indexer.graph_common import (
 from seam.indexer.graph_scope_infer_ext import resolve_receiver_type_ext
 from seam.indexer.graph_scope_infer_ext2 import (
     _CPP_SELF_NAMES,
+    collect_composition_types_cpp,
     record_cpp_local_types,
     record_cpp_param_types,
     scan_class_fields_cpp,
@@ -400,6 +401,7 @@ def _extract_edges_cpp(root: Node, filepath: Path) -> list[Edge]:
         file_str = str(filepath)
         file_stem = filepath.stem
         infer = config.SEAM_TYPE_INFERENCE == "on"
+        composition_on = config.SEAM_COMPOSITION_EDGES == "on"
 
         def _walk(
             node: Node,
@@ -412,11 +414,14 @@ def _extract_edges_cpp(root: Node, filepath: Path) -> list[Edge]:
                 _handle_c_include(node, file_str, file_stem, edges)
                 return
 
-            if ntype in ("class_specifier", "struct_specifier") and infer:
+            if ntype in ("class_specifier", "struct_specifier"):
                 new_class: str | None = None
                 cn = node.child_by_field_name("name")
                 if cn is not None:
                     new_class = _text(cn).strip() or None
+                # Slice #79: emit holds edges for C++ class/struct fields.
+                if composition_on and new_class:
+                    _handle_cpp_class_holds(node, new_class, file_str, edges)
                 new_fields = scan_class_fields_cpp(node) if infer else {}
                 for child in node.children:
                     _walk(child, new_class, new_fields, dict(new_fields))
@@ -513,6 +518,31 @@ def _extract_edges_cpp(root: Node, filepath: Path) -> list[Edge]:
             exc_info=True,
         )
         return []
+
+
+def _handle_cpp_class_holds(
+    class_node: Node, class_name: str, file_str: str, edges: list[Edge]
+) -> None:
+    """Emit holds edges for each plain user-type field in a C++ class/struct.
+
+    Delegates to collect_composition_types_cpp for (held_type, line) pairs and
+    emits one Edge per unique pair. Never raises (backstop try/except).
+    """
+    try:
+        for held_type, held_line in collect_composition_types_cpp(class_node):
+            edges.append(
+                Edge(
+                    source=class_name,
+                    target=held_type,
+                    kind="holds",
+                    file=file_str,
+                    line=held_line,
+                    confidence="INFERRED",
+                    receiver=None,
+                )
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_handle_cpp_class_holds: failed: %r", exc)
 
 
 def _extract_comments_cpp(root: Node, filepath: Path) -> list[Comment]:

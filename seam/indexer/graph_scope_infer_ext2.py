@@ -25,6 +25,7 @@ import logging
 
 from tree_sitter import Node
 
+from seam.analysis.builtins import is_builtin
 from seam.indexer.graph_common import _text
 
 logger = logging.getLogger(__name__)
@@ -663,3 +664,329 @@ def _record_php_property(prop_node: Node, out: dict[str, str]) -> None:
             out[prop_name] = type_name
     except Exception:  # noqa: BLE001
         pass
+
+
+# ── Slice #79: Composition (holds) collectors for Java, C#, C++, Ruby, PHP ───
+# Reuse scan_class_fields_* helpers; add ctor/init param pass where applicable.
+# Conservatism: plain user-type identifiers only. Generics/nullable/primitives refused.
+# Dedupe: same type from field + ctor → one entry. Never raises; returns [] on error.
+
+
+def collect_composition_types_java(class_node: Node) -> list[tuple[str, int]]:
+    """Collect (held_type_name, line) pairs from a Java class_declaration node.
+
+    Pass 1: field_declaration with plain type_identifier. Pass 2: constructor_declaration
+    formal_parameter with plain type_identifier. Deduped by type name.
+    Returns [] on any error. Never raises.
+    """
+    try:
+        seen: set[str] = set()
+        result: list[tuple[str, int]] = []
+
+        body = class_node.child_by_field_name("body")
+        if body is None:
+            return result
+
+        # Pass 1: class field declarations (plain type_identifier only).
+        for child in body.named_children:
+            if child.type != "field_declaration":
+                continue
+            try:
+                type_node = child.child_by_field_name("type")
+                if type_node is None or type_node.type != "type_identifier":
+                    continue
+                type_name = _text(type_node).strip()
+                if not type_name or not type_name[0].isupper():
+                    continue
+                if type_name not in seen:
+                    seen.add(type_name)
+                    result.append((type_name, child.start_point[0] + 1))
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Pass 2: constructor parameter types (constructor_declaration formal_parameters).
+        for child in body.named_children:
+            if child.type != "constructor_declaration":
+                continue
+            try:
+                params = child.child_by_field_name("parameters")
+                if params is None:
+                    continue
+                for param in params.named_children:
+                    if param.type != "formal_parameter":
+                        continue
+                    type_node = param.child_by_field_name("type")
+                    if type_node is None or type_node.type != "type_identifier":
+                        continue
+                    type_name = _text(type_node).strip()
+                    if not type_name or not type_name[0].isupper():
+                        continue
+                    if type_name not in seen:
+                        seen.add(type_name)
+                        result.append((type_name, param.start_point[0] + 1))
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Post-filter builtins (String/Integer/List/Map/etc.) — the PascalCase guard
+        # admits them; is_builtin is the authoritative cross-language source.
+        return [(t, ln) for (t, ln) in result if not is_builtin(t, "java")]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("collect_composition_types_java: failed: %r", exc)
+        return []
+
+
+def collect_composition_types_cs(class_node: Node) -> list[tuple[str, int]]:
+    """Collect (held_type_name, line) pairs from a C# class/struct/record_declaration node.
+
+    Pass 1: field_declaration → variable_declaration first identifier (type name).
+    Pass 2: constructor_declaration parameter → plain identifier type (no nullable/generic).
+    Deduped by type name. Returns [] on any error. Never raises.
+    """
+    try:
+        seen: set[str] = set()
+        result: list[tuple[str, int]] = []
+
+        body = class_node.child_by_field_name("body")
+        if body is None:
+            return result
+
+        # Pass 1: field declarations.
+        for child in body.named_children:
+            if child.type != "field_declaration":
+                continue
+            try:
+                # C# field_declaration → variable_declaration → first identifier = type name.
+                var_decl = None
+                for fc in child.children:
+                    if fc.type == "variable_declaration":
+                        var_decl = fc
+                        break
+                if var_decl is None:
+                    continue
+                type_name: str | None = None
+                for vc in var_decl.children:
+                    if vc.type == "identifier":
+                        type_name = _text(vc).strip()
+                        break
+                if not type_name or not type_name[0].isupper():
+                    continue
+                if type_name not in seen:
+                    seen.add(type_name)
+                    result.append((type_name, child.start_point[0] + 1))
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Pass 2: constructor parameter types.
+        for child in body.named_children:
+            if child.type != "constructor_declaration":
+                continue
+            try:
+                params = child.child_by_field_name("parameters")
+                if params is None:
+                    continue
+                for param in params.named_children:
+                    if param.type != "parameter":
+                        continue
+                    type_node = param.child_by_field_name("type")
+                    name_node = param.child_by_field_name("name")
+                    if type_node is None or name_node is None:
+                        continue
+                    # Only plain identifier (no nullable, no generic).
+                    if type_node.type != "identifier":
+                        continue
+                    type_name = _text(type_node).strip()
+                    if not type_name or not type_name[0].isupper():
+                        continue
+                    if type_name not in seen:
+                        seen.add(type_name)
+                        result.append((type_name, param.start_point[0] + 1))
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Post-filter builtins (String/Int32/List/etc.) via the authoritative source.
+        return [(t, ln) for (t, ln) in result if not is_builtin(t, "csharp")]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("collect_composition_types_cs: failed: %r", exc)
+        return []
+
+
+def collect_composition_types_cpp(class_node: Node) -> list[tuple[str, int]]:
+    """Collect (held_type_name, line) pairs from a C++ class_specifier/struct_specifier node.
+
+    Single pass: field_declaration nodes in the body with a plain type_identifier.
+    Uses _cpp_extract_type_name (same as scan_class_fields_cpp). No ctor-param pass
+    (C++ constructors may be out-of-line). Deduped. Returns [] on error. Never raises.
+
+    WHY no constructor-parameter pass:
+      C++ constructors are often defined out-of-line (in the .cpp file, not the header).
+      The class_specifier/struct_specifier node only contains the declaration, not the
+      definition. Scanning ctor params would require finding the matching
+      function_definition elsewhere in the AST — complex and unreliable. Field
+      declarations in the class body are always present and authoritative.
+    """
+    try:
+        seen: set[str] = set()
+        result: list[tuple[str, int]] = []
+
+        body = class_node.child_by_field_name("body")
+        if body is None:
+            return result
+
+        for child in body.named_children:
+            if child.type != "field_declaration":
+                continue
+            try:
+                # _cpp_extract_type_name searches for type_identifier child.
+                type_name = _cpp_extract_type_name(child)
+                if not type_name or not type_name[0].isupper():
+                    continue
+                if type_name not in seen:
+                    seen.add(type_name)
+                    result.append((type_name, child.start_point[0] + 1))
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Post-filter builtins (std::string surfaces as 'string'; PascalCase stdlib
+        # types) via the authoritative source.
+        return [(t, ln) for (t, ln) in result if not is_builtin(t, "cpp")]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("collect_composition_types_cpp: failed: %r", exc)
+        return []
+
+
+def collect_composition_types_ruby(class_node: Node) -> list[tuple[str, int]]:
+    """Collect (held_type_name, line) pairs from a Ruby class node.
+
+    Scans initialize method body for @ivar = ClassName.new patterns only.
+    Ruby has no static type annotations; .new calls on PascalCase constants are the
+    only reliable composition signal. No ctor-param pass (params are untyped).
+    Deduped by type name. Returns [] on any error. Never raises.
+
+    WHY only `initialize`, not other methods:
+      Assignments in other methods may be local temporaries or conditional re-bindings
+      — they don't reliably indicate a stored, owned dependency. Only ivar assignments
+      in `initialize` with a `.new` call are a strong signal that the class owns that
+      object for its lifetime. Other methods' @ivar assignments are intentionally
+      excluded to avoid false composition edges.
+    """
+    try:
+        seen: set[str] = set()
+        result: list[tuple[str, int]] = []
+
+        body = class_node.child_by_field_name("body")
+        if body is None:
+            return result
+
+        # Find the initialize method and scan its body for @ivar = ClassName.new.
+        for child in body.named_children:
+            if child.type != "method":
+                continue
+            try:
+                name_node = child.child_by_field_name("name")
+                if name_node is None or _text(name_node).strip() != "initialize":
+                    continue
+                # Found initialize — scan its body for ivar assignments.
+                method_body = child.child_by_field_name("body")
+                if method_body is None:
+                    continue
+                for stmt in method_body.named_children:
+                    if stmt.type != "assignment":
+                        continue
+                    try:
+                        right = stmt.child_by_field_name("right")
+                        if right is None:
+                            continue
+                        type_name = _ruby_new_call_class(right)
+                        if type_name and type_name not in seen:
+                            seen.add(type_name)
+                            result.append((type_name, stmt.start_point[0] + 1))
+                    except Exception:  # noqa: BLE001
+                        pass
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Post-filter builtins (Array.new/Hash.new/String.new etc. are PascalCase
+        # constants but stdlib, not user composition) via the authoritative source.
+        return [(t, ln) for (t, ln) in result if not is_builtin(t, "ruby")]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("collect_composition_types_ruby: failed: %r", exc)
+        return []
+
+
+def collect_composition_types_php(class_node: Node) -> list[tuple[str, int]]:
+    """Collect (held_type_name, line) pairs from a PHP class_declaration node.
+
+    Pass 1: property_declaration with named_type → plain name child.
+    Pass 2: __construct simple_parameter nodes with named_type type hint.
+    PHP 8+ promoted constructor properties appear in pass 2.
+    Deduped by type name. Returns [] on any error. Never raises.
+    """
+    try:
+        seen: set[str] = set()
+        result: list[tuple[str, int]] = []
+
+        body = class_node.child_by_field_name("body")
+        if body is None:
+            return result
+
+        # Pass 1: typed property declarations.
+        for child in body.named_children:
+            if child.type != "property_declaration":
+                continue
+            try:
+                type_name: str | None = None
+                for pc in child.children:
+                    if pc.type == "named_type":
+                        for tc in pc.children:
+                            if tc.type == "name":
+                                type_name = _text(tc).strip()
+                                break
+                        break
+                if not type_name or not type_name[0].isupper():
+                    continue
+                if type_name not in seen:
+                    seen.add(type_name)
+                    result.append((type_name, child.start_point[0] + 1))
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Pass 2: constructor parameter type hints (__construct).
+        for child in body.named_children:
+            if child.type != "method_declaration":
+                continue
+            try:
+                name_node = child.child_by_field_name("name")
+                if name_node is None or _text(name_node).strip() != "__construct":
+                    continue
+                params = child.child_by_field_name("parameters")
+                if params is None:
+                    continue
+                for param in params.named_children:
+                    if param.type != "simple_parameter":
+                        continue
+                    type_node = None
+                    for pc in param.children:
+                        if pc.type == "named_type":
+                            type_node = pc
+                            break
+                    if type_node is None:
+                        continue
+                    type_name = None
+                    for tc in type_node.children:
+                        if tc.type == "name":
+                            type_name = _text(tc).strip()
+                            break
+                    if not type_name or not type_name[0].isupper():
+                        continue
+                    if type_name not in seen:
+                        seen.add(type_name)
+                        result.append((type_name, param.start_point[0] + 1))
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Post-filter builtins via the authoritative source (PHP type hints can name
+        # built-in classes like 'DateTime'/'ArrayObject').
+        return [(t, ln) for (t, ln) in result if not is_builtin(t, "php")]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("collect_composition_types_php: failed: %r", exc)
+        return []

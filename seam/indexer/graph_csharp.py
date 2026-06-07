@@ -38,6 +38,7 @@ from seam.indexer.graph_common import (
 from seam.indexer.graph_scope_infer_ext import resolve_receiver_type_ext
 from seam.indexer.graph_scope_infer_ext2 import (
     _CS_SELF_NAMES,
+    collect_composition_types_cs,
     record_cs_local_types,
     record_cs_param_types,
     scan_class_fields_cs,
@@ -302,6 +303,7 @@ def _extract_edges_csharp(root: Node, filepath: Path) -> list[Edge]:
     file_stem = filepath.stem
     emit_inheritance = config.SEAM_INHERITANCE_EDGES == "on"
     infer = config.SEAM_TYPE_INFERENCE == "on"
+    composition_on = config.SEAM_COMPOSITION_EDGES == "on"
 
     def _walk(
         node: Node,
@@ -333,6 +335,9 @@ def _extract_edges_csharp(root: Node, filepath: Path) -> list[Edge]:
                 cn = node.child_by_field_name("name")
                 if cn is not None:
                     new_class_name = _text(cn).strip() or None
+                # Slice #79: emit holds edges for C# class fields + ctor params.
+                if composition_on and new_class_name:
+                    _handle_cs_class_holds(node, new_class_name, file_str, edges)
                 new_fields: dict[str, str] = scan_class_fields_cs(node) if infer else {}
                 body = node.child_by_field_name("body")
                 if body is not None:
@@ -429,6 +434,31 @@ def _extract_edges_csharp(root: Node, filepath: Path) -> list[Edge]:
         _walk(child, None, {}, {})
 
     return edges
+
+
+def _handle_cs_class_holds(
+    class_node: Node, class_name: str, file_str: str, edges: list[Edge]
+) -> None:
+    """Emit holds edges for each plain user-type field/ctor-param in a C# class.
+
+    Delegates to collect_composition_types_cs for (held_type, line) pairs and
+    emits one Edge per unique pair. Never raises (backstop try/except).
+    """
+    try:
+        for held_type, held_line in collect_composition_types_cs(class_node):
+            edges.append(
+                Edge(
+                    source=class_name,
+                    target=held_type,
+                    kind="holds",
+                    file=file_str,
+                    line=held_line,
+                    confidence="INFERRED",
+                    receiver=None,
+                )
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_handle_cs_class_holds: failed: %r", exc)
 
 
 def _handle_csharp_inheritance(decl_node: Node, file_str: str, edges: list[Edge]) -> None:

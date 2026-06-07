@@ -280,6 +280,20 @@ SEAM_NAME_EXPANSION_CAP: int = int(os.getenv("SEAM_NAME_EXPANSION_CAP", "50"))
 SEAM_BARE_RESOLVE_CAP: int = int(os.getenv("SEAM_BARE_RESOLVE_CAP", "25"))
 
 
+# ── Slice #77: Composition (holds) edges ────────────────────────────────────
+
+# Master switch for composition edge extraction. When "on" (default), the extractor
+# emits an Edge(kind="holds", confidence="INFERRED") from a class to every plain user
+# type it stores as a typed field/property OR receives as a typed constructor/init
+# parameter. This captures DI and composition relationships in the call graph so that
+# seam_impact traversal surfaces which classes depend on a given type structurally (not
+# only via explicit calls). Conservatism contract: only plain user type names bind — the
+# same refusal rules as SEAM_TYPE_INFERENCE (optionals, generics, containers, primitives,
+# dotted expressions are all rejected). When "off", the collector pass is skipped entirely
+# and the produced edge set is byte-identical to pre-Slice-#77 behavior.
+SEAM_COMPOSITION_EDGES: str = os.getenv("SEAM_COMPOSITION_EDGES", "on")
+
+
 # ── Tier B B4: Receiver-type inference (Python + TypeScript/JS) ──────────────
 
 # Master switch for receiver-type inference in Python and TypeScript/JS extractors.

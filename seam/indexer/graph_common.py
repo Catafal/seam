@@ -83,6 +83,8 @@ class Edge(TypedDict):
     #   'extends'      — class inheritance (base class)
     #   'implements'   — interface implementation
     #   'instantiates' — object construction (new Foo(), Foo(), Foo::new(), Foo{}) [Tier B B6]
+    #   'holds'        — composition: a class stores a plain user type as a typed field/property
+    #                    OR receives one as a typed constructor/init parameter [Slice #77]
     kind: str
     file: str
     line: int
