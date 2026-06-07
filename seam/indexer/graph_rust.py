@@ -1,9 +1,11 @@
 """Rust symbol, edge, and comment extraction from tree-sitter ASTs.
 
-LAYER: imports from graph_common (leaf) and graph_scope_infer_ext (leaf) — never from graph.py.
+LAYER: imports from graph_common (leaf), graph_scope_infer_ext (leaf), field_access (leaf) —
+never from graph.py.
 
 LAYERING:
     graph_common       (leaf — no seam deps)
+    field_access       (leaf — field-access read/write classification + field symbols)
          ↑
     graph_rust         (this file)
          ↑
@@ -18,11 +20,16 @@ All extractor functions follow the same contract:
   - Edges carry confidence='INFERRED' by default.
 """
 
+import logging
 from pathlib import Path
 
 from tree_sitter import Node
 
 import seam.config as config
+from seam.indexer.field_access import (
+    collect_field_symbols_rust,
+    extract_field_accesses_rust,
+)
 from seam.indexer.graph_common import (
     Comment,
     Edge,
@@ -44,6 +51,8 @@ from seam.indexer.graph_scope_infer_ext import (
     scan_class_fields_rust,
 )
 from seam.indexer.signatures import extract_node_fields
+
+logger = logging.getLogger(__name__)
 
 # ── Doc-comment helper ─────────────────────────────────────────────────────────
 
@@ -88,9 +97,9 @@ def _rust_doc_comment(decl_node: Node) -> str | None:
 
 
 def _extract_symbols_rust(root: Node, filepath: Path) -> list[Symbol]:
-    """Walk a Rust AST and extract fn, struct, enum, trait, and impl-method symbols.
+    """Walk a Rust AST and extract fn, struct, enum, trait, impl-method, and field symbols.
 
-    Kind mapping (per spec, existing 5 kinds only):
+    Kind mapping (per spec, existing 5 kinds only for non-field symbols):
         function_item (top-level or in mod)  → function
         function_item inside impl_item       → method  (qualified as 'Type.fn')
         struct_item                          → class
@@ -98,9 +107,13 @@ def _extract_symbols_rust(root: Node, filepath: Path) -> list[Symbol]:
         trait_item                           → interface
         function_item inside trait_item body → method  (qualified as 'Trait.fn')
         mod_item                             → traversed (NOT emitted as symbol)
+
+    A3 Slice 3: when SEAM_FIELD_ACCESS_EDGES='on', also emits kind='field' symbols
+    for each struct_item field_declaration, using collect_field_symbols_rust.
     """
     symbols: list[Symbol] = []
     file_str = str(filepath)
+    field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
 
     def _walk(node: Node, impl_type: str | None = None) -> None:
         if node.type == "function_item":
@@ -211,6 +224,24 @@ def _extract_symbols_rust(root: Node, filepath: Path) -> list[Symbol]:
                         qualified_name=struct_name,
                     )
                 )
+                # A3: emit field symbols for this struct when feature is on.
+                if field_access_on:
+                    for qualified_field, field_line in collect_field_symbols_rust(
+                        node, struct_name
+                    ):
+                        symbols.append(Symbol(
+                            name=qualified_field,
+                            kind="field",
+                            file=file_str,
+                            start_line=field_line,
+                            end_line=field_line,
+                            docstring=None,
+                            signature=None,
+                            decorators=[],
+                            is_exported=None,
+                            visibility=None,
+                            qualified_name=qualified_field,
+                        ))
 
         elif node.type == "enum_item":
             name_node = node.child_by_field_name("name")
@@ -305,12 +336,16 @@ def _extract_edges_rust(root: Node, filepath: Path) -> list[Edge]:
 
     Slice #78: when SEAM_COMPOSITION_EDGES is on, struct_item nodes emit holds edges
     for each plain user-type field. Happens alongside the Tier B field pre-scan.
+
+    A3 Slice 3: when SEAM_FIELD_ACCESS_EDGES is on, field_expression nodes that are
+    NOT in call position emit reads/writes edges for struct field accesses.
     """
     edges: list[Edge] = []
     file_str = str(filepath)
     file_stem = filepath.stem
     infer = config.SEAM_TYPE_INFERENCE == "on"
     composition_on = config.SEAM_COMPOSITION_EDGES == "on"
+    field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
 
     # struct_fields: struct name → field type map; pre-scanned so impl methods can see them.
     struct_fields: dict[str, dict[str, str]] = {}
@@ -331,7 +366,12 @@ def _extract_edges_rust(root: Node, filepath: Path) -> list[Edge]:
             if name_node:
                 sname = _text(name_node).strip()
                 if sname:
-                    if infer:
+                    # Pre-scan struct fields when type inference OR field access is on.
+                    # WHY: field_access_on needs struct_fields for receiver resolution
+                    # (self.field → Account.field requires knowing field types). Even when
+                    # SEAM_TYPE_INFERENCE is off, we still need the pre-scan so that
+                    # extract_field_accesses_rust can resolve self to the enclosing type.
+                    if infer or field_access_on:
                         struct_fields[sname] = scan_class_fields_rust(node)
                     # Slice #78: emit holds edges for each plain user-type field.
                     # WHY here: struct_item is where field declarations live in Rust
@@ -375,10 +415,38 @@ def _extract_edges_rust(root: Node, filepath: Path) -> list[Edge]:
                 if impl_type and impl_type in struct_fields:
                     new_types.update(struct_fields[impl_type])
                 record_rust_param_types(node, new_types)
+            # A3: also seed for field-access resolution even when infer is off.
+            # WHY: field-access resolution uses var_types for receiver lookup;
+            # without the struct field seed, self.field won't resolve to Type.field.
+            if field_access_on and not infer:
+                if impl_type and impl_type in struct_fields:
+                    new_types.update(struct_fields[impl_type])
+                record_rust_param_types(node, new_types)
             body = node.child_by_field_name("body")
             if body is not None:
                 for child in body.children:
                     _walk(child, new_types, impl_type)
+            # A3: emit field-access (reads/writes) edges for this function body.
+            # Done AFTER the body walk so that record_rust_local_types has accumulated
+            # local bindings into new_types (incremental during the walk above).
+            if field_access_on and body is not None:
+                fn_name = _node_name(node)
+                if fn_name:
+                    source_fn = (
+                        f"{impl_type}.{fn_name}" if impl_type else fn_name
+                    )
+                    for _src, target_field, mode, fa_line in extract_field_accesses_rust(
+                        body, source_fn, impl_type, new_types
+                    ):
+                        edges.append(Edge(
+                            source=source_fn,
+                            target=target_field,
+                            kind=mode,
+                            file=file_str,
+                            line=fa_line,
+                            confidence="INFERRED",
+                            receiver=None,
+                        ))
             return
 
         if infer and ntype == "let_declaration":
