@@ -316,8 +316,11 @@ def _go_classify_selector(
         if operand is None or field is None:
             return None
 
-        # Only field_identifier fields are real field accesses.
-        # (type_identifier would be a package.Type reference — skip)
+        # Only field_identifier fields are real struct field accesses.
+        # A type_identifier in selector position means pkg.SomeType or pkg.SomeFunc —
+        # a package-level reference, not a struct field access. We skip those to avoid
+        # emitting phantom field edges for cross-package qualified identifiers like
+        # `fmt.Println` (selector_expression with type_identifier for 'Println').
         if field.type != "field_identifier":
             return None
 
@@ -328,8 +331,11 @@ def _go_classify_selector(
         receiver_text = _text(operand)
 
         # Go has no universal self — pass empty frozenset() for self_names.
-        # The receiver type comes purely from var_types (record_go_param_types),
-        # not from any self-alias convention.
+        # The receiver type comes purely from var_types (record_go_param_types +
+        # the receiver-binding injected by _go_emit_field_access_edges), not from
+        # any self-alias convention. Without the receiver binding in var_types,
+        # `r.Balance` in a method `func (r *Account) M()` would produce a bare
+        # 'Balance' edge instead of the qualified 'Account.Balance'.
         resolved_type = resolve_receiver_type_ext(
             receiver_text, impl_type, var_types, frozenset()
         )

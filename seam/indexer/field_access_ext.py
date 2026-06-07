@@ -238,6 +238,13 @@ def _java_emit_read_if_not_in_call(
     WHY: Java method calls like this.foo() use method_invocation, not field_access +
     call_expression. So there is no field_access-in-call-position case to worry about.
     We still guard against being inside a method_invocation argument list.
+
+    WHY guard against being the 'object' of method_invocation: chained calls like
+    `this.obj.foo()` produce a field_access for `this.obj` as the 'object' of the
+    method_invocation. In that case `this.obj` IS genuinely being read (to get the
+    receiver), but we skip it conservatively — the call edge on `obj.foo` already
+    captures the dependency. Emitting both a 'reads' edge AND a 'call' edge for the
+    same chained expression would double-count the relationship.
     """
     parent = node.parent
     # Guard: if parent is a method_invocation and this is the 'object' field,

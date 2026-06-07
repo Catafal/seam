@@ -236,6 +236,11 @@ def _ruby_emit_read(
     node type — this is different from Python/TS where the attribute node itself
     may appear as the function of a call expression).
     So any bare instance_variable node that reaches this function is a read.
+
+    WHY no receiver resolution step: Ruby @ivars are implicitly bound to the enclosing
+    class — there is no receiver expression to resolve. `@balance` always belongs to
+    `self` (the current instance), so the qualified target is always `ClassName.balance`
+    when inside a class method. No var_types lookup is needed or possible.
     """
     field_name = _ruby_ivar_field_name(node)
     if field_name:
@@ -307,6 +312,12 @@ def collect_field_symbols_ruby(
     The only way to discover @ivar fields is from assignment sites in method bodies.
     We scan ALL methods (not just initialize) to catch ivars assigned in setters etc.
     First-seen wins for the line number.
+
+    WHY scan all methods and not just initialize: Ruby setters like `def balance=(v)`
+    assign `@balance = v` — these are the canonical assignment sites for that field.
+    Restricting to initialize would miss such setter-defined fields entirely.
+    The first-seen line number gives a reasonable canonical location even when an ivar
+    is first assigned in a setter rather than the constructor.
 
     Returns [] on any error. Never raises.
     """

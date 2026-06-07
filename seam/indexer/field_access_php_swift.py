@@ -159,6 +159,12 @@ def _php_walk_stmt(
         return
 
     # member_call_expression: $this->method() → NOT a field edge. Recurse into args.
+    # WHY PHP needs explicit member_call_expression handling (unlike Python/TS):
+    # PHP uses TWO DISTINCT node types — member_access_expression for $this->field
+    # and member_call_expression for $this->method(). There is no shared parent node
+    # to check "is this in call position?" on. Handling member_call_expression here
+    # prevents the generic recursion from reaching its member_access_expression object
+    # child (the receiver) and mistakenly emitting a field-read for it.
     if t in ("member_call_expression", "nullsafe_member_call_expression"):
         # Only recurse into the arguments — not the object/name fields.
         args = node.child_by_field_name("arguments")
@@ -587,6 +593,12 @@ def _swift_emit_read_if_not_in_call(
 
     A navigation_expression is in call position when its parent is a call_expression
     AND it is the first child (callee). We skip those (method calls).
+
+    WHY first-child check instead of a named field: Swift's tree-sitter grammar does
+    not expose the callee of a call_expression as a named field (unlike Python 'function'
+    or TS 'function'). The callee is always the first child of the call_expression node.
+    We compare start_point (same stable identity rationale as Python/TS/Go) to handle
+    the fact that tree-sitter returns fresh Node objects on each child access.
     """
     parent = node.parent
     if parent is not None and parent.type == "call_expression":
@@ -785,6 +797,17 @@ def emit_swift_field_access_edges(
     Finds the function_body child and runs extract_field_accesses_swift on it.
     The source_fn is derived from the function's simple_identifier child.
     Returns a (possibly empty) list of Edge TypedDicts.
+
+    WHY this lives in field_access_php_swift instead of graph_swift:
+    graph_swift.py reached the 1000-line limit. These emission helpers share the same
+    layer as the Swift extractor (leaf), so moving them here keeps both files under
+    the limit without introducing a new dependency direction. graph_swift.py calls
+    this function directly via `from seam.indexer.field_access_ext2 import ...`.
+
+    All emitted edges carry confidence='INFERRED' — receiver-type inference for Swift
+    fields is extraction-time heuristic (self → class is certain; var_types lookup is
+    scope-annotation-based). INFERRED is the correct label for the whole edge regardless
+    of how confident the individual receiver resolution was.
 
     Never raises.
     """

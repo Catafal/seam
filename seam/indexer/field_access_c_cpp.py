@@ -267,11 +267,18 @@ def _c_classify_field_expr(
             return None
 
         receiver_text = _text(arg_node)
-        # Strip leading '*' for pointer dereference (e.g. (*p) → p).
+        # Strip leading '*' for pointer dereference (e.g. (*p).field or *p → p).
+        # WHY strip: C struct access via pointer uses `->` (tree-sitter handles both
+        # dot and arrow as field_expression), but explicit dereference `(*p).x` also
+        # occurs. The receiver text would be `*p`; after stripping, `p` can be looked
+        # up in var_types to resolve the struct type.
         clean_recv = receiver_text.lstrip("*").strip()
 
         # C has no self convention — pass empty frozenset().
-        # Resolution comes purely from var_types.
+        # WHY: Unlike C++/Java/Python, C free functions have no implicit receiver.
+        # All struct type resolution must come from explicit var_types bindings
+        # (e.g. `Account *a` → var_types['a'] = 'Account'). If the receiver is not
+        # in var_types, we emit a bare field name rather than guessing.
         resolved_type = resolve_receiver_type_ext(
             clean_recv, struct_name, var_types, frozenset()
         )
@@ -624,6 +631,11 @@ def _cpp_collect_field_decl(
         # Simple cases also have identifier nodes.
         if child.type in ("field_identifier", "identifier"):
             field_name = _text(child).strip()
+            # WHY keyword filter: C++ tree-sitter sometimes surfaces access specifiers
+            # and storage/qualifier keywords as bare identifier tokens inside a
+            # field_declaration (e.g. `static int x` may produce an 'identifier' child
+            # with text 'static'). These are not field names and must be excluded to
+            # avoid creating phantom field symbols with names like 'static' or 'const'.
             if field_name and field_name not in ("public", "private", "protected",
                                                   "static", "const", "virtual",
                                                   "inline", "explicit", "override"):

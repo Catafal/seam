@@ -249,6 +249,12 @@ def _emit_read_if_not_in_call(
     An attribute is in call position when it is the 'function' field of a parent
     'call' node. We skip those (they are method calls, handled as 'call' edges).
 
+    WHY exclude call position: `self.foo()` produces an attribute node for `self.foo`
+    AND a call node for the invocation. If we emitted a 'reads' edge for `self.foo`
+    here, we would produce a field-read edge AND a call edge for the same expression —
+    overcounting the dependency and confusing blast-radius analysis. The 'call' edge
+    (already handled by _emit_call_edge) fully represents this relationship.
+
     WHY start_point comparison instead of identity: tree-sitter creates fresh Python
     Node objects on each field access call, so `func_field is node` is always False
     even when both point to the same underlying C node. Comparing start_point (row,col)
@@ -310,6 +316,19 @@ def _classify_attribute(
       NEVER emit a wrong qualified target. If the receiver type cannot be
       confidently determined, return the bare field name.
 
+    WHY bare name instead of None on unresolvable: returning a bare 'field' name
+    keeps the edge in the graph as an AMBIGUOUS match. A qualified Type.field edge
+    is more precise, but a bare edge is still useful — seam_impact on 'balance'
+    will find all methods that write ANY field named 'balance' across all types.
+    Returning None would silently drop the edge entirely, losing real dependencies.
+
+    WHY all field-access edges carry confidence='INFERRED': the same field name can
+    appear across multiple types ('balance' in Account AND Transaction), so even a
+    qualified 'Account.balance' edge was inferred from a receiver type annotation —
+    we did not statically prove the receiver IS of type Account (only that it LOOKS
+    like one). INFERRED is consistent with how call edges on typed receivers and
+    holds edges are rated across all 12 languages.
+
     Never raises (returns None on any exception).
     """
     try:
@@ -354,6 +373,16 @@ def collect_field_symbols_python(
 
     Dedup: by (class_name, field_name) — multiple assignments to same field → one entry.
     Class-level declaration wins over __init__ assignment (class body scanned first).
+
+    WHY index fields as first-class symbols: without a symbol row for 'Account.balance',
+    seam_context('Account.balance') would return not-found even though reads/writes edges
+    reference it. A field symbol gives the symbol a location (file+line) and lets
+    seam_context surface field_readers/field_writers for it.
+
+    WHY scan __init__ for self.x: Python classes often declare fields only in __init__
+    with no class-level annotation (e.g. `self.balance = 0`). These fields have no
+    annotated_assignment node at class level, so the only way to discover them is from
+    assignment sites. First-occurrence wins to give a stable canonical line number.
 
     Returns [] on any error. Never raises.
     """

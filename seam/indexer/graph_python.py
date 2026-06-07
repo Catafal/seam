@@ -210,12 +210,18 @@ def _extract_symbols_python(root: Node, filepath: Path) -> list[Symbol]:
                 # A3: Emit field symbols for this class when feature is on.
                 # Collects annotated class-level fields (x: Type) and first
                 # self.x = ... assignments in __init__. Deduped by (class, field).
+                # WHY emit field symbols here alongside the class symbol: we need the
+                # class name context ('name') which is only available at the class_definition
+                # node. Doing it in a separate post-pass over symbols would require
+                # re-parsing or re-walking.
                 if field_access_on:
                     for qualified_field, field_line in collect_field_symbols_python(node, name):
-                        # Use a sentinel node with the right line numbers.
-                        # _make_symbol needs a Node for start/end lines, but we have
-                        # explicit line numbers from collect_field_symbols_python.
-                        # We build the Symbol manually to avoid needing a dummy node.
+                        # WHY build Symbol manually instead of using _make_symbol:
+                        # _make_symbol expects a tree-sitter Node for start/end lines.
+                        # collect_field_symbols_python returns explicit (name, line) pairs
+                        # because the field may come from __init__ (a child node of the
+                        # class body, not the class node itself). Building Symbol directly
+                        # with the exact line avoids needing a dummy or sentinel node.
                         symbols.append(Symbol(
                             name=qualified_field,
                             kind="field",

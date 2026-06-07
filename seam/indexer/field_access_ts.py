@@ -139,6 +139,11 @@ def _ts_walk_stmt(
 
     # call_expression: the function child may be a member_expression (method call).
     # We do NOT emit a field edge for it — it's a call. But arguments may contain reads.
+    # WHY handle call_expression explicitly instead of relying on _ts_emit_read_if_not_in_call:
+    # the recursive fallback path below would recurse into the call_expression's children and
+    # eventually reach the callee member_expression. _ts_emit_read_if_not_in_call does guard
+    # against that, but handling call_expression here first short-circuits cleanly: only the
+    # arguments are recursed, the callee is never reached.
     if t == "call_expression":
         args = node.child_by_field_name("arguments")
         if args is not None:
@@ -371,6 +376,8 @@ def _ts_unwrap_type_assertion(node: Node) -> Node:
 
     WHY one level: deeper nesting is not common in practice, and the conservatism
     contract requires refusing uncertain receivers rather than over-unwrapping.
+    A two-level unwrap like `((this as any) as T).field` is exotic enough that keeping
+    the outer wrapper (and thus resolving the bare field name) is safer than guessing.
     Returns the original node if unwrapping does not yield a simpler node.
     Never raises.
     """

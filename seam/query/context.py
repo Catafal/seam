@@ -50,6 +50,11 @@ def collect_field_access_for_names(
     WHY: field access edges store target_name as the qualified 'Type.field' (when the
     receiver type was inferred) OR as the bare 'field' (when the receiver was unresolvable).
     We query both forms to be consistent with how callers/callees edges are looked up.
+
+    WHY kind is passed as a parameter instead of querying both 'reads' and 'writes':
+    the caller (collect_field_access_split) always needs the two lists separately for
+    seam_context to surface field_readers vs field_writers as distinct fields. A single
+    combined query would lose the distinction and require a second pass to re-split.
     """
     if not symbol_name:
         return []

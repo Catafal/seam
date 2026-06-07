@@ -1032,3 +1032,112 @@ emission at extraction time. Set to `"off"` to suppress all `holds` edges; byte-
 pre-composition behaviour. Like all other extraction-time knobs (`SEAM_TYPE_INFERENCE`,
 `SEAM_INHERITANCE_EDGES`), toggling takes effect only on the next `seam init` re-index —
 the existing stored edges are not retroactively removed.
+
+---
+
+## A3 — Field-Access Edges (`reads` / `writes`) + Field Symbols
+
+> Shipped on branch `feat/field-access-edges`. **No schema migration** — `"reads"`, `"writes"`,
+> and `"field"` are new values in the existing `edges.kind TEXT` and `symbols.kind TEXT` columns.
+> Extraction-time, per-file, watcher-compatible. MCP tool count stays 12.
+> `seam_context` gains `field_readers` and `field_writers` in its output.
+
+### The visibility gap A3 closes
+
+Before A3, the call graph captured invocations but not data-flow through stored fields. A field
+read (`obj.url`) or write (`obj.url = x`) had no edge — so renaming `Config.url` or changing
+its type produced zero upstream results from `seam_impact`. A3 adds per-access-site edges that
+make field data-flow as visible as method control-flow.
+
+### New edge kinds: `reads` and `writes`
+
+Edge kind vocabulary grows from 6 to **8**:
+
+```
+call | import | extends | implements | instantiates | holds | reads | writes
+```
+
+| Kind | When emitted | Mode detection |
+|------|-------------|---------------|
+| `reads` | `obj.field` appears as an expression rvalue | Default — any non-write access |
+| `writes` | `obj.field = x`, `obj.field += x`, `del obj.field` | LHS of assignment, augmented-assign, or `del` |
+
+All field-access edges carry `confidence='INFERRED'`. The edge `source` is the enclosing symbol
+(function/method); the `target` is the field name (bare or `Type.field` when the receiver type is
+inferred).
+
+### Fields/properties as first-class symbols
+
+`symbols.kind` gains `'field'`. A class field/property is now indexed as:
+
+```
+Symbol(name='Client.url', kind='field', qualified_name='Client.url', ...)
+```
+
+This is additive — no migration needed, no column added. Field symbols participate in FTS5 search,
+`seam_context`, and `seam_impact` exactly like method symbols. Existing tooling that treats `kind`
+as a closed enum must be updated to handle `'field'`.
+
+### Conservatism contract (same as Tier B)
+
+Receiver type resolution follows the same two-layer scope model as `resolve_receiver_type`:
+
+1. `self`/`this`/`cls` → resolved to the enclosing class → qualified `Type.field` edge emitted
+2. Typed local/param receiver (via `resolve_receiver_type`) → `Type.field` when confidently inferred
+3. Unresolvable receiver → bare `field` name kept (never emit a wrong edge)
+
+Optionals, containers, generics, chained receivers, and unknown identifiers return `None` →
+edge silently omitted (false negative always preferred over false positive).
+
+### New read-path view: `field_readers` / `field_writers`
+
+`seam/query/context.py` adds two lists to the context result:
+
+- `field_readers` — symbols that have a `reads` edge pointing to this symbol
+- `field_writers` — symbols that have a `writes` edge pointing to this symbol
+
+These are the **typed** complement to `callers`, which remains the inclusive BFS view (all edge
+kinds). Use `field_readers`/`field_writers` to distinguish data-flow from control-flow precisely;
+use `callers` for the full inclusive blast radius.
+
+### Write-path data flow (seam init, per file)
+
+```
+For each source file (same pass as call-edge extraction):
+  a. field_access.extract_field_access_edges(node, language, path, symbols)
+     → dispatches to per-family leaf module
+     → per access site: detect mode (reads / writes) from AST context
+     → resolve receiver type (self→class / typed receiver / bare)
+     → emit Edge(source=enclosing_fn, target=field_name, kind='reads'|'writes',
+                 confidence='INFERRED', receiver=raw_text)
+  b. db.upsert_file writes edges alongside call/holds edges
+  c. field symbols (kind='field') written to symbols table in the same upsert
+```
+
+Because this runs per-file in the existing pipeline, the **watcher picks up field-access edges
+automatically** — no post-pass needed (unlike synthesis or clustering).
+
+### Module split (1000-line cap)
+
+| Leaf module | Languages |
+|-------------|-----------|
+| `seam/indexer/field_access.py` | Python extractor + facade re-exports |
+| `seam/indexer/field_access_ts.py` | TypeScript / JavaScript |
+| `seam/indexer/field_access_go_rust.py` | Go / Rust |
+| `seam/indexer/field_access_ext.py` | Java / C# |
+| `seam/indexer/field_access_c_cpp.py` | C / C++ |
+| `seam/indexer/field_access_ext2.py` | Ruby / PHP |
+| `seam/indexer/field_access_php_swift.py` | PHP emission helpers + Swift |
+
+### Traversal — automatic, no new code
+
+The traversal layer (`seam/analysis/traversal.py`) is **kind-agnostic**: it walks all edges
+regardless of `kind`. Adding `reads`/`writes` flows through `seam_impact`, `seam_context`,
+and `seam_trace` automatically — exactly the same mechanism as `holds` and synthesized edges.
+
+### Config knob
+
+`SEAM_FIELD_ACCESS_EDGES: "on" | "off"` (default `"on"`) — master switch for field-access-edge
+emission and field-symbol extraction at extraction time. Set to `"off"` for byte-identical
+pre-A3 behavior (no `reads`/`writes` edges, no `kind='field'` symbols). Like all extraction-time
+knobs, toggling takes effect only on the next `seam init` re-index.

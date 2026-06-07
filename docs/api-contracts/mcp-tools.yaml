@@ -19,6 +19,17 @@
 # tool is added — count stays 12. (synthesized_by is stored in the DB but is NOT yet surfaced
 # in tool OUTPUT — a documented follow-up; agents cannot yet distinguish a synthesized INFERRED
 # edge from a statically-extracted one in results.)
+#
+# A3 field-access edges: extraction-time, per-file, watcher-compatible. New edge kinds
+# 'reads' (field read) and 'writes' (field write/delete). Edge kind vocabulary is now 8:
+#   call | import | extends | implements | instantiates | holds | reads | writes
+# symbols.kind gains 'field' (qualified_name='Type.field'). All reads/writes edges carry
+# confidence='INFERRED'. Because traversal is KIND-AGNOSTIC, seam_impact / seam_trace /
+# seam_context pick them up automatically. seam_context additionally returns field_readers
+# and field_writers lists (typed split of the inclusive callers BFS). Controlled by
+# SEAM_FIELD_ACCESS_EDGES (default on; extraction-time; seam init re-index required).
+# NO new tool — count stays 12. read/write provenance (kind) is NOT yet surfaced in
+# seam_impact / seam_trace output — a documented follow-up.
 
 tools:
 
@@ -174,7 +185,11 @@ tools:
           type: integer
         kind:
           type: string
-          enum: [function, class, method, interface, type]
+          enum: [function, class, method, interface, type, field]
+          description: |
+            'field' is new in A3 — first-class indexed field/property symbol
+            (qualified_name='Type.field'). Tooling that treats kind as a closed enum must
+            handle 'field'. All other kinds are unchanged.
         docstring:
           type: string
           nullable: true
@@ -243,6 +258,23 @@ tools:
             Phase 4. Scope-resolved name: "ClassName.method" for methods or plain name
             for top-level symbols. null when the outer scope could not be determined or
             for pre-v5 rows.
+        field_readers:
+          type: array
+          items: string
+          description: |
+            A3. Symbol names that have a 'reads' edge pointing to this symbol —
+            i.e., symbols that read this field/property. Empty list when no reads
+            edges exist (either pre-A3 index, SEAM_FIELD_ACCESS_EDGES=off, or this
+            symbol has no recorded field readers). Distinct from 'callers': callers
+            uses the kind-agnostic BFS (all edge kinds); field_readers is the precise
+            typed split for reads edges only.
+        field_writers:
+          type: array
+          items: string
+          description: |
+            A3. Symbol names that have a 'writes' edge pointing to this symbol —
+            i.e., symbols that write or delete this field/property. Empty list when
+            no writes edges exist. Same distinction from 'callers' as field_readers.
     errors:
       - code: INVALID_INPUT
         condition: symbol is empty string or whitespace-only
@@ -361,6 +393,15 @@ tools:
       SEAM_COMPOSITION_EDGES (default on). Requires seam init re-index to appear.
       No new tool; traversed automatically alongside call/import/extends/implements/
       instantiates.
+
+      A3 field-access edges: 'reads' and 'writes' edges capture data-flow through
+      fields and properties (all 12 languages, extraction-time, watcher-compatible).
+      A field reader or writer appears in the blast radius of the field symbol at d=1.
+      symbols.kind gains 'field' (qualified_name='Type.field'). Controlled by
+      SEAM_FIELD_ACCESS_EDGES (default on). Requires seam init re-index to appear.
+      No new tool; traversed automatically (kind-agnostic BFS). NOTE: reads/writes
+      provenance is NOT yet surfaced per-entry in seam_impact output — a documented
+      follow-up (same pattern as synthesized_by).
 
       Tier B edge enrichment: edges whose receiver type was confidently inferred
       at index time already carry a qualified 'Type.method' target in the DB —
@@ -498,12 +539,14 @@ tools:
       Trace the call/dependency path between two symbols.
       Returns the shortest path from source to target as an ordered list of hops,
       where each hop carries the edge kind (call | import | extends | implements |
-      instantiates | holds) and per-edge confidence (EXTRACTED | INFERRED | AMBIGUOUS).
+      instantiates | holds | reads | writes) and per-edge confidence
+      (EXTRACTED | INFERRED | AMBIGUOUS).
       The extends/implements kinds are class-inheritance edges added in P6a
       (SEAM_INHERITANCE_EDGES=on). The instantiates kind was added in Tier B B6:
       'new Foo()' / struct-literal / composite-literal calls. The holds kind captures
       class composition: a class that stores another user-defined type as a typed
-      field/property or constructor parameter. Tier B also enriches edge resolution:
+      field/property or constructor parameter. The reads and writes kinds (A3) capture
+      field-access data-flow: reads = field read, writes = field write/delete. Tier B also enriches edge resolution:
       when a call's receiver type was inferred at index time, the target is already
       qualified ('Type.method') so it resolves with EXTRACTED confidence when unique
       — no Tier A bridging needed for that hop.
@@ -571,7 +614,8 @@ tools:
         Hop shape (per edge in a path):
           from_name      (str)      — source of this edge
           to_name        (str)      — target of this edge
-          kind           (str)      — 'call' | 'import' | 'extends' | 'implements' | 'instantiates' | 'holds'
+          kind           (str)      — 'call' | 'import' | 'extends' | 'implements' | 'instantiates' | 'holds' | 'reads' | 'writes'
+                                      'reads' and 'writes' are A3 field-access edge kinds
           confidence     (str)      — EXTRACTED | INFERRED | AMBIGUOUS
                                       Resolved at read time against the whole index
                                       (EXTRACTED = to_name unique in index; AMBIGUOUS = shared name;
@@ -586,7 +630,7 @@ tools:
 
         EdgeHop shape (for callers_* / callees_* lists):
           name           (str)      — neighboring symbol name
-          kind           (str)      — 'call' | 'import' | 'extends' | 'implements' | 'instantiates' | 'holds'
+          kind           (str)      — 'call' | 'import' | 'extends' | 'implements' | 'instantiates' | 'holds' | 'reads' | 'writes'
           confidence     (str)      — EXTRACTED | INFERRED | AMBIGUOUS
           resolved_by    (str|null) — Phase 5. Same provenance vocabulary as Hop above.
                                       null for pre-v6 indexes or missing context.

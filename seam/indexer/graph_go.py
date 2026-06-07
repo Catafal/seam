@@ -245,7 +245,10 @@ def _go_emit_field_symbols(
         if name_node is None or type_node is None:
             return
         if type_node.type != "struct_type":
-            return  # Only emit field symbols for struct types
+            # WHY skip non-struct type_specs: interface_type and other named types
+            # have no stored fields — only struct_type has a field_declaration_list.
+            # Interfaces define method signatures, not data, so no field symbols.
+            return
 
         struct_name = _text(name_node).strip()
         if not struct_name:
