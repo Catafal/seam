@@ -2,6 +2,38 @@
 # Format: [x] = done, [>] = in progress, [ ] = not started
 # Update this EVERY session. It is the first thing the agent reads.
 #
+# 2026-06-07: E3 — neighbor relevance ranking for seam_context_pack (RWR / personalized PageRank)
+#   (branch feat/e3-neighbor-ranking). The most under-delivered CodeGraph-gap backlog item.
+#   PROBLEM: context_pack capped callers/callees to SEAM_PACK_NEIGHBOR_LIMIT (10) in min_id order
+#   (arbitrary insertion order) → kept 10 neither relevant nor alphabetical; a hot symbol could
+#   drop its most important caller just because it was indexed late. (The prior "E2/E3" #94 ranked
+#   impact TIERS; this is the SEPARATE neighbor-ranking gap — context() callers were still sorted()
+#   alphabetical.)
+#   FIX (full RWR, the user-chosen principled option, not the degree MVP): rank neighbors by
+#   personalized PageRank from the seed over a bounded local subgraph BEFORE the per-file + global
+#   caps. Restart-at-seed → a neighbor woven into the seed's neighborhood (shares callers/callees =
+#   same functional cluster) outranks a globally-popular-but-distant one; raw degree can't express
+#   that. Key=(-ppr_score, is_test, min_id), stable → off = byte-identical min_id revert.
+#   NEW pure leaf seam/analysis/rwr.py (mirrors clustering.py): personalized_pagerank(adjacency,
+#   seeds, ...) — graph + seed SET in → scores out; no DB/IO/config; never raises. seeds is a SET
+#   (edge_match_names: qualified+bare) → handles the qualified/bare asymmetry. Subgraph BFS +
+#   scoring in pack.py (_fetch_local_subgraph bounded, _neighbor_scores), computed ONCE per pack,
+#   reused for callers+callees. Fully defensive (degrades to min_id order on any failure).
+#   3 knobs: SEAM_PACK_RELEVANCE_RANK (on/off default on), SEAM_RWR_MAX_NODES (500),
+#   SEAM_RWR_MAX_DEPTH (3). Read-path/MCP-only; no schema change, no re-index; tool count stays 12.
+#   SMOKE (clicky, CompanionManager): ranking changes which callers survive the cap-10 (e.g.
+#   sendTranscriptToClaudeWithScreenshot, the highest-PPR self-method, floats to #1), truncated
+#   counts identical, never crashed. SCOPE: context_pack is MCP-only (NOT in the neutral benchmark
+#   capture, which uses `seam context`/engine context()) → PRODUCT-quality win, NOT a benchmark-score
+#   change (the benchmark frontier is tapped; structure-synthesis is the remaining qualitative gap).
+#   context()'s uncapped lists stay alphabetical (out of scope — no info lost there).
+#   Tests: tests/unit/test_rwr.py (9 pure PPR) + tests/unit/test_pack_relevance_rank.py (4: high-id
+#   relevant caller survives cap, knob-off min_id revert, production-before-test tie, never-raises).
+#   GATE: ruff + mypy clean (92 files), 2890 tests pass.
+# Next: backlog open items after E3 — E4 actionable truncation steer (S) + surface edge kind/
+#   synthesized_by in impact/trace output (S); E1-real full project-adaptive byte ceiling (M);
+#   P2 staleness banner (M); A4 framework resolvers (L). OR pivot to v0.1.0 PyPI release (seam-mcp).
+#
 # 2026-06-07: E1 — leaner default seam_impact output (omit null best_candidate) complete
 #   (branch feat/e1-lean-impact-output). The FINAL clicky impact-B lever — campaign done.
 #   After 'uses' edges, all 5 truth-dependents resolve at d=1 and --lean showed 5/5, but the

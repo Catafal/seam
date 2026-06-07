@@ -224,6 +224,23 @@ SEAM_PACK_PER_FILE_CAP: int = int(os.getenv("SEAM_PACK_PER_FILE_CAP", "3"))
 # Maximum WHY/HACK/NOTE/TODO/FIXME comments in the bundle.
 SEAM_PACK_MAX_COMMENTS: int = int(os.getenv("SEAM_PACK_MAX_COMMENTS", "10"))
 
+# E3 — rank context_pack neighbors by personalized-PageRank (RWR) relevance to the seed symbol
+# BEFORE the per-file + global caps, so the kept N are the most relevant neighbors rather than the
+# lowest-symbol-id ones. With restart-at-seed, a neighbor woven into the seed's local neighborhood
+# (shares callers/callees → same functional cluster) outranks a globally-popular but topically-
+# distant neighbor — relevance-to-the-seed, which raw degree cannot express. Pure-offline,
+# deterministic; the stable sort preserves the prior min_id order within ties. "off" = byte-
+# identical revert (min_id order). Read-path / MCP-tool only; no schema change, no re-index.
+SEAM_PACK_RELEVANCE_RANK: str = os.getenv("SEAM_PACK_RELEVANCE_RANK", "on")
+
+# Max nodes in the bounded local subgraph the RWR walk runs over (cost ceiling). The subgraph is a
+# depth-capped BFS from the seed; once this many nodes are collected, expansion stops. Keeps RWR
+# O(subgraph) — ~hundreds of nodes × ~30 power-iterations — never a whole-graph walk.
+SEAM_RWR_MAX_NODES: int = int(os.getenv("SEAM_RWR_MAX_NODES", "500"))
+
+# Max BFS depth (hops from the seed) when collecting the local subgraph for the RWR walk.
+SEAM_RWR_MAX_DEPTH: int = int(os.getenv("SEAM_RWR_MAX_DEPTH", "3"))
+
 # ── Execution flows configuration (seam_flows) ───────────────────────────────
 
 # Max entry points returned by seam_flows in list mode.
