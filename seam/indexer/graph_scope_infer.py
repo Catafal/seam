@@ -642,6 +642,19 @@ def _ts_record_single_declarator(decl: Node, var_types: dict[str, str]) -> None:
 #   The existing scan_class_fields_* helpers already apply this filter for fields.
 #   Constructor/init params add the same filter on top.
 #
+#   WHY no is_builtin() post-filter here (unlike graph_scope_infer_ext*.py):
+#     This file is a LEAF module — it may only import from graph_common and stdlib.
+#     Importing seam.analysis.builtins would break the layering constraint. The
+#     _PY_BUILTIN_TYPES and _TS_BUILTIN_TYPES frozensets (already used by the
+#     plain-type helpers) serve the same authoritative-filter role in a leaf-safe way.
+#
+# WHY constructor/__init__ params count as composition but other method params do not:
+#   A constructor/init parameter that is stored as a field represents an OWNED
+#   dependency — the object holds a reference for its lifetime. Parameters of
+#   other methods are transient (passed per-call) and express USE, not composition.
+#   Emitting holds edges for non-init params would conflate dependency injection with
+#   ordinary function arguments, producing false composition claims.
+#
 # DEDUPE: a type name that appears as BOTH a field and a ctor/init param is emitted
 # only ONCE. Dedupe is per (source, target) — the set returned here is deduplicated.
 #

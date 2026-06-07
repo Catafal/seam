@@ -816,6 +816,13 @@ def collect_composition_types_cpp(class_node: Node) -> list[tuple[str, int]]:
     Single pass: field_declaration nodes in the body with a plain type_identifier.
     Uses _cpp_extract_type_name (same as scan_class_fields_cpp). No ctor-param pass
     (C++ constructors may be out-of-line). Deduped. Returns [] on error. Never raises.
+
+    WHY no constructor-parameter pass:
+      C++ constructors are often defined out-of-line (in the .cpp file, not the header).
+      The class_specifier/struct_specifier node only contains the declaration, not the
+      definition. Scanning ctor params would require finding the matching
+      function_definition elsewhere in the AST — complex and unreliable. Field
+      declarations in the class body are always present and authoritative.
     """
     try:
         seen: set[str] = set()
@@ -854,6 +861,13 @@ def collect_composition_types_ruby(class_node: Node) -> list[tuple[str, int]]:
     Ruby has no static type annotations; .new calls on PascalCase constants are the
     only reliable composition signal. No ctor-param pass (params are untyped).
     Deduped by type name. Returns [] on any error. Never raises.
+
+    WHY only `initialize`, not other methods:
+      Assignments in other methods may be local temporaries or conditional re-bindings
+      — they don't reliably indicate a stored, owned dependency. Only ivar assignments
+      in `initialize` with a `.new` call are a strong signal that the class owns that
+      object for its lifetime. Other methods' @ivar assignments are intentionally
+      excluded to avoid false composition edges.
     """
     try:
         seen: set[str] = set()
