@@ -387,10 +387,10 @@ class TestInitSemanticWithEmbedder:
 
 
 class TestMcpToolCount:
-    """MCP1 — Tool count must stay 11 (no new tool added for semantic)."""
+    """MCP1 — Tool count must be 12 (seam_structure added in Tier D11)."""
 
-    def test_mcp_tool_count_is_eleven(self, tmp_path: Path) -> None:
-        """create_server registers exactly 11 tools — semantic is transparent."""
+    def test_mcp_tool_count_is_twelve(self, tmp_path: Path) -> None:
+        """create_server registers exactly 12 tools — semantic is transparent."""
         pytest.importorskip("mcp")
 
         project_root, db_path = _make_project_with_index(tmp_path)
@@ -403,7 +403,7 @@ class TestMcpToolCount:
             # as the existing test_lean_parity.py tests)
             tool_names = list(server._tool_manager._tools.keys())
             count = len(tool_names)
-            assert count == 11, f"Expected 11 MCP tools, got {count}: {sorted(tool_names)}"
+            assert count == 12, f"Expected 12 MCP tools, got {count}: {sorted(tool_names)}"
         finally:
             conn.close()
 

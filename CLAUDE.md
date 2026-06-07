@@ -26,6 +26,7 @@ Local code intelligence MCP server — indexes codebases with tree-sitter, store
 - `uv run seam query <concept> --no-semantic` — Force keyword-only FTS5, bypassing hybrid path
 - `uv run seam flows [entry]` — execution flows: list entry points (call-graph roots ranked by
   downstream reach), or expand one entry's forward call-chain tree; `--json`/`--quiet`
+- `uv run seam structure [path]` — whole-repo directory/file/container structure tree; `--json`/`--quiet`
 - `uv run seam install` — Write the MCP config into an agent (`--target claude|cursor|codex|all`,
   `--location project|user`, `--print-config`); `uv run seam uninstall` reverses it
 - `uv run seam serve` — Start the local Seam Explorer web server (FastAPI, 127.0.0.1:7420);
@@ -407,12 +408,13 @@ See `progress.txt` for session history. Next: roadmap item 8 (`seam install`) / 
 - `seam_affected` — changed files → impacted test files via reverse-dependency traversal (Phase 3)
 - `seam_context_pack` — enriched context bundle: target + NeighborRef callers/callees + WHY + cluster peers + truncated counts (Phase 6)
 - `seam_flows` — execution flows: list entry points (call-graph roots ranked by downstream reach), or expand one entry's depth/breadth-capped, cycle-safe forward call-chain tree (Flows). No arg → `{entry_points:[{name,kind,file,reach}]}`; with `entry` → a Flow tree (or `{found:false}`). Pure-structural, no LLM.
+- `seam_structure` — whole-repo directory/file/container structure tree (Tier D11). Returns a nested dir/file/container/function tree built from the index. Methods roll up into their owning container's `members` count. No args. Each node: `{kind, name, path, symbol_count, area, children, members}`. Pure-read, no schema change.
 
-There are **eleven MCP tools** (`seam_flows` is the newest — see Flows below). The ten enrichment-carrying tools return the five Phase 4 enrichment fields where available: `signature`, `decorators`, `is_exported`, `visibility`, `qualified_name`. Fields are `null` (not absent) for pre-v5 rows or unsupported scenarios — callers treat `null` as "unknown". (`seam_flows` is the exception: its step shape is `name/kind/file/line/confidence` and it does NOT carry the Phase 4 fields.)
+There are **twelve MCP tools** (`seam_structure` is the newest — Tier D11). The ten enrichment-carrying tools return the five Phase 4 enrichment fields where available: `signature`, `decorators`, `is_exported`, `visibility`, `qualified_name`. Fields are `null` (not absent) for pre-v5 rows or unsupported scenarios — callers treat `null` as "unknown". (`seam_flows` and `seam_structure` are exceptions: they do NOT carry Phase 4 enrichment fields.)
 
 **Tier B edge enrichment:** The edge kind vocabulary now includes `instantiates` (added in Tier B B6) alongside `call`, `import`, `extends`, `implements`. `seam_impact` and `seam_trace` traverse `instantiates` edges. `seam_trace` hop `kind` may be `instantiates`. Edges with a confidently inferred receiver type now carry a qualified `Type.method` target directly in the DB — `seam_context` and `seam_impact` resolve these with higher confidence (EXTRACTED when unique, no read-time bridging needed for those hops). The raw receiver text is stored in `edges.receiver` (v10 column, NULL for pre-v10 rows and for bare/import edges).
 
-**Semantic hybrid (Semantic phase):** `seam_search` and `seam_query` auto-merge FTS5 candidates with semantic (cosine) candidates via Reciprocal Rank Fusion (RRF, k=60) when BOTH conditions hold: `SEAM_SEMANTIC=on` AND embeddings exist for the configured model. No new MCP tool is added — tool count stays **11**. A keyword-only index behaves byte-identically to pre-Semantic. The `semantic` param (default `true`) can be passed to force keyword-only from a tool call.
+**Semantic hybrid (Semantic phase):** `seam_search` and `seam_query` auto-merge FTS5 candidates with semantic (cosine) candidates via Reciprocal Rank Fusion (RRF, k=60) when BOTH conditions hold: `SEAM_SEMANTIC=on` AND embeddings exist for the configured model. A keyword-only index behaves byte-identically to pre-Semantic. The `semantic` param (default `true`) can be passed to force keyword-only from a tool call.
 
 **Phase 8 lean output:** `seam_context`, `seam_trace`, `seam_impact`, `seam_context_pack` accept `verbose: bool = True`. With `verbose=False` the 6 heavy fields (decorators, is_exported, visibility, qualified_name, resolved_by, best_candidate) are **absent** (not null) — `signature` + core fields are always kept. `verbose=True` is byte-identical to pre-Phase-8 (EXCEPT `seam_impact`, which always adds `risk_summary`/`truncated` and caps by default). `seam_query` and `seam_search` carry no enrichment → no `verbose` flag.
 
@@ -573,7 +575,7 @@ This project is indexed. Use GitNexus MCP tools before coding on existing code.
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **seam** (273 symbols, 293 relationships, 0 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **seam** (5245 symbols, 17811 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

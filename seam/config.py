@@ -321,6 +321,25 @@ SEAM_TOKENIZE_IDENTIFIERS: str = os.getenv("SEAM_TOKENIZE_IDENTIFIERS", "on")
 SEAM_SWIFT_TYPE_INFERENCE: str = os.getenv("SEAM_SWIFT_TYPE_INFERENCE", "on")
 
 
+# ── Tier D11: Structure view configuration (seam_structure) ──────────────────
+
+# Maximum nesting depth of the structure tree.
+# The root dir node is depth 0; its immediate children are depth 1, and so on.
+# Nodes at depth > max_depth are cut from the tree (not returned); the cut
+# count is added to StructureResult.truncated. Default 8 handles virtually
+# all real codebases (3–5 levels is typical); raise via env var for monorepos.
+SEAM_STRUCTURE_MAX_DEPTH: int = int(os.getenv("SEAM_STRUCTURE_MAX_DEPTH", "8"))
+
+# Maximum total number of nodes in the structure tree (excluding the root itself).
+# When the tree would exceed this count, excess nodes are dropped BFS-style (closest
+# to root survive) and StructureResult.truncated reports how many were omitted.
+# Default 2000: sufficient for most repos; prevents MCP token-budget explosions on
+# giant codebases with thousands of files and containers.
+# 0 (or any value <= 0) = UNLIMITED — no node cap (matches the seam_impact limit=0
+# convention; avoids the footgun where a negative value silently empties the tree).
+SEAM_STRUCTURE_MAX_NODES: int = int(os.getenv("SEAM_STRUCTURE_MAX_NODES", "2000"))
+
+
 def get_db_path(project_root: Path) -> Path:
     """Resolve the database path relative to the project root."""
     return project_root / SEAM_DB_PATH

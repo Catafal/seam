@@ -1011,3 +1011,55 @@ tools:
     errors:
       - code: INVALID_INPUT
         condition: entry is provided but empty/whitespace-only
+
+  seam_structure:
+    status: IMPLEMENTED
+    phase: tier-d11
+    description: |
+      Whole-repository directory/file/container structure tree — Slice 1 (Tier D11).
+
+      Returns a nested tree of the repository's structural skeleton derived from the index.
+      No arguments. Pure-read — no schema change, no new config knobs.
+
+      Tree node kinds:
+        dir       — a directory in the repository hierarchy
+        file      — an indexed source file (carries symbol_count and child containers/functions)
+        container — a class/interface/type symbol within a file (path=null)
+        function  — a top-level function within a file (path=null)
+
+      Method/member symbols (kind='method' or qualified name containing '.') are rolled up
+      into their owning container's `members` count and do NOT appear as separate nodes —
+      this keeps the tree compact and focused on the structural skeleton.
+
+      Each node carries:
+        kind:         'dir' | 'file' | 'container' | 'function'
+        name:         display name (directory basename, filename, or symbol name)
+        path:         repo-root-relative path string; null for container and function nodes
+        symbol_count: total symbol DB rows in this subtree (file: all rows; dir: sum of children)
+        area:         functional-area cluster label (Slice 1: always null)
+        children:     child nodes (list of StructureNode)
+        members:      count of rolled-up method/member rows (0 for non-container kinds)
+
+      Slice 1 invariants (area=null, truncated=0, no caps):
+        - area is null on every node (populated in a future slice).
+        - truncated is always 0 (no per-directory or per-file caps applied).
+
+      Use this to get a structural overview before diving into a specific file or symbol,
+      or to understand how files and containers are organized across the repository.
+    input: {}
+    output:
+      type: object
+      description: |
+        tree:
+          (StructureNode) — root dir node representing the project root. Nested:
+            kind:         (str)  — 'dir' | 'file' | 'container' | 'function'
+            name:         (str)  — display name
+            path:         (str | null) — repo-root-relative path; null for containers/functions
+            symbol_count: (int)  — total symbol rows in this subtree
+            area:         (null) — always null in Slice 1
+            children:     (list) — child StructureNodes
+            members:      (int)  — rolled-up method count (0 for non-container nodes)
+        truncated:
+          (int) — count of omitted nodes (always 0 in Slice 1)
+      found_false_ok: false
+    errors: []

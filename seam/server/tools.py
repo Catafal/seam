@@ -37,6 +37,8 @@ from seam.query.clusters import list_clusters as query_list_clusters
 from seam.query.comments import why as comments_why
 from seam.query.pack import ContextPack, NeighborRef
 from seam.query.pack import context_pack as run_context_pack
+from seam.query.structure import StructureResult
+from seam.query.structure import build_structure as run_build_structure
 
 logger = logging.getLogger(__name__)
 
@@ -1096,3 +1098,47 @@ def handle_seam_context_pack(
         "cluster_peers": pack["cluster_peers"],
         "truncated": pack["truncated"],
     }
+
+
+def handle_seam_structure(
+    conn: sqlite3.Connection,
+    root: Path,
+    *,
+    path: Path | None = None,
+    max_depth: int | None = None,
+    max_nodes: int | None = None,
+) -> StructureResult:
+    """Handler for the seam_structure MCP tool — whole-repo structure tree.
+
+    Returns a directory -> file -> container/function tree built from the index.
+    Container nodes (class/interface/type) aggregate method/member rows into a
+    `members` count rather than emitting separate child nodes. Top-level functions
+    appear as 'function' children of their file node.
+
+    File paths in the tree are relativized to `root` (no absolute paths leak).
+    Container nodes carry path=None (they are logical, not file-backed).
+
+    Slice 3 params:
+      path:      When set, scopes the tree to this subdirectory.
+      max_depth: Maximum nesting depth. None uses the config default.
+      max_nodes: Maximum total non-root nodes. None uses the config default.
+
+    This is a pure read; never raises — degrades to an empty safe tree on any error.
+
+    Args:
+        conn:      Open SQLite connection to the Seam index (read-only).
+        root:      Project root Path — used to relativize file paths.
+        path:      Optional scope path. Absolute paths are honoured as-is; a relative
+                   path is resolved against `root` (NOT cwd) by build_structure.
+        max_depth: Optional depth cap override.
+        max_nodes: Optional node-count cap override.
+
+    Returns:
+        StructureResult dict with keys:
+            tree:      Root 'dir' StructureNode representing `root` (or scoped path).
+            truncated: Count of omitted nodes (0 when nothing was trimmed).
+    """
+    # Pass the scope path through unresolved: build_structure resolves a RELATIVE
+    # path against `root` (not cwd), so MCP callers and the CLI get root-relative
+    # scoping regardless of the server/process working directory.
+    return run_build_structure(conn, root, path=path, max_depth=max_depth, max_nodes=max_nodes)

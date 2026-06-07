@@ -72,6 +72,7 @@ from seam.query.comments import why as comments_why
 # NOTE: seam.server.mcp (and the `mcp` package it needs) is imported LAZILY inside the
 # `start` command — see _load_create_server(). This keeps the entire CLI usable with the
 # `mcp` extra UNINSTALLED (pure-CLI install): only `seam start` requires it.
+from seam.query.structure import StructureNode
 from seam.server.tools import (
     handle_seam_affected,
     handle_seam_changes,
@@ -79,6 +80,7 @@ from seam.server.tools import (
     handle_seam_context_pack,
     handle_seam_flows,
     handle_seam_impact,
+    handle_seam_structure,
     handle_seam_trace,
     handle_seam_why,
 )
@@ -1684,6 +1686,183 @@ def flows_cmd(
     footer = " · [yellow]truncated[/yellow]" if result["truncated"] else ""
     console.print(f"[dim]{result['total_steps']} steps{footer}[/dim]")
     _print_flow_tree(result["steps"])
+
+
+# ── seam structure ────────────────────────────────────────────────────────────
+
+
+def _render_structure_quiet(node: StructureNode, depth: int = 0) -> None:
+    """Render the structure tree as an indented plain-text tree (quiet mode).
+
+    WHY a separate helper: keeps the command body readable and matches the
+    _print_flow_tree pattern established by seam flows.
+
+    Slice 2: file and dir nodes include their 'area' label when present.
+    """
+    indent = "  " * depth
+    kind = node["kind"]
+    name = node["name"]
+    path = node.get("path") or ""
+    sym = node.get("symbol_count", 0)
+    members = node.get("members", 0)
+    area = node.get("area")
+
+    # Optional area suffix — shown for dir and file nodes when area is set.
+    area_suffix = f"  [{area}]" if area else ""
+
+    # One line per node: indent + kind marker + name + counts + optional area
+    if kind == "dir":
+        sys.stdout.write(f"{indent}[{kind}] {name}/  ({sym} symbols){area_suffix}\n")
+    elif kind == "file":
+        sys.stdout.write(f"{indent}[{kind}] {path}  ({sym} symbols){area_suffix}\n")
+    elif kind == "container":
+        sys.stdout.write(f"{indent}[{kind}] {name}  ({members} members)\n")
+    else:
+        sys.stdout.write(f"{indent}[{kind}] {name}\n")
+
+    for child in node.get("children", []):
+        _render_structure_quiet(child, depth + 1)
+
+
+def _render_structure_rich(node: StructureNode, prefix: str = "", is_root: bool = True) -> None:
+    """Render the structure tree with Rich ├─/└─ branch chars + colour (default mode).
+
+    WHY separate from _render_structure_quiet: the quiet helper is plain-text for
+    pipes/scripts; this one mirrors _print_flow_tree (seam flows) so the interactive
+    default view gets branch glyphs and colour, matching the project's CLI convention.
+    The root node prints flush-left; children recurse under ├─/└─ connectors.
+    """
+    area = node.get("area")
+    area_suffix = f"  [dim]\\[{area}][/dim]" if area else ""
+    kind = node["kind"]
+
+    if is_root:
+        sym = node.get("symbol_count", 0)
+        console.print(f"[bold cyan]{node['name']}/[/bold cyan] [dim]({sym} symbols)[/dim]{area_suffix}")
+    else:
+        # Connector is supplied by the parent via `prefix`; render this node's label.
+        if kind == "dir":
+            label = f"[cyan]{node['name']}/[/cyan] [dim]({node.get('symbol_count', 0)} symbols)[/dim]{area_suffix}"
+        elif kind == "file":
+            label = f"{node['name']} [dim]({node.get('symbol_count', 0)} symbols)[/dim]{area_suffix}"
+        elif kind == "container":
+            label = f"[green]{node['name']}[/green] [dim]({node.get('members', 0)} members)[/dim]"
+        else:  # function
+            label = f"[yellow]{node['name']}[/yellow]"
+        console.print(f"{prefix}{label}")
+
+    children = node.get("children", [])
+    # Child indent: root's children start fresh; deeper levels extend the parent prefix.
+    child_base = "" if is_root else prefix.replace("├─ ", "│  ").replace("└─ ", "   ")
+    for i, child in enumerate(children):
+        last = i == len(children) - 1
+        connector = "└─ " if last else "├─ "
+        _render_structure_rich(child, child_base + connector, is_root=False)
+
+
+@app.command(name="structure")
+def structure_cmd(
+    path: str = typer.Argument(".", help="Project root to inspect (default: current directory)"),
+    db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
+    scope: str = typer.Option(
+        "",
+        "--scope",
+        help=(
+            "Scope the tree to a subdirectory (absolute or relative path). "
+            "Only files under this path are included. Unknown paths yield an empty tree."
+        ),
+    ),
+    depth: int = typer.Option(
+        -1,
+        "--depth",
+        help=(
+            "Maximum nesting depth of the tree (root=0). "
+            "Nodes beyond this depth are omitted and counted in 'truncated'. "
+            "Default: use SEAM_STRUCTURE_MAX_DEPTH (8)."
+        ),
+    ),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        help="Print indented tree (one node per line) without the JSON envelope.",
+    ),
+) -> None:
+    """Show the whole-repository directory/file/container structure tree.
+
+    Reads the index and renders a compact skeleton of the codebase:
+      - directory nodes (dir)
+      - file nodes with symbol counts
+      - container nodes (class/interface/type) with member counts
+      - top-level function nodes
+
+    Examples:
+      seam structure                    -- Rich indented tree (default)
+      seam structure --json             -- structured JSON envelope
+      seam structure --quiet            -- plain indented text (one node per line)
+      seam structure /path/to/repo      -- inspect a specific project
+      seam structure --scope src/       -- scope to the src/ subdirectory
+      seam structure --depth 3          -- limit tree to 3 nesting levels
+    """
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
+    project_root = Path(path).resolve()
+    db_root = Path(db_dir).resolve() if db_dir else project_root
+    db_path = config.get_db_path(db_root)
+
+    if not db_path.exists():
+        if json_:
+            emit_json_error("NO_INDEX", "No index found. Run 'seam init' first.")
+        console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
+        raise typer.Exit(code=1)
+
+    try:
+        conn = connect(db_path)
+    except sqlite3.Error as exc:
+        if json_:
+            emit_json_error("DB_ERROR", f"Failed to open database: {exc}")
+        console.print(f"[red]Failed to open database:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    # Slice 3: optional scope path + depth override. scope="" means no scoping;
+    # depth=-1 means use the config default. Pass the scope UNRESOLVED — build_structure
+    # resolves a relative scope against the project root (NOT cwd), so
+    # `seam structure /repo --scope src/` correctly means "/repo/src", not "$CWD/src".
+    scope_path: Path | None = Path(scope) if scope else None
+    max_depth_arg: int | None = depth if depth >= 0 else None
+
+    try:
+        result = handle_seam_structure(
+            conn,
+            root=project_root,
+            path=scope_path,
+            max_depth=max_depth_arg,
+        )
+    finally:
+        conn.close()
+
+    # ── JSON mode ─────────────────────────────────────────────────────────────
+    if json_:
+        emit_json(result)
+        return
+
+    # ── Quiet mode — indented plain-text tree ─────────────────────────────────
+    if quiet:
+        _render_structure_quiet(result["tree"])
+        if result.get("truncated", 0) > 0:
+            sys.stdout.write(f"[truncated: {result['truncated']} nodes omitted]\n")
+        return
+
+    # ── Rich (default) mode — indented Rich tree with branch glyphs + colour ──
+    tree = result["tree"]
+    total = tree.get("symbol_count", 0)
+    console.print(f"\n[dim]Repository structure ({total} total symbols)[/dim]")
+    _render_structure_rich(tree)
+    if result.get("truncated", 0) > 0:
+        console.print(f"[dim yellow]({result['truncated']} nodes omitted by depth/node caps)[/dim yellow]")
 
 
 # ── seam affected ─────────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-"""MCP server setup — FastMCP stdio transport, eleven tools registered.
+"""MCP server setup — FastMCP stdio transport, twelve tools registered.
 
 Creates and configures the MCP server instance.
 Tool handlers in tools.py are thin adapters; this module wires them to FastMCP.
@@ -7,7 +7,7 @@ Usage (from cli/main.py):
     server = create_server(conn, root)
     server.run(transport="stdio")
 
-Tools registered (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3 + Phase 6):
+Tools registered (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3 + Phase 6 + Tier D11):
     seam_query        — FTS5 + 1-hop graph expansion search
     seam_context      — 360-degree symbol view (callers, callees, location, cluster)
     seam_search       — full-text search (FTS5 BM25)
@@ -19,6 +19,7 @@ Tools registered (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3 + Phase 6):
     seam_affected     — changed files → impacted test files via reverse-dependency BFS (Phase 3)
     seam_context_pack — enriched context bundle: target + neighbors + WHY + peers (Phase 6)
     seam_flows        — execution flows: entry points + forward call-chain expansion
+    seam_structure    — whole-repo directory/file/container structure tree (Tier D11)
 
 Design:
 - One FastMCP instance per process; connection is injected at creation time.
@@ -47,6 +48,7 @@ from seam.server.tools import (
     handle_seam_impact,
     handle_seam_query,
     handle_seam_search,
+    handle_seam_structure,
     handle_seam_trace,
     handle_seam_why,
 )
@@ -90,7 +92,7 @@ def _finalize(result: Any) -> Any:
 
 
 def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
-    """Configure and return a FastMCP server with all eleven Seam tools registered.
+    """Configure and return a FastMCP server with all twelve Seam tools registered.
 
     Phase 0:  seam_query, seam_context, seam_search
     Phase 1:  seam_impact, seam_trace, seam_changes
@@ -99,6 +101,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
     Phase 3:  seam_affected
     Phase 6:  seam_context_pack
     Flows:    seam_flows
+    Tier D11: seam_structure
 
     Args:
         conn: Open SQLite connection to the Seam index DB.
@@ -408,5 +411,63 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         promoted confidence. Returns {found: false} when the entry name is unknown.
         """
         return _finalize(handle_seam_flows(conn, root, entry=entry))
+
+    @mcp.tool()
+    def seam_structure(
+        path: str | None = None,
+        depth: int | None = None,
+        nodes: int | None = None,
+    ) -> Any:
+        """Get the whole-repository directory/file/container structure tree.
+
+        Returns a nested tree of:
+          dir nodes       — directories in the repository hierarchy
+          file nodes      — indexed source files under each directory
+          container nodes — class/interface/type symbols within each file
+          function nodes  — top-level functions within each file
+
+        Method/member symbols are rolled up into their owning container's
+        `members` count and do NOT appear as separate nodes — this keeps the tree
+        compact and focused on the structural skeleton rather than every detail.
+
+        Each node carries:
+          kind:         'dir' | 'file' | 'container' | 'function'
+          name:         display name (dir basename, file name, symbol name)
+          path:         repo-root-relative path; null for container and function nodes
+          symbol_count: total symbol rows in this subtree
+          area:         functional-area label from cluster data (null if no clustering)
+          children:     child nodes
+          members:      count of method/member rows rolled into this container (0 for non-containers)
+          truncated:    count of nodes omitted by depth/node caps (0 = nothing trimmed)
+
+        Optional scoping and bounds (Slice 3):
+          path:  Scope the tree to a subdirectory. A relative path resolves against the
+                 repo root (NOT the server cwd); an absolute path is honoured as-is.
+                 An unknown or out-of-tree path degrades to {found: false} — never an error.
+          depth: Maximum nesting depth (root=0). Nodes beyond this depth are dropped
+                 and counted in `truncated`. Defaults to SEAM_STRUCTURE_MAX_DEPTH (8).
+          nodes: Maximum total non-root nodes. Excess nodes are dropped BFS-order (closest
+                 to root survive) and counted in `truncated`. 0 = unlimited.
+                 Defaults to SEAM_STRUCTURE_MAX_NODES (2000).
+
+        Use this to get a structural overview before diving into a specific file or
+        symbol, or to understand how files and containers are organized across the repo.
+
+        Returns {found: false} when the (scoped) tree has no symbols — an empty/not-yet
+        indexed repo, or a scope path that matches no indexed files.
+        """
+        # Pass the scope path string straight through: handle_seam_structure /
+        # build_structure resolve a relative path against `root`, not the server cwd.
+        scope_path = Path(path) if path else None
+        result = handle_seam_structure(
+            conn, root, path=scope_path, max_depth=depth, max_nodes=nodes
+        )
+        # Normalize a genuinely-empty (scoped) tree to the not-found sentinel so
+        # _finalize emits {found: false} — matching every sibling read tool and the
+        # docstring contract. The CLI keeps rendering the (possibly empty) tree itself.
+        tree = result["tree"]
+        if not tree["children"] and tree["symbol_count"] == 0:
+            return _finalize(None)
+        return _finalize(result)
 
     return mcp

@@ -806,3 +806,130 @@ scan — then recomputes the UID over each candidate's absolute path until one m
 `engine.context_at(file, line)` powers the exact-symbol context path (vs. `context()`'s first-by-
 name); the impact/trace graphs are name-keyed, so a UID there is resolved to its symbol NAME. An
 unknown/stale UID returns the standard not-found result, never an error.
+
+---
+
+## Tier D11 — `seam_structure`: Whole-Repository Structure View
+
+> Tier D11 shipped on branch `feat/tier-d11-structure-view`. **No schema change, no migration, no
+> new config schema version** — pure read over the existing `symbols` + `files` + `clusters` tables.
+> MCP tool count goes from **11 → 12** (`seam_structure` is the 12th tool).
+
+### Why a Physical Structure View Alongside Clusters
+
+Seam already exposes `seam_clusters` (semantic community view), which groups symbols by call/import
+coupling. `seam_structure` adds the complementary **physical container map**: the filesystem
+hierarchy with symbol counts and cluster area labels per node. The two views answer different
+questions:
+
+| View | Primary question | Organisation |
+|------|-----------------|--------------|
+| `seam_clusters` | "What is logically coupled to X?" | Semantic communities (Louvain) |
+| `seam_structure` | "Where does X live? What else is in that file/dir?" | Filesystem hierarchy |
+
+An agent understanding a repo for the first time needs the physical map first; the cluster view
+provides a second, semantic cut. Both views share the same cluster `area` label, so a node in the
+structure tree annotated `area: "auth"` is the Louvain community a maintainer would recognise.
+
+### New Module: `seam/query/structure.py`
+
+Leaf read module. Single public function:
+
+```python
+build_structure(conn, root, *, path=None, max_depth=None, max_nodes=None) -> StructureResult
+```
+
+Algorithm:
+1. Fetch all `(file_path, name, kind, start_line)` rows in one `JOIN files` query — O(symbols),
+   no per-file queries.
+2. Partition each file's symbols into containers (class/interface/type), members (method or
+   qualified `Owner.member`), and top-level functions. Members roll up into their owning
+   container's `members` count — they are NOT emitted as separate tree nodes, keeping the
+   skeleton compact.
+3. Build the dir → file → container/function tree by navigating path parts, creating dir nodes
+   on demand via a `rel_path → StructureNode` dict (O(1) lookup per dir).
+4. Annotate each file node with a functional `area` label drawn from the cluster the plurality
+   of that file's symbols belong to. Dir nodes inherit the plurality of their direct children's
+   areas (bottom-up propagation after tree assembly).
+5. Apply Slice 3 bounds (depth cap → node cap), accumulate dropped counts into `truncated`.
+
+Never raises — returns a valid empty tree on any error.
+
+**Node shape:**
+```
+StructureNode:
+  kind:         'dir' | 'file' | 'container' | 'function'
+  name:         display name (dir basename, file name, symbol name)
+  path:         repo-root-relative string; null for container and function nodes
+  symbol_count: total symbols in this subtree (file: row count; dir: sum of children)
+  area:         cluster label (null when no cluster data exists)
+  children:     child StructureNodes
+  members:      method/member count rolled into this container (0 for non-containers)
+```
+
+### Depth and Node Caps — Non-Obvious Semantics
+
+**`depth` counts ALL tree levels, not only directory nesting.** Root is depth 0; its immediate
+children are depth 1; a file directly under root is depth 1; its containers are depth 2. In
+practice a codebase with two directory levels, files, and containers occupies depths 0–4. The
+default `SEAM_STRUCTURE_MAX_DEPTH=8` is deliberately generous so containers survive for typical
+repo layouts (3–5 dirs + 1 file level + 1 container level = 5–7 total). Maintainers who set a
+small `--depth` (e.g. `--depth 2`) should expect containers to be truncated even for top-level
+files, because file→container occupies depth 2 from root.
+
+**`SEAM_STRUCTURE_MAX_NODES <= 0` means UNLIMITED** — matching the `seam_impact limit=0`
+convention used throughout Seam. Setting `--nodes 0` or `SEAM_STRUCTURE_MAX_NODES=0` disables
+the node cap entirely (the full tree is returned). A negative value has the same effect; the
+guard in `_apply_node_cap` is `if max_nodes <= 0: return 0`. This avoids the footgun where an
+operator setting the knob to `-1` or `0` silently receives an empty tree instead of an
+uncapped one.
+
+**BFS drop order (node cap):** when the node cap is reached, the algorithm drops *all* children of
+the current node together rather than including partial sibling groups. Including 3 of 5 containers
+in a file would imply the file has fewer symbols than it does. The whole-group drop keeps
+`symbol_count` and `members` values honest on surviving nodes.
+
+### New 12th MCP Tool: `seam_structure`
+
+Registered in `seam/server/mcp.py`. Parameters:
+
+| Param | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `path` | `str \| null` | `null` | Scope to a subdirectory (relative resolves against repo root, not server cwd) |
+| `depth` | `int \| null` | `SEAM_STRUCTURE_MAX_DEPTH` (8) | Max tree depth (counts dir+file+container levels — see note above) |
+| `nodes` | `int \| null` | `SEAM_STRUCTURE_MAX_NODES` (2000) | Max non-root nodes; 0 = unlimited |
+
+Returns `{found: false}` when the tree has no symbols (empty index, or scope matches nothing).
+All file paths in the response are root-relative; container nodes carry `path: null`.
+
+### New CLI Command: `seam structure`
+
+```bash
+seam structure                        # Rich tree with branch glyphs (default)
+seam structure --json                 # JSON envelope {"ok":true,"data":{tree,truncated}}
+seam structure --quiet                # plain indented text (one node per line)
+seam structure /path/to/repo          # inspect a specific project
+seam structure --scope src/           # scope to the src/ subdirectory
+seam structure --depth 3              # max depth 3 (note: includes file+container levels)
+```
+
+Implemented in `seam/cli/main.py` with two render helpers: `_render_structure_quiet` (plain text
+for piping) and `_render_structure_rich` (branch glyphs + colour, mirroring `seam flows`). Both
+helpers show the `area` label on dir and file nodes when present.
+
+### System Diagram Update (Tier D11)
+
+The MCP server section now has a 12th tool:
+
+```
+                         ├── seam_structure(path?, depth?, nodes?)
+                         │           → query.structure.build_structure()
+                                   [Tier D11]
+```
+
+### Config Knobs (Tier D11)
+
+| Knob | Default | Purpose |
+|------|---------|---------|
+| `SEAM_STRUCTURE_MAX_DEPTH` | `8` | Max tree depth (counts dir+file+container levels, not dirs only) |
+| `SEAM_STRUCTURE_MAX_NODES` | `2000` | Max non-root nodes; `<= 0` = unlimited |
