@@ -70,6 +70,13 @@ seam/config.py               ← all settings (env vars with defaults)
                                 SEAM_PACK_NEIGHBOR_LIMIT: max enriched callers and max enriched callees in context_pack (default: 10)
                                 SEAM_PACK_PER_FILE_CAP: max neighbor entries from any single file — diversity cap (default: 3)
                                 SEAM_PACK_MAX_COMMENTS: max WHY/HACK/NOTE comments in context_pack bundle (default: 10)
+                                SEAM_PACK_RELEVANCE_RANK: "on" | "off" — rank context_pack neighbors by
+                                  personalized-PageRank (RWR) relevance to the seed BEFORE the per-file +
+                                  global caps, so the kept N are the most relevant neighbors not the
+                                  lowest-symbol-id ones (E3; default: on). "off" = byte-identical revert
+                                  (min_id order). Read-path/MCP-only; no re-index.
+                                SEAM_RWR_MAX_NODES: max nodes in the bounded RWR local subgraph (default: 500)
+                                SEAM_RWR_MAX_DEPTH: max BFS hops from the seed when collecting the RWR subgraph (default: 3)
                                 SEAM_IMPACT_MAX_RESULTS: per-tier entry cap for seam_impact (default: 25; 0 = unlimited) [Phase 8]
                                 SEAM_IMPACT_RELEVANCE_SORT: "on" | "off" — rank EXTERNAL dependents ahead of the
                                   target's own container-members (self-references) BEFORE the per-tier cap, so the
@@ -286,6 +293,12 @@ seam/indexer/cluster_index.py← clustering orchestration bridge (Phase 2)
 seam/indexer/db.py           ← SQLite write (init_db, upsert_file, delete_file)
 seam/analysis/clustering.py  ← LEAF: pure-Python Louvain community detection (Phase 2)
                                 detect_communities(nodes, edges) → {name: cluster_id}
+seam/analysis/rwr.py         ← LEAF: pure personalized-PageRank / RWR (E3 neighbor ranking)
+                                personalized_pagerank(adjacency, seeds, *, restart, iters, tol) → {name: score}
+                                graph + seed SET in → relevance scores out; no DB/IO/config; never raises.
+                                seeds is a SET (symbol's edge_match_names: qualified + bare) so neighbours
+                                reachable via either storage form score against the same logical seed.
+                                Degenerate → {} (empty/no-seed-present) or seed-only mass (isolated seed).
 seam/analysis/cluster_naming.py ← LEAF: deterministic + opt-in LLM cluster labeling (Phase 2)
 seam/analysis/synthesis.py   ← LEAF: edge-synthesis engine — A2 interface→implementation override
                                 fan-out (link every base method to every same-name impl as a
@@ -315,6 +328,10 @@ seam/query/clusters.py       ← cluster read queries (Phase 2): list_clusters, 
 seam/query/pack.py           ← LEAF: context_pack(conn, symbol_name) → ContextPack | None
                                 orchestrates context()+why() into one enriched bundle; applies caps from config
                                 ContextPack: target, callers, callees (NeighborRef), why, cluster_peers, truncated
+                                E3: ranks neighbors by RWR relevance to the seed BEFORE caps (most-relevant N
+                                  survive, not lowest-id). _neighbor_scores (one bounded subgraph + one PPR per
+                                  pack, reused for callers+callees) → _enrich_neighbors sorts by
+                                  (-ppr_score, is_test, min_id). Gated by SEAM_PACK_RELEVANCE_RANK.
 seam/server/tools.py         ← MCP tool handlers (thin adapters → engine + clusters + pack)
 seam/server/graph_api.py     ← LEAF: build_neighborhood(conn, name, direction) → dict (Phase B1)
                                 depth-1 neighbors from edges table; homonym-collapse (name-keyed nodes);
@@ -355,6 +372,15 @@ tests/eval/                  ← P1 recall harness (edge-synthesis phase): fixtu
 - **Edges use string names** (not symbol IDs) — required for independent re-indexing
 
 ## Current Phase
+E3 — neighbor relevance ranking for `seam_context_pack` (personalized PageRank / RWR). Read-path only.
+- **Why (the most under-delivered CodeGraph-gap backlog item):** `context_pack` capped callers/callees to `SEAM_PACK_NEIGHBOR_LIMIT` (10) in `min_id` order (lowest symbol id = arbitrary insertion order) — so the kept 10 were neither relevant nor alphabetical; a hot symbol could drop its most important caller purely because it was indexed late. (Note: the prior "E2/E3" #94 ranked impact TIERS; this is the separate, still-open neighbor-ranking gap the round-2 CodeGraph backlog flagged — `context()` callers were still `sorted()` alphabetical.)
+- **The fix (full RWR, the principled option):** rank neighbors by **personalized PageRank** from the seed over a bounded local subgraph, BEFORE the per-file + global caps. With restart-at-seed, a neighbor woven into the seed's neighborhood (shares callers/callees → same functional cluster) outranks a globally-popular but topically-distant one — relevance-TO-THE-SEED, which raw degree can't express (this is CodeGraph's `computeGraphRelevance` approach). Key = `(-ppr_score, is_test, min_id)` (stable → `off` is a byte-identical min_id revert).
+- **New pure leaf `seam/analysis/rwr.py`** (mirrors `clustering.py`): `personalized_pagerank(adjacency, seeds, …)` — graph + seed SET in → scores out; no DB/IO/config; never raises. `seeds` is a SET (the symbol's `edge_match_names`: qualified + bare) so the qualified/bare asymmetry is handled. Subgraph fetch + scoring live in `pack.py` (`_fetch_local_subgraph` bounded BFS, `_neighbor_scores`), computed ONCE per pack and reused for callers + callees.
+- **3 knobs:** `SEAM_PACK_RELEVANCE_RANK` (on/off, default on; off = byte-identical), `SEAM_RWR_MAX_NODES` (500), `SEAM_RWR_MAX_DEPTH` (3). Read-path/MCP-only — no schema change, no re-index. `seam_context`'s uncapped lists stay alphabetical (out of scope). MCP tool count stays 12.
+- **Scope note (honest):** `context_pack` is MCP-only (not in the neutral-benchmark capture, which uses `seam context`), so this is a PRODUCT-quality win, NOT a benchmark-score change — the benchmark frontier is tapped (per the E1 campaign re-bench; remaining gap is structure synthesis). Gate: ruff + mypy clean (92 files), 2890 tests pass.
+See `progress.txt`.
+
+### Prior phase
 E1 — leaner default `seam_impact` output (omit null `best_candidate`). Handler-layer, read-path only.
 - **Why (the final clicky impact-B lever):** after `uses` edges, all 5 external truth-dependents resolve at d=1, and `--lean` showed 5/5 in the benchmark's 1500-char window — but the DEFAULT (verbose) window held only 4/5. Measured root cause: in every WILL_BREAK entry `best_candidate` is null (it is the AMBIGUOUS proximity pick — null for all EXTRACTED/INFERRED entries) while `resolved_by` is non-null. The `, "best_candidate": null` suffix (~25 B/entry) was the only thing pushing the 5th truth-dependent past the window.
 - **The fix (lossless, not a byte-ceiling):** drop `best_candidate` from impact entries WHEN IT IS NULL. null ≡ absent per the established null-contract, so this removes zero information; a non-null best_candidate (AMBIGUOUS entries) is always kept. `resolved_by` is kept always (genuine provenance several agents/tests rely on). A byte-ceiling / token-budget machinery was deliberately NOT built — field omission already hits 5/5.
@@ -551,7 +577,7 @@ See `progress.txt` for session history. Next: roadmap item 8 (`seam install`) / 
 - `seam_why` — semantic comments WHY/HACK/NOTE/TODO/FIXME (Phase 1b)
 - `seam_clusters` — list functional areas or drill into one cluster (Phase 2)
 - `seam_affected` — changed files → impacted test files via reverse-dependency traversal (Phase 3)
-- `seam_context_pack` — enriched context bundle: target + NeighborRef callers/callees + WHY + cluster peers + truncated counts (Phase 6)
+- `seam_context_pack` — enriched context bundle: target + NeighborRef callers/callees + WHY + cluster peers + truncated counts (Phase 6); **E3: callers/callees are ranked by personalized-PageRank (RWR) relevance to the seed BEFORE the per-file + global caps**, so when the lists are capped the kept neighbors are the most relevant (woven into the seed's local neighborhood), not the lowest-symbol-id ones. Internal ranking only — NeighborRef shape and `truncated` semantics are unchanged. Gated by `SEAM_PACK_RELEVANCE_RANK` (default on; off = byte-identical min_id order)
 - `seam_flows` — execution flows: list entry points (call-graph roots ranked by downstream reach), or expand one entry's depth/breadth-capped, cycle-safe forward call-chain tree (Flows). No arg → `{entry_points:[{name,kind,file,reach}]}`; with `entry` → a Flow tree (or `{found:false}`). Pure-structural, no LLM.
 - `seam_structure` — whole-repo directory/file/container structure tree (Tier D11). Returns a nested dir/file/container/function tree built from the index. Methods roll up into their owning container's `members` count. No args. Each node: `{kind, name, path, symbol_count, area, children, members}`. Pure-read, no schema change.
 
@@ -580,6 +606,7 @@ There are **twelve MCP tools** (`seam_structure` is the newest — Tier D11). Th
 - **E2/E3 relevance ranking is HANDLER-ONLY and read-time — no re-index, no effect on `seam_changes`/`seam_affected`**: `SEAM_IMPACT_RELEVANCE_SORT` / `SEAM_IMPACT_SELF_REF` shape only `seam_impact`'s handler output. `seam_changes` and `seam_affected` call the analysis-layer `impact()` directly (below the handler), so their risk verdicts stay byte-stable regardless of these knobs. There is no DB change — the knobs take effect immediately on the existing index. `SEAM_IMPACT_RELEVANCE_SORT=off` reverts `seam_impact` to the prior production-before-test ordering byte-identically.
 - **`SEAM_IMPACT_SELF_REF=hide` can drop a bare-name homonym that collides with a member name**: self-reference classification is name-keyed (like the rest of Seam). A target class `Foo` with member `Foo.run` contributes the bare name `run` to its self-name set; an UNRELATED external symbol also named bare `run` would be classified self-ref and, in `hide` mode, dropped from the output (in the default `rank` mode it is only deprioritized, never dropped). This is the same homonym-collapse limitation the edge graph already has — Seam cannot distinguish two bare `run`s. Use the default `rank` mode (lossless) unless byte budget is critical, and prefer qualified targets to disambiguate.
 - **`hidden_self_refs` appears ONLY under `SEAM_IMPACT_SELF_REF=hide`**: like `hidden_tests`, its presence signals self-refs were filtered (even when the count is 0, so agents can rely on it to reconcile `risk_summary` against the shown entries). In the default `rank` mode it is absent — self-refs are present in the output (sorted last), so `risk_summary` already accounts for them.
+- **`seam_context_pack` neighbor ORDER is RWR-relevance, not alphabetical or insertion order (E3)**: under `SEAM_PACK_RELEVANCE_RANK=on` (default), callers/callees are sorted by `(-personalized_pagerank_score, is_test, min_id)` before the per-file + global caps. So the kept neighbors when a list is capped are the ones most relevant to the seed (in its local call-graph neighborhood), and a neighbor whose name sorts late / was indexed late can now appear FIRST. The full uncapped lists from `seam_context` (engine `context()`) are UNAFFECTED — they remain alphabetical (`sorted()`); E3 only reorders the CAPPED pack. `truncated` counts and the `NeighborRef` shape are unchanged (ranking is internal — no `ppr_score` field is exposed). Set `SEAM_PACK_RELEVANCE_RANK=off` for the prior min_id order. The RWR walk is bounded (`SEAM_RWR_MAX_NODES`/`SEAM_RWR_MAX_DEPTH`); on a bound hit or any failure it degrades to min_id order, never raises.
 - **`best_candidate` is ABSENT (not null) on non-AMBIGUOUS `seam_impact` entries by default (E1)**: under `SEAM_IMPACT_OMIT_NULL_CANDIDATE=on` (default) a null `best_candidate` key is omitted from impact entries. `best_candidate` is the AMBIGUOUS proximity pick — null for every EXTRACTED/INFERRED entry — so its omission is lossless (null ≡ absent, the same null-contract as everywhere else). An AMBIGUOUS entry's NON-null `best_candidate` is always kept. Tooling must treat a missing `best_candidate` key as "no proximity pick" (i.e. not AMBIGUOUS), identical to the prior `null`. `resolved_by` is NOT affected — it is always present (may be null). Set `SEAM_IMPACT_OMIT_NULL_CANDIDATE=off` for the byte-identical prior shape (`best_candidate: null` retained). Handler-layer only — `seam_changes`/`seam_affected` never carried `best_candidate` and are unaffected; `seam_trace` hops still carry `best_candidate` (E1 scoped to impact entries only).
 - **`reads`/`writes` feed the kind-agnostic BFS — impact/changes/affected verdicts WIDEN after a field-access re-index**: field-access edges add one edge per access site (higher volume than `holds`, which is one edge per stored field). Every `seam_impact`, `seam_changes`, and `seam_affected` result will include field readers/writers in the blast radius. If you need verdicts to stay byte-stable across an A3 upgrade, gate the index with `SEAM_FIELD_ACCESS_EDGES=off`.
 - **field-access edges and `field` symbols require a `seam init` re-index**: pre-A3 indexes have no `reads`/`writes` edges and no `kind='field'` symbols. `seam_impact` / `seam_context` / `seam_trace` on a field name will show empty results until the index is rebuilt. There is NO schema migration — `reads`/`writes`/`field` are additive TEXT values in the existing `edges.kind` and `symbols.kind` columns.
