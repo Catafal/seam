@@ -177,18 +177,45 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         Each entry also carries is_test (bool) so you can distinguish production dependents
         from test-only callers.
 
+        E4 — Edge provenance (SEAM_EDGE_PROVENANCE=on, default):
+          kind           — the edge kind via which this dependent was reached. Full
+                           vocabulary: call | import | extends | implements | instantiates
+                           | holds | reads | writes | uses. Lets you distinguish a hard
+                           call-edge dependent from a data-coupling (reads/holds) or
+                           signature-coupling (uses) dependent. Always present in both
+                           verbose and lean modes (core field, never stripped).
+          synthesized_by — synthesis channel name when the edge is heuristic (e.g.
+                           "interface-override", "closure-collection", "event-emitter"),
+                           null when statically extracted. Lets you weight entries that
+                           rest on over-approximated synthesized edges differently.
+                           Null is RETAINED (null = "static edge", the informative common
+                           case — unlike best_candidate which is E1-omitted when null).
+                           Stripped in lean mode (verbose=false), like resolved_by.
+          Set SEAM_EDGE_PROVENANCE=off for byte-identical pre-E4 output.
+
+        E4 — Truncation steer (SEAM_IMPACT_STEER=on, default):
+          next_actions   — top-level list[str] of ready-to-act prose hints, PRESENT only
+                           when ≥1 entry was trimmed (by count cap or byte ceiling).
+                           ABSENT when nothing was trimmed (so its presence is an
+                           unambiguous "there is more" signal). Hints name the specific
+                           direction+tier+count trimmed and the exact remedy (raise limit,
+                           zero max_bytes, etc.) — so you know what to do, not just that
+                           something was dropped. An all-trimmed response (empty entries
+                           but non-empty risk_summary) includes a warning that the blast
+                           radius was trimmed to nothing, NOT that no dependents exist.
+                           Set SEAM_IMPACT_STEER=off to suppress next_actions entirely.
+
         By default (include_tests=false) the result is the PRODUCTION blast radius:
         test-file dependents are filtered out and their count is reported as hidden_tests.
         This keeps "what breaks?" focused on production code (test callers otherwise
         dominate the tiers and trip the per-tier cap). Set include_tests=true to include
         test dependents too; or use seam_affected to get the impacted test files directly.
 
-        Set verbose=false to omit heavy enrichment fields (resolved_by, best_candidate)
-        from every tier entry and get a compact response. verbose=true (default) returns
-        all Phase 4/5 enrichment fields. NOTE: risk_summary, truncated, and the per-tier
-        cap are NEW in Phase 8 and apply regardless of verbose — so the impact response is
-        NOT byte-identical to pre-Phase-8 (unlike the other tools). Use limit=0 for the
-        full, uncapped transitive set.
+        Set verbose=false to omit heavy enrichment fields (resolved_by, best_candidate,
+        synthesized_by) from every tier entry and get a compact response. kind is always
+        kept even in lean mode. verbose=true (default) returns all enrichment fields.
+        NOTE: risk_summary, truncated, and the per-tier cap apply regardless of verbose.
+        Use limit=0 for the full, uncapped transitive set.
 
         limit controls the per-tier entry cap (default: SEAM_IMPACT_MAX_RESULTS=25).
         Set limit=0 to disable the cap and receive all transitive entries.
@@ -238,8 +265,21 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         """Trace the call/dependency path between two symbols.
 
         Returns the shortest path from source to target as an ordered list of hops,
-        where each hop carries the edge kind (call | import) and per-edge confidence
+        where each hop carries the edge kind and per-edge confidence
         (EXTRACTED | INFERRED | AMBIGUOUS).
+
+        Full edge kind vocabulary (E4 corrected from stale 'call | import'):
+          call | import | extends | implements | instantiates | holds | reads | writes | uses
+        The hop kind reflects the actual relationship traversed — e.g. a 'holds' hop
+        means one class stores the other as a typed field, while a 'reads' hop means
+        a field-access read edge was traversed.
+
+        E4 — synthesized_by on each hop (SEAM_EDGE_PROVENANCE=on, default):
+          synthesized_by — synthesis channel name when the hop is a heuristic synthesized
+                           edge (e.g. "interface-override"), null when statically extracted.
+                           Lets you see which hops in a path rest on over-approximations.
+                           In lean mode (verbose=false), synthesized_by is stripped
+                           (like resolved_by) — kind is always kept.
 
         Also returns one-hop callers and callees for both symbols so you can see
         the immediate neighborhood alongside the path.
@@ -254,16 +294,23 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         (name collision at extraction time) so you know which conclusions are certain
         and which need manual verification.
 
-        Set verbose=false to omit heavy fields (resolved_by, best_candidate) from
-        every hop and edge hop. verbose=true (default) is byte-identical to pre-Phase-8.
+        Set verbose=false to omit heavy fields (resolved_by, best_candidate,
+        synthesized_by) from every hop and edge hop. kind is always kept.
+        verbose=true (default) is byte-identical to pre-Phase-8 (plus E4 fields).
 
         Pass uid / target_uid (stable handles from seam_search/seam_query results)
         instead of source / target to pin exact symbols and skip re-disambiguation.
         """
         return _finalize(
             handle_seam_trace(
-                conn, source, target, root, max_depth=max_depth, verbose=verbose,
-                uid=uid, target_uid=target_uid,
+                conn,
+                source,
+                target,
+                root,
+                max_depth=max_depth,
+                verbose=verbose,
+                uid=uid,
+                target_uid=target_uid,
             )
         )
 
@@ -477,7 +524,11 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         # build_structure resolve a relative path against `root`, not the server cwd.
         scope_path = Path(path) if path else None
         result = handle_seam_structure(
-            conn, root, path=scope_path, max_depth=depth, max_nodes=nodes,
+            conn,
+            root,
+            path=scope_path,
+            max_depth=depth,
+            max_nodes=nodes,
             include_functions=symbols,
         )
         # Normalize a genuinely-empty (scoped) tree to the not-found sentinel so
