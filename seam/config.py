@@ -207,6 +207,37 @@ SEAM_IMPACT_SELF_REF: str = os.getenv("SEAM_IMPACT_SELF_REF", "rank")
 # call the analysis layer directly). resolved_by is always kept (genuine provenance).
 SEAM_IMPACT_OMIT_NULL_CANDIDATE: str = os.getenv("SEAM_IMPACT_OMIT_NULL_CANDIDATE", "on")
 
+# E1-FULL — opt-in byte ceiling for seam_impact output.
+#
+# WHY a byte ceiling (not just the per-tier count cap):
+#   SEAM_IMPACT_MAX_RESULTS caps entries-per-tier, but a tier of 25 entries with long
+#   signatures can be many kilobytes while a tier of 25 short entries is tiny. Agents
+#   budget their context window in tokens (≈ bytes/chars), not entry counts, so the
+#   count cap cannot guarantee the output fits a context budget. This knob adds a
+#   hard byte ceiling so agents can say "give me the highest-signal dependents that
+#   fit in N characters."
+#
+# HOW it works (handler-layer only, no re-index, no schema change):
+#   After the existing per-tier count cap and E2/E3 relevance ordering, handle_seam_impact
+#   trims entries from the least-valuable end of a global priority order — downstream
+#   before upstream, MAY_NEED_TESTING before WILL_BREAK, tail of each tier before front —
+#   until the serialized output fits the budget. Because E2/E3 already ordered entries
+#   (externals first, production before test), the survivors are the highest-signal
+#   dependents that fit.
+#
+# UNIT = characters (compact JSON byte count). A real tokenizer is an external,
+#   model-specific dependency that violates Seam's zero-external-services rule.
+#   Characters are deterministic and a stable ~4-chars/token proxy.
+#
+# DEFAULT = 0 (unlimited). 0 or any negative value means the byte ceiling is INACTIVE
+#   and the output is byte-identical to the pre-feature behavior. Set to a positive
+#   integer (e.g. 8000) to activate the ceiling.
+#
+# SCOPE: handler-layer and read-path only. seam_changes and seam_affected call the
+#   analysis-layer impact() directly (below the handler) and are unaffected. No schema
+#   migration or re-index is required — the ceiling is applied at response-assembly time.
+SEAM_IMPACT_MAX_BYTES: int = int(os.getenv("SEAM_IMPACT_MAX_BYTES", "0"))
+
 
 # ── Phase 6: Context-Pack configuration ─────────────────────────────────────
 
