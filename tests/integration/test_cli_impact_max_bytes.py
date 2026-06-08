@@ -460,3 +460,39 @@ def test_rich_all_trimmed_not_reported_as_no_dependents(tmp_path: Path) -> None:
     assert "trimmed" in out and ("max-bytes" in out or "byte" in out), (
         f"all-trimmed Rich output must say the dependents were trimmed;\n{result.output}"
     )
+
+
+def test_byte_drops_not_misattributed_to_limit_footer(tmp_path: Path) -> None:
+    """With --limit 0, byte-trimmed entries (merged into `truncated` for reconciliation) must
+    NOT be reported by the --limit footer — that misattributes the cause AND nonsensically
+    tells the user to 'use --limit 0' when they already passed it. Only the byte footer fires."""
+    db_path, root = _make_db(tmp_path, n_direct=20)
+    budget = _get_tight_budget(db_path, root)
+
+    # Rich mode
+    rich = runner.invoke(
+        app,
+        ["impact", "hub", "--limit", "0", "--max-bytes", str(budget),
+         "--db-dir", str(root), "--path", str(root)],
+    )
+    assert rich.exit_code == 0, rich.output
+    assert "truncated by --limit" not in rich.output.lower(), (
+        f"--limit footer must not fire under --limit 0;\n{rich.output}"
+    )
+    assert "trimmed to fit --max-bytes" in rich.output.lower(), (
+        f"byte footer must report the byte trim;\n{rich.output}"
+    )
+
+    # Quiet mode (stderr; CliRunner merges streams into .output)
+    quiet = runner.invoke(
+        app,
+        ["impact", "hub", "--quiet", "--limit", "0", "--max-bytes", str(budget),
+         "--db-dir", str(root), "--path", str(root)],
+    )
+    assert quiet.exit_code == 0, quiet.output
+    assert "truncated by --limit" not in quiet.output.lower(), (
+        f"quiet --limit note must not fire under --limit 0;\n{quiet.output}"
+    )
+    assert "trimmed to fit --max-bytes" in quiet.output.lower(), (
+        f"quiet byte note must report the byte trim;\n{quiet.output}"
+    )

@@ -801,22 +801,27 @@ def impact_cmd(
                     print_quiet(entry, field="name")
         # Signal truncation on stderr so stdout stays a pure bare-name list
         # (a `seam impact X --quiet | wc -l` pipeline must not see this line).
+        # truncated conflates BOTH causes (count cap + byte ceiling are merged there for
+        # reconciliation), so subtract the byte portion to report the count-cap drops only —
+        # otherwise byte-trimmed entries are misattributed to --limit (and "use --limit 0"
+        # is nonsense when --limit 0 was already passed).
         truncated = result.get("truncated")
+        byte_capped = result.get("byte_capped")
+        byte_omitted = byte_capped.get("omitted", 0) if byte_capped else 0
         if truncated:
             total_omitted = sum(n for tiers in truncated.values() for n in tiers.values())
-            if total_omitted > 0:
+            limit_omitted = total_omitted - byte_omitted  # count-cap portion only
+            if limit_omitted > 0:
                 sys.stderr.write(
-                    f"# {total_omitted} more entr(ies) truncated by --limit; "
+                    f"# {limit_omitted} more entr(ies) truncated by --limit; "
                     "use --limit 0 for the full set\n"
                 )
         # Note the byte ceiling separately so the user can distinguish the two controls.
-        byte_capped = result.get("byte_capped")
         if byte_capped:
-            bc_omitted = byte_capped.get("omitted", 0)
             bc_limit = byte_capped.get("limit", 0)
-            if bc_omitted > 0:
+            if byte_omitted > 0:
                 sys.stderr.write(
-                    f"# {bc_omitted} entr(ies) trimmed to fit --max-bytes {bc_limit}; "
+                    f"# {byte_omitted} entr(ies) trimmed to fit --max-bytes {bc_limit}; "
                     "raise --max-bytes or use --lean for more\n"
                 )
         return
@@ -921,13 +926,18 @@ def impact_cmd(
         # Per-direction truncation footer: when --limit capped this direction's tiers,
         # tell the user how many entries were omitted and how to see them all. Without
         # this the capped Rich output looks complete (the silent-cap parity bug).
-        dir_truncated = result.get("truncated", {}).get(direction_key, {})
-        omitted = sum(dir_truncated.values())
-        if omitted > 0:
-            console.print(
-                f"\n  [dim]… {omitted} more entr(ies) truncated by --limit "
-                f"(showing {limit} per tier; use --limit 0 for the full blast radius).[/dim]"
-            )
+        # Gate on limit > 0: with --limit 0 the count cap is OFF, so any entries in
+        # `truncated` were dropped by the byte ceiling (reported by its own footer below) —
+        # showing "truncated by --limit (showing 0 per tier; use --limit 0)" here would
+        # both misattribute the cause and contradict the flag the user already passed.
+        if limit > 0:
+            dir_truncated = result.get("truncated", {}).get(direction_key, {})
+            omitted = sum(dir_truncated.values())
+            if omitted > 0:
+                console.print(
+                    f"\n  [dim]… {omitted} more entr(ies) truncated by --limit "
+                    f"(showing {limit} per tier; use --limit 0 for the full blast radius).[/dim]"
+                )
 
     # Byte-ceiling footer: when --max-bytes trimmed entries, tell the user.
     # Kept separate from the per-direction --limit footer so the user can distinguish
