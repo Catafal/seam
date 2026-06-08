@@ -153,7 +153,7 @@ def init(
         "--semantic",
         help=(
             "Also embed all symbols with the local fastembed model after indexing. "
-            "Requires: pip install 'seam-mcp[semantic]' and SEAM_SEMANTIC=on. "
+            "Requires: pip install 'seam-code[semantic]' and SEAM_SEMANTIC=on. "
             "Downloads the model on first run (~67 MB); subsequent runs use the local cache."
         ),
     ),
@@ -344,7 +344,7 @@ def init(
     if semantic and total_embeddings == 0 and not embedding_failed and total_symbols > 0:
         console.print(
             "[yellow]embeddings: skipped[/yellow] — fastembed is not installed.\n"
-            "  Install it with: [bold]pip install 'seam-mcp\\[semantic]'[/bold]"
+            "  Install it with: [bold]pip install 'seam-code\\[semantic]'[/bold]"
         )
 
     # Issue #8: LLM naming summary line.
@@ -557,7 +557,7 @@ def _load_create_server() -> Any:
     except ImportError as exc:
         Console(stderr=True).print(
             "[red]MCP server support is not installed.[/red]\n"
-            "Install it with:  [bold]pip install 'seam-mcp[server]'[/bold]"
+            "Install it with:  [bold]pip install 'seam-code[server]'[/bold]"
             "  (from source: [bold]uv sync --extra server[/bold])"
         )
         raise typer.Exit(code=1) from exc
@@ -2392,7 +2392,7 @@ def sync_cmd(
         "--semantic",
         help=(
             "Re-embed all symbols after sync (full re-embed, not incremental). "
-            "Requires: pip install 'seam-mcp[semantic]'. "
+            "Requires: pip install 'seam-code[semantic]'. "
             "Skips cleanly when fastembed is absent."
         ),
     ),

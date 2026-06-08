@@ -53,7 +53,16 @@ Three properties define it:
 
 ## Quickstart
 
-> **Not yet on PyPI.** The distribution name will be `seam-mcp` (the name `seam` belongs to an unrelated package); the import package and the `seam` command keep the short name. Install from source for now.
+Published on PyPI as **`seam-code`** — the PyPI name `seam` belongs to an unrelated package, so the *distribution* is `seam-code` while the import package and the `seam` command keep the short name.
+
+```bash
+pip install seam-code              # CLI only
+pip install 'seam-code[server]'    # + the MCP server (seam start)
+pip install 'seam-code[semantic]'  # + semantic search (fastembed, ONNX/CPU, ~67 MB model on first run)
+pip install 'seam-code[web]'       # + the Seam Explorer web UI (FastAPI)
+```
+
+Or from source with uv:
 
 ```bash
 git clone <repo-url> && cd seam

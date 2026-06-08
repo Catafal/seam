@@ -3,10 +3,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-# Distribution name is "seam-mcp" because the PyPI name "seam" is taken by an
+# Distribution name is "seam-code" because the PyPI name "seam" is taken by an
 # unrelated package (Seam Labs' smart-lock API SDK). The import package and the
 # console command both stay "seam" (distribution name != import name is standard).
-name = "seam-mcp"
+name = "seam-code"
 version = "0.3.0"
 description = "Local code intelligence MCP server for AI agents"
 readme = "README.md"
@@ -44,13 +44,13 @@ dependencies = [
 
 [project.optional-dependencies]
 # MCP server support is OPTIONAL — the CLI (init/query/search/context/impact/…) runs
-# fully without it. `pip install 'seam-mcp[server]'` adds the `seam start` MCP server.
+# fully without it. `pip install 'seam-code[server]'` adds the `seam start` MCP server.
 server = ["mcp>=1.0.0"]
-# Web explorer is OPTIONAL — `pip install 'seam-mcp[web]'` adds the `seam serve` HTTP
+# Web explorer is OPTIONAL — `pip install 'seam-code[web]'` adds the `seam serve` HTTP
 # server + React SPA. FastAPI brings Starlette + Pydantic, but NOT the ASGI server —
 # uvicorn must be listed explicitly or `seam serve` exits with "uvicorn is not installed".
 web = ["fastapi>=0.110", "uvicorn>=0.30"]
-# Semantic (embedding-based) search is OPTIONAL — `pip install 'seam-mcp[semantic]'`
+# Semantic (embedding-based) search is OPTIONAL — `pip install 'seam-code[semantic]'`
 # adds local vector search via quantized ONNX on CPU (no torch, ~67MB model download).
 # Requires `seam init --semantic` to build the embeddings table before use.
 semantic = ["fastembed>=0.4"]
@@ -65,7 +65,7 @@ Repository = "https://github.com/Catafal/seam"
 [dependency-groups]
 dev = [
     # mcp here (not in core deps) so the dev/test env exercises the MCP server while
-    # end-user `pip install seam-mcp` stays mcp-free; opt in with the `server` extra.
+    # end-user `pip install seam-code` stays mcp-free; opt in with the `server` extra.
     "mcp>=1.0.0",
     # fastapi here so integration tests (TestClient) run without needing --extra web.
     # End-users who only want the CLI get neither mcp nor fastapi.

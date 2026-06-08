@@ -2,6 +2,21 @@
 # Format: [x] = done, [>] = in progress, [ ] = not started
 # Update this EVERY session. It is the first thing the agent reads.
 #
+# 2026-06-08: PUBLISHED to PyPI as `seam-code` 0.3.0 + distribution rename
+#   ACTION: published the package to PyPI so it installs with pip. The PyPI name `seam` is
+#     taken (Seam Labs' SDK) AND `seam-mcp` is ALSO taken by an unrelated package — so the
+#     distribution name is now `seam-code` (import package + `seam` command UNCHANGED).
+#   HOW: pyproject name seam-mcp -> seam-code; built with hatchling (uv build); published via
+#     `uv publish` using UV_PUBLISH_TOKEN from .env. VERIFIED: clean `pip install seam-code` in a
+#     fresh venv (Python 3.14) + `seam init` builds an index (packaged seam/_data/schema.sql loads).
+#   SWEEP: every `pip install 'seam-mcp[...]'` hint in source (cli/main.py, cli/serve.py,
+#     server/web.py) + the tests asserting those strings + pyproject comments + README quickstart +
+#     CLAUDE.md updated seam-mcp -> seam-code (a `pip install seam-mcp` hint would install the WRONG
+#     package). README quickstart now leads with `pip install seam-code` (+ [server]/[semantic]/[web]).
+#   NOTE: uv.lock changed (project's own name) but is NOT staged per repo rule (never git add uv.lock).
+#   GATE: re-run after the rename sweep (install-hint test assertions updated in lockstep).
+#   NEXT: tag a v0.3.0 GitHub release (optional).
+#
 # 2026-06-08: CLI-first agent guidance for `seam install` (#106, PR #107 merged to main)
 #   (branch feat/cli-first-agent-guidance → rebase-merged; commit 11cc101 on main).
 #   PROBLEM: `seam install` wired up MCP — the MOST expensive way for an agent to USE Seam.
@@ -37,7 +52,7 @@
 #   NO new config knobs, NO schema change, NO re-index; MCP tool count stays 12.
 #   GATE: ruff + mypy clean (100 files), full suite + 47 installer tests pass.
 #   SHIPPED: PR #107 rebase-merged to main; issue #106 closed; remote+local branch deleted.
-#   NEXT: v0.1.0 PyPI release (seam-mcp).
+#   NEXT: published to PyPI as `seam-code` 0.3.0 — see the entry above.
 #
 # 2026-06-08: P2 — index staleness banner + tools.py split (#103)
 #   (branch feat/p2-staleness-banner-tools-split, 3 commits: 7bbbd0f staleness,

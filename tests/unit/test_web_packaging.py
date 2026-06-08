@@ -13,7 +13,7 @@ _ROOT = Path(__file__).parents[2]
 
 
 def test_web_optional_dependency_exists() -> None:
-    """The 'web' extra must be declared so users can do pip install 'seam-mcp[web]'."""
+    """The 'web' extra must be declared so users can do pip install 'seam-code[web]'."""
     cfg = tomllib.loads((_ROOT / "pyproject.toml").read_text())
     optional_deps = cfg["project"].get("optional-dependencies", {})
     assert "web" in optional_deps, "'web' extra not found in [project.optional-dependencies]"

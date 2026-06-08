@@ -539,8 +539,8 @@ class TestWatch3InstallHint:
                 app, ["init", "--semantic", str(tmp_path)]
             )
 
-        assert "seam-mcp[semantic]" in result.output, (
-            f"Expected 'seam-mcp[semantic]' install hint in output; got:\n{result.output}"
+        assert "seam-code[semantic]" in result.output, (
+            f"Expected 'seam-code[semantic]' install hint in output; got:\n{result.output}"
         )
 
 

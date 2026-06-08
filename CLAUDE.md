@@ -15,7 +15,7 @@ Local code intelligence MCP server — indexes codebases with tree-sitter, store
 - `make fmt` — Format + fix lint (not part of gate)
 - `make bench-semantic` — Run semantic recall benchmark (requires `[semantic]` extra + one-time model download; NOT part of gate)
 - `uv run seam init` — Index current directory
-- `uv run seam init --semantic` — Index + build local embeddings for hybrid semantic search (requires `pip install 'seam-mcp[semantic]'`; downloads model ~67 MB on first run)
+- `uv run seam init --semantic` — Index + build local embeddings for hybrid semantic search (requires `pip install 'seam-code[semantic]'`; downloads model ~67 MB on first run)
 - `uv run seam sync` — Incrementally reconcile the index (changed/added/removed files) + gated cluster recompute
 - `uv run seam sync --semantic` — Reconcile + rebuild all embeddings (full re-embed; safe/idempotent)
 - `uv run seam start` — Start MCP server + watcher
@@ -32,7 +32,7 @@ Local code intelligence MCP server — indexes codebases with tree-sitter, store
   the MCP config (`--target claude|cursor|codex|all`, `--location project|user`,
   `--print-config`); `uv run seam uninstall` reverses both (guidance + MCP)
 - `uv run seam serve` — Start the local Seam Explorer web server (FastAPI, 127.0.0.1:7420);
-  requires `[web]` extra (`pip install 'seam-mcp[web]'`); `--host`, `--port`, `--no-open`
+  requires `[web]` extra (`pip install 'seam-code[web]'`); `--host`, `--port`, `--no-open`
 - `uv sync` installs the CLI only; `uv sync --extra server` adds the optional MCP server (`mcp` package); `uv sync --extra semantic` adds fastembed for semantic search
 
 ## File References
@@ -630,7 +630,7 @@ Tier A name-resolution (read-path-only bridge between qualified symbol names and
 See `progress.txt`.
 
 ### Prior phase (Semantic search)
-- **New `[semantic]` extra** (`pip install 'seam-mcp[semantic]'`) — pulls `fastembed>=0.4` (ONNX/CPU, no torch). Base install unchanged; gate stays offline.
+- **New `[semantic]` extra** (`pip install 'seam-code[semantic]'`) — pulls `fastembed>=0.4` (ONNX/CPU, no torch). Base install unchanged; gate stays offline.
 - **3 new modules:** `seam/analysis/embeddings.py` (fastembed wrapper), `seam/indexer/embedding_index.py` (index orchestration), `seam/query/semantic.py` (read path: RRF + cosine + model-mismatch guard).
 - **Schema v6→v7:** new `embeddings(symbol_id PK, model, dim, vector BLOB)` table. Auto-migrated on `connect()`; no backfill — populated only by `seam init --semantic`.
 - **5 new config knobs:** `SEAM_SEMANTIC` (off/on, default off), `SEAM_EMBED_MODEL` (default `BAAI/bge-small-en-v1.5`), `SEAM_SEMANTIC_LIMIT` (default 20), `SEAM_SEMANTIC_SCAN_CAP` (default 20000), `SEAM_RRF_K` (default 60).
@@ -639,20 +639,20 @@ See `progress.txt`.
 - **MCP transparent:** `seam_search`/`seam_query` auto-hybrid via engine.py. No new tool, count stays 11. Optional `semantic` param (default `true`) lets callers force keyword-only.
 - **Benchmark:** `benchmarks/semantic_recall.py` (15 concept queries, 8 keyword-friendly + 7 vocabulary-gap), `make bench-semantic`. NOT part of gate — requires fastembed + model.
 - **Gate:** 1747 tests, 5 skipped (real-model behind `pytest.importorskip("fastembed")`), 0 failed. Fully offline.
-See `progress.txt`. Next: v0.1.0 — publish to PyPI as `seam-mcp`.
+See `progress.txt`. Next: v0.1.0 — publish to PyPI as `seam-code`.
 
 ### Prior phase (CLI-only completion + optional-MCP install profile)
 CLI-only completion + optional-MCP install profile.
 - **3 new CLI commands** — `seam query` / `search` / `context` (seam/cli/read.py) over the existing
   transport-agnostic handlers; query SQLite directly → the FULL feature set is usable with NO MCP server.
 - **`mcp` is now an OPTIONAL extra** (`[project.optional-dependencies] server`), not a core dep. `mcp` is
-  imported lazily inside `start()`; `seam start` without it exits with an install hint. `pip install seam-mcp`
-  = CLI only; `pip install 'seam-mcp[server]'` adds the server. (`mcp` kept in the dev group for tests.)
+  imported lazily inside `start()`; `seam start` without it exits with an install hint. `pip install seam-code`
+  = CLI only; `pip install 'seam-code[server]'` adds the server. (`mcp` kept in the dev group for tests.)
 - **Distribution bug fixed (found via a real wheel install):** `seam init` read `docs/database/schema.sql`
   (outside the package) → crashed on any `pip install`. Schema now force-included at `seam/_data/schema.sql`,
   loaded packaged-first with a dev fallback. Guard test added.
 - 1504 tests passing; gate green. Plan: `.claude/tasks/cli-query-context-search.md`.
-See `progress.txt`. Next: v0.1.0 — publish to PyPI as `seam-mcp`.
+See `progress.txt`. Next: v0.1.0 — publish to PyPI as `seam-code`.
 
 ### Prior phase
 `seam install` (roadmap item 8) — one-command MCP wiring for Claude Code / Cursor / Codex.
@@ -665,12 +665,12 @@ See `progress.txt`. Next: v0.1.0 — publish to PyPI as `seam-mcp`.
 - Command written = absolute resolved `seam` path (via `sys.argv[0]`) + `["start", <root>]`. CLI-only — **no new
   MCP tool** (server stays read-only); tool count stays 10. No schema change, no migration.
 - 1492 tests passing; gate green. Plan: `.claude/tasks/seam-install.md`.
-See `progress.txt`. Next: v0.1.0 release prep — actually publish to PyPI as `seam-mcp`; add more agent targets
+See `progress.txt`. Next: v0.1.0 release prep — actually publish to PyPI as `seam-code`; add more agent targets
 (one file each) as needed. Kotlin still parked behind a robust grammar.
 
 ### Prior phase
 Agentic-readiness hardening (post-Phase-10) — 3 critical audit fixes.
-- **Distribution renamed `seam` → `seam-mcp`** in pyproject (PyPI `seam` is taken by Seam Labs' SDK).
+- **Distribution renamed `seam` → `seam-code`** in pyproject (PyPI `seam` is taken by Seam Labs' SDK).
   Import package + console command stay `seam`. Not yet published; README install is from-source.
 - **MCP error/not-found contract unified** via `_finalize` (seam/server/mcp.py): app errors now
   `isError=True` (`"CODE: message"`), not-found → `{"found": false}`. See the Known Gotchas entry.
@@ -929,8 +929,8 @@ There are **twelve MCP tools** (`seam_structure` is the newest — Tier D11). Th
   cosine scores. When the stored model ≠ configured model, `semantic_candidates` detects the
   mismatch (COUNT WHERE model=? == 0), logs a WARNING, and returns `[]`. The engine falls
   through to pure-FTS5. Re-run `seam init --semantic` with the new model to rebuild.
-- **`[semantic]` extra required**: `seam-mcp` base install does NOT include fastembed.
-  Install with: `pip install 'seam-mcp[semantic]'` (or `uv sync --extra semantic`). When
+- **`[semantic]` extra required**: `seam-code` base install does NOT include fastembed.
+  Install with: `pip install 'seam-code[semantic]'` (or `uv sync --extra semantic`). When
   fastembed is absent, `is_available()` returns False, `index_embeddings` returns 0 (skipped),
   and the hybrid path degrades silently to FTS-only. An install hint is printed if `--semantic`
   is requested but fastembed is absent.

@@ -35,7 +35,7 @@ err_console = Console(stderr=True)
 def _load_web_app_factory():  # type: ignore[return]
     """Lazy-import seam.server.web and return create_web_app.
 
-    WHY lazy: `fastapi` is an optional extra (`seam-mcp[web]`). Importing at module
+    WHY lazy: `fastapi` is an optional extra (`seam-code[web]`). Importing at module
     top-level would crash the CLI on startup for users who installed without [web].
     Only `seam serve` needs it, so the import lives here, not at the top of the file.
 
@@ -52,13 +52,13 @@ def _load_web_app_factory():  # type: ignore[return]
         # correctly in the terminal. CliRunner captures the rendered (markup-stripped) text.
         err_console.print(
             "[red]Web server support is not installed.[/red]\n"
-            "Install it with:  [bold]pip install 'seam-mcp\\[web]'[/bold]\n"
+            "Install it with:  [bold]pip install 'seam-code\\[web]'[/bold]\n"
             "  (from source: [bold]uv sync --extra web[/bold])"
         )
         # Also write to stdout so CliRunner captures it in res.output during tests.
         console.print(
             "[red]Web server support is not installed.[/red]\n"
-            "Install it with:  [bold]pip install 'seam-mcp\\[web]'[/bold]"
+            "Install it with:  [bold]pip install 'seam-code\\[web]'[/bold]"
         )
         raise typer.Exit(code=1)
 
@@ -79,7 +79,7 @@ def serve_command(
     --no-open is given. The server exposes the /api/* endpoints backed by the
     Seam index at .seam/seam.db and serves the built SPA at '/'.
 
-    Requires the [web] extra:  pip install 'seam-mcp[web]'
+    Requires the [web] extra:  pip install 'seam-code[web]'
     """
     # Resolve paths the same way every other read command does (mirrors read.py).
     project_root = Path(path).resolve()
@@ -137,7 +137,7 @@ def serve_command(
     except ImportError:
         err_console.print(
             "[red]uvicorn is not installed.[/red] "
-            "Install it with:  [bold]pip install 'seam-mcp[web]'[/bold]"
+            "Install it with:  [bold]pip install 'seam-code[web]'[/bold]"
         )
         raise typer.Exit(code=1)
 

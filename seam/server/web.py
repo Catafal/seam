@@ -21,7 +21,7 @@ Design:
 
 IMPORT NOTE: 'import fastapi' at the top of this module is intentional. This module
 is only imported via the lazy CLI path (`seam serve` / `create_web_app`). The `fastapi`
-package is an optional extra (`seam-mcp[web]`) and a dev group dep — it is never imported
+package is an optional extra (`seam-code[web]`) and a dev group dep — it is never imported
 at CLI startup, only when this file is imported. See CLAUDE.md "FastAPI import is lazy".
 """
 

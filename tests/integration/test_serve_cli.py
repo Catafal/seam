@@ -49,7 +49,7 @@ def test_serve_missing_extra_exits_with_hint(tmp_path: Path) -> None:
     We need a repo WITH an index so the NO_INDEX check passes and we reach the lazy
     import. We mock _load_web_app_factory directly to simulate the ImportError path
     without touching sys.modules (which is unreliable when the module is already cached).
-    The command must print a message mentioning 'seam-mcp[web]' and exit with code 1.
+    The command must print a message mentioning 'seam-code[web]' and exit with code 1.
     """
     # Create an indexed repo so the NO_INDEX check passes and we hit the lazy import.
     repo = _make_indexed_repo(tmp_path)
@@ -66,7 +66,7 @@ def test_serve_missing_extra_exits_with_hint(tmp_path: Path) -> None:
         # logic — print the hint and exit 1. Use same escaped brackets as serve.py.
         serve_mod.console.print(
             "[red]Web server support is not installed.[/red]\n"
-            "Install it with:  [bold]pip install 'seam-mcp\\[web]'[/bold]"
+            "Install it with:  [bold]pip install 'seam-code\\[web]'[/bold]"
         )
         raise typer.Exit(code=1)
 
@@ -79,7 +79,7 @@ def test_serve_missing_extra_exits_with_hint(tmp_path: Path) -> None:
     assert res.exit_code == 1, f"Expected exit 1, got {res.exit_code}. Output:\n{res.output}"
     # The hint must mention pip install and the package (brackets may be stripped by Rich markup
     # but the core text must be present). Check for the parts that survive markup rendering.
-    assert "seam-mcp" in res.output, f"Package hint not found in output:\n{res.output}"
+    assert "seam-code" in res.output, f"Package hint not found in output:\n{res.output}"
     assert "pip install" in res.output, f"Install hint not found in output:\n{res.output}"
 
 
