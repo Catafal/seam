@@ -225,60 +225,48 @@ def _generate_steer_impl(
 
     # ── (a) Count-cap hints — one per direction+tier with count-cap omissions ──
     # truncated[dir][tier] is the MERGED omitted count (count-cap drops + byte-ceiling
-    # drops, additive). To attribute it correctly we must isolate the count-cap-only
-    # portion, because the two have DIFFERENT remedies: count-cap drops are revealed by
-    # raising `limit`, byte-ceiling drops only by raising `max_bytes`. Misattributing a
+    # drops, additive). The two have DIFFERENT remedies — count-cap drops are revealed by
+    # raising `limit`, byte-ceiling drops only by raising `max_bytes` — so attributing a
     # byte-dropped entry to the count cap yields a hint ("Raise limit to N") that, when
-    # followed, does NOT reveal the entry — the agent re-queries, sees the same truncation,
-    # and may wrongly conclude the dependent is phantom.
+    # followed, does NOT reveal the entry (the agent re-queries, sees the same truncation,
+    # and may wrongly conclude the dependent is phantom).
     #
-    # The byte ceiling (fit_to_byte_budget) trims from the LEAST-valuable end first:
-    # downstream before upstream, MAY_NEED_TESTING before WILL_BREAK. So we deduct the
-    # byte-omitted total from the merged counts in that SAME reverse order; whatever
-    # remains in a (dir, tier) cell is its genuine count-cap portion.
-    count_cap_portion: dict[tuple[str, str], int] = {}
-    remaining_byte_omitted = byte_omitted
-    for direction in reversed(direction_order):
-        dir_trunc = truncated.get(direction)
-        if not isinstance(dir_trunc, dict):
-            continue
-        for tier in reversed(tier_order):
-            merged_omitted = dir_trunc.get(tier, 0)
-            if not isinstance(merged_omitted, int) or merged_omitted <= 0:
+    # The count-cap portion is computable EXACTLY from risk_summary and limit, with no
+    # byte-drop data: the per-tier count cap keeps min(entries, limit), so it drops
+    # max(risk - limit, 0) from each tier (the cap is the SAME limit for every tier). This
+    # is exact — a tier that was NOT count-capped (risk <= limit) but byte-dropped yields
+    # portion == 0 and gets NO 'raise limit' hint, only the byte remedy below. (This is why
+    # we do not split the global byte_capped.omitted scalar across tiers — that scalar
+    # cannot say which tiers it came from, whereas max(risk - limit, 0) is exact.)
+    if limit > 0:  # limit == 0 (unlimited) ⇒ no count-cap drops anywhere
+        for direction in direction_order:
+            dir_risk = risk_summary.get(direction, {})
+            if not isinstance(dir_risk, dict):
                 continue
-            byte_portion = min(remaining_byte_omitted, merged_omitted)
-            remaining_byte_omitted -= byte_portion
-            count_cap_portion[(direction, tier)] = merged_omitted - byte_portion
-
-    # Emit count-cap hints in DISPLAY order (highest-priority tier first).
-    for direction in direction_order:
-        dir_risk = risk_summary.get(direction, {})
-        if not isinstance(dir_risk, dict):
-            dir_risk = {}
-        for tier in tier_order:
-            portion = count_cap_portion.get((direction, tier), 0)
-            if portion <= 0:
-                continue
-            # A count-cap drop is only possible when the count cap is active (limit > 0);
-            # with limit=0 (unlimited) every count-cap drop is really a byte-ceiling drop
-            # and the deduction above should have zeroed `portion`. Guard defensively.
-            if limit <= 0:
-                continue
-
-            # Suggest the minimum limit that reveals all entries in this tier:
-            # risk_summary[dir][tier] is the honest pre-cap total. Clamp to never suggest
-            # a value <= the current limit (which would tell the agent to LOWER the cap
-            # and HIDE entries) — the suggestion must always be enough to reveal `portion`
-            # more entries on top of what is shown.
-            total_in_tier = dir_risk.get(tier, 0)
-            if not isinstance(total_in_tier, int):
-                total_in_tier = 0
-            suggested_limit = max(total_in_tier, limit + portion)
-            hints.append(
-                f"Raise limit to {suggested_limit} to see {portion} more "
-                f"{tier} {direction} dependents "
-                f"(currently capped at {limit})."
-            )
+            dir_trunc = truncated.get(direction, {})
+            if not isinstance(dir_trunc, dict):
+                dir_trunc = {}
+            for tier in tier_order:
+                merged = dir_trunc.get(tier, 0)
+                if not isinstance(merged, int) or merged <= 0:
+                    continue  # nothing omitted from this tier at all
+                risk = dir_risk.get(tier, 0)
+                if not isinstance(risk, int):
+                    risk = 0
+                # Exact count-cap drop; clamp to merged (can't exceed the total omitted).
+                portion = min(max(risk - limit, 0), merged)
+                if portion <= 0:
+                    continue  # this tier's omissions were ALL byte-ceiling drops
+                # Suggest the minimum limit that reveals every entry in this tier
+                # (risk = limit + portion when portion > 0, so this equals `risk`). Clamp
+                # to never suggest a value <= the current limit (which would tell the agent
+                # to LOWER the cap and HIDE entries).
+                suggested_limit = max(risk, limit + portion)
+                hints.append(
+                    f"Raise limit to {suggested_limit} to see {portion} more "
+                    f"{tier} {direction} dependents "
+                    f"(currently capped at {limit})."
+                )
 
     # ── (b) Byte-ceiling hint ─────────────────────────────────────────────────
     if byte_omitted > 0 and byte_capped_clean:

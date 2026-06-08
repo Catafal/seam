@@ -420,6 +420,38 @@ def test_suggested_limit_never_below_current_limit() -> None:
     assert int(m.group(1)) > 5
 
 
+def test_both_caps_count_cap_portion_is_exact_from_risk_and_limit() -> None:
+    """When both caps fire, the count-cap portion is EXACTLY max(risk - limit, 0) per tier.
+
+    Regression for the QA finding: the global byte_capped.omitted scalar cannot say which
+    tiers the byte drops came from, so deducting it across tiers over-attributed the
+    count-cap portion of a tier that was BOTH count-capped and byte-dropped. The fix
+    computes the count-cap drop directly from risk_summary and limit (the cap is the same
+    per-tier limit), which is exact and independent of the byte split.
+
+    Scenario mirrors a real hub: WILL_BREAK risk 438 / LIKELY 599, limit 100, and the byte
+    ceiling additionally dropped 192 entries (so truncated WILL=430 > true count-cap 338).
+    """
+    import re
+
+    hints = generate_steer(
+        truncated={"upstream": {"WILL_BREAK": 430, "LIKELY_AFFECTED": 599}},
+        byte_capped={"limit": 3000, "omitted": 192},
+        risk_summary={"upstream": {"WILL_BREAK": 438, "LIKELY_AFFECTED": 599}},
+        limit=100,
+        max_bytes=3000,
+    )
+    portions = {
+        m.group(2): int(m.group(1))
+        for h in hints
+        if (m := re.search(r"to see (\d+) more (\w+) upstream", h))
+    }
+    assert portions.get("WILL_BREAK") == 338, f"expected 438-100=338, got {portions}"
+    assert portions.get("LIKELY_AFFECTED") == 499, f"expected 599-100=499, got {portions}"
+    # Byte remedy still present (byte ceiling fired).
+    assert any("max_bytes" in h for h in hints)
+
+
 def test_tier_order_injection_is_honored() -> None:
     """Injected tier_order governs which tiers produce hints (single-source-of-truth).
 
