@@ -131,35 +131,29 @@ def test_tools_facade_handler_is_same_callable_as_trace_handler() -> None:
 # ── 2. No new top-level keys injected by the split ──────────────────────────
 
 
-def _make_temp_db() -> Any:
-    """Create a minimal on-disk Seam DB (empty) for handler smoke tests.
+def _make_temp_db(tmp_path: Path) -> Any:
+    """Create a minimal on-disk Seam DB (empty) under tmp_path for handler smoke tests.
 
-    Returns a tuple of (conn, tmpdir) — tmpdir keeps the tempfile alive while conn is used.
-    But to keep tests simple, we use a context-manager-free form and let the caller hold
-    the tmp dir. Actually we use a module-level temp dir approach.
+    Returns the open connection. The DB lives under pytest's tmp_path fixture, which
+    is auto-cleaned — no leaked temp directory and no risk of writing artifacts into
+    the repo root.
     """
-    import tempfile
-    from pathlib import Path as _Path
-
     from seam.indexer.db import init_db
 
-    # Create a temp directory for the DB (kept alive by the OS until the test exits)
-    tmpdir = tempfile.mkdtemp()
-    db_path = _Path(tmpdir) / ".seam" / "seam.db"
+    db_path = tmp_path / ".seam" / "seam.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = init_db(db_path)
-    return conn
+    return init_db(db_path)
 
 
-def test_search_handler_output_has_no_split_artifacts() -> None:
+def test_search_handler_output_has_no_split_artifacts(tmp_path: Path) -> None:
     """handle_seam_search returns a list (or error dict); no stray keys from the split."""
     from unittest.mock import patch
 
     import seam.config as config
     from seam.server.tools import handle_seam_search
 
-    conn = _make_temp_db()
-    root = Path("/fake/root")
+    conn = _make_temp_db(tmp_path)
+    root = tmp_path
 
     with patch.object(config, "SEAM_STALENESS_CHECK", "off"):
         result = handle_seam_search(conn, "foo", root)
@@ -168,17 +162,17 @@ def test_search_handler_output_has_no_split_artifacts() -> None:
     assert isinstance(result, list), f"Expected list, got {type(result)}"
 
 
-def test_impact_handler_output_has_no_split_artifacts() -> None:
+def test_impact_handler_output_has_no_split_artifacts(tmp_path: Path) -> None:
     """handle_seam_impact returns a dict with expected keys; no stray keys from the split."""
+    from unittest.mock import patch
+
     import seam.config as config
     from seam.server.tools import handle_seam_impact
 
-    conn = _make_temp_db()
-    root = Path("/fake/root")
+    conn = _make_temp_db(tmp_path)
+    root = tmp_path
 
-    with __import__("unittest.mock", fromlist=["patch"]).patch.object(
-        config, "SEAM_STALENESS_CHECK", "off"
-    ):
+    with patch.object(config, "SEAM_STALENESS_CHECK", "off"):
         result = handle_seam_impact(conn, "nonexistent_symbol", root)
 
     assert isinstance(result, dict), f"Expected dict, got {type(result)}"

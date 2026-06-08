@@ -79,7 +79,10 @@ _cache: dict[str, tuple[float, StalenessVerdict]] = {}
 def _cache_key(conn: sqlite3.Connection, root: Path) -> str:
     """Build a string cache key from the DB path and root path."""
     try:
-        db_path = conn.execute("PRAGMA database_list").fetchone()[2]
+        raw_db_path = conn.execute("PRAGMA database_list").fetchone()[2]
+        # Normalize the DB path too (not just root) so two spellings of the same DB
+        # can't produce duplicate cache entries.
+        db_path = str(Path(raw_db_path).resolve()) if raw_db_path else "<unknown>"
     except Exception:  # noqa: BLE001 — closed/invalid conn → no cache
         db_path = "<unknown>"
     return f"{db_path}||{root.resolve()}"
@@ -190,6 +193,17 @@ def _scan_for_drift(
             # File is gone (deleted) or permission denied.
             # Both count as "stale" — the index references something that changed.
             deleted += 1
+
+    # Observability: when the scan fills the cap, the verdict covers only the newest
+    # `scan_cap` files — a stale file OUTSIDE that window reads identical to a clean
+    # repo. Log it so a "fresh" verdict on a large repo is not silently partial.
+    if len(rows) >= scan_cap:
+        logger.info(
+            "check_staleness: scan hit cap (%d files) — verdict covers only the "
+            "newest %d indexed files; older drift is not detected",
+            scan_cap,
+            scan_cap,
+        )
     return changed, deleted
 
 
@@ -199,6 +213,7 @@ def check_staleness(
     root: Path,
     watcher_alive: bool = False,
     scan_cap: int | None = None,
+    respect_knob: bool = True,
 ) -> StalenessVerdict:
     """Determine whether the index is stale relative to the current on-disk state.
 
@@ -211,6 +226,12 @@ def check_staleness(
                        synthesized-edge drift still is).
         scan_cap:      Override for SEAM_STALENESS_SCAN_CAP (used by tests to
                        exercise the boundary without setting the config).
+        respect_knob:  When True (default), SEAM_STALENESS_CHECK=off short-circuits
+                       to a fresh verdict (the MCP-banner gate). The `seam status`
+                       CLI passes respect_knob=False so its freshness field is
+                       computed regardless of the banner knob — the knob gates the
+                       MCP banner, NOT the unrelated CLI freshness feature, which
+                       predates it and must not be silently disabled by it.
 
     Returns:
         StalenessVerdict with stale, reason, hint.
@@ -218,16 +239,18 @@ def check_staleness(
     Never raises. On any error, returns stale=False (conservative default; do NOT
     cry wolf when freshness cannot be determined).
     """
-    # Fast path: knob off → no IO, no banner, byte-identical to pre-feature.
-    # The handlers skip calling this when the knob is off, but this guard is a
-    # safety net in case this function is called directly with the knob off.
-    if config.SEAM_STALENESS_CHECK != "on":
+    # Banner gate: knob off → no IO, no banner, byte-identical to pre-feature.
+    # The handlers skip calling this when the knob is off; this guard is the safety
+    # net for direct callers. `seam status` opts out (respect_knob=False) so the
+    # CLI freshness field stays live even when the MCP banner is disabled.
+    if respect_knob and config.SEAM_STALENESS_CHECK != "on":
         return StalenessVerdict(stale=False, reason="", hint="")
 
     # Resolve scan_cap: test override takes precedence; otherwise use config.
     effective_cap = scan_cap if scan_cap is not None else config.SEAM_STALENESS_SCAN_CAP
 
-    # Per-process TTL cache: skip re-stat if verdict is fresh.
+    # Per-process TTL cache: a known-stale verdict is reused within the TTL so a
+    # burst of read-tool calls doesn't re-scan a repo we already know is stale.
     cache_key = _cache_key(conn, root)
     cached = _cache_get(cache_key)
     if cached is not None:
@@ -238,11 +261,20 @@ def check_staleness(
         verdict = _check_staleness_impl(conn, watcher_alive=watcher_alive, scan_cap=effective_cap)
     except Exception:  # noqa: BLE001 — never propagate to the read-tool caller
         # Conservative default: stale=False means we don't cry wolf on unexpected errors.
-        # Logged so the unexpected error is observable (not silently swallowed).
-        logger.debug("check_staleness: unexpected error; returning stale=False", exc_info=True)
-        verdict = StalenessVerdict(stale=False, reason="", hint="")
+        # WARNING (not debug): a throw here is genuinely unexpected and silently defeats
+        # a CORRECTNESS feature — an operator must be able to see that the check broke
+        # rather than mistake "check failed" for "verified fresh". The deliberate
+        # no-watcher / no-drift skips stay quiet; only the unexpected path is loud.
+        logger.warning("check_staleness: unexpected error; returning stale=False", exc_info=True)
+        return StalenessVerdict(stale=False, reason="", hint="")
 
-    _cache_put(cache_key, verdict)
+    # Cache ONLY stale verdicts (the safe asymmetry). A fresh verdict is NOT cached:
+    # caching stale=False would mask a file edited within the TTL window — the exact
+    # false-safe this feature exists to prevent (and would also mask a watcher that
+    # died mid-session). Re-verifying a fresh repo is cheap (bounded by scan_cap stats);
+    # persisting a known-stale verdict is the only direction that is safe to cache.
+    if verdict["stale"]:
+        _cache_put(cache_key, verdict)
     return verdict
 
 

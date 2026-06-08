@@ -458,10 +458,14 @@ def status(
         # Freshness: delegate to seam/analysis/staleness.py — single source of truth.
         # WHY: the MCP handler layer uses the same module; having two divergent heuristics
         # would cause `seam status` and `seam_impact` index_status to disagree.
+        # respect_knob=False: the CLI freshness field is INDEPENDENT of SEAM_STALENESS_CHECK
+        # (which gates only the MCP banner). `seam status` must keep reporting freshness even
+        # when the banner is disabled — otherwise the knob would silently kill a pre-existing
+        # CLI feature and make `seam status --quiet` always report "fresh".
         pid_file_inner = db_path.parent / "watcher.pid"
         watcher_alive_inner = _watcher_is_alive(pid_file_inner) is not None
         staleness_verdict = check_staleness(
-            conn, root=project_root, watcher_alive=watcher_alive_inner
+            conn, root=project_root, watcher_alive=watcher_alive_inner, respect_knob=False
         )
         freshness = "stale" if staleness_verdict["stale"] else "fresh"
 

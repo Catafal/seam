@@ -20,6 +20,8 @@ Prior art:
   tests/unit/test_impact_max_bytes.py         — byte-stability assertion pattern
 """
 
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -97,8 +99,12 @@ def _make_stale(db_path: Path, src_file: Path) -> Path:
     mtime in the DB unchanged.
     Returns the db_path.
     """
-    # Touch the file so its on-disk mtime becomes newer than what the DB stores.
     src_file.write_text("def caller(): return 1\ndef callee(): pass\n")
+    # Force a definitively-newer mtime (not just a content write) so the test is not
+    # flaky on coarse-mtime filesystems where the rewrite could land in the same tick
+    # as indexing. A far-future stamp is unambiguously > any stored mtime.
+    future = time.time() + 1000.0
+    os.utime(src_file, (future, future))
     return db_path
 
 

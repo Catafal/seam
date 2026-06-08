@@ -315,3 +315,91 @@ def test_check_staleness_is_cheap_when_knob_off(tmp_path: Path, monkeypatch: pyt
     assert isinstance(verdict["stale"], bool)
     assert isinstance(verdict["reason"], str)
     assert isinstance(verdict["hint"], str)
+
+
+# ── S9: respect_knob=False computes freshness even when the knob is off ───────
+
+
+def test_respect_knob_false_computes_despite_knob_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """respect_knob=False (used by `seam status`) detects staleness even when the
+    banner knob is off — the knob gates the MCP banner, NOT the CLI freshness field.
+
+    Regression guard: a prior version short-circuited to stale=False whenever the
+    knob was off, which silently disabled `seam status` freshness detection.
+    """
+    import seam.config as config
+
+    monkeypatch.setattr(config, "SEAM_STALENESS_CHECK", "off")
+
+    db_path = tmp_path / ".seam" / "seam.db"
+    db_path.parent.mkdir(parents=True)
+    real_file = tmp_path / "src.py"
+    real_file.write_text("def foo(): pass\n")
+    disk_mtime = real_file.stat().st_mtime
+
+    conn = _make_db(db_path)
+    _insert_file_row(conn, str(real_file.resolve()), disk_mtime - 10.0)  # modified
+
+    # Banner gate (respect_knob=True, the default) → fresh because knob is off.
+    assert check_staleness(conn, root=tmp_path)["stale"] is False
+    # CLI path (respect_knob=False) → still detects the drift despite knob off.
+    assert check_staleness(conn, root=tmp_path, respect_knob=False)["stale"] is True
+
+
+# ── S10: cache asymmetry — fresh is NOT cached, stale IS cached ──────────────
+
+
+def test_fresh_verdict_is_not_cached_so_new_drift_is_not_masked(tmp_path: Path) -> None:
+    """A fresh verdict must NOT be cached: an edit within the TTL window must still
+    be detected on the next call (the false-safe this feature exists to prevent).
+    """
+    from seam.analysis.staleness import _cache
+
+    _cache.clear()
+    db_path = tmp_path / ".seam" / "seam.db"
+    db_path.parent.mkdir(parents=True)
+    real_file = tmp_path / "src.py"
+    real_file.write_text("def foo(): pass\n")
+    disk_mtime = real_file.stat().st_mtime
+
+    conn = _make_db(db_path)
+    _insert_file_row(conn, str(real_file.resolve()), disk_mtime)  # fresh
+
+    assert check_staleness(conn, root=tmp_path)["stale"] is False
+    # Simulate an edit AFTER the fresh verdict (stored mtime now older than disk).
+    conn.execute(
+        "UPDATE files SET mtime = ? WHERE path = ?",
+        (disk_mtime - 10.0, str(real_file.resolve())),
+    )
+    conn.commit()
+    # The fresh verdict must NOT have been cached → drift detected immediately.
+    assert check_staleness(conn, root=tmp_path)["stale"] is True
+
+
+def test_stale_verdict_is_cached(tmp_path: Path) -> None:
+    """A stale verdict IS cached (the safe direction): a known-stale repo is not
+    re-scanned on every call within the TTL.
+    """
+    from seam.analysis.staleness import _cache
+
+    _cache.clear()
+    db_path = tmp_path / ".seam" / "seam.db"
+    db_path.parent.mkdir(parents=True)
+    real_file = tmp_path / "src.py"
+    real_file.write_text("def foo(): pass\n")
+    disk_mtime = real_file.stat().st_mtime
+
+    conn = _make_db(db_path)
+    _insert_file_row(conn, str(real_file.resolve()), disk_mtime - 10.0)  # stale
+
+    assert check_staleness(conn, root=tmp_path)["stale"] is True
+    # "Fix" the index (stored mtime now matches disk) but stay within the TTL.
+    conn.execute(
+        "UPDATE files SET mtime = ? WHERE path = ?",
+        (disk_mtime, str(real_file.resolve())),
+    )
+    conn.commit()
+    # The stale verdict was cached → still served as stale within the TTL window.
+    assert check_staleness(conn, root=tmp_path)["stale"] is True
