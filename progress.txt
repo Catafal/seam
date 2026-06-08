@@ -2,6 +2,43 @@
 # Format: [x] = done, [>] = in progress, [ ] = not started
 # Update this EVERY session. It is the first thing the agent reads.
 #
+# 2026-06-08: CLI-first agent guidance for `seam install` (#106, PR #107 merged to main)
+#   (branch feat/cli-first-agent-guidance → rebase-merged; commit 11cc101 on main).
+#   PROBLEM: `seam install` wired up MCP — the MOST expensive way for an agent to USE Seam.
+#     Measured on this repo: the 12 MCP tool schemas cost ~6,060 tokens of standing context
+#     per session and the MCP tools bottom out at lean-JSON. The CLI's --quiet mode is
+#     ~14-17x leaner (seam impact connect --quiet = 170 tok vs 2,324 for the leanest MCP
+#     call), but nothing told the agent the CLI existed or when to escalate verbosity. The
+#     CLI is also Seam's agentic-first identity — yet it wasn't the install default.
+#   FIX (CLI-first default, MCP opt-in): bare `seam install` now writes a token-lean CLI
+#     guidance playbook into the repo (escalation ladder --quiet -> --json --lean -> --json,
+#     seam init/sync freshness, when-to-use triggers, MCP-as-alternative note). `--with-mcp`
+#     ALSO writes the MCP config (the old behavior). `seam uninstall` reverses BOTH.
+#   PER-AGENT RENDERING (token principle: tiny always-loaded + progressive detail):
+#     claude -> project skill .claude/skills/seam/SKILL.md (body loads only on invocation) +
+#       a thin CLAUDE.md discovery hook (~95% reliable vs ~70-85% description-only).
+#     cursor -> .cursor/rules/seam.mdc "Agent Requested" rule (alwaysApply:false + description
+#       + empty globs = progressive). doc-confirmed format.
+#     codex  -> inline AGENTS.md block (Codex has no progressive mechanism).
+#     Guidance is PROJECT-SCOPED (lives in the repo), independent of MCP --location — so Codex
+#       gets repo guidance despite its user-only MCP.
+#   NEW LEAF: seam/installer/guide.py — ONE guide template + 4 renderers (skill / .mdc / Codex
+#     AGENTS block / thin CLAUDE.md hook). Single source so the formats never drift. Pure.
+#   NEW LEAF: seam/installer/markdownfile.py (stdlib) — owned-file write (skill/.mdc) + marker-
+#     delimited block upsert/remove (<!-- seam:start/end -->) for shared AGENTS.md/CLAUDE.md.
+#     Atomic; preserves foreign content; replaces in place, never duplicates. Pure.
+#   ABC CHANGE: AgentTarget gains install_guidance/uninstall_guidance/guidance_previews; the 3
+#     target modules implement them. CLI adds --with-mcp; upfront MCP-location validation so a
+#     bad --with-mcp location fails BEFORE any write (no partial state).
+#   DOCS: README "Wire it to an AI agent" rewritten CLI-first; CLAUDE.md command + installer
+#     layout + Current Phase (this feature; P2 -> Prior phase); plus the documentation overhaul
+#     (docs/CONCEPTS.md, docs/CONFIGURATION.md, docs/architecture.html, ARCHITECTURE current-
+#     state overview) landed in the same PR.
+#   NO new config knobs, NO schema change, NO re-index; MCP tool count stays 12.
+#   GATE: ruff + mypy clean (100 files), full suite + 47 installer tests pass.
+#   SHIPPED: PR #107 rebase-merged to main; issue #106 closed; remote+local branch deleted.
+#   NEXT: v0.1.0 PyPI release (seam-mcp).
+#
 # 2026-06-08: P2 — index staleness banner + tools.py split (#103)
 #   (branch feat/p2-staleness-banner-tools-split, 3 commits: 7bbbd0f staleness,
 #   c06cc3e split, bac23d4 review/taste remediation).

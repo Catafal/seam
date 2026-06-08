@@ -1,5 +1,9 @@
 # Seam
 
+<p align="center">
+  <img src="docs/assets/seam-hero.png" alt="A codebase as a graph: hexagonal symbol nodes connected by typed edges around a central indexed core; a queried symbol (chartreuse) traces through the core to an impacted dependent (magenta)" width="100%">
+</p>
+
 **Local code intelligence for AI agents.** Index a codebase once; agents query its structure instead of re-discovering it with `grep` every session.
 
 `v0.3.0` · 12 languages · 12 MCP tools · SQLite-backed · **zero network calls at query time** · gate-green (~3,055 tests)
