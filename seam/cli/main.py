@@ -56,6 +56,7 @@ from seam.analysis.impact import (
     TIER_MAY_NEED_TESTING,
     TIER_WILL_BREAK,
 )
+from seam.analysis.staleness import _watcher_is_alive, check_staleness
 from seam.cli.install import install_command, uninstall_command
 from seam.cli.output import check_mutual_exclusion, emit_json, emit_json_error, print_quiet
 from seam.cli.read import context_command, query_command, search_command
@@ -131,23 +132,9 @@ def _render_next_actions(result: dict[str, Any]) -> None:
             console.print(f"  [dim]→[/dim] {hint}")
 
 
-def _watcher_is_alive(pid_file: Path) -> int | None:
-    """Return the PID if a live watcher process is recorded, else None.
-
-    Reads the PID file and probes the process with os.kill(pid, 0). A stale
-    PID file (process gone) returns None so callers can safely overwrite it.
-    """
-    if not pid_file.exists():
-        return None
-    try:
-        pid = int(pid_file.read_text().strip())
-    except (OSError, ValueError):
-        return None
-    try:
-        os.kill(pid, 0)  # signal 0 = liveness probe, doesn't actually signal
-    except OSError:
-        return None  # no such process (or not ours) — treat as dead
-    return pid
+# _watcher_is_alive is defined in seam/analysis/staleness.py and imported above.
+# It was moved there so the MCP handler layer (seam/server/tools.py) can use it
+# for the P2 staleness banner without creating a circular import through seam.cli.
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
@@ -468,25 +455,19 @@ def status(
             else "never"
         )
 
-        # Freshness: compare newest DB mtime vs newest on-disk mtime for indexed paths
-        db_newest_mtime: float = conn.execute("SELECT MAX(mtime) FROM files").fetchone()[0] or 0.0
-
-        # Check on-disk mtimes for files we know about
-        disk_newest_mtime = 0.0
-        paths_rows = conn.execute("SELECT path FROM files WHERE path NOT LIKE ':%'").fetchall()
-        for row in paths_rows:
-            p = Path(row["path"])
-            try:
-                mtime = p.stat().st_mtime
-                if mtime > disk_newest_mtime:
-                    disk_newest_mtime = mtime
-            except OSError:
-                pass  # file deleted — stale entry
-
-        # Heuristic: only detects modified/added tracked files. Deletions and
-        # brand-new untracked files are not reflected here (the live watcher
-        # handles those in real time). See lessons.md.
-        freshness = "fresh" if disk_newest_mtime <= db_newest_mtime else "stale"
+        # Freshness: delegate to seam/analysis/staleness.py — single source of truth.
+        # WHY: the MCP handler layer uses the same module; having two divergent heuristics
+        # would cause `seam status` and `seam_impact` index_status to disagree.
+        # respect_knob=False: the CLI freshness field is INDEPENDENT of SEAM_STALENESS_CHECK
+        # (which gates only the MCP banner). `seam status` must keep reporting freshness even
+        # when the banner is disabled — otherwise the knob would silently kill a pre-existing
+        # CLI feature and make `seam status --quiet` always report "fresh".
+        pid_file_inner = db_path.parent / "watcher.pid"
+        watcher_alive_inner = _watcher_is_alive(pid_file_inner) is not None
+        staleness_verdict = check_staleness(
+            conn, root=project_root, watcher_alive=watcher_alive_inner, respect_knob=False
+        )
+        freshness = "stale" if staleness_verdict["stale"] else "fresh"
 
     finally:
         conn.close()
