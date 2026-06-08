@@ -262,6 +262,33 @@ SEAM_EDGE_PROVENANCE: str = os.getenv("SEAM_EDGE_PROVENANCE", "on")
 SEAM_IMPACT_STEER: str = os.getenv("SEAM_IMPACT_STEER", "on")
 
 
+# ── P2: Index staleness banner ────────────────────────────────────────────────
+
+# Master switch for the index-staleness check on graph-traversal MCP read tools.
+# When "on" (default), the 5 graph-traversal handlers (seam_impact, seam_changes,
+# seam_affected, seam_context, seam_trace) attach a structured index_status banner to
+# their output when the index is stale — "this index is stale; results may be wrong;
+# run seam sync/init". When fresh → no banner → output byte-identical to pre-feature.
+# "off" = no banner ever, no stat IO, byte-identical to pre-feature. Handler-layer and
+# read-path only — no schema change, no re-index. Single source of truth via
+# seam/analysis/staleness.py (seam status also delegates to the same module).
+SEAM_STALENESS_CHECK: str = os.getenv("SEAM_STALENESS_CHECK", "on")
+
+# Maximum number of files stat'd per staleness verdict. Only the N most-recently-indexed
+# real files are checked (newest indexed_at first, LIMIT N). A stale file that falls
+# outside this window is not detected — documented limitation. Default 200 bounds the
+# stat IO to ~5-20ms even on a network filesystem and prevents O(files) checks on the
+# hot MCP read path.
+SEAM_STALENESS_SCAN_CAP: int = int(os.getenv("SEAM_STALENESS_SCAN_CAP", "200"))
+
+# Per-process verdict cache TTL in seconds. Within this window, repeated MCP read-tool
+# calls in one server session reuse the cached verdict instead of re-stat'ing files.
+# Default 5s: fresh enough for interactive use; prevents re-stat on every tool call in a
+# rapid burst (e.g. an agent running seam_impact + seam_context back-to-back). Set to 0
+# to disable caching (always re-stat; useful for testing).
+SEAM_STALENESS_TTL_SECONDS: int = int(os.getenv("SEAM_STALENESS_TTL_SECONDS", "5"))
+
+
 # ── Phase 6: Context-Pack configuration ─────────────────────────────────────
 
 # Maximum enriched callers AND maximum enriched callees in one context_pack bundle.

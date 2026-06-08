@@ -33,6 +33,7 @@ from seam.analysis.changes import (
 from seam.analysis.flows import EdgeHop, Hop
 from seam.analysis.processes import Flow, build_flow, list_entry_points
 from seam.analysis.relevance import order_by_relevance, owning_container, partition_self_refs
+from seam.analysis.staleness import StalenessVerdict, _watcher_is_alive, check_staleness
 from seam.analysis.steer import generate_steer
 from seam.query import engine
 from seam.query.clusters import cluster_members as query_cluster_members
@@ -293,6 +294,49 @@ def _invalid_query(message: str) -> dict[str, Any]:
     return {"error": "INVALID_QUERY", "message": message}
 
 
+def _maybe_attach_staleness(
+    response: dict[str, Any],
+    conn: sqlite3.Connection,
+    root: Path,
+) -> dict[str, Any]:
+    """Attach the P2 staleness banner to a graph-traversal handler response.
+
+    Called as the LAST step in the 5 graph-traversal handlers (impact, changes,
+    affected, context, trace). Purely additive — never alters existing fields.
+
+    When SEAM_STALENESS_CHECK=off OR the index is fresh → returns response UNCHANGED
+    (byte-identical to pre-feature). When stale → adds a top-level `index_status`
+    key: {"stale": True, "reason": str, "hint": str}.
+
+    WHY last step: staleness is orthogonal to the handler's core logic. Attaching
+    it last keeps the core path clean and makes it easy to audit that only an
+    additive field is added.
+
+    Never raises — staleness check degrades gracefully on any IO error.
+    """
+    if config.SEAM_STALENESS_CHECK != "on":
+        return response
+
+    # Derive watcher-alive status from the standard PID file location.
+    # The convention is root/.seam/watcher.pid (same as main.py start/status).
+    pid_file = root / ".seam" / "watcher.pid"
+    watcher_alive = _watcher_is_alive(pid_file) is not None
+
+    verdict: StalenessVerdict = check_staleness(conn, root=root, watcher_alive=watcher_alive)
+    if verdict["stale"]:
+        # Additive only: build a new dict with index_status at the end.
+        # WHY new dict: we never mutate the input (same contract as _apply_verbosity).
+        result = dict(response)
+        result["index_status"] = {
+            "stale": True,
+            "reason": verdict["reason"],
+            "hint": verdict["hint"],
+        }
+        return result
+
+    return response
+
+
 # ── Handlers ──────────────────────────────────────────────────────────────────
 
 
@@ -416,7 +460,9 @@ def handle_seam_context(
         "field_readers": result["field_readers"],
         "field_writers": result["field_writers"],
     }
-    return _apply_verbosity(record, verbose)
+    context_result = _apply_verbosity(record, verbose)
+    # P2: attach staleness banner LAST — purely additive, byte-identical when fresh.
+    return _maybe_attach_staleness(context_result, conn, root)
 
 
 def handle_seam_search(
@@ -956,7 +1002,8 @@ def handle_seam_impact(
             final_response, response, limit=limit, max_bytes=max_bytes
         )
 
-    return final_response
+    # P2: attach staleness banner LAST — purely additive, byte-identical when fresh.
+    return _maybe_attach_staleness(final_response, conn, root)
 
 
 # Small margin (chars) added to the steer-byte reserve when re-trimming so the
@@ -1166,7 +1213,7 @@ def handle_seam_trace(
         [_apply_verbosity(_serialize_hop(hop, root), verbose) for hop in path] for path in paths
     ]
 
-    return {
+    trace_result: dict[str, Any] = {
         "found": len(paths) > 0,
         # Echo the RESOLVED endpoints so the agent sees what the path connected (e.g. a
         # bare 'bar' that resolved to 'Foo.bar'); identical to the input when unchanged.
@@ -1186,6 +1233,8 @@ def handle_seam_trace(
             _apply_verbosity(_serialize_edge_hop(h, root), verbose) for h in callees_target
         ],
     }
+    # P2: attach staleness banner LAST — purely additive, byte-identical when fresh.
+    return _maybe_attach_staleness(trace_result, conn, root)
 
 
 # Default scope for seam_changes.
@@ -1270,7 +1319,7 @@ def handle_seam_changes(
         for a in report["affected"]
     ]
 
-    return {
+    changes_result: dict[str, Any] = {
         "changed_symbols": changed_symbols_out,
         "new_files": [_rel(f) for f in report["new_files"]],
         "affected": affected_out,
@@ -1281,6 +1330,8 @@ def handle_seam_changes(
         # partial=True when changed symbols exceeded the cap (see ChangeReport docstring).
         "partial": report["partial"],
     }
+    # P2: attach staleness banner LAST — purely additive; risk_level etc. unchanged.
+    return _maybe_attach_staleness(changes_result, conn, root)
 
 
 def handle_seam_why(
@@ -1453,13 +1504,15 @@ def handle_seam_affected(
     # Relativize all file paths so the MCP consumer gets portable paths.
     # The analysis layer returns absolute paths (DB storage contract);
     # the handler contract (like all other handlers) is to relativize before returning.
-    return {
+    affected_result: dict[str, Any] = {
         "changed_files": [_relativize(p, root) for p in result["changed_files"]],
         "affected_tests": [_relativize(p, root) for p in result["affected_tests"]],
         "total_dependents_traversed": result["total_dependents_traversed"],
         # partial=True when a file exceeded SEAM_MAX_AFFECTED_SYMBOLS; result may be incomplete.
         "partial": result["partial"],
     }
+    # P2: attach staleness banner LAST — purely additive; risk verdicts unchanged.
+    return _maybe_attach_staleness(affected_result, conn, root)
 
 
 def handle_seam_context_pack(
