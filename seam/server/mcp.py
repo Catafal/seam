@@ -66,6 +66,7 @@ _CHANGES_BASE_REF_DEFAULT = DEFAULT_BASE_REF
 
 _AFFECTED_DEPTH_DEFAULT = config.SEAM_AFFECTED_DEPTH
 _IMPACT_LIMIT_DEFAULT = config.SEAM_IMPACT_MAX_RESULTS
+_IMPACT_MAX_BYTES_DEFAULT = config.SEAM_IMPACT_MAX_BYTES
 
 
 def _finalize(result: Any) -> Any:
@@ -160,6 +161,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         include_tests: bool = False,
         verbose: bool = True,
         limit: int = _IMPACT_LIMIT_DEFAULT,
+        max_bytes: int = _IMPACT_MAX_BYTES_DEFAULT,
         uid: str | None = None,
     ) -> Any:
         """Blast-radius analysis — what breaks if I change this symbol?
@@ -194,6 +196,16 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         from the full pre-cap result, so the blast radius size is always visible.
         When entries were truncated, truncated: {direction: {tier: omitted}} is included.
 
+        max_bytes controls the per-call character budget for the serialized output
+        (characters of compact JSON). Default: SEAM_IMPACT_MAX_BYTES (0 = unlimited).
+        When > 0, runs after the per-tier count cap and E2/E3 relevance ordering, trimming
+        entries from the least-valuable end (downstream before upstream, MAY_NEED_TESTING
+        before WILL_BREAK, tail before front) until the output fits. Byte-dropped counts
+        are merged into truncated additively. When the ceiling fires, byte_capped is added:
+        {"limit": <budget>, "omitted": <total entries dropped by the byte pass>}.
+        byte_capped is absent when max_bytes=0 or when everything fit (no trimming).
+        risk_summary remains the honest full pre-cap total regardless of byte trimming.
+
         Pass uid (a stable handle from a seam_search/seam_query result) instead of
         target to pin the exact symbol and skip homonym re-disambiguation.
 
@@ -209,6 +221,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
                 include_tests=include_tests,
                 verbose=verbose,
                 limit=limit,
+                max_bytes=max_bytes,
                 uid=uid,
             )
         )

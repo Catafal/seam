@@ -111,7 +111,7 @@ app.command(name="serve")(serve_command)
 # truncated (which are {direction: {tier: int}} dicts) get treated as direction
 # groups and, in the count path, len() is called on an int → TypeError.
 _IMPACT_META_KEYS: frozenset[str] = frozenset(
-    {"found", "target", "hidden_tests", "risk_summary", "truncated"}
+    {"found", "target", "hidden_tests", "risk_summary", "truncated", "byte_capped"}
 )
 
 
@@ -697,6 +697,15 @@ def impact_cmd(
             "Identical to the limit parameter in the MCP tool."
         ),
     ),
+    max_bytes: int = typer.Option(
+        config.SEAM_IMPACT_MAX_BYTES,
+        "--max-bytes",
+        help=(
+            "Per-call character budget for the impact output; 0 = unlimited (default "
+            "SEAM_IMPACT_MAX_BYTES). Most-relevant dependents survive when trimmed. "
+            "Identical to the max_bytes parameter in the MCP tool."
+        ),
+    ),
     json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
     quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
 ) -> None:
@@ -770,6 +779,7 @@ def impact_cmd(
             include_tests=include_tests,
             verbose=verbose,
             limit=limit,
+            max_bytes=max_bytes,
         )
     finally:
         conn.close()
@@ -791,13 +801,28 @@ def impact_cmd(
                     print_quiet(entry, field="name")
         # Signal truncation on stderr so stdout stays a pure bare-name list
         # (a `seam impact X --quiet | wc -l` pipeline must not see this line).
+        # truncated conflates BOTH causes (count cap + byte ceiling are merged there for
+        # reconciliation), so subtract the byte portion to report the count-cap drops only —
+        # otherwise byte-trimmed entries are misattributed to --limit (and "use --limit 0"
+        # is nonsense when --limit 0 was already passed).
         truncated = result.get("truncated")
+        byte_capped = result.get("byte_capped")
+        byte_omitted = byte_capped.get("omitted", 0) if byte_capped else 0
         if truncated:
             total_omitted = sum(n for tiers in truncated.values() for n in tiers.values())
-            if total_omitted > 0:
+            limit_omitted = total_omitted - byte_omitted  # count-cap portion only
+            if limit_omitted > 0:
                 sys.stderr.write(
-                    f"# {total_omitted} more entr(ies) truncated by --limit; "
+                    f"# {limit_omitted} more entr(ies) truncated by --limit; "
                     "use --limit 0 for the full set\n"
+                )
+        # Note the byte ceiling separately so the user can distinguish the two controls.
+        if byte_capped:
+            bc_limit = byte_capped.get("limit", 0)
+            if byte_omitted > 0:
+                sys.stderr.write(
+                    f"# {byte_omitted} entr(ies) trimmed to fit --max-bytes {bc_limit}; "
+                    "raise --max-bytes or use --lean for more\n"
                 )
         return
 
@@ -825,7 +850,20 @@ def impact_cmd(
     hidden_tests = result.get("hidden_tests", 0)
 
     if total == 0:
-        if hidden_tests:
+        # CRITICAL false-safe guard: an empty entry list can mean "trimmed to nothing"
+        # OR "no dependents". The byte ceiling can drop EVERY entry when --max-bytes is
+        # smaller than the envelope, so check byte_capped FIRST — printing "No dependents
+        # found" here when entries were merely trimmed would tell an agent the symbol is
+        # safe to delete (the same dangerous false-safe the hidden_tests branch guards).
+        byte_capped_empty = result.get("byte_capped")
+        if byte_capped_empty and byte_capped_empty.get("omitted", 0) > 0:
+            console.print(
+                f"[yellow]All {byte_capped_empty['omitted']} dependent(s) for "
+                f"[bold]{symbol}[/bold] were trimmed to fit --max-bytes "
+                f"{byte_capped_empty.get('limit')}[/yellow] — this is NOT 'no dependents'. "
+                "Raise --max-bytes or use --lean to see them."
+            )
+        elif hidden_tests:
             # Critical distinction: this symbol is NOT dead code — it has test
             # dependents hidden by the production-only default. Saying "no dependents"
             # here would be a dangerous false-safe (an agent might delete/rewrite it).
@@ -888,12 +926,30 @@ def impact_cmd(
         # Per-direction truncation footer: when --limit capped this direction's tiers,
         # tell the user how many entries were omitted and how to see them all. Without
         # this the capped Rich output looks complete (the silent-cap parity bug).
-        dir_truncated = result.get("truncated", {}).get(direction_key, {})
-        omitted = sum(dir_truncated.values())
-        if omitted > 0:
+        # Gate on limit > 0: with --limit 0 the count cap is OFF, so any entries in
+        # `truncated` were dropped by the byte ceiling (reported by its own footer below) —
+        # showing "truncated by --limit (showing 0 per tier; use --limit 0)" here would
+        # both misattribute the cause and contradict the flag the user already passed.
+        if limit > 0:
+            dir_truncated = result.get("truncated", {}).get(direction_key, {})
+            omitted = sum(dir_truncated.values())
+            if omitted > 0:
+                console.print(
+                    f"\n  [dim]… {omitted} more entr(ies) truncated by --limit "
+                    f"(showing {limit} per tier; use --limit 0 for the full blast radius).[/dim]"
+                )
+
+    # Byte-ceiling footer: when --max-bytes trimmed entries, tell the user.
+    # Kept separate from the per-direction --limit footer so the user can distinguish
+    # the two controls and knows to raise --max-bytes (not --limit) to see more.
+    byte_capped = result.get("byte_capped")
+    if byte_capped:
+        bc_omitted = byte_capped.get("omitted", 0)
+        bc_limit = byte_capped.get("limit", 0)
+        if bc_omitted > 0:
             console.print(
-                f"\n  [dim]… {omitted} more entr(ies) truncated by --limit "
-                f"(showing {limit} per tier; use --limit 0 for the full blast radius).[/dim]"
+                f"\n[dim]… {bc_omitted} entr(ies) trimmed to fit --max-bytes {bc_limit}; "
+                "raise --max-bytes or use --lean for more.[/dim]"
             )
 
     # Footer: when production dependents were shown but tests were also hidden,

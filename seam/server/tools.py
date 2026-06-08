@@ -22,6 +22,7 @@ from seam.analysis import flows as flows_module
 from seam.analysis import impact as impact_module
 from seam.analysis.affected import AffectedResult
 from seam.analysis.affected import affected as run_affected
+from seam.analysis.byte_budget import fit_to_byte_budget, serialized_size
 from seam.analysis.changes import (
     DEFAULT_BASE_REF,
     VALID_SCOPES,
@@ -593,6 +594,106 @@ def _shape_tier_group(
     return capped_tiers, dir_truncated, dir_hidden_self_refs
 
 
+# Worst-case size (chars) of the trailing `truncated` structure the byte pass can add
+# on top of what the count cap already wrote: 6 (direction × tier) slots in the CLI emit
+# serialization. Reserved (with the exact byte_capped size) so the FINAL response —
+# entries PLUS the trailing byte_capped/truncated metadata — still fits the budget,
+# making the ceiling a hard guarantee rather than entries-only.
+_BYTE_CEILING_TRUNCATED_RESERVE = 200
+
+
+def _count_direction_entries(response: dict[str, Any]) -> int:
+    """Total entries across all direction-tier lists — the upper bound on `omitted`."""
+    total = 0
+    for direction in ("upstream", "downstream"):
+        dir_group = response.get(direction)
+        if isinstance(dir_group, dict):
+            for tier_val in dir_group.values():
+                if isinstance(tier_val, list):
+                    total += len(tier_val)
+    return total
+
+
+def _apply_byte_ceiling(response: dict[str, Any], budget: int) -> dict[str, Any]:
+    """Apply the E1-FULL byte ceiling to a fully-assembled seam_impact response.
+
+    Runs AFTER the per-tier count cap and E2/E3 relevance ordering. When budget > 0 and
+    the response does not already fit, trims entries (via fit_to_byte_budget) from the
+    least-valuable end, merges the byte-dropped counts into response["truncated"]
+    additively (so risk_summary - shown == truncated holds end-to-end), and sets
+    response["byte_capped"] = {"limit", "omitted"}.
+
+    Hard-ceiling guarantee: the trim runs against `budget - reserve`, where `reserve`
+    is the exact byte_capped size plus a worst-case allowance for the `truncated` growth
+    this function appends afterwards — so the FINAL serialized response (entries + that
+    trailing metadata) stays within `budget`. The only exception is a `budget` smaller
+    than the irreducible envelope, where no entries fit at all.
+
+    When budget <= 0: returns the response unchanged (byte-identical revert).
+    When the response already fits: returns it unchanged, byte_capped NOT added (so a
+    generous budget is a true no-op).
+
+    Never raises — the whole body is guarded; on any failure the untrimmed response is
+    returned. If the trim degrades to a no-op despite the response NOT fitting (the leaf's
+    never-raises safety net fired), that silent path is logged so it is observable.
+
+    Args:
+        response: Fully-assembled seam_impact response dict (non-mutating).
+        budget:   SEAM_IMPACT_MAX_BYTES (from param). 0 or negative = unlimited.
+
+    Returns:
+        The (possibly trimmed) response dict with merged truncated + byte_capped.
+    """
+    if budget <= 0:
+        return response
+
+    try:
+        # Already within budget → no trim, no metadata (generous-budget no-op path).
+        if serialized_size(response) <= budget:
+            return response
+
+        # Reserve room for the trailing metadata the merge appends, so the final
+        # response still fits. byte_capped is sized exactly (omitted <= entry count);
+        # truncated growth uses a worst-case 6-slot allowance.
+        total_entries = _count_direction_entries(response)
+        reserve = serialized_size({"byte_capped": {"limit": budget, "omitted": total_entries}})
+        reserve += _BYTE_CEILING_TRUNCATED_RESERVE
+        effective = max(budget - reserve, 1)
+
+        trimmed, byte_dropped, total_omitted = fit_to_byte_budget(response, budget=effective)
+
+        if total_omitted == 0:
+            # The response did NOT fit (checked above) yet nothing was trimmed — the
+            # leaf's never-raises safety net fired. Surface it and return untrimmed
+            # rather than attach a misleading byte_capped that claims a trim happened.
+            logger.warning(
+                "seam_impact byte ceiling could not trim output (budget=%d); returning untrimmed",
+                budget,
+            )
+            return response
+
+        # Merge byte_dropped into truncated ADDITIVELY so the invariant holds:
+        #   risk_summary[dir][tier] - shown[dir][tier] == truncated[dir][tier]
+        existing_truncated: dict[str, dict[str, int]] = dict(trimmed.get("truncated", {}))
+        for direction, tier_map in byte_dropped.items():
+            dir_trunc = dict(existing_truncated.get(direction, {}))
+            for tier, count in tier_map.items():
+                dir_trunc[tier] = dir_trunc.get(tier, 0) + count
+            existing_truncated[direction] = dir_trunc
+
+        # trimmed is a new dict from fit_to_byte_budget (never mutates input).
+        result = dict(trimmed)
+        result["truncated"] = existing_truncated
+        result["byte_capped"] = {"limit": budget, "omitted": total_omitted}
+        return result
+    except Exception:
+        # The handler claims "never raises" in its own right (not only via the leaf).
+        logger.warning(
+            "seam_impact byte ceiling failed; returning untrimmed output", exc_info=True
+        )
+        return response
+
+
 def handle_seam_impact(
     conn: sqlite3.Connection,
     target: str,
@@ -602,6 +703,7 @@ def handle_seam_impact(
     include_tests: bool = False,
     verbose: bool = True,
     limit: int = config.SEAM_IMPACT_MAX_RESULTS,
+    max_bytes: int = config.SEAM_IMPACT_MAX_BYTES,
     *,
     uid: str | None = None,
 ) -> dict[str, Any]:
@@ -630,6 +732,15 @@ def handle_seam_impact(
                        Entries arrive distance-ordered from the analysis layer (tiers group
                        by distance), so the kept slice is always the closest/highest-risk.
                        limit <= 0 means unlimited (all entries returned).
+        max_bytes:     Optional byte ceiling for the serialized output (characters of compact
+                       JSON). Default: SEAM_IMPACT_MAX_BYTES (0 = unlimited). When > 0, the
+                       ceiling runs AFTER the per-tier count cap and E2/E3 ordering, trimming
+                       entries from the least-valuable end (downstream before upstream,
+                       MAY_NEED_TESTING before WILL_BREAK, tail before front) until the
+                       serialized output fits. The dropped counts are merged into `truncated`
+                       additively and a `byte_capped` key is added when the ceiling fired
+                       (byte_capped is ABSENT when max_bytes=0 or nothing was trimmed). 0 or
+                       negative means unlimited — byte-identical to the pre-feature output.
 
     Returns:
         A JSON-able dict with the impact result, or an error dict on bad input.
@@ -640,6 +751,7 @@ def handle_seam_impact(
         when include_tests=False, risk_summary counts the production-only blast radius
         (test dependents are already excluded), matching the entries actually returned.
         When any tier was capped, `truncated` is included: {direction: {tier: omitted}}.
+        When the byte ceiling fires, `byte_capped` is added: {"limit": int, "omitted": int}.
 
         Shape for direction="upstream":
             {"found": bool, "target": str, "risk_summary": {...},
@@ -773,7 +885,13 @@ def handle_seam_impact(
     if relevance_on and self_ref_mode == "hide":
         response["hidden_self_refs"] = hidden_self_refs
 
-    return response
+    # E1-FULL: byte ceiling — runs LAST, after count cap + E2/E3 ordering.
+    # When max_bytes > 0, trims entries from the least-valuable end until the
+    # serialized output fits the budget. byte_capped is set only when the ceiling
+    # actually fired (i.e. at least one entry was dropped). When max_bytes <= 0
+    # this is a no-op (byte-identical revert). seam_changes/seam_affected bypass
+    # this entirely because they call the analysis layer directly.
+    return _apply_byte_ceiling(response, max_bytes)
 
 
 def handle_seam_trace(
