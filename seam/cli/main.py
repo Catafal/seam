@@ -111,7 +111,7 @@ app.command(name="serve")(serve_command)
 # truncated (which are {direction: {tier: int}} dicts) get treated as direction
 # groups and, in the count path, len() is called on an int → TypeError.
 _IMPACT_META_KEYS: frozenset[str] = frozenset(
-    {"found", "target", "hidden_tests", "risk_summary", "truncated"}
+    {"found", "target", "hidden_tests", "risk_summary", "truncated", "byte_capped"}
 )
 
 
@@ -697,6 +697,15 @@ def impact_cmd(
             "Identical to the limit parameter in the MCP tool."
         ),
     ),
+    max_bytes: int = typer.Option(
+        config.SEAM_IMPACT_MAX_BYTES,
+        "--max-bytes",
+        help=(
+            "Per-call character budget for the impact output; 0 = unlimited (default "
+            "SEAM_IMPACT_MAX_BYTES). Most-relevant dependents survive when trimmed. "
+            "Identical to the max_bytes parameter in the MCP tool."
+        ),
+    ),
     json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
     quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
 ) -> None:
@@ -770,6 +779,7 @@ def impact_cmd(
             include_tests=include_tests,
             verbose=verbose,
             limit=limit,
+            max_bytes=max_bytes,
         )
     finally:
         conn.close()
@@ -798,6 +808,16 @@ def impact_cmd(
                 sys.stderr.write(
                     f"# {total_omitted} more entr(ies) truncated by --limit; "
                     "use --limit 0 for the full set\n"
+                )
+        # Note the byte ceiling separately so the user can distinguish the two controls.
+        byte_capped = result.get("byte_capped")
+        if byte_capped:
+            bc_omitted = byte_capped.get("omitted", 0)
+            bc_limit = byte_capped.get("limit", 0)
+            if bc_omitted > 0:
+                sys.stderr.write(
+                    f"# {bc_omitted} entr(ies) trimmed to fit --max-bytes {bc_limit}; "
+                    "raise --max-bytes or use --lean for more\n"
                 )
         return
 
@@ -894,6 +914,19 @@ def impact_cmd(
             console.print(
                 f"\n  [dim]… {omitted} more entr(ies) truncated by --limit "
                 f"(showing {limit} per tier; use --limit 0 for the full blast radius).[/dim]"
+            )
+
+    # Byte-ceiling footer: when --max-bytes trimmed entries, tell the user.
+    # Kept separate from the per-direction --limit footer so the user can distinguish
+    # the two controls and knows to raise --max-bytes (not --limit) to see more.
+    byte_capped = result.get("byte_capped")
+    if byte_capped:
+        bc_omitted = byte_capped.get("omitted", 0)
+        bc_limit = byte_capped.get("limit", 0)
+        if bc_omitted > 0:
+            console.print(
+                f"\n[dim]… {bc_omitted} entr(ies) trimmed to fit --max-bytes {bc_limit}; "
+                "raise --max-bytes or use --lean for more.[/dim]"
             )
 
     # Footer: when production dependents were shown but tests were also hidden,
