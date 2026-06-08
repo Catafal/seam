@@ -5,6 +5,7 @@ Used by the recall regression harness to test:
   - ordinary direct call edges
   - seam_trace between pipeline symbols
 """
+
 from collections.abc import Callable
 
 

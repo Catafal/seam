@@ -110,8 +110,7 @@ def indexed_conn() -> Any:
 def golden() -> dict[str, Any]:
     """Load the golden.json file. Fails if the file does not exist."""
     assert GOLDEN_PATH.exists(), (
-        f"Golden file missing: {GOLDEN_PATH}. "
-        "Run 'make eval' or the gen script to regenerate."
+        f"Golden file missing: {GOLDEN_PATH}. Run 'make eval' or the gen script to regenerate."
     )
     return json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))
 
@@ -175,15 +174,11 @@ def _run_query(
     tool = query_spec["tool"]
     try:
         if tool == "search":
-            result = handle_seam_search(
-                conn, query_spec["query"], FIXTURE_DIR, semantic=False
-            )
+            result = handle_seam_search(conn, query_spec["query"], FIXTURE_DIR, semantic=False)
             return [r["symbol"] for r in result] if isinstance(result, list) else []
 
         elif tool == "query":
-            result = handle_seam_query(
-                conn, query_spec["query"], FIXTURE_DIR, semantic=False
-            )
+            result = handle_seam_query(conn, query_spec["query"], FIXTURE_DIR, semantic=False)
             return [r["symbol"] for r in result] if isinstance(result, list) else []
 
         elif tool == "context_callers":
@@ -238,9 +233,7 @@ def _run_query(
             return names
 
         elif tool == "trace":
-            trace = handle_seam_trace(
-                conn, query_spec["source"], query_spec["target"], FIXTURE_DIR
-            )
+            trace = handle_seam_trace(conn, query_spec["source"], query_spec["target"], FIXTURE_DIR)
             # For trace, the expected_symbols are the callees of the source.
             # We check that the trace is found (path exists) and the target appears in callees.
             callees = [x["name"] for x in trace.get("callees_source", [])]
@@ -326,9 +319,7 @@ class TestPerQueryRegression:
         """Locate EventBus by concept query."""
         self._assert_query(indexed_conn, golden, "query-event-emitter")
 
-    def test_context_callers_format_result(
-        self, indexed_conn: Any, golden: dict[str, Any]
-    ) -> None:
+    def test_context_callers_format_result(self, indexed_conn: Any, golden: dict[str, Any]) -> None:
         """Callers of format_result via direct call edges."""
         self._assert_query(indexed_conn, golden, "context-callers-format-result")
 
@@ -336,25 +327,19 @@ class TestPerQueryRegression:
         self, indexed_conn: Any, golden: dict[str, Any]
     ) -> None:
         """Synthesized EE edge: data_received event fires on_data_received_handler."""
-        self._assert_query(
-            indexed_conn, golden, "impact-downstream-event-emitter-synthesis"
-        )
+        self._assert_query(indexed_conn, golden, "impact-downstream-event-emitter-synthesis")
 
     def test_impact_downstream_interface_override_synthesis(
         self, indexed_conn: Any, golden: dict[str, Any]
     ) -> None:
         """Synthesized interface-override: PaymentProcessor.process_payment impls."""
-        self._assert_query(
-            indexed_conn, golden, "impact-downstream-interface-override-synthesis"
-        )
+        self._assert_query(indexed_conn, golden, "impact-downstream-interface-override-synthesis")
 
     def test_trace_render_to_format(self, indexed_conn: Any, golden: dict[str, Any]) -> None:
         """Trace: render_output calls format_result (direct call path)."""
         self._assert_query(indexed_conn, golden, "trace-render-to-format")
 
-    def test_context_callers_validate_data(
-        self, indexed_conn: Any, golden: dict[str, Any]
-    ) -> None:
+    def test_context_callers_validate_data(self, indexed_conn: Any, golden: dict[str, Any]) -> None:
         """Callers of validate_data: EventBus.process_data calls it."""
         self._assert_query(indexed_conn, golden, "context-callers-validate-data")
 
@@ -362,19 +347,13 @@ class TestPerQueryRegression:
         self, indexed_conn: Any, golden: dict[str, Any]
     ) -> None:
         """Synthesized interface-override: PaymentProcessor.refund has 2 impls."""
-        self._assert_query(
-            indexed_conn, golden, "impact-downstream-interface-refund-synthesis"
-        )
+        self._assert_query(indexed_conn, golden, "impact-downstream-interface-refund-synthesis")
 
-    def test_context_field_readers_stages(
-        self, indexed_conn: Any, golden: dict[str, Any]
-    ) -> None:
+    def test_context_field_readers_stages(self, indexed_conn: Any, golden: dict[str, Any]) -> None:
         """A3: field_readers of DataPipeline.stages (who reads the stages field)."""
         self._assert_query(indexed_conn, golden, "context-field-readers-stages")
 
-    def test_context_field_writers_stages(
-        self, indexed_conn: Any, golden: dict[str, Any]
-    ) -> None:
+    def test_context_field_writers_stages(self, indexed_conn: Any, golden: dict[str, Any]) -> None:
         """A3: field_writers of DataPipeline.stages (who writes the stages field)."""
         self._assert_query(indexed_conn, golden, "context-field-writers-stages")
 
@@ -384,9 +363,7 @@ class TestPerQueryRegression:
         """A3: field_writers of OrderService.processor (dependency injection site)."""
         self._assert_query(indexed_conn, golden, "context-field-writers-processor")
 
-    def test_impact_upstream_stages_field(
-        self, indexed_conn: Any, golden: dict[str, Any]
-    ) -> None:
+    def test_impact_upstream_stages_field(self, indexed_conn: Any, golden: dict[str, Any]) -> None:
         """A3: upstream impact of DataPipeline.stages as a field seed."""
         self._assert_query(indexed_conn, golden, "impact-upstream-stages-field")
 
@@ -437,9 +414,7 @@ class TestFieldAccessQueries:
 class TestAggregateMetrics:
     """Aggregate recall@K and MRR over all golden queries must meet the baseline."""
 
-    def test_aggregate_recall_and_mrr(
-        self, indexed_conn: Any, golden: dict[str, Any]
-    ) -> None:
+    def test_aggregate_recall_and_mrr(self, indexed_conn: Any, golden: dict[str, Any]) -> None:
         """All queries together: mean recall@K and MRR must equal 1.0.
 
         Because the golden was generated from the live index (synthesis ON), every
@@ -450,10 +425,12 @@ class TestAggregateMetrics:
         cases = []
         for query_spec in golden.get("queries", []):
             actual = _run_query(indexed_conn, query_spec)
-            cases.append({
-                "expected_symbols": query_spec["expected_symbols"],
-                "actual_symbols": actual,
-            })
+            cases.append(
+                {
+                    "expected_symbols": query_spec["expected_symbols"],
+                    "actual_symbols": actual,
+                }
+            )
 
         metrics = compute_metrics(cases, k=10)
         n = metrics["n"]

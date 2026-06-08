@@ -10,6 +10,7 @@ Used by the recall regression harness to test:
 def parse_config(path: str) -> dict:
     """Parse a JSON config file and return its contents as a dict."""
     import json
+
     with open(path) as f:
         return json.load(f)
 
@@ -27,6 +28,7 @@ def render_output(value: object) -> str:
 def compute_checksum(data: bytes) -> str:
     """Compute a hex SHA-256 checksum of data."""
     import hashlib
+
     return hashlib.sha256(data).hexdigest()
 
 

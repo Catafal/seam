@@ -239,6 +239,29 @@ SEAM_IMPACT_OMIT_NULL_CANDIDATE: str = os.getenv("SEAM_IMPACT_OMIT_NULL_CANDIDAT
 SEAM_IMPACT_MAX_BYTES: int = int(os.getenv("SEAM_IMPACT_MAX_BYTES", "0"))
 
 
+# ── E4: Edge provenance + truncation steer ───────────────────────────────────
+
+# Master switch for edge-provenance fields on seam_impact entries and seam_trace hops.
+# When "on" (default), each seam_impact tier entry and each seam_trace hop carries:
+#   kind          — the edge kind that reached the dependent (call, reads, holds, …)
+#   synthesized_by — synthesis channel name when heuristic, null for static edges
+# This surfaces information already stored in v12 edges.kind + edges.synthesized_by
+# so agents can distinguish a hard call edge from a heuristic synthesized edge.
+# "off" = byte-identical pre-E4 output (neither field is emitted). Handler-layer and
+# read-path only — no schema change, no re-index. seam_changes/seam_affected unaffected.
+SEAM_EDGE_PROVENANCE: str = os.getenv("SEAM_EDGE_PROVENANCE", "on")
+
+# Master switch for the next_actions truncation steer on seam_impact output.
+# When "on" (default), a top-level `next_actions: list[str]` of ready-to-act prose
+# hints is attached to the seam_impact response when ≥1 entry was trimmed by the
+# per-tier count cap or the E1-FULL byte ceiling. The steer names the exact remedy
+# (e.g. "Raise limit to 17 to see 12 more WILL_BREAK dependents"). ABSENT when
+# nothing was trimmed — so its presence is an unambiguous "there is more" signal.
+# "off" = byte-identical pre-E4 output (no next_actions key ever). Handler-layer and
+# read-path only — no schema change, no re-index. seam_changes/seam_affected unaffected.
+SEAM_IMPACT_STEER: str = os.getenv("SEAM_IMPACT_STEER", "on")
+
+
 # ── Phase 6: Context-Pack configuration ─────────────────────────────────────
 
 # Maximum enriched callers AND maximum enriched callees in one context_pack bundle.

@@ -110,9 +110,25 @@ app.command(name="serve")(serve_command)
 # the total-entry count, Rich rendering) MUST skip these — otherwise risk_summary /
 # truncated (which are {direction: {tier: int}} dicts) get treated as direction
 # groups and, in the count path, len() is called on an int → TypeError.
+# E4: 'next_actions' added — the steer list is top-level metadata, not a direction group.
 _IMPACT_META_KEYS: frozenset[str] = frozenset(
-    {"found", "target", "hidden_tests", "risk_summary", "truncated", "byte_capped"}
+    {"found", "target", "hidden_tests", "risk_summary", "truncated", "byte_capped", "next_actions"}
 )
+
+
+def _render_next_actions(result: dict[str, Any]) -> None:
+    """Render the E4 next_actions steer footer (Rich), if the handler produced one.
+
+    Shared by both the normal impact render and the all-trimmed early-return branch so
+    the human CLI surface always shows the same actionable hints (incl. the all-trimmed
+    anti-false-safe warning) that JSON/MCP consumers receive. No-op when absent (steer
+    off, or nothing was trimmed).
+    """
+    next_actions = result.get("next_actions")
+    if next_actions and isinstance(next_actions, list):
+        console.print("\n[bold cyan]Next actions:[/bold cyan]")
+        for hint in next_actions:
+            console.print(f"  [dim]→[/dim] {hint}")
 
 
 def _watcher_is_alive(pid_file: Path) -> int | None:
@@ -192,7 +208,9 @@ def init(
     skipped_files = 0
     total_clusters = 0
     total_synthesis: int | None = None  # None = not yet run; -1 = failed; >=0 = count
-    total_embeddings: int | None = None  # None = not requested; 0 = skipped; >0 = count; -1 = failed
+    total_embeddings: int | None = (
+        None  # None = not requested; 0 = skipped; >0 = count; -1 = failed
+    )
     llm_naming_summary: str | None = None
 
     with Progress(
@@ -336,12 +354,7 @@ def init(
 
     # Actionable install hint when --semantic was requested but fastembed is absent.
     # total_embeddings == 0 AND symbols present AND no failure means fastembed not installed.
-    if (
-        semantic
-        and total_embeddings == 0
-        and not embedding_failed
-        and total_symbols > 0
-    ):
+    if semantic and total_embeddings == 0 and not embedding_failed and total_symbols > 0:
         console.print(
             "[yellow]embeddings: skipped[/yellow] — fastembed is not installed.\n"
             "  Install it with: [bold]pip install 'seam-mcp\\[semantic]'[/bold]"
@@ -410,9 +423,9 @@ def status(
     try:
         # Exclude synthetic file rows (path starting ':', e.g. ':synthesis:') from the
         # file count — they are post-pass bookkeeping rows, not real indexed files.
-        file_count = conn.execute(
-            "SELECT COUNT(*) FROM files WHERE path NOT LIKE ':%'"
-        ).fetchone()[0]
+        file_count = conn.execute("SELECT COUNT(*) FROM files WHERE path NOT LIKE ':%'").fetchone()[
+            0
+        ]
         symbol_count = conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
         edge_count = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
 
@@ -460,9 +473,7 @@ def status(
 
         # Check on-disk mtimes for files we know about
         disk_newest_mtime = 0.0
-        paths_rows = conn.execute(
-            "SELECT path FROM files WHERE path NOT LIKE ':%'"
-        ).fetchall()
+        paths_rows = conn.execute("SELECT path FROM files WHERE path NOT LIKE ':%'").fetchall()
         for row in paths_rows:
             p = Path(row["path"])
             try:
@@ -540,9 +551,7 @@ def status(
         embeddings_display = f"{configured_count_rich} ({config.SEAM_EMBED_MODEL})"
     else:
         # Embeddings exist but for a different model — show mismatch warning.
-        stored_models = ", ".join(
-            f"{m}:{c}" for m, c in embedding_model_counts.items()
-        )
+        stored_models = ", ".join(f"{m}:{c}" for m, c in embedding_model_counts.items())
         embeddings_display = (
             f"{embedding_count} [stored: {stored_models}] "
             f"⚠ model mismatch (configured: {config.SEAM_EMBED_MODEL}) "
@@ -874,6 +883,11 @@ def impact_cmd(
             )
         else:
             console.print(f"[dim]No dependents found for [bold]{symbol}[/bold].[/dim]")
+        # E4 (WATCH-3): render the steer here too, so the human surface gets the same
+        # actionable next_actions (incl. the richer all-trimmed anti-false-safe warning)
+        # that JSON/MCP consumers receive. Without this, the early return below hid the
+        # footer for the all-trimmed case.
+        _render_next_actions(result)
         return
 
     # Print a tiered summary per direction.
@@ -917,10 +931,25 @@ def impact_cmd(
                 # --lean mode, so use .get().
                 best = entry.get("best_candidate")
                 best_marker = f" [dim](best: {best})[/dim]" if best else ""
+                # E4: surface edge kind and synthesized marker when SEAM_EDGE_PROVENANCE=on.
+                # kind is kept in lean mode (core field); synthesized_by is stripped (heavy field).
+                # Absent when SEAM_EDGE_PROVENANCE=off (byte-identical pre-E4 output).
+                kind_marker = ""
+                synth_marker = ""
+                if config.SEAM_EDGE_PROVENANCE == "on":
+                    edge_kind = entry.get("kind", "")
+                    kind_marker = f"  [dim]{edge_kind}[/dim]" if edge_kind else ""
+                    # synthesized_by is present in verbose mode; absent in --lean.
+                    # Non-null = heuristic edge from the synthesis post-pass.
+                    # NOTE: use plain text for the channel name — avoid wrapping the
+                    # channel string in [] which looks like Rich markup and gets stripped.
+                    synth_channel = entry.get("synthesized_by")
+                    if synth_channel:
+                        synth_marker = f" [yellow](synth:{synth_channel})[/yellow]"
                 console.print(
                     f"    [bold]{entry['name']}[/bold]  "
                     f"[{confidence_color}]{entry['confidence']}[/{confidence_color}]  "
-                    f"[dim]d={entry['distance']}[/dim]{test_marker}{best_marker}"
+                    f"[dim]d={entry['distance']}[/dim]{kind_marker}{test_marker}{best_marker}{synth_marker}"
                 )
 
         # Per-direction truncation footer: when --limit capped this direction's tiers,
@@ -960,6 +989,9 @@ def impact_cmd(
             f"use --include-tests to show them)[/dim]"
         )
 
+    # E4: next_actions steer footer (shared with the all-trimmed early-return branch).
+    _render_next_actions(result)
+
 
 @app.command(name="trace")
 def trace_cmd(
@@ -983,11 +1015,16 @@ def trace_cmd(
 ) -> None:
     """Trace the call/dependency path from one symbol to another.
 
-    Shows each hop with its edge kind (call | import) and confidence level
+    Shows each hop with its edge kind (call | import | extends | implements |
+    instantiates | holds | reads | writes | uses) and confidence level
     (EXTRACTED | INFERRED | AMBIGUOUS). Confidence colors:
       green  = EXTRACTED (definitely this edge)
       yellow = INFERRED  (heuristic best-guess)
       red    = AMBIGUOUS (name collision — verify manually)
+
+    When SEAM_EDGE_PROVENANCE=on (default), synthesized hops from the edge-synthesis
+    post-pass are labelled (synth:<channel>) so you can tell a heuristic edge from a
+    statically-extracted one.
 
     Also shows direct callers and callees of both source and target.
 
@@ -1027,8 +1064,12 @@ def trace_cmd(
         # WHY: reuse handle_seam_trace for --json/--quiet to ensure MCP/CLI parity.
         if json_ or quiet:
             result = handle_seam_trace(
-                conn, source=source, target=target, root=project_root,
-                max_depth=safe_depth, verbose=verbose,
+                conn,
+                source=source,
+                target=target,
+                root=project_root,
+                max_depth=safe_depth,
+                verbose=verbose,
             )
         else:
             # Thread project_root as repo_root for Phase 5 import-promotion so
@@ -1096,10 +1137,21 @@ def trace_cmd(
                 # Format: "EXTRACTED [via import]" so users can spot promoted hops.
                 rby = hop.get("resolved_by")
                 rby_suffix = f" [dim][via {rby}][/dim]" if rby else ""
+                # E4: show synthesized marker when the hop was heuristically inferred.
+                # synthesized_by is None for static edges (no marker); a channel name
+                # for synthesized edges (e.g. "interface-override", "event-emitter").
+                # Gated by SEAM_EDGE_PROVENANCE so callers can revert to pre-E4 output.
+                # NOTE: use () not [] for the channel — [] looks like Rich markup tags
+                # and gets silently stripped by the Rich console renderer.
+                trace_synth_marker = ""
+                if config.SEAM_EDGE_PROVENANCE == "on":
+                    synth_ch = hop.get("synthesized_by")
+                    if synth_ch:
+                        trace_synth_marker = f" [yellow](synth:{synth_ch})[/yellow]"
                 console.print(
                     f"  [bold]{hop['from_name']}[/bold]{arrow}[bold]{hop['to_name']}[/bold]"
                     f"  [dim]{hop['kind']}[/dim]"
-                    f"  [{color}]{hop['confidence']}[/{color}]{rby_suffix}{_best_suffix(hop)}"
+                    f"  [{color}]{hop['confidence']}[/{color}]{rby_suffix}{_best_suffix(hop)}{trace_synth_marker}"
                 )
 
     # ── One-hop neighborhood ──────────────────────────────────────────────────
@@ -1851,13 +1903,17 @@ def _render_structure_rich(node: StructureNode, prefix: str = "", is_root: bool 
 
     if is_root:
         sym = node.get("symbol_count", 0)
-        console.print(f"[bold cyan]{node['name']}/[/bold cyan] [dim]({sym} symbols)[/dim]{area_suffix}")
+        console.print(
+            f"[bold cyan]{node['name']}/[/bold cyan] [dim]({sym} symbols)[/dim]{area_suffix}"
+        )
     else:
         # Connector is supplied by the parent via `prefix`; render this node's label.
         if kind == "dir":
             label = f"[cyan]{node['name']}/[/cyan] [dim]({node.get('symbol_count', 0)} symbols)[/dim]{area_suffix}"
         elif kind == "file":
-            label = f"{node['name']} [dim]({node.get('symbol_count', 0)} symbols)[/dim]{area_suffix}"
+            label = (
+                f"{node['name']} [dim]({node.get('symbol_count', 0)} symbols)[/dim]{area_suffix}"
+            )
         elif kind == "container":
             label = f"[green]{node['name']}[/green] [dim]({node.get('members', 0)} members)[/dim]"
         else:  # function
@@ -1984,7 +2040,9 @@ def structure_cmd(
     console.print(f"\n[dim]Repository structure ({total} total symbols)[/dim]")
     _render_structure_rich(tree)
     if result.get("truncated", 0) > 0:
-        console.print(f"[dim yellow]({result['truncated']} nodes omitted by depth/node caps)[/dim yellow]")
+        console.print(
+            f"[dim yellow]({result['truncated']} nodes omitted by depth/node caps)[/dim yellow]"
+        )
 
 
 # ── seam affected ─────────────────────────────────────────────────────────────
@@ -2242,13 +2300,9 @@ def pack_cmd(
             f"{target['symbol']}  {target['kind']}  {target['file']}:{target['line']}\n"
         )
         if result["callers"]:
-            sys.stdout.write(
-                "callers: " + ", ".join(nb["name"] for nb in result["callers"]) + "\n"
-            )
+            sys.stdout.write("callers: " + ", ".join(nb["name"] for nb in result["callers"]) + "\n")
         if result["callees"]:
-            sys.stdout.write(
-                "callees: " + ", ".join(nb["name"] for nb in result["callees"]) + "\n"
-            )
+            sys.stdout.write("callees: " + ", ".join(nb["name"] for nb in result["callees"]) + "\n")
         for hit in result["why"]:
             sys.stdout.write(f"{hit['marker']}: {hit['text']}\n")
         return
@@ -2302,8 +2356,11 @@ def pack_cmd(
         console.print(f"\n  [bold]why[/bold]{suffix}:")
         for hit in why_hits:
             marker_color = {
-                "WHY": "cyan", "HACK": "yellow", "NOTE": "blue",
-                "TODO": "green", "FIXME": "red",
+                "WHY": "cyan",
+                "HACK": "yellow",
+                "NOTE": "blue",
+                "TODO": "green",
+                "FIXME": "red",
             }.get(hit["marker"], "white")
             console.print(
                 f"    [{marker_color}]{hit['marker']}[/{marker_color}]"

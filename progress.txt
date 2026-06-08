@@ -2,6 +2,70 @@
 # Format: [x] = done, [>] = in progress, [ ] = not started
 # Update this EVERY session. It is the first thing the agent reads.
 #
+# 2026-06-08: E4 — edge provenance on seam_impact entries + seam_trace hops, and
+#   actionable truncation steer (branch feat/e4-edge-provenance-steer).
+#   PROBLEM 1: seam_impact entries were edge-kind-blind — a WILL_BREAK dependent could
+#     arrive via a hard 'call', a data-coupling 'reads', a composition 'holds', or a
+#     heuristic synthesized edge. The edges.synthesized_by column (v12) existed precisely
+#     to surface this but was never plumbed to the output. Two CLAUDE.md "Known Gotchas"
+#     explicitly called this out as open follow-ups: "synthesized_by NOT surfaced in
+#     impact/trace output" and "read/write kind NOT surfaced in impact/trace output".
+#   PROBLEM 2: when entries were dropped by the per-tier count cap or the byte ceiling,
+#     the response carried honest truncated/byte_capped counts but no remedy hint —
+#     agents had to guess whether to raise limit or max_bytes.
+#   FIX 1 (edge provenance): each seam_impact tier entry now carries:
+#     kind          — edge kind of the final hop (full 9-kind vocab;
+#                     call|import|extends|implements|instantiates|holds|reads|writes|uses)
+#                     always present; kept in lean mode (core field, not heavy field)
+#     synthesized_by — synthesis channel name when heuristic, null for static edges;
+#                     stripped in lean mode like resolved_by; null RETAINED in verbose
+#                     (null = static edge = the common informative value)
+#   Each seam_trace hop gains synthesized_by (hops already carried kind; docstrings
+#   corrected to the full 9-kind vocabulary).
+#   Gated by SEAM_EDGE_PROVENANCE ("on" default; "off" = byte-identical pre-E4).
+#   FIX 2 (truncation steer): a top-level next_actions: list[str] is attached to
+#   seam_impact when >=1 entry was trimmed. Hints name the exact remedy, e.g.:
+#     "Raise limit to 17 to see 12 more WILL_BREAK upstream dependents."
+#     "Pass max_bytes=0 for the full untrimmed blast radius."
+#   ABSENT when nothing was trimmed (presence = unambiguous "there is more" signal).
+#   All-trimmed case emits explicit anti-false-safe warning.
+#   Steer stays WITHIN max_bytes: _attach_steer reserves room and re-trims from the
+#   PRE-ceiling response when appending would breach the budget (single pass, converges).
+#   Gated by SEAM_IMPACT_STEER ("on" default; "off" = no next_actions key ever).
+#   IMPLEMENTATION:
+#     New pure leaf seam/analysis/steer.py (stdlib-only: logging, typing):
+#       generate_steer(...) → list[str]; never raises ([] on any error, logged).
+#       Injected with canonical TIER_* names from impact.py via tier_order param
+#       (leaf stays standalone-testable; no impact.py import at module scope).
+#     Traversal threading (seam/analysis/flows.py + impact.py):
+#       _fetch_outgoing_edges / _fetch_incoming_edges: synthesized_by added to SELECT.
+#       Reached TypedDict, Hop TypedDict, EdgeHop TypedDict: synthesized_by field added.
+#       BFS propagates winning hop's kind/synthesized_by alongside resolved_by.
+#       _build_tier_group: copies kind/synthesized_by from walk()'s Reached result.
+#     Handler wiring (seam/server/tools.py):
+#       _HEAVY_FIELDS: synthesized_by added (stripped in lean mode).
+#       _serialize_hop / _serialize_edge_hop / _serialize_tier_entry: emit kind +
+#         synthesized_by when SEAM_EDGE_PROVENANCE="on".
+#       _apply_byte_ceiling: extra_reserve param (E4) holds back room for next_actions.
+#       _attach_steer: new helper; generates steer, re-trims if budget breached.
+#       handle_seam_impact: wires _attach_steer after _apply_byte_ceiling.
+#     Config (seam/config.py): SEAM_EDGE_PROVENANCE + SEAM_IMPACT_STEER knobs.
+#     CLI (seam/cli/main.py): kind_marker + synth_marker per impact entry; trace hops
+#       show synth:<channel> marker; _render_next_actions footer (Rich); _IMPACT_META_KEYS
+#       updated with 'next_actions'.
+#   REVIEW/TASTE REMEDIATIONS (from /review + /backend-taste passes):
+#     STOP (byte-ceiling breach): naively appending the steer after _apply_byte_ceiling
+#       would push the response past max_bytes. _attach_steer now re-trims from the
+#       PRE-ceiling response with extra_reserve=steer_bytes+_STEER_RESERVE_MARGIN.
+#     WATCH-3 (CLI all-trimmed anti-false-safe): the early-return "total==0" branch in
+#       impact_cmd now also calls _render_next_actions so the CLI surface gets the same
+#       anti-false-safe warning that JSON/MCP consumers receive.
+#     Logging fix: steer generation failure now logs a warning (not silent drop) so a
+#       malformed-input bug that silently drops the all-trimmed warning is observable.
+#   QA: seam_changes and seam_affected output confirmed byte-stable (regression tests
+#     pass; they call the analysis layer directly, below the handler).
+#   GATE: ruff + mypy clean, 3008 tests pass.
+#
 # 2026-06-08: E1-FULL — opt-in byte ceiling for seam_impact (SEAM_IMPACT_MAX_BYTES)
 #   (branch feat/e1-full-impact-byte-ceiling). 3 build slices + review/taste/QA remediation.
 #   PROBLEM: the E1 null-candidate omission brought the benchmark window to 5/5, but a hub
