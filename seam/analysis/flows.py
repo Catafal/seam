@@ -93,12 +93,18 @@ class Hop(TypedDict):
     Fields:
         from_name      — source symbol of this edge
         to_name        — target symbol of this edge
-        kind           — edge kind: 'call' | 'import'
+        kind           — edge kind. Full closed vocabulary:
+                         call | import | extends | implements | instantiates |
+                         holds | reads | writes | uses.
         confidence     — edge confidence: EXTRACTED | INFERRED | AMBIGUOUS
         resolved_by    — Phase 5: how confidence was decided (see RESOLVED_BY_* in confidence.py).
                          None for fast-path hops (name-count only, no import mapping context).
         best_candidate — Phase 5: for AMBIGUOUS hops, the most-proximate declaring file.
                          None for non-AMBIGUOUS or when proximity data is unavailable.
+        synthesized_by — E4: synthesis channel name when this hop is a heuristic synthesized
+                         edge (e.g. 'interface-override', 'closure-collection', 'event-emitter').
+                         None when the hop is statically extracted. Same null-contract as
+                         resolved_by/best_candidate: null ≡ statically extracted.
     """
 
     from_name: str
@@ -107,6 +113,7 @@ class Hop(TypedDict):
     confidence: str
     resolved_by: str | None
     best_candidate: str | None
+    synthesized_by: str | None
 
 
 # Path is an ordered list of Hops from source to target.
@@ -124,12 +131,18 @@ class EdgeHop(TypedDict):
 
     Fields:
         name           — the neighboring symbol name
-        kind           — edge kind: 'call' | 'import'
+        kind           — edge kind. Full closed vocabulary:
+                         call | import | extends | implements | instantiates |
+                         holds | reads | writes | uses.
         confidence     — edge confidence: EXTRACTED | INFERRED | AMBIGUOUS
         resolved_by    — Phase 5: how confidence was decided. None for fast-path hops
                          (name-count only — full import-promotion context not available here).
         best_candidate — Phase 5: for AMBIGUOUS hops, the most-proximate declaring file.
                          None for non-AMBIGUOUS or when proximity data is unavailable.
+        synthesized_by — E4: synthesis channel name when this hop is a heuristic synthesized
+                         edge (e.g. 'interface-override', 'closure-collection', 'event-emitter').
+                         None when the hop is statically extracted. Same null-contract as
+                         resolved_by/best_candidate: null ≡ statically extracted.
     """
 
     name: str
@@ -137,6 +150,7 @@ class EdgeHop(TypedDict):
     confidence: str
     resolved_by: str | None
     best_candidate: str | None
+    synthesized_by: str | None
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
@@ -158,14 +172,17 @@ __all__ = [
 def _fetch_outgoing_edges(
     conn: sqlite3.Connection,
     names: set[str],
-) -> list[tuple[str, str, str, str, str]]:
+) -> list[tuple[str, str, str, str, str, str | None]]:
     """Fetch all outgoing edges from any name in `names`, with file context for Phase 5.
 
-    Returns list of (source_name, target_name, kind, ref_file_path, language).
+    Returns list of (source_name, target_name, kind, ref_file_path, language, synthesized_by).
     Self-edges (source == target) are excluded.
 
     ref_file_path and language come from the edges.file_id → files JOIN, providing
     the referencing file context required by resolve_edge() for import promotion.
+
+    synthesized_by (E4): the edge.synthesized_by column value — None for statically
+    extracted edges; a channel name string for synthesized edges.
 
     The stored edges.confidence column is intentionally NOT selected: per-hop
     confidence is resolved whole-index from target_name at read time (see
@@ -178,16 +195,18 @@ def _fetch_outgoing_edges(
         return []
 
     names_list = list(names)
-    all_rows: list[tuple[str, str, str, str, str]] = []
+    all_rows: list[tuple[str, str, str, str, str, str | None]] = []
 
     for batch_start in range(0, len(names_list), _SQL_VAR_BATCH):
         batch = names_list[batch_start : batch_start + _SQL_VAR_BATCH]
         placeholders = ",".join("?" * len(batch))
 
         # Downstream: follow edges from source to target, join files for context.
+        # E4: also select e.synthesized_by for provenance threading.
         sql = f"""
             SELECT e.source_name, e.target_name, e.kind,
-                   f.path AS ref_file_path, f.language
+                   f.path AS ref_file_path, f.language,
+                   e.synthesized_by
             FROM edges e
             JOIN files f ON f.id = e.file_id
             WHERE e.source_name IN ({placeholders})
@@ -201,6 +220,7 @@ def _fetch_outgoing_edges(
                 row["kind"],
                 row["ref_file_path"],
                 row["language"],
+                row["synthesized_by"],
             )
             for row in rows
         )
@@ -211,14 +231,17 @@ def _fetch_outgoing_edges(
 def _fetch_incoming_edges(
     conn: sqlite3.Connection,
     names: set[str],
-) -> list[tuple[str, str, str, str, str]]:
+) -> list[tuple[str, str, str, str, str, str | None]]:
     """Fetch all incoming edges to any name in `names`, with file context for Phase 5.
 
-    Returns list of (source_name, target_name, kind, ref_file_path, language).
+    Returns list of (source_name, target_name, kind, ref_file_path, language, synthesized_by).
     Self-edges (source == target) are excluded.
 
     ref_file_path and language come from the edges.file_id → files JOIN, providing
     the referencing file context required by resolve_edge() for import promotion.
+
+    synthesized_by (E4): the edge.synthesized_by column value — None for statically
+    extracted edges; a channel name string for synthesized edges.
 
     Stored confidence is not selected — see _fetch_outgoing_edges for why.
 
@@ -228,16 +251,18 @@ def _fetch_incoming_edges(
         return []
 
     names_list = list(names)
-    all_rows: list[tuple[str, str, str, str, str]] = []
+    all_rows: list[tuple[str, str, str, str, str, str | None]] = []
 
     for batch_start in range(0, len(names_list), _SQL_VAR_BATCH):
         batch = names_list[batch_start : batch_start + _SQL_VAR_BATCH]
         placeholders = ",".join("?" * len(batch))
 
         # Upstream: edges pointing AT these names, join files for context.
+        # E4: also select e.synthesized_by for provenance threading.
         sql = f"""
             SELECT e.source_name, e.target_name, e.kind,
-                   f.path AS ref_file_path, f.language
+                   f.path AS ref_file_path, f.language,
+                   e.synthesized_by
             FROM edges e
             JOIN files f ON f.id = e.file_id
             WHERE e.target_name IN ({placeholders})
@@ -251,6 +276,7 @@ def _fetch_incoming_edges(
                 row["kind"],
                 row["ref_file_path"],
                 row["language"],
+                row["synthesized_by"],
             )
             for row in rows
         )
@@ -340,9 +366,7 @@ def trace(
     target_aliases: set[str] = set(target_seeds)
     # Always include the exact target — expand_impact_seeds returns it first but be explicit.
     target_aliases.add(target)
-    logger.debug(
-        "trace: target=%r expanded aliases=%s", target, sorted(target_aliases)
-    )
+    logger.debug("trace: target=%r expanded aliases=%s", target, sorted(target_aliases))
 
     # Load whole-index name-count map ONCE per trace() call.
     name_counts = load_name_counts(conn)
@@ -387,7 +411,7 @@ def trace(
 
         next_frontier: set[str] = set()
 
-        for src_name, tgt_name, kind, ref_file_path, language in outgoing:
+        for src_name, tgt_name, kind, ref_file_path, language, synth_by in outgoing:
             # Resolve per-hop confidence via full Phase 5 resolver when available,
             # using the cache to avoid re-running declaration-check and proximity SELECTs
             # for repeated (file, target) pairs across BFS levels.
@@ -415,6 +439,8 @@ def trace(
                 hop_resolved_by = None
                 hop_best_candidate = None
 
+            # E4: synthesized_by is the edge.synthesized_by column value from the DB.
+            # None = statically extracted; channel name = synthesized by post-pass.
             hop = Hop(
                 from_name=src_name,
                 to_name=tgt_name,
@@ -422,6 +448,7 @@ def trace(
                 confidence=hop_confidence,
                 resolved_by=hop_resolved_by,
                 best_candidate=hop_best_candidate,
+                synthesized_by=synth_by,
             )
 
             # Found the target — record its parent and return immediately (BFS = shortest).
@@ -518,10 +545,11 @@ def callers(
 
     rows = _fetch_incoming_edges(conn, {symbol})
 
-    # Deduplicate by (source_name, kind) — keep strongest (confidence, resolved_by, best_candidate).
-    best: dict[tuple[str, str], tuple[str, str | None, str | None]] = {}
+    # Deduplicate by (source_name, kind) — keep strongest (confidence, resolved_by,
+    # best_candidate, synthesized_by). All four provenance fields come from the same edge.
+    best: dict[tuple[str, str], tuple[str, str | None, str | None, str | None]] = {}
 
-    for src, tgt, kind, ref_file_path, language in rows:
+    for src, tgt, kind, ref_file_path, language, synth_by in rows:
         # Resolve confidence, using the cache to avoid repeated declaration SELECTs.
         if use_import_promotion and ref_file_path and language:
             cache_key = (ref_file_path, tgt)
@@ -550,15 +578,22 @@ def callers(
         key = (src, kind)
         existing = best.get(key)
         if existing is None:
-            best[key] = (resolved_confidence, resolved_by, best_candidate)
+            best[key] = (resolved_confidence, resolved_by, best_candidate, synth_by)
         else:
-            # Keep stronger confidence (higher rank); update resolved_by and best_candidate.
+            # Keep stronger confidence (higher rank); update all provenance fields.
             if _rank(resolved_confidence) > _rank(existing[0]):
-                best[key] = (resolved_confidence, resolved_by, best_candidate)
+                best[key] = (resolved_confidence, resolved_by, best_candidate, synth_by)
 
     result: list[EdgeHop] = [
-        EdgeHop(name=name, kind=kind, confidence=conf, resolved_by=rby, best_candidate=bc)
-        for (name, kind), (conf, rby, bc) in sorted(best.items())
+        EdgeHop(
+            name=name,
+            kind=kind,
+            confidence=conf,
+            resolved_by=rby,
+            best_candidate=bc,
+            synthesized_by=synth_by,
+        )
+        for (name, kind), (conf, rby, bc, synth_by) in sorted(best.items())
     ]
     logger.debug(
         "callers(%r): %d one-hop callers (import_promotion=%s)",
@@ -614,10 +649,11 @@ def callees(
 
     rows = _fetch_outgoing_edges(conn, {symbol})
 
-    # Deduplicate by (target_name, kind) — keep strongest (confidence, resolved_by, best_candidate).
-    best: dict[tuple[str, str], tuple[str, str | None, str | None]] = {}
+    # Deduplicate by (target_name, kind) — keep strongest (confidence, resolved_by,
+    # best_candidate, synthesized_by). All four provenance fields come from the same edge.
+    best: dict[tuple[str, str], tuple[str, str | None, str | None, str | None]] = {}
 
-    for _src, tgt, kind, ref_file_path, language in rows:
+    for _src, tgt, kind, ref_file_path, language, synth_by in rows:
         if use_import_promotion and ref_file_path and language:
             cache_key = (ref_file_path, tgt)
             if cache_key not in _resolution_cache:
@@ -645,14 +681,21 @@ def callees(
         key = (tgt, kind)
         existing = best.get(key)
         if existing is None:
-            best[key] = (resolved_confidence, resolved_by, best_candidate_c)
+            best[key] = (resolved_confidence, resolved_by, best_candidate_c, synth_by)
         else:
             if _rank(resolved_confidence) > _rank(existing[0]):
-                best[key] = (resolved_confidence, resolved_by, best_candidate_c)
+                best[key] = (resolved_confidence, resolved_by, best_candidate_c, synth_by)
 
     result: list[EdgeHop] = [
-        EdgeHop(name=name, kind=kind, confidence=conf, resolved_by=rby, best_candidate=bc)
-        for (name, kind), (conf, rby, bc) in sorted(best.items())
+        EdgeHop(
+            name=name,
+            kind=kind,
+            confidence=conf,
+            resolved_by=rby,
+            best_candidate=bc,
+            synthesized_by=synth_by,
+        )
+        for (name, kind), (conf, rby, bc, synth_by) in sorted(best.items())
     ]
     logger.debug(
         "callees(%r): %d one-hop callees (import_promotion=%s)",

@@ -120,6 +120,16 @@ class Reached(TypedDict):
         best_candidate — Phase 5: for AMBIGUOUS final-hop entries, the most
                          file-path-proximate declaring file (absolute path string).
                          None for non-AMBIGUOUS hops or when proximity data is unavailable.
+        kind           — E4: edge kind of the FINAL hop of the winning (strongest-confidence)
+                         path to this symbol. Full closed vocabulary:
+                         call | import | extends | implements | instantiates | holds |
+                         reads | writes | uses.
+                         Same provenance source as resolved_by — all four fields describe
+                         one coherent edge. Empty string for degenerate BFS cases.
+        synthesized_by — E4: synthesis channel name when the final hop is a heuristic
+                         synthesized edge (e.g. 'interface-override', 'closure-collection',
+                         'event-emitter'). None when the final hop is statically extracted.
+                         Same null-contract as resolved_by/best_candidate: null ≡ static.
     """
 
     name: str
@@ -127,6 +137,8 @@ class Reached(TypedDict):
     confidence: str
     resolved_by: str | None
     best_candidate: str | None
+    kind: str
+    synthesized_by: str | None
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
@@ -152,10 +164,12 @@ def _fetch_neighbors_with_parents(
     conn: sqlite3.Connection,
     names: set[str],
     direction: str,
-) -> list[tuple[str, str, str, str, str]]:
+) -> list[tuple[str, str, str, str, str, str, str | None]]:
     """Fetch one-hop neighbors for a set of symbol names, with file context for Phase 5.
 
-    Returns a list of (neighbor_name, parent_name, edge_target_name, ref_file_path, language).
+    Returns a list of:
+        (neighbor_name, parent_name, edge_target_name, ref_file_path, language,
+         edge_kind, edge_synthesized_by)
 
     The 3rd column — edge_target_name — is always the edge's target_name column,
     regardless of traversal direction.  This lets the caller resolve confidence
@@ -166,6 +180,10 @@ def _fetch_neighbors_with_parents(
 
     5th column — language — is files.language for the referencing file.  Used by
     resolve_edge() for builtin-check and import source resolution.
+
+    6th column — edge_kind — the edge.kind value ('call'|'import'|'holds'|...).
+    7th column — edge_synthesized_by — the edge.synthesized_by value (None for static edges;
+                  channel name string for synthesized edges).
 
     The stored edges.confidence column is intentionally NOT selected: hop
     confidence is resolved whole-index from edge_target_name at read time
@@ -183,7 +201,7 @@ def _fetch_neighbors_with_parents(
         return []
 
     names_list = list(names)
-    all_rows: list[tuple[str, str, str, str, str]] = []
+    all_rows: list[tuple[str, str, str, str, str, str, str | None]] = []
 
     # Process in batches to avoid SQLITE_MAX_VARIABLE_NUMBER (999 on most builds).
     for batch_start in range(0, len(names_list), _SQL_VAR_BATCH):
@@ -194,12 +212,15 @@ def _fetch_neighbors_with_parents(
             # Who depends on us? → edges pointing at us → source_name is the caller.
             # edge_target_name = target_name (the callee, i.e. the seed symbol).
             # JOIN files to get the referencing file path and language for resolve_edge.
+            # E4: also select e.kind and e.synthesized_by for provenance threading.
             sql = f"""
-                SELECT e.source_name AS neighbor,
-                       e.target_name AS parent,
-                       e.target_name AS edge_target_name,
-                       f.path        AS ref_file_path,
-                       f.language    AS language
+                SELECT e.source_name    AS neighbor,
+                       e.target_name    AS parent,
+                       e.target_name    AS edge_target_name,
+                       f.path           AS ref_file_path,
+                       f.language       AS language,
+                       e.kind           AS edge_kind,
+                       e.synthesized_by AS edge_synthesized_by
                 FROM edges e
                 JOIN files f ON f.id = e.file_id
                 WHERE e.target_name IN ({placeholders})
@@ -208,12 +229,15 @@ def _fetch_neighbors_with_parents(
         else:
             # What do we depend on? → edges going out from us → target_name is dep.
             # edge_target_name = target_name (the callee, i.e. the neighbor).
+            # E4: also select e.kind and e.synthesized_by for provenance threading.
             sql = f"""
-                SELECT e.target_name AS neighbor,
-                       e.source_name AS parent,
-                       e.target_name AS edge_target_name,
-                       f.path        AS ref_file_path,
-                       f.language    AS language
+                SELECT e.target_name    AS neighbor,
+                       e.source_name    AS parent,
+                       e.target_name    AS edge_target_name,
+                       f.path           AS ref_file_path,
+                       f.language       AS language,
+                       e.kind           AS edge_kind,
+                       e.synthesized_by AS edge_synthesized_by
                 FROM edges e
                 JOIN files f ON f.id = e.file_id
                 WHERE e.source_name IN ({placeholders})
@@ -228,6 +252,8 @@ def _fetch_neighbors_with_parents(
                 row["edge_target_name"],
                 row["ref_file_path"],
                 row["language"],
+                row["edge_kind"],
+                row["edge_synthesized_by"],
             )
             for row in rows
         )
@@ -311,16 +337,18 @@ def walk(
     # BFS state:
     #   visited: symbols already processed (prevents revisiting and cycles)
     #   current_frontier: set of (name, path_rank) for the current BFS level
-    #   results: name -> (distance, best_path_rank, resolved_by_for_best_path, best_candidate)
+    #   results: name -> (distance, best_path_rank, resolved_by_for_best_path, best_candidate,
+    #                     kind_for_best_path, synthesized_by_for_best_path)
     seed_set = set(seeds)
     visited: set[str] = set(seeds)  # seeds are "visited" — we don't return them
 
     # Initial frontier: all seeds at EXTRACTED rank (perfect start — the seed IS the seed).
     current_frontier: list[tuple[str, int]] = [(s, 2) for s in seeds]
 
-    # Results map: name -> (distance, best_path_rank, resolved_by_of_best_path_hop, best_candidate)
-    # best_candidate is from the final hop's Resolution (surface AMBIGUOUS tie-break).
-    results: dict[str, tuple[int, int, str | None, str | None]] = {}
+    # Results map: name -> (distance, best_path_rank, resolved_by, best_candidate, kind, synthesized_by)
+    # best_candidate, kind, and synthesized_by all come from the final hop of the winning
+    # (strongest-confidence) path — so all four provenance fields describe one coherent edge.
+    results: dict[str, tuple[int, int, str | None, str | None, str, str | None]] = {}
 
     for depth in range(1, max_depth + 1):
         if not current_frontier:
@@ -333,17 +361,17 @@ def walk(
                 parent_rank[name] = pr
 
         # Fetch one-hop neighbors for all symbols in the current frontier.
-        # Returns (neighbor, parent, edge_target_name, ref_file_path, language).
+        # Returns (neighbor, parent, edge_target_name, ref_file_path, language, edge_kind, edge_synthesized_by).
         frontier_names = {name for name, _ in current_frontier}
         rows = _fetch_neighbors_with_parents(conn, frontier_names, direction)
 
         if not rows:
             break
 
-        # next_frontier tracks: name -> (best_path_rank, resolved_by, best_candidate)
-        next_frontier: dict[str, tuple[int, str | None, str | None]] = {}
+        # next_frontier tracks: name -> (best_path_rank, resolved_by, best_candidate, kind, synthesized_by)
+        next_frontier: dict[str, tuple[int, str | None, str | None, str, str | None]] = {}
 
-        for neighbor, parent, edge_target_name, ref_file_path, language in rows:
+        for neighbor, parent, edge_target_name, ref_file_path, language, edge_kind, edge_synth_by in rows:
             # Skip seeds — they are never returned as reachable.
             if neighbor in seed_set:
                 continue
@@ -389,26 +417,33 @@ def walk(
                 continue
 
             # Keep the strongest path rank for this neighbor at this BFS level.
-            # When replacing with a stronger path, update resolved_by and best_candidate
-            # from the winning hop.
+            # When replacing with a stronger path, update resolved_by, best_candidate,
+            # kind, and synthesized_by from the winning hop — all four provenance fields
+            # come from the same final hop of the strongest-confidence path.
             existing = next_frontier.get(neighbor)
             if existing is None or path_rank > existing[0]:
-                next_frontier[neighbor] = (path_rank, hop_resolved_by, hop_best_candidate)
+                next_frontier[neighbor] = (
+                    path_rank,
+                    hop_resolved_by,
+                    hop_best_candidate,
+                    edge_kind,
+                    edge_synth_by,
+                )
 
         # Commit next_frontier to results and advance visited set.
         new_frontier: list[tuple[str, int]] = []
-        for name, (pr, resolved_by, best_candidate) in next_frontier.items():
+        for name, (pr, resolved_by, best_candidate, kind, synth_by) in next_frontier.items():
             visited.add(name)
-            results[name] = (depth, pr, resolved_by, best_candidate)
+            results[name] = (depth, pr, resolved_by, best_candidate, kind, synth_by)
             new_frontier.append((name, pr))
 
         current_frontier = new_frontier
 
     # Convert results to Reached list, sorted by distance then name.
-    # resolved_by reflects the FINAL hop of the winning (strongest-confidence) path,
-    # while confidence is the WEAKEST hop — so resolved_by='import' can accompany
-    # confidence='AMBIGUOUS' on multi-hop paths where an earlier hop was ambiguous.
-    # best_candidate is from the final hop's Resolution (only set for AMBIGUOUS hops).
+    # resolved_by, kind, and synthesized_by all reflect the FINAL hop of the winning
+    # (strongest-confidence) path. confidence is the WEAKEST hop — so resolved_by='import'
+    # can accompany confidence='AMBIGUOUS' on multi-hop paths where an earlier hop was
+    # ambiguous. best_candidate is from the final hop's Resolution (only set for AMBIGUOUS).
     reached: list[Reached] = [
         Reached(
             name=name,
@@ -416,8 +451,10 @@ def walk(
             confidence=_RANK_CONFIDENCE.get(best_rank, CONFIDENCE_INFERRED),
             resolved_by=resolved_by,
             best_candidate=best_candidate,
+            kind=kind,
+            synthesized_by=synth_by,
         )
-        for name, (distance, best_rank, resolved_by, best_candidate) in results.items()
+        for name, (distance, best_rank, resolved_by, best_candidate, kind, synth_by) in results.items()
     ]
     reached.sort(key=lambda r: (r["distance"], r["name"]))
 

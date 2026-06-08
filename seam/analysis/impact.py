@@ -57,8 +57,8 @@ logger = logging.getLogger(__name__)
 # ── Tier name constants ────────────────────────────────────────────────────────
 # Must match exactly the tier names in CLAUDE.md d=1/2/3.
 
-TIER_WILL_BREAK = "WILL_BREAK"           # distance == 1
-TIER_LIKELY_AFFECTED = "LIKELY_AFFECTED" # distance == 2
+TIER_WILL_BREAK = "WILL_BREAK"  # distance == 1
+TIER_LIKELY_AFFECTED = "LIKELY_AFFECTED"  # distance == 2
 TIER_MAY_NEED_TESTING = "MAY_NEED_TESTING"  # distance >= 3
 
 # Depth bounds for clamping user input.
@@ -76,11 +76,19 @@ _VALID_DIRECTIONS = {"upstream", "downstream", "both"}
 # mixed-type TypedDicts. The shape is documented below and in CONTRACT.md.
 #
 # TieredEntry shape:
-#   name        (str)        — symbol name
-#   distance    (int)        — hops from the target
-#   confidence  (str)        — EXTRACTED | INFERRED | AMBIGUOUS
-#   tier        (str)        — WILL_BREAK | LIKELY_AFFECTED | MAY_NEED_TESTING
-#   file        (str | None) — absolute path if name is an indexed symbol; else None
+#   name           (str)        — symbol name
+#   distance       (int)        — hops from the target
+#   confidence     (str)        — EXTRACTED | INFERRED | AMBIGUOUS
+#   tier           (str)        — WILL_BREAK | LIKELY_AFFECTED | MAY_NEED_TESTING
+#   file           (str | None) — absolute path if name is an indexed symbol; else None
+#   kind           (str)        — E4: edge kind of the final hop of the winning path.
+#                                 Full vocabulary: call | import | extends | implements |
+#                                 instantiates | holds | reads | writes | uses.
+#                                 Empty string for degenerate / pre-E4 cases (never absent).
+#   synthesized_by (str | None) — E4: synthesis channel name when the final hop is
+#                                 heuristic (e.g. 'interface-override'), or None when
+#                                 the final hop is statically extracted. Same null-contract
+#                                 as resolved_by/best_candidate: null ≡ static.
 
 # TierGroup maps tier-name -> list of entries for that tier.
 # e.g. {"WILL_BREAK": [...], "LIKELY_AFFECTED": [...], "MAY_NEED_TESTING": [...]}
@@ -249,6 +257,13 @@ def _build_tier_group(
                 # Phase 5: best_candidate is the highest-proximity declaring file for
                 # AMBIGUOUS entries (PRD story 6). None for non-AMBIGUOUS or unavailable.
                 "best_candidate": r.get("best_candidate"),
+                # E4: edge kind of the final hop of the winning path (e.g. 'call', 'holds',
+                # 'reads', 'uses', etc.). Copied directly from walk()'s Reached result.
+                # Same provenance source as resolved_by — all four fields describe one edge.
+                "kind": r.get("kind", ""),
+                # E4: synthesis channel name when the final hop is a synthesized (heuristic)
+                # edge; None for statically-extracted edges. Same null-contract as resolved_by.
+                "synthesized_by": r.get("synthesized_by"),
             }
         )
     return group
@@ -277,10 +292,7 @@ def _filter_tests_from_tier_group(tier_group: TierGroup) -> TierGroup:
 def _count_test_entries(tier_group: TierGroup) -> int:
     """Count is_test=True entries across all tiers (how many include_tests=False hides)."""
     return sum(
-        1
-        for entries in tier_group.values()
-        for entry in entries
-        if entry.get("is_test", False)
+        1 for entries in tier_group.values() for entry in entries if entry.get("is_test", False)
     )
 
 
