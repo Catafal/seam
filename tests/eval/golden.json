@@ -1,5 +1,5 @@
 {
-  "fixture_hash": "63301e04429396b2",
+  "fixture_hash": "0f11955b3b5b277a",
   "queries": [
     {
       "id": "search-validate-data",
@@ -178,10 +178,10 @@
       "k": 10,
       "note": "A3: upstream blast radius of DataPipeline.stages as a field seed",
       "expected_symbols": [
+        "build_pipeline",
         "DataPipeline.__init__",
         "DataPipeline.add_stage",
         "DataPipeline.run",
-        "build_pipeline",
         "run_pipeline"
       ]
     }
