@@ -42,16 +42,23 @@ def _serialized_size(obj: object) -> int:
 def _sym(name: str, file: str, kind: str = "function", line: int = 1) -> Symbol:
     """Minimal Symbol fixture."""
     return Symbol(
-        name=name, kind=kind, file=file, start_line=line, end_line=line + 2,
-        docstring=None, signature=None, decorators=[], is_exported=True,
-        visibility="public", qualified_name=name,
+        name=name,
+        kind=kind,
+        file=file,
+        start_line=line,
+        end_line=line + 2,
+        docstring=None,
+        signature=None,
+        decorators=[],
+        is_exported=True,
+        visibility="public",
+        qualified_name=name,
     )
 
 
 def _edge(source: str, target: str, file: str) -> Edge:
     """Minimal call Edge."""
-    return Edge(source=source, target=target, kind="call", file=file, line=1,
-                confidence="INFERRED")
+    return Edge(source=source, target=target, kind="call", file=file, line=1, confidence="INFERRED")
 
 
 def _make_hub_db(tmp_path: Path, n_direct: int = 5, n_indirect: int = 5) -> Path:
@@ -169,11 +176,7 @@ def test_truncated_includes_byte_dropped_counts(tmp_path: Path) -> None:
         assert "truncated" in result, "truncated must be present when byte ceiling fired"
         # truncated must have non-zero counts for at least one direction/tier
         truncated = result["truncated"]
-        total_truncated = sum(
-            cnt
-            for tier_map in truncated.values()
-            for cnt in tier_map.values()
-        )
+        total_truncated = sum(cnt for tier_map in truncated.values() for cnt in tier_map.values())
         assert total_truncated > 0, "truncated must have non-zero counts when byte_capped"
 
 
@@ -269,9 +272,7 @@ def test_byte_capped_present_only_when_ceiling_fired(tmp_path: Path) -> None:
         assert result_tight["byte_capped"]["omitted"] > 0
 
     # Generous budget: ceiling should not have fired
-    assert "byte_capped" not in result_generous, (
-        "byte_capped must be absent when everything fits"
-    )
+    assert "byte_capped" not in result_generous, "byte_capped must be absent when everything fits"
 
 
 def test_byte_capped_shape_when_present(tmp_path: Path) -> None:
@@ -310,7 +311,8 @@ def test_max_bytes_zero_is_byte_identical(tmp_path: Path) -> None:
         conn.close()
 
     assert json.dumps(result_default, separators=(",", ":")) == json.dumps(
-        result_zero, separators=(",", ":"),
+        result_zero,
+        separators=(",", ":"),
     ), "max_bytes=0 must be byte-identical to default (no byte ceiling)"
     assert "byte_capped" not in result_zero
 
@@ -347,8 +349,12 @@ def test_byte_ceiling_runs_after_count_cap(tmp_path: Path) -> None:
     finally:
         conn.close()
 
-    # Byte ceiling trimmed further than count cap alone
-    assert _serialized_size(result_both) <= budget
+    # Byte ceiling trimmed further than count cap alone.
+    # E4: 'next_actions' steer is appended AFTER the byte ceiling and is not
+    # counted against the budget (same pattern as 'byte_capped'/'truncated' metadata).
+    # Compare the entry-bearing portion of the response, excluding the steer.
+    result_without_steer = {k: v for k, v in result_both.items() if k != "next_actions"}
+    assert _serialized_size(result_without_steer) <= budget
 
     if "byte_capped" in result_both:
         # The result with both is <= the count-cap-only result in terms of entries
@@ -448,7 +454,8 @@ def test_max_bytes_larger_than_full_result_no_trimming(tmp_path: Path) -> None:
     assert "byte_capped" not in result
     # The result should be identical to the full result
     assert json.dumps(result, separators=(",", ":")) == json.dumps(
-        full_result, separators=(",", ":"),
+        full_result,
+        separators=(",", ":"),
     )
 
 
@@ -466,14 +473,22 @@ def test_max_bytes_param_overrides_config(tmp_path: Path, monkeypatch) -> None:
         # Config says tight budget, but param overrides to unlimited
         monkeypatch.setattr(config, "SEAM_IMPACT_MAX_BYTES", 10)
         result_unlimited_via_param = handle_seam_impact(
-            conn, "hub", ROOT, limit=0, max_bytes=0,  # 0 = unlimited
+            conn,
+            "hub",
+            ROOT,
+            limit=0,
+            max_bytes=0,  # 0 = unlimited
         )
 
         # Config says unlimited (0), but param activates tight budget
         monkeypatch.setattr(config, "SEAM_IMPACT_MAX_BYTES", 0)
         tight_budget = full_size // 2
         result_tight_via_param = handle_seam_impact(
-            conn, "hub", ROOT, limit=0, max_bytes=tight_budget,
+            conn,
+            "hub",
+            ROOT,
+            limit=0,
+            max_bytes=tight_budget,
         )
     finally:
         conn.close()

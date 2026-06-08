@@ -33,6 +33,7 @@ from seam.analysis.changes import (
 from seam.analysis.flows import EdgeHop, Hop
 from seam.analysis.processes import Flow, build_flow, list_entry_points
 from seam.analysis.relevance import order_by_relevance, owning_container, partition_self_refs
+from seam.analysis.steer import generate_steer
 from seam.query import engine
 from seam.query.clusters import cluster_members as query_cluster_members
 from seam.query.clusters import list_clusters as query_list_clusters
@@ -47,17 +48,22 @@ logger = logging.getLogger(__name__)
 
 # ── Lean-output: heavy fields stripped when verbose=False ────────────────────
 
-# These 6 fields are valuable in verbose mode but inflate every record unnecessarily
+# These fields are valuable in verbose mode but inflate every record unnecessarily
 # when the agent only needs the core identity + signature.
 # Keys are ABSENT (not null) in lean mode — lean mode's whole point is fewer bytes.
-_HEAVY_FIELDS: frozenset[str] = frozenset({
-    "decorators",
-    "is_exported",
-    "visibility",
-    "qualified_name",
-    "resolved_by",
-    "best_candidate",
-})
+# E4: synthesized_by added — provenance detail, stripped in lean mode like resolved_by.
+#     kind is NOT here — it is a core field always kept even in lean mode.
+_HEAVY_FIELDS: frozenset[str] = frozenset(
+    {
+        "decorators",
+        "is_exported",
+        "visibility",
+        "qualified_name",
+        "resolved_by",
+        "best_candidate",
+        "synthesized_by",  # E4: provenance detail — stripped in lean, like resolved_by
+    }
+)
 
 
 def _apply_verbosity(record: dict[str, Any], verbose: bool) -> dict[str, Any]:
@@ -107,9 +113,14 @@ def _serialize_hop(hop: Hop, root: Path) -> dict[str, Any]:
     """Serialize a flows.Hop dict for JSON output with path relativization.
 
     Includes best_candidate (relativized) for AMBIGUOUS hops.
+
+    E4: when SEAM_EDGE_PROVENANCE=on, adds 'synthesized_by' (the synthesis channel name
+    when the hop is heuristic, null when statically extracted). synthesized_by is in
+    _HEAVY_FIELDS and therefore stripped in lean mode (verbose=False) by the caller's
+    _apply_verbosity call. 'kind' is always present (it was already emitted before E4).
     """
     raw_candidate: str | None = hop.get("best_candidate")
-    return {
+    record: dict[str, Any] = {
         "from_name": hop["from_name"],
         "to_name": hop["to_name"],
         "kind": hop["kind"],
@@ -117,6 +128,11 @@ def _serialize_hop(hop: Hop, root: Path) -> dict[str, Any]:
         "resolved_by": hop.get("resolved_by"),
         "best_candidate": _relativize(raw_candidate, root) if raw_candidate is not None else None,
     }
+    # E4: surface synthesized_by when edge-provenance is enabled.
+    # null (None) is retained — it is the common "static edge" value and is meaningful.
+    if config.SEAM_EDGE_PROVENANCE == "on":
+        record["synthesized_by"] = hop.get("synthesized_by")
+    return record
 
 
 def _serialize_edge_hop(hop: EdgeHop, root: Path | None = None) -> dict[str, Any]:
@@ -124,19 +140,28 @@ def _serialize_edge_hop(hop: EdgeHop, root: Path | None = None) -> dict[str, Any
 
     Phase 5: includes resolved_by for provenance (null when not available).
     Includes best_candidate (relativized) for AMBIGUOUS hops.
+
+    E4: when SEAM_EDGE_PROVENANCE=on, adds 'synthesized_by' (channel name for
+    heuristic edges, null for static). In _HEAVY_FIELDS → stripped in lean mode.
     """
     raw_candidate = hop.get("best_candidate")
-    return {
+    record: dict[str, Any] = {
         "name": hop["name"],
         "kind": hop["kind"],
         "confidence": hop["confidence"],
         "resolved_by": hop.get("resolved_by"),  # Phase 5: null = unknown/fast-path
         # best_candidate for AMBIGUOUS hops; relativized when root is provided.
         "best_candidate": (
-            _relativize(raw_candidate, root) if (raw_candidate is not None and root is not None)
+            _relativize(raw_candidate, root)
+            if (raw_candidate is not None and root is not None)
             else raw_candidate
         ),
     }
+    # E4: surface synthesized_by when edge-provenance is enabled.
+    # null (None) is retained — it is the common "static edge" value and is meaningful.
+    if config.SEAM_EDGE_PROVENANCE == "on":
+        record["synthesized_by"] = hop.get("synthesized_by")
+    return record
 
 
 def _trace_not_found(source: str, target: str) -> dict[str, Any]:
@@ -457,8 +482,19 @@ def _serialize_tier_entry(
     entries; for EXTRACTED/INFERRED it is always null and carries no signal, so
     omitting it is lossless (null ≡ absent) and reclaims ~25 B/entry. In lean
     mode (_apply_verbosity already stripped it) this is a no-op.
+
+    E4: when SEAM_EDGE_PROVENANCE=on, emits:
+      - 'kind': the edge kind of the final hop (always present, NOT in _HEAVY_FIELDS
+        because it is a core field kept in lean mode — like 'confidence').
+      - 'synthesized_by': synthesis channel name when heuristic, null for static.
+        In _HEAVY_FIELDS → stripped in lean mode (verbose=False), just like resolved_by.
+        IMPORTANT: null is RETAINED in verbose mode (unlike best_candidate which is
+        E1-omitted). For synthesized_by, null = "static edge", which is the common,
+        informative case and must not be dropped.
+    When SEAM_EDGE_PROVENANCE=off, neither 'kind' nor 'synthesized_by' is emitted →
+    byte-identical pre-E4 output.
     """
-    record = _apply_verbosity({
+    base: dict[str, Any] = {
         "name": entry["name"],
         "distance": entry["distance"],
         "confidence": entry["confidence"],
@@ -476,7 +512,16 @@ def _serialize_tier_entry(
             if entry.get("best_candidate") is not None
             else None
         ),
-    }, verbose)
+    }
+
+    # E4: emit edge provenance fields when the knob is on.
+    # 'kind' is always kept (not in _HEAVY_FIELDS); 'synthesized_by' is in
+    # _HEAVY_FIELDS and gets stripped by _apply_verbosity when verbose=False.
+    if config.SEAM_EDGE_PROVENANCE == "on":
+        base["kind"] = entry.get("kind", "")  # defensive: empty string for pre-E4 entries
+        base["synthesized_by"] = entry.get("synthesized_by")  # null = static, retained
+
+    record = _apply_verbosity(base, verbose)
     if omit_null_candidate and record.get("best_candidate") is None:
         record.pop("best_candidate", None)
     return record
@@ -688,9 +733,7 @@ def _apply_byte_ceiling(response: dict[str, Any], budget: int) -> dict[str, Any]
         return result
     except Exception:
         # The handler claims "never raises" in its own right (not only via the leaf).
-        logger.warning(
-            "seam_impact byte ceiling failed; returning untrimmed output", exc_info=True
-        )
+        logger.warning("seam_impact byte ceiling failed; returning untrimmed output", exc_info=True)
         return response
 
 
@@ -885,13 +928,31 @@ def handle_seam_impact(
     if relevance_on and self_ref_mode == "hide":
         response["hidden_self_refs"] = hidden_self_refs
 
-    # E1-FULL: byte ceiling — runs LAST, after count cap + E2/E3 ordering.
+    # E1-FULL: byte ceiling — runs LAST (before steer), after count cap + E2/E3 ordering.
     # When max_bytes > 0, trims entries from the least-valuable end until the
     # serialized output fits the budget. byte_capped is set only when the ceiling
     # actually fired (i.e. at least one entry was dropped). When max_bytes <= 0
     # this is a no-op (byte-identical revert). seam_changes/seam_affected bypass
     # this entirely because they call the analysis layer directly.
-    return _apply_byte_ceiling(response, max_bytes)
+    final_response = _apply_byte_ceiling(response, max_bytes)
+
+    # E4: truncation steer — runs AFTER byte ceiling so it reads the merged truncated
+    # totals (count-cap drops + byte-ceiling drops) and the byte_capped metadata.
+    # Generates ready-to-act prose hints when ≥1 entry was trimmed. ABSENT when
+    # nothing was trimmed (so presence is an unambiguous "there is more" signal).
+    # Gated by SEAM_IMPACT_STEER; "off" = byte-identical pre-E4 (no next_actions key).
+    if config.SEAM_IMPACT_STEER == "on":
+        steer = generate_steer(
+            truncated=final_response.get("truncated", {}),
+            byte_capped=final_response.get("byte_capped"),
+            risk_summary=final_response.get("risk_summary", {}),
+            limit=limit,
+            max_bytes=max_bytes,
+        )
+        if steer:
+            final_response["next_actions"] = steer
+
+    return final_response
 
 
 def handle_seam_trace(
@@ -975,8 +1036,9 @@ def handle_seam_trace(
 
     # Find the shortest path from source to target.
     # Thread root as repo_root for Phase 5 import-promotion (root is the project root).
-    paths = flows_module.trace(conn, clean_source, clean_target,
-                               max_depth=safe_depth, repo_root=root)
+    paths = flows_module.trace(
+        conn, clean_source, clean_target, max_depth=safe_depth, repo_root=root
+    )
     resolved_source, resolved_target = clean_source, clean_target
 
     # Bare->qualified fallback (Tier D11): with Tier B receiver inference, method call
@@ -1016,11 +1078,7 @@ def handle_seam_trace(
     # Include best_candidate (relativized) for AMBIGUOUS hops.
     # Apply _apply_verbosity to each hop so lean mode strips resolved_by/best_candidate.
     serialized_paths = [
-        [
-            _apply_verbosity(_serialize_hop(hop, root), verbose)
-            for hop in path
-        ]
-        for path in paths
+        [_apply_verbosity(_serialize_hop(hop, root), verbose) for hop in path] for path in paths
     ]
 
     return {
@@ -1030,10 +1088,18 @@ def handle_seam_trace(
         "source": resolved_source,
         "target": resolved_target,
         "paths": serialized_paths,
-        "callers_source": [_apply_verbosity(_serialize_edge_hop(h, root), verbose) for h in callers_source],
-        "callees_source": [_apply_verbosity(_serialize_edge_hop(h, root), verbose) for h in callees_source],
-        "callers_target": [_apply_verbosity(_serialize_edge_hop(h, root), verbose) for h in callers_target],
-        "callees_target": [_apply_verbosity(_serialize_edge_hop(h, root), verbose) for h in callees_target],
+        "callers_source": [
+            _apply_verbosity(_serialize_edge_hop(h, root), verbose) for h in callers_source
+        ],
+        "callees_source": [
+            _apply_verbosity(_serialize_edge_hop(h, root), verbose) for h in callees_source
+        ],
+        "callers_target": [
+            _apply_verbosity(_serialize_edge_hop(h, root), verbose) for h in callers_target
+        ],
+        "callees_target": [
+            _apply_verbosity(_serialize_edge_hop(h, root), verbose) for h in callees_target
+        ],
     }
 
 
@@ -1353,25 +1419,28 @@ def handle_seam_context_pack(
     # Relativize file path in target (mirrors handle_seam_context).
     # Apply _apply_verbosity so lean mode strips heavy fields from the target record.
     target = pack["target"]
-    serialized_target = _apply_verbosity({
-        "symbol": target["symbol"],
-        "file": _relativize(target["file"], root),
-        "line": target["line"],
-        "end_line": target["end_line"],
-        "kind": target["kind"],
-        "docstring": target["docstring"],
-        "callers": target["callers"],
-        "callees": target["callees"],
-        "ambiguous": target["ambiguous"],
-        "cluster_id": target["cluster_id"],
-        "cluster_label": target["cluster_label"],
-        "cluster_peers": target["cluster_peers"],
-        "signature": target["signature"],
-        "decorators": target["decorators"],
-        "is_exported": target["is_exported"],
-        "visibility": target["visibility"],
-        "qualified_name": target["qualified_name"],
-    }, verbose)
+    serialized_target = _apply_verbosity(
+        {
+            "symbol": target["symbol"],
+            "file": _relativize(target["file"], root),
+            "line": target["line"],
+            "end_line": target["end_line"],
+            "kind": target["kind"],
+            "docstring": target["docstring"],
+            "callers": target["callers"],
+            "callees": target["callees"],
+            "ambiguous": target["ambiguous"],
+            "cluster_id": target["cluster_id"],
+            "cluster_label": target["cluster_label"],
+            "cluster_peers": target["cluster_peers"],
+            "signature": target["signature"],
+            "decorators": target["decorators"],
+            "is_exported": target["is_exported"],
+            "visibility": target["visibility"],
+            "qualified_name": target["qualified_name"],
+        },
+        verbose,
+    )
 
     # Relativize file paths in enriched neighbors.
     # WHY direct key access (not .get()): NeighborRef is a TypedDict with all
@@ -1379,17 +1448,20 @@ def handle_seam_context_pack(
     # instead of raising a KeyError that makes the bug visible.
     # Apply _apply_verbosity so lean mode strips heavy fields from each neighbor.
     def _serialize_neighbor(nb: NeighborRef) -> dict[str, Any]:
-        return _apply_verbosity({
-            "name": nb["name"],
-            "file": _relativize(nb["file"], root),
-            "line": nb["line"],
-            "kind": nb["kind"],
-            "signature": nb["signature"],
-            "decorators": nb["decorators"],
-            "is_exported": nb["is_exported"],
-            "visibility": nb["visibility"],
-            "qualified_name": nb["qualified_name"],
-        }, verbose)
+        return _apply_verbosity(
+            {
+                "name": nb["name"],
+                "file": _relativize(nb["file"], root),
+                "line": nb["line"],
+                "kind": nb["kind"],
+                "signature": nb["signature"],
+                "decorators": nb["decorators"],
+                "is_exported": nb["is_exported"],
+                "visibility": nb["visibility"],
+                "qualified_name": nb["qualified_name"],
+            },
+            verbose,
+        )
 
     return {
         "target": serialized_target,
@@ -1452,6 +1524,10 @@ def handle_seam_structure(
     # path against `root` (not cwd), so MCP callers and the CLI get root-relative
     # scoping regardless of the server/process working directory.
     return run_build_structure(
-        conn, root, path=path, max_depth=max_depth, max_nodes=max_nodes,
+        conn,
+        root,
+        path=path,
+        max_depth=max_depth,
+        max_nodes=max_nodes,
         include_functions=include_functions,
     )
