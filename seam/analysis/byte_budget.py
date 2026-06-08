@@ -24,29 +24,51 @@ Priority order (highest to lowest — front entries survive, tail entries are dr
   3. intra-tier: existing E2/E3 entry order preserved (front entries survive)
 
 Conservatism contract:
-  - NEVER exceed the budget (hard ceiling).
-  - NEVER raise on any input — wrap the whole body and return (response, {}, 0) on failure
-    (no trimming is safer than a crash; the handler degrades gracefully).
+  - NEVER exceed the budget for the trimmed response body — `running` is a proven UPPER
+    bound on the real serialized size (see the algorithm note), so `running <= budget`
+    guarantees `serialized_size(trimmed) <= budget`. The ONLY case the body can exceed
+    budget is when the budget is smaller than the irreducible envelope (no entries can
+    fit) — then every entry is dropped and the bare envelope is returned.
+  - NEVER raise on any input — the public entry point wraps the whole body and returns
+    (response, {}, 0) on failure (no trimming is safer than a crash; the handler degrades).
   - NEVER mutate the input response dict.
   - Non-direction keys (found, target, risk_summary, truncated, etc.) are ALWAYS copied
     through unchanged — trimming touches only direction-tier entry lists.
   - Budget <= 0 means unlimited — return input unchanged immediately.
 
-Unit = characters in the compact JSON serialization (json.dumps with separators=(",", ":")).
-This is a deterministic, dependency-free token proxy (~4 chars/token). No tokenizer is used
-— a real tokenizer would be an external model-specific dep violating zero-external-services.
+Unit = characters of json.dumps(obj, ensure_ascii=False) — the SAME serialization the
+CLI uses to emit results (seam/cli/output.py emit_json). Measuring with the emit
+serializer means the budget bounds the actual rendered bytes, not a more-compact proxy
+that would let the real output overrun the ceiling. This is a deterministic,
+dependency-free token proxy (~4 chars/token); no tokenizer is used (a real tokenizer
+would be an external model-specific dep violating zero-external-services).
 
-Note on algorithm (stop-at-first-overflow prefix):
-  Entries are walked in keep-priority order. Each entry is placed tentatively and the
-  FULL response is re-serialized. If the result fits the budget the entry is kept;
-  if not, ALL remaining lower-priority entries are also dropped (stop-at-first-overflow).
-  This guarantees a clean prefix: every entry before position k is kept, every entry at or
-  after k is dropped. With n <= ~150 entries per response (25 per tier × 3 tiers × 2
-  directions), re-measuring per placement is negligible in practice.
+Algorithm note (O(n) running-total prefix):
+  Entries are walked in keep-priority order. Each entry is charged its own serialized
+  size PLUS one separator char (the comma that joins it to its siblings). The running
+  total starts from the envelope size (the response with all tier lists emptied) and
+  accumulates per kept entry. The +1-per-entry charge is a deliberate OVER-estimate:
+  the first entry in a tier has no preceding comma, so `running` is always >= the true
+  serialized size — which is exactly what makes `running <= budget` a hard guarantee.
+  The first entry that would overflow stops all further placement (stop-at-first-overflow
+  prefix): every entry before position k is kept, every entry at or after k is dropped.
+  This is O(n) (no full re-serialization per placement), so it stays cheap even on the
+  documented limit=0 / unbounded blast-radius path.
 """
 
 import json
 from typing import Any
+
+
+def serialized_size(obj: Any) -> int:
+    """Return the character count of obj under the CLI emit serialization.
+
+    Matches seam/cli/output.py emit_json (json.dumps with default separators and
+    ensure_ascii=False) so the measured budget reflects the bytes actually rendered.
+    Exported as the single source of truth — the handler and tests measure with this
+    same function so budget arithmetic cannot drift between layers.
+    """
+    return len(json.dumps(obj, ensure_ascii=False))
 
 
 def fit_to_byte_budget(
@@ -87,12 +109,9 @@ def fit_to_byte_budget(
         return _fit_to_byte_budget_impl(response, budget, direction_order, tier_order)
     except Exception:
         # Safety net: return input unchanged on any failure (no trimming > crash).
+        # The handler detects this degradation (it knew the response did NOT fit yet
+        # nothing was dropped) and logs it, so the silent path is observable upstream.
         return response, {}, 0
-
-
-def _serialized_size(obj: Any) -> int:
-    """Return the compact JSON character count of obj."""
-    return len(json.dumps(obj, separators=(",", ":")))
 
 
 def _collect_entry_walk(
@@ -103,12 +122,12 @@ def _collect_entry_walk(
     """Build the priority-ordered flat walk of (direction, tier, entry) triples.
 
     Only includes entries from directions/tiers that are BOTH present in the response
-    AND have a list value (malformed non-list tier values are silently skipped here;
-    they are copied through in the envelope).
+    AND have a list value (malformed non-list tier values are skipped here; they are
+    copied through in the envelope, never trimmed).
 
-    The walk order is: for direction in direction_order, for tier in tier_order,
-    for entry in that tier's list. This is the keep-priority order — earlier triples
-    are more valuable and survive trimming.
+    The walk order is the keep-priority order: for direction in direction_order, for
+    tier in tier_order, for entry in that tier's list — earlier triples are more
+    valuable and survive trimming.
     """
     walk: list[tuple[str, str, Any]] = []
     for direction in direction_order:
@@ -127,27 +146,20 @@ def _collect_entry_walk(
 def _build_envelope(
     response: dict[str, Any],
     direction_order: tuple[str, ...],
-    tier_order: tuple[str, ...],
 ) -> dict[str, Any]:
     """Build a response copy with all direction-tier lists EMPTIED.
 
-    Non-direction keys and direction groups that are present in the original are
-    preserved in structure; only the entry lists are set to []. This gives the
-    'overhead' size that any kept entry must fit on top of.
-
-    Malformed tier values (non-list) are copied through unchanged (they add to
-    overhead but cannot be trimmed — safety/conservatism).
+    Non-direction keys and direction groups present in the original are preserved in
+    structure; only the entry lists are set to []. This gives the 'overhead' size that
+    any kept entry must fit on top of. Malformed tier values (non-list) are copied
+    through unchanged (they add to overhead but cannot be trimmed — conservatism).
     """
     envelope: dict[str, Any] = {}
     for key, value in response.items():
         if key in direction_order and isinstance(value, dict):
-            # Empty all list-valued tier slots; copy non-list slots unchanged.
             dir_copy: dict[str, Any] = {}
             for tier_key, tier_val in value.items():
-                if isinstance(tier_val, list):
-                    dir_copy[tier_key] = []
-                else:
-                    dir_copy[tier_key] = tier_val
+                dir_copy[tier_key] = [] if isinstance(tier_val, list) else tier_val
             envelope[key] = dir_copy
         else:
             envelope[key] = value
@@ -160,89 +172,46 @@ def _fit_to_byte_budget_impl(
     direction_order: tuple[str, ...],
     tier_order: tuple[str, ...],
 ) -> tuple[dict[str, Any], dict[str, dict[str, int]], int]:
-    """Inner implementation — only called when budget > 0. May not raise (caller wraps it)."""
-    # Check if the full response already fits — fast path.
-    if _serialized_size(response) <= budget:
+    """Inner implementation — only called when budget > 0. Caller wraps for never-raises."""
+    # Fast path: the full response already fits.
+    if serialized_size(response) <= budget:
         return response, {}, 0
 
-    # Build the envelope (response with all tier lists emptied).
-    working = _build_envelope(response, direction_order, tier_order)
-
-    # If even the envelope doesn't fit, all entries must be dropped.
-    if _serialized_size(working) > budget:
-        # Count all original entries as dropped.
-        byte_dropped: dict[str, dict[str, int]] = {}
-        total = 0
-        for direction in direction_order:
-            dir_group = response.get(direction)
-            if not isinstance(dir_group, dict):
-                continue
-            for tier in tier_order:
-                tier_val = dir_group.get(tier)
-                if isinstance(tier_val, list) and tier_val:
-                    count = len(tier_val)
-                    byte_dropped.setdefault(direction, {})[tier] = count
-                    total += count
-        return working, byte_dropped, total
-
-    # Walk entries in keep-priority order; greedily place each one.
     walk = _collect_entry_walk(response, direction_order, tier_order)
+    # Running total starts at the envelope size (overhead with all tier lists empty).
+    running = serialized_size(_build_envelope(response, direction_order))
 
-    # Track which entries we KEEP per (direction, tier).
     kept: dict[str, dict[str, list[Any]]] = {}
-    # Track counts of dropped entries per (direction, tier).
-    dropped_counts: dict[str, dict[str, int]] = {}
-
-    overflow = False  # once True, all remaining entries are dropped
+    dropped: dict[str, dict[str, int]] = {}
+    overflow = False  # once True, all remaining (lower-priority) entries are dropped
 
     for direction, tier, entry in walk:
-        if overflow:
-            # Drop all remaining lower-priority entries.
-            dropped_counts.setdefault(direction, {})[tier] = (
-                dropped_counts.get(direction, {}).get(tier, 0) + 1
-            )
-            continue
-
-        # Tentatively add this entry and re-measure.
-        kept.setdefault(direction, {}).setdefault(tier, []).append(entry)
-        _apply_kept_to_working(working, kept)
-        if _serialized_size(working) <= budget:
-            # Fits — keep it.
-            pass
-        else:
-            # Doesn't fit — remove it and stop placing any more entries.
-            kept[direction][tier].pop()
-            _apply_kept_to_working(working, kept)
+        if not overflow:
+            # +1 charges the comma that joins this entry to its siblings. The first
+            # entry in a tier has no preceding comma, so this OVER-estimates — which is
+            # what makes `running <= budget` a hard upper bound on the real size.
+            cost = serialized_size(entry) + 1
+            if running + cost <= budget:
+                kept.setdefault(direction, {}).setdefault(tier, []).append(entry)
+                running += cost
+                continue
             overflow = True
-            dropped_counts.setdefault(direction, {})[tier] = (
-                dropped_counts.get(direction, {}).get(tier, 0) + 1
-            )
+        dir_dropped = dropped.setdefault(direction, {})
+        dir_dropped[tier] = dir_dropped.get(tier, 0) + 1
 
-    # Also count entries that were never reached because overflow=True was set earlier,
-    # but which weren't in the walk yet. Actually the loop above handles all entries
-    # (they all appear in walk), so we just need to finalize dropped from the totals.
-    # Compute byte_dropped (only non-zero direction/tier counts).
-    byte_dropped_final: dict[str, dict[str, int]] = {}
-    for direction, tier_map in dropped_counts.items():
-        filtered = {tier: cnt for tier, cnt in tier_map.items() if cnt > 0}
-        if filtered:
-            byte_dropped_final[direction] = filtered
-
-    total_omitted = sum(
-        cnt for tier_map in byte_dropped_final.values() for cnt in tier_map.values()
-    )
-
-    return working, byte_dropped_final, total_omitted
-
-
-def _apply_kept_to_working(
-    working: dict[str, Any],
-    kept: dict[str, dict[str, list[Any]]],
-) -> None:
-    """Apply the current kept entry lists into the working response dict (in-place).
-
-    Only updates direction groups + tier lists that are represented in kept.
-    """
+    # Build the trimmed response: a fresh empty-list envelope with the kept lists filled.
+    # kept holds the SAME entry-dict references as the input (never copied, never mutated).
+    trimmed = _build_envelope(response, direction_order)
     for direction, tier_map in kept.items():
         for tier, entries in tier_map.items():
-            working[direction][tier] = entries
+            trimmed[direction][tier] = entries
+
+    # byte_dropped: drop zero counts and empty direction dicts.
+    byte_dropped: dict[str, dict[str, int]] = {}
+    for direction, count_map in dropped.items():
+        filtered = {tier: cnt for tier, cnt in count_map.items() if cnt > 0}
+        if filtered:
+            byte_dropped[direction] = filtered
+    total_omitted = sum(cnt for count_map in byte_dropped.values() for cnt in count_map.values())
+
+    return trimmed, byte_dropped, total_omitted

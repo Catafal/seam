@@ -24,9 +24,8 @@ NOTE ON BUDGET CALCULATIONS:
 """
 
 import copy
-import json
 
-from seam.analysis.byte_budget import fit_to_byte_budget
+from seam.analysis.byte_budget import fit_to_byte_budget, serialized_size
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -37,8 +36,13 @@ def _mk_entry(name: str) -> dict:
 
 
 def _serialized_size(obj: object) -> int:
-    """Measure the compact JSON size of an object."""
-    return len(json.dumps(obj, separators=(",", ":")))
+    """Measure object size via the leaf's own serializer (single source of truth).
+
+    Using serialized_size (the same json.dumps(..., ensure_ascii=False) the leaf and the
+    CLI emit_json use) keeps every budget computed below consistent with what the trimmer
+    measures internally — so boundary tests can't pass/fail on a separator mismatch.
+    """
+    return serialized_size(obj)
 
 
 def _mk_response(

@@ -845,7 +845,20 @@ def impact_cmd(
     hidden_tests = result.get("hidden_tests", 0)
 
     if total == 0:
-        if hidden_tests:
+        # CRITICAL false-safe guard: an empty entry list can mean "trimmed to nothing"
+        # OR "no dependents". The byte ceiling can drop EVERY entry when --max-bytes is
+        # smaller than the envelope, so check byte_capped FIRST — printing "No dependents
+        # found" here when entries were merely trimmed would tell an agent the symbol is
+        # safe to delete (the same dangerous false-safe the hidden_tests branch guards).
+        byte_capped_empty = result.get("byte_capped")
+        if byte_capped_empty and byte_capped_empty.get("omitted", 0) > 0:
+            console.print(
+                f"[yellow]All {byte_capped_empty['omitted']} dependent(s) for "
+                f"[bold]{symbol}[/bold] were trimmed to fit --max-bytes "
+                f"{byte_capped_empty.get('limit')}[/yellow] — this is NOT 'no dependents'. "
+                "Raise --max-bytes or use --lean to see them."
+            )
+        elif hidden_tests:
             # Critical distinction: this symbol is NOT dead code — it has test
             # dependents hidden by the production-only default. Saying "no dependents"
             # here would be a dangerous false-safe (an agent might delete/rewrite it).

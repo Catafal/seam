@@ -22,7 +22,7 @@ from seam.analysis import flows as flows_module
 from seam.analysis import impact as impact_module
 from seam.analysis.affected import AffectedResult
 from seam.analysis.affected import affected as run_affected
-from seam.analysis.byte_budget import fit_to_byte_budget
+from seam.analysis.byte_budget import fit_to_byte_budget, serialized_size
 from seam.analysis.changes import (
     DEFAULT_BASE_REF,
     VALID_SCOPES,
@@ -594,19 +594,48 @@ def _shape_tier_group(
     return capped_tiers, dir_truncated, dir_hidden_self_refs
 
 
+# Worst-case size (chars) of the trailing `truncated` structure the byte pass can add
+# on top of what the count cap already wrote: 6 (direction × tier) slots in the CLI emit
+# serialization. Reserved (with the exact byte_capped size) so the FINAL response —
+# entries PLUS the trailing byte_capped/truncated metadata — still fits the budget,
+# making the ceiling a hard guarantee rather than entries-only.
+_BYTE_CEILING_TRUNCATED_RESERVE = 200
+
+
+def _count_direction_entries(response: dict[str, Any]) -> int:
+    """Total entries across all direction-tier lists — the upper bound on `omitted`."""
+    total = 0
+    for direction in ("upstream", "downstream"):
+        dir_group = response.get(direction)
+        if isinstance(dir_group, dict):
+            for tier_val in dir_group.values():
+                if isinstance(tier_val, list):
+                    total += len(tier_val)
+    return total
+
+
 def _apply_byte_ceiling(response: dict[str, Any], budget: int) -> dict[str, Any]:
     """Apply the E1-FULL byte ceiling to a fully-assembled seam_impact response.
 
-    Runs AFTER the per-tier count cap and E2/E3 relevance ordering. When budget > 0,
-    calls fit_to_byte_budget and merges any byte-dropped counts into response["truncated"]
-    additively (so risk_summary - shown == truncated holds end-to-end), then sets
-    response["byte_capped"] when the ceiling actually fired.
+    Runs AFTER the per-tier count cap and E2/E3 relevance ordering. When budget > 0 and
+    the response does not already fit, trims entries (via fit_to_byte_budget) from the
+    least-valuable end, merges the byte-dropped counts into response["truncated"]
+    additively (so risk_summary - shown == truncated holds end-to-end), and sets
+    response["byte_capped"] = {"limit", "omitted"}.
+
+    Hard-ceiling guarantee: the trim runs against `budget - reserve`, where `reserve`
+    is the exact byte_capped size plus a worst-case allowance for the `truncated` growth
+    this function appends afterwards — so the FINAL serialized response (entries + that
+    trailing metadata) stays within `budget`. The only exception is a `budget` smaller
+    than the irreducible envelope, where no entries fit at all.
 
     When budget <= 0: returns the response unchanged (byte-identical revert).
-    When the ceiling did NOT fire (everything fits): response is returned unchanged,
-    byte_capped is NOT added.
+    When the response already fits: returns it unchanged, byte_capped NOT added (so a
+    generous budget is a true no-op).
 
-    Never raises — fit_to_byte_budget degrades gracefully on any failure.
+    Never raises — the whole body is guarded; on any failure the untrimmed response is
+    returned. If the trim degrades to a no-op despite the response NOT fitting (the leaf's
+    never-raises safety net fired), that silent path is logged so it is observable.
 
     Args:
         response: Fully-assembled seam_impact response dict (non-mutating).
@@ -618,29 +647,51 @@ def _apply_byte_ceiling(response: dict[str, Any], budget: int) -> dict[str, Any]
     if budget <= 0:
         return response
 
-    trimmed, byte_dropped, total_omitted = fit_to_byte_budget(response, budget=budget)
+    try:
+        # Already within budget → no trim, no metadata (generous-budget no-op path).
+        if serialized_size(response) <= budget:
+            return response
 
-    if total_omitted == 0:
-        # Nothing was dropped — ceiling did not fire; return original response unchanged.
+        # Reserve room for the trailing metadata the merge appends, so the final
+        # response still fits. byte_capped is sized exactly (omitted <= entry count);
+        # truncated growth uses a worst-case 6-slot allowance.
+        total_entries = _count_direction_entries(response)
+        reserve = serialized_size({"byte_capped": {"limit": budget, "omitted": total_entries}})
+        reserve += _BYTE_CEILING_TRUNCATED_RESERVE
+        effective = max(budget - reserve, 1)
+
+        trimmed, byte_dropped, total_omitted = fit_to_byte_budget(response, budget=effective)
+
+        if total_omitted == 0:
+            # The response did NOT fit (checked above) yet nothing was trimmed — the
+            # leaf's never-raises safety net fired. Surface it and return untrimmed
+            # rather than attach a misleading byte_capped that claims a trim happened.
+            logger.warning(
+                "seam_impact byte ceiling could not trim output (budget=%d); returning untrimmed",
+                budget,
+            )
+            return response
+
+        # Merge byte_dropped into truncated ADDITIVELY so the invariant holds:
+        #   risk_summary[dir][tier] - shown[dir][tier] == truncated[dir][tier]
+        existing_truncated: dict[str, dict[str, int]] = dict(trimmed.get("truncated", {}))
+        for direction, tier_map in byte_dropped.items():
+            dir_trunc = dict(existing_truncated.get(direction, {}))
+            for tier, count in tier_map.items():
+                dir_trunc[tier] = dir_trunc.get(tier, 0) + count
+            existing_truncated[direction] = dir_trunc
+
+        # trimmed is a new dict from fit_to_byte_budget (never mutates input).
+        result = dict(trimmed)
+        result["truncated"] = existing_truncated
+        result["byte_capped"] = {"limit": budget, "omitted": total_omitted}
+        return result
+    except Exception:
+        # The handler claims "never raises" in its own right (not only via the leaf).
+        logger.warning(
+            "seam_impact byte ceiling failed; returning untrimmed output", exc_info=True
+        )
         return response
-
-    # Merge byte_dropped into truncated ADDITIVELY.
-    # truncated is {direction: {tier: omitted}} — we add the byte-pass drops to any
-    # count-cap omissions already there, so the invariant holds:
-    #   risk_summary[dir][tier] - shown[dir][tier] == truncated[dir][tier]
-    existing_truncated: dict[str, dict[str, int]] = dict(trimmed.get("truncated", {}))
-    for direction, tier_map in byte_dropped.items():
-        dir_trunc = dict(existing_truncated.get(direction, {}))
-        for tier, count in tier_map.items():
-            dir_trunc[tier] = dir_trunc.get(tier, 0) + count
-        existing_truncated[direction] = dir_trunc
-
-    # Build the final response with merged truncated and byte_capped.
-    # trimmed is a new dict from fit_to_byte_budget (never mutates input).
-    result = dict(trimmed)
-    result["truncated"] = existing_truncated
-    result["byte_capped"] = {"limit": budget, "omitted": total_omitted}
-    return result
 
 
 def handle_seam_impact(

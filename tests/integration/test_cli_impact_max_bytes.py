@@ -399,3 +399,64 @@ def test_mcp_max_bytes_zero_identical_to_default(tmp_path: Path) -> None:
         result_zero, separators=(",", ":"),
     ), "max_bytes=0 via MCP handler must be byte-identical to default"
     assert "byte_capped" not in result_zero
+
+
+# ── Regression: the ceiling is a HARD ceiling, metadata included (review STOP-3) ──
+
+
+def _emit_size(obj: object) -> int:
+    """Size under the CLI emit serializer (json.dumps default separators, ensure_ascii=False).
+
+    This is the serialization emit_json actually renders — the byte ceiling must hold
+    against THIS, not a more-compact proxy, or the real output overruns the budget.
+    """
+    return len(json.dumps(obj, ensure_ascii=False))
+
+
+def test_final_response_including_metadata_within_budget(tmp_path: Path) -> None:
+    """HARD ceiling: the FULL response — entries PLUS the appended byte_capped/truncated
+    metadata — must fit the budget when measured in the emit serialization. Guards the
+    regression where byte_capped was added AFTER the trim and pushed the output over budget."""
+    db_path, root = _make_db(tmp_path, n_direct=20)
+    budget = _get_tight_budget(db_path, root)  # keeps some entries, fires the ceiling
+
+    conn = connect(db_path)
+    try:
+        result = handle_seam_impact(conn, "hub", root, limit=0, max_bytes=budget)
+    finally:
+        conn.close()
+
+    assert "byte_capped" in result, "ceiling should have fired on this tight budget"
+    # The response body (what emit_json renders as `data`) must be <= the stated budget,
+    # WITH the byte_capped + truncated metadata already present.
+    assert _emit_size(result) <= budget, (
+        f"final response {_emit_size(result)} chars exceeds budget {budget} "
+        f"(metadata overshoot regression); keys={list(result.keys())}"
+    )
+
+
+def test_rich_all_trimmed_not_reported_as_no_dependents(tmp_path: Path) -> None:
+    """FALSE-SAFE guard (review STOP-2): when --max-bytes trims EVERY entry, Rich mode must
+    NOT print 'No dependents found' (which reads as 'safe to delete') — it must say the
+    dependents were trimmed."""
+    db_path, root = _make_db(tmp_path, n_direct=10)
+    # A budget far below the envelope forces every entry to drop (total == 0 in Rich).
+    result = runner.invoke(
+        app,
+        [
+            "impact", "hub",
+            "--limit", "0",
+            "--max-bytes", "200",
+            "--db-dir", str(root),
+            "--path", str(root),
+        ],
+    )
+
+    assert result.exit_code == 0, f"exit_code={result.exit_code}\n{result.output}"
+    out = result.output.lower()
+    assert "no dependents found" not in out, (
+        f"all-trimmed must NOT read as 'no dependents found' (dangerous false-safe);\n{result.output}"
+    )
+    assert "trimmed" in out and ("max-bytes" in out or "byte" in out), (
+        f"all-trimmed Rich output must say the dependents were trimmed;\n{result.output}"
+    )
