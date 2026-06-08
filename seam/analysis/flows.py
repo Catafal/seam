@@ -517,7 +517,8 @@ def callers(
     Returns:
         List of EdgeHop dicts, each with:
             name        — the caller/importer symbol name
-            kind        — 'call' | 'import'
+            kind        — full closed vocabulary: call | import | extends | implements |
+                          instantiates | holds | reads | writes | uses (E4 corrected)
             confidence  — EXTRACTED | INFERRED | AMBIGUOUS
             resolved_by — Phase 5 provenance string (or None for fast-path)
 
@@ -622,7 +623,8 @@ def callees(
     Returns:
         List of EdgeHop dicts, each with:
             name        — the callee/importee symbol name
-            kind        — 'call' | 'import'
+            kind        — full closed vocabulary: call | import | extends | implements |
+                          instantiates | holds | reads | writes | uses (E4 corrected)
             confidence  — EXTRACTED | INFERRED | AMBIGUOUS
             resolved_by — Phase 5 provenance string (or None for fast-path)
 

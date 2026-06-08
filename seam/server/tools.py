@@ -1075,15 +1075,19 @@ def handle_seam_trace(
             callees_target (list)   — one-hop callees of target (EdgeHop dicts).
 
         Each Hop dict:
-            from_name   (str) — source of this edge
-            to_name     (str) — target of this edge
-            kind        (str) — 'call' | 'import'
-            confidence  (str) — EXTRACTED | INFERRED | AMBIGUOUS
+            from_name      (str)      — source of this edge
+            to_name        (str)      — target of this edge
+            kind           (str)      — full closed vocabulary: call | import | extends |
+                                        implements | instantiates | holds | reads | writes | uses
+            confidence     (str)      — EXTRACTED | INFERRED | AMBIGUOUS
+            synthesized_by (str|null) — E4: channel name for heuristic edges, null for static
+                                        (present when SEAM_EDGE_PROVENANCE="on"; stripped in lean)
 
         Each EdgeHop dict:
-            name        (str) — neighboring symbol
-            kind        (str) — 'call' | 'import'
-            confidence  (str) — EXTRACTED | INFERRED | AMBIGUOUS
+            name           (str)      — neighboring symbol
+            kind           (str)      — full closed vocabulary (same as Hop.kind above)
+            confidence     (str)      — EXTRACTED | INFERRED | AMBIGUOUS
+            synthesized_by (str|null) — E4: same semantics as Hop.synthesized_by above
 
     Error shapes:
         {"error": "INVALID_INPUT", "message": "..."} — blank source or target.
