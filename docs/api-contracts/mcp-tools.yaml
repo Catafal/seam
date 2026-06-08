@@ -470,6 +470,20 @@ tools:
           (the pre-P1 behavior). To get the impacted TEST files specifically, use
           seam_affected instead. NOTE: the analysis-layer impact() default stays True;
           only the seam_impact tool/handler/CLI default flipped to false.
+      max_bytes:
+        type: integer
+        required: false
+        default: 0
+        description: |
+          E1-FULL. Opt-in hard byte ceiling for the serialized response body (characters
+          of compact JSON). Default: SEAM_IMPACT_MAX_BYTES (0 = unlimited = byte-identical
+          to pre-feature). When > 0, entries are trimmed from the LEAST-VALUABLE end
+          (downstream before upstream; MAY_NEED_TESTING before WILL_BREAK; intra-tier
+          tail before front) after the per-tier count cap and E2/E3 relevance ordering,
+          until the serialized response fits the budget. Dropped counts are merged into
+          `truncated` additively; `byte_capped` is added to the response when the ceiling
+          fires. risk_summary always reflects the full pre-cap total. seam_changes and
+          seam_affected are NEVER affected by this parameter.
     output:
       type: object
       description: |
@@ -523,6 +537,19 @@ tools:
                               all tiers. Distinguishes "no dependents" (hidden_tests==0)
                               from "all dependents were test files, all hidden" (hidden_tests>0).
                               The latter is NOT safe to treat as dead code — tests would break.
+
+        Present only when max_bytes > 0 AND the ceiling trimmed >=1 entry:
+          byte_capped: {limit: int, omitted: int}
+                       limit   — the budget that was active (echoed from max_bytes param).
+                       omitted — total entries dropped across all directions and tiers.
+                       ABSENT when max_bytes=0 (unlimited) or everything fit within budget.
+                       Dropped counts are also merged INTO `truncated` additively so the
+                       invariant risk_summary[dir][tier] - shown == truncated[dir][tier]
+                       holds end-to-end. Read `byte_capped.omitted` to isolate byte-drop
+                       counts from count-cap drops (both accumulate in truncated).
+                       IMPORTANT: an empty entry list + non-empty risk_summary means
+                       "trimmed to nothing by byte ceiling", NOT "no dependents found".
+                       Check byte_capped before concluding a symbol is safe to change.
 
         Unknown symbol: found=false, empty tier groups (not an error).
       empty_ok: true

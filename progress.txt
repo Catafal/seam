@@ -2,6 +2,48 @@
 # Format: [x] = done, [>] = in progress, [ ] = not started
 # Update this EVERY session. It is the first thing the agent reads.
 #
+# 2026-06-08: E1-FULL — opt-in byte ceiling for seam_impact (SEAM_IMPACT_MAX_BYTES)
+#   (branch feat/e1-full-impact-byte-ceiling). 3 build slices + review/taste/QA remediation.
+#   PROBLEM: the E1 null-candidate omission brought the benchmark window to 5/5, but a hub
+#   symbol or large codebase can still overflow an agent's context window. The per-tier COUNT
+#   cap (SEAM_IMPACT_MAX_RESULTS) is a poor proxy: entry byte size varies widely. Agents
+#   budget in tokens (chars), not entry counts.
+#   FIX (opt-in hard character budget on the response body):
+#     New SEAM_IMPACT_MAX_BYTES config knob (int, default 0 = unlimited = byte-identical
+#     pre-feature). max_bytes param on seam_impact MCP tool + --max-bytes on CLI.
+#     Runs AFTER the per-tier count cap and E2/E3 relevance ordering.
+#     Trims entries from the least-valuable end (downstream-before-upstream,
+#     MAY_NEED_TESTING-before-WILL_BREAK, intra-tier tail-before-front).
+#     O(n) running-total prefix walk (no full re-serialization per placement).
+#     Hard-ceiling guarantee: +1 comma over-estimate → running <= budget is a proven
+#     upper bound; reserve in _apply_byte_ceiling accounts for trailing byte_capped +
+#     truncated metadata so the FINAL response still fits.
+#   NEW OUTPUT KEY: byte_capped = {"limit": int, "omitted": int} — present ONLY when the
+#     ceiling fired (absent when max_bytes=0 or everything fit).
+#     Dropped counts merged INTO truncated ADDITIVELY so the invariant
+#     risk_summary[dir][tier] - shown == truncated[dir][tier] holds end-to-end.
+#     risk_summary stays the honest full pre-cap total.
+#   QA REMEDIATION (commits f0533b4 + 8007538):
+#     Hard-ceiling fix: original O(n²) full-re-serialization-per-placement replaced
+#     with the O(n) running-total prefix walk; reserve added so FINAL response fits budget.
+#     Rich false-safe fix: total==0 branch now checks byte_capped FIRST and prints
+#     "trimmed to fit --max-bytes" instead of "no dependents found" (dangerous false-safe
+#     that would let an agent conclude a symbol is safe to delete when entries were merely
+#     trimmed to nothing by the budget).
+#     Footer misattribution fix: quiet/Rich --limit footer now subtracts byte_omitted so
+#     byte-ceiling drops are not misattributed to --limit (a "use --limit 0" suggestion
+#     is nonsense when limit=0 was already passed).
+#   NEW LEAF: seam/analysis/byte_budget.py (stdlib-only: json, typing) —
+#     fit_to_byte_budget(response, *, budget, ...) + serialized_size(obj).
+#     Pure, no DB, no config, never raises; mirrors the leaf discipline of relevance.py.
+#   KNOB: SEAM_IMPACT_MAX_BYTES (int, default 0; opt-in; follows the =off-revert
+#     discipline of the E series). MCP tool count stays 12. No schema change, no re-index.
+#   Tests: tests/unit/test_byte_budget.py + tests/integration/test_impact_byte_ceiling.py.
+#   GATE: ruff + mypy clean, 2890 tests pass.
+# Next: backlog open items — E4 actionable truncation steer (S); surface edge kind /
+#   synthesized_by in impact/trace output (S); P2 staleness banner (M);
+#   A4 framework resolvers (L). OR pivot to v0.1.0 PyPI release (seam-mcp).
+#
 # 2026-06-07: E3 — neighbor relevance ranking for seam_context_pack (RWR / personalized PageRank)
 #   (branch feat/e3-neighbor-ranking). The most under-delivered CodeGraph-gap backlog item.
 #   PROBLEM: context_pack capped callers/callees to SEAM_PACK_NEIGHBOR_LIMIT (10) in min_id order
