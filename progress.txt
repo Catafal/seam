@@ -2,6 +2,50 @@
 # Format: [x] = done, [>] = in progress, [ ] = not started
 # Update this EVERY session. It is the first thing the agent reads.
 #
+# 2026-06-08: P2 — index staleness banner + tools.py split (#103)
+#   (branch feat/p2-staleness-banner-tools-split, 3 commits: 7bbbd0f staleness,
+#   c06cc3e split, bac23d4 review/taste remediation).
+#   PROBLEM: agents querying a stale index (file edited since seam init) received
+#     incorrect blast-radius and change-risk answers with no in-band signal. seam status
+#     had a freshness field but it wasn't surfaced on every graph query.
+#   FIX 1 (staleness banner): after the 5 graph-traversal handlers (seam_impact,
+#     seam_changes, seam_affected, seam_context, seam_trace) produce their core result,
+#     _maybe_attach_staleness() appends index_status = {stale: true, reason, hint} when
+#     the index is stale. ABSENT when fresh — presence = stale signal. Byte-identical
+#     when fresh or when SEAM_STALENESS_CHECK=off.
+#   FIX 2 (watcher-aware staleness): live watcher → file-drift NOT reported stale
+#     (watcher self-heals). But a watched index WITH synthesized edges IS stale (watcher
+#     never recomputes synth edges or clusters). `seam status` freshness now delegates to
+#     staleness.py with respect_knob=False — always computed, independent of the MCP
+#     banner knob.
+#   FIX 3 (tools.py split): tools.py was 1671 lines (over 1000-line limit). Sliced into:
+#     handler_common.py (323 lines) — shared helpers + _maybe_attach_staleness
+#     impact_handler.py (615 lines) — all impact shaping logic
+#     trace_handler.py  (184 lines) — seam_trace logic
+#     tools.py          (697 lines) — thin facade re-exporting all handlers unchanged
+#     All files < 1000 lines; mcp.py and all imports byte-identical.
+#   NEW LEAF: seam/analysis/staleness.py (stdlib-only: logging, os, sqlite3, time, pathlib)
+#     check_staleness(conn, *, root, watcher_alive, scan_cap, respect_knob) → StalenessVerdict
+#     Bounded-scan (SEAM_STALENESS_SCAN_CAP newest files by indexed_at DESC) for mtime drift.
+#     Per-process TTL cache: ONLY stale verdicts cached (fresh never cached; safe asymmetry).
+#     Never raises; conservative stale=False on any IO/DB error.
+#   NEW HELPER: seam/server/handler_common.py::_maybe_attach_staleness (last step in 5 handlers)
+#   3 new config knobs: SEAM_STALENESS_CHECK (on/off, default on), SEAM_STALENESS_SCAN_CAP
+#     (int, default 200), SEAM_STALENESS_TTL_SECONDS (int, default 5).
+#   REVIEW/TASTE STOP FIX (bac23d4): seam status freshness decoupled from SEAM_STALENESS_CHECK
+#     via respect_knob=False — the knob gates the MCP BANNER only, not the CLI freshness field.
+#   QA VERDICT: seam_changes/seam_affected risk verdicts confirmed byte-stable (regression
+#     tests pass; analysis layer called directly below the handler). QA-OBS-001 (pure
+#     mtime-only change triggers banner but seam sync does not clear it) documented as a
+#     Known Gotcha — pre-existing limitation, harmless (index is correct; only banner is off).
+#   DOCS: CLAUDE.md (P2 as Current Phase, E4 → Prior phase; 3 new config knobs; package layout
+#     with staleness.py + 4 new server modules; MCP Tools section updated for 5 tools; 5 new
+#     Known Gotchas + superseded seam sync freshness gotcha corrected),
+#     docs/api-contracts/mcp-tools.yaml (index_status field on 5 tools + header note),
+#     progress.txt (this entry).
+#   GATE: ruff + mypy clean, 3055 tests pass.
+#   NEXT: push/PR/merge feat/p2-staleness-banner-tools-split → main, then v0.1.0 PyPI release.
+#
 # 2026-06-08: E4 — edge provenance on seam_impact entries + seam_trace hops, and
 #   actionable truncation steer (branch feat/e4-edge-provenance-steer).
 #   PROBLEM 1: seam_impact entries were edge-kind-blind — a WILL_BREAK dependent could
