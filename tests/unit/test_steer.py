@@ -348,3 +348,93 @@ def test_returns_list_of_strings() -> None:
     assert isinstance(hints, list)
     for hint in hints:
         assert isinstance(hint, str), f"Non-string hint: {hint!r}"
+
+
+# ── E4 remediation: both-caps cross-tier attribution + suggested-limit clamp ────
+
+
+def test_both_caps_byte_drops_attributed_to_least_valuable_tier_not_will_break() -> None:
+    """Byte-ceiling drops must NOT be misattributed to a higher tier's count-cap hint.
+
+    Regression for the /backend-taste STOP finding: the byte ceiling trims from the
+    least-valuable end (downstream + MAY_NEED_TESTING first), so when it omits entries
+    in a LOW-priority tier, the steer must attribute those to the byte ceiling — NOT
+    tell the agent to "Raise limit" for that tier (raising limit cannot reveal a
+    byte-dropped entry; the agent would re-query, see the same truncation, and may
+    wrongly conclude the dependent is phantom).
+
+    Scenario: upstream WILL_BREAK has 3 genuine count-cap drops (risk 8, limit 5);
+    downstream MAY_NEED_TESTING has 4 drops that are ALL byte-ceiling drops (omitted=4).
+    """
+    hints = generate_steer(
+        truncated={
+            "upstream": {"WILL_BREAK": 3},
+            "downstream": {"MAY_NEED_TESTING": 4},
+        },
+        byte_capped={"limit": 2000, "omitted": 4},
+        risk_summary={
+            "upstream": {"WILL_BREAK": 8},
+            "downstream": {"MAY_NEED_TESTING": 4},
+        },
+        limit=5,
+        max_bytes=2000,
+    )
+    joined = " ".join(hints)
+    # The genuine count-cap tier (upstream WILL_BREAK) gets a limit hint suggesting 8.
+    will_break_hints = [h for h in hints if "WILL_BREAK" in h]
+    assert will_break_hints, f"expected a WILL_BREAK count-cap hint, got: {hints}"
+    assert "8" in will_break_hints[0]
+    # The byte-dropped tier (downstream MAY_NEED_TESTING) must NOT get a 'Raise limit' hint.
+    may_limit_hints = [
+        h for h in hints if "MAY_NEED_TESTING" in h and "limit" in h.lower()
+    ]
+    assert not may_limit_hints, (
+        "byte-dropped MAY_NEED_TESTING entries were misattributed to the count cap: "
+        f"{may_limit_hints}"
+    )
+    # The byte remedy is still present.
+    assert "max_bytes" in joined
+
+
+def test_suggested_limit_never_below_current_limit() -> None:
+    """A count-cap hint must never suggest a limit <= the current one (would HIDE entries).
+
+    Regression for the /backend-taste STOP finding: suggested_limit is clamped to
+    max(risk_total, limit + count_cap_portion) so following the hint always reveals
+    at least the omitted entries — never tells the agent to LOWER the cap.
+    """
+    import re
+
+    hints = generate_steer(
+        truncated={"upstream": {"WILL_BREAK": 2}},
+        byte_capped=None,
+        risk_summary={"upstream": {"WILL_BREAK": 7}},
+        limit=5,
+        max_bytes=0,
+    )
+    will_break = [h for h in hints if "WILL_BREAK" in h]
+    assert will_break
+    # Extract "Raise limit to N" and assert N > current limit (5).
+    m = re.search(r"Raise limit to (\d+)", will_break[0])
+    assert m, f"hint missing 'Raise limit to N': {will_break[0]}"
+    assert int(m.group(1)) > 5
+
+
+def test_tier_order_injection_is_honored() -> None:
+    """Injected tier_order governs which tiers produce hints (single-source-of-truth).
+
+    Passing a tier_order that omits a tier means that tier is never iterated, so no hint
+    is produced for it — proving the leaf uses the injected order, not a hardcoded copy.
+    """
+    hints = generate_steer(
+        truncated={"upstream": {"WILL_BREAK": 3}},
+        byte_capped=None,
+        risk_summary={"upstream": {"WILL_BREAK": 8}},
+        limit=5,
+        max_bytes=0,
+        tier_order=("LIKELY_AFFECTED",),  # WILL_BREAK intentionally excluded
+        direction_order=("upstream",),
+    )
+    assert not any("WILL_BREAK" in h for h in hints), (
+        f"WILL_BREAK hint emitted despite tier_order excluding it: {hints}"
+    )

@@ -659,7 +659,9 @@ def _count_direction_entries(response: dict[str, Any]) -> int:
     return total
 
 
-def _apply_byte_ceiling(response: dict[str, Any], budget: int) -> dict[str, Any]:
+def _apply_byte_ceiling(
+    response: dict[str, Any], budget: int, *, extra_reserve: int = 0
+) -> dict[str, Any]:
     """Apply the E1-FULL byte ceiling to a fully-assembled seam_impact response.
 
     Runs AFTER the per-tier count cap and E2/E3 relevance ordering. When budget > 0 and
@@ -685,6 +687,11 @@ def _apply_byte_ceiling(response: dict[str, Any], budget: int) -> dict[str, Any]
     Args:
         response: Fully-assembled seam_impact response dict (non-mutating).
         budget:   SEAM_IMPACT_MAX_BYTES (from param). 0 or negative = unlimited.
+        extra_reserve: Additional bytes to hold back from the trim budget (E4). The
+                  handler passes the serialized size of the `next_actions` steer here so
+                  the FINAL response — entries + byte_capped/truncated + next_actions —
+                  still fits `budget`. byte_capped["limit"] keeps reporting the true
+                  `budget` (not the reduced trim budget), so the reported ceiling is honest.
 
     Returns:
         The (possibly trimmed) response dict with merged truncated + byte_capped.
@@ -693,16 +700,17 @@ def _apply_byte_ceiling(response: dict[str, Any], budget: int) -> dict[str, Any]
         return response
 
     try:
-        # Already within budget → no trim, no metadata (generous-budget no-op path).
-        if serialized_size(response) <= budget:
+        # Already within budget (including the steer the handler will append) → no trim.
+        if serialized_size(response) + extra_reserve <= budget:
             return response
 
         # Reserve room for the trailing metadata the merge appends, so the final
         # response still fits. byte_capped is sized exactly (omitted <= entry count);
-        # truncated growth uses a worst-case 6-slot allowance.
+        # truncated growth uses a worst-case 6-slot allowance. extra_reserve (E4) holds
+        # back room for the next_actions steer the handler appends after this returns.
         total_entries = _count_direction_entries(response)
         reserve = serialized_size({"byte_capped": {"limit": budget, "omitted": total_entries}})
-        reserve += _BYTE_CEILING_TRUNCATED_RESERVE
+        reserve += _BYTE_CEILING_TRUNCATED_RESERVE + max(extra_reserve, 0)
         effective = max(budget - reserve, 1)
 
         trimmed, byte_dropped, total_omitted = fit_to_byte_budget(response, budget=effective)
@@ -941,17 +949,90 @@ def handle_seam_impact(
     # Generates ready-to-act prose hints when ≥1 entry was trimmed. ABSENT when
     # nothing was trimmed (so presence is an unambiguous "there is more" signal).
     # Gated by SEAM_IMPACT_STEER; "off" = byte-identical pre-E4 (no next_actions key).
+    # `response` (pre-ceiling) is passed so the steer-aware re-trim starts clean rather
+    # than re-trimming an already-trimmed response (which would double-count truncated).
     if config.SEAM_IMPACT_STEER == "on":
-        steer = generate_steer(
-            truncated=final_response.get("truncated", {}),
-            byte_capped=final_response.get("byte_capped"),
-            risk_summary=final_response.get("risk_summary", {}),
+        final_response = _attach_steer(
+            final_response, response, limit=limit, max_bytes=max_bytes
+        )
+
+    return final_response
+
+
+# Small margin (chars) added to the steer-byte reserve when re-trimming so the
+# regenerated steer's digit growth (byte-drop counts grow as more entries are trimmed)
+# cannot nudge the response back over the budget.
+_STEER_RESERVE_MARGIN = 64
+
+
+def _attach_steer(
+    final_response: dict[str, Any],
+    pre_ceiling_response: dict[str, Any],
+    *,
+    limit: int,
+    max_bytes: int,
+) -> dict[str, Any]:
+    """Generate the E4 next_actions steer and attach it WITHIN the byte ceiling (E4 fix).
+
+    The steer is generated from the post-ceiling trim metadata. Naively appending it would
+    push the response past max_bytes — defeating the E1-FULL hard ceiling exactly when the
+    ceiling fired (the steer fires iff something was trimmed). So when max_bytes is active
+    and attaching the steer would breach the budget, we re-run the ceiling from the
+    PRE-CEILING response (clean — not the already-trimmed one, which would double-count
+    `truncated`), reserving room for the steer, then regenerate it for the smaller set.
+
+    WHY a single re-trim converges: the steer's count-cap hints depend only on the
+    count-cap portion of `truncated` (applied before the ceiling), which is INVARIANT
+    under further byte trimming. So the regenerated steer differs from the first only in
+    the byte-hint's trailing count — a few digits — absorbed by _STEER_RESERVE_MARGIN.
+    No iteration loop needed.
+
+    All-trimmed (budget-below-envelope) is the documented exception: entries are already
+    empty, re-trimming changes nothing, and the anti-false-safe WARNING is the point — it
+    is attached even if it exceeds a sub-envelope budget (the same carve-out the
+    irreducible envelope already has).
+
+    tier_order / direction_order are injected from impact.py's canonical TIER_* constants
+    so the steer has a single source of truth for the tier names (no hardcoded copy).
+    """
+    tier_order = (
+        impact_module.TIER_WILL_BREAK,
+        impact_module.TIER_LIKELY_AFFECTED,
+        impact_module.TIER_MAY_NEED_TESTING,
+    )
+
+    def _make_steer(resp: dict[str, Any]) -> list[str]:
+        return generate_steer(
+            truncated=resp.get("truncated", {}),
+            byte_capped=resp.get("byte_capped"),
+            risk_summary=resp.get("risk_summary", {}),
             limit=limit,
             max_bytes=max_bytes,
+            tier_order=tier_order,
+            direction_order=("upstream", "downstream"),
         )
-        if steer:
-            final_response["next_actions"] = steer
 
+    steer = _make_steer(final_response)
+    if not steer:
+        return final_response
+
+    # Keep the steer inside the byte budget (E4 STOP fix). Only re-trim when the budget
+    # is active AND attaching the steer would actually breach it.
+    if max_bytes > 0:
+        steer_bytes = serialized_size({"next_actions": steer})
+        if serialized_size(final_response) + steer_bytes > max_bytes:
+            # Re-trim from the PRE-ceiling response (clean single pass) reserving room
+            # for the steer, then regenerate the steer for the now-smaller entry set.
+            final_response = _apply_byte_ceiling(
+                pre_ceiling_response,
+                max_bytes,
+                extra_reserve=steer_bytes + _STEER_RESERVE_MARGIN,
+            )
+            steer = _make_steer(final_response)
+            if not steer:
+                return final_response
+
+    final_response["next_actions"] = steer
     return final_response
 
 

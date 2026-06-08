@@ -46,11 +46,19 @@ Null-contract:
 Never raises. On any exception returns [].
 """
 
+import logging
 from typing import Any
 
-# Canonical tier ordering (matches byte_budget.py's direction/tier priority).
-_TIER_ORDER = ("WILL_BREAK", "LIKELY_AFFECTED", "MAY_NEED_TESTING")
-_DIRECTION_ORDER = ("upstream", "downstream")
+logger = logging.getLogger(__name__)
+
+# Default tier/direction priority. These are DEFAULTS only — the handler injects the
+# canonical impact.py TIER_* constants via the tier_order/direction_order params so the
+# names have a single source of truth (the leaf stays standalone-testable without
+# importing impact.py, preserving leaf discipline). Order matters: highest priority
+# first (WILL_BREAK before MAY_NEED_TESTING) for DISPLAY; the byte-portion deduction
+# walks this reversed (least-valuable first) to mirror fit_to_byte_budget's trim order.
+_DEFAULT_TIER_ORDER = ("WILL_BREAK", "LIKELY_AFFECTED", "MAY_NEED_TESTING")
+_DEFAULT_DIRECTION_ORDER = ("upstream", "downstream")
 
 
 def generate_steer(
@@ -60,6 +68,8 @@ def generate_steer(
     risk_summary: dict[str, dict[str, int]],
     limit: int,
     max_bytes: int,
+    tier_order: tuple[str, ...] = _DEFAULT_TIER_ORDER,
+    direction_order: tuple[str, ...] = _DEFAULT_DIRECTION_ORDER,
 ) -> list[str]:
     """Generate actionable truncation-steer hints from seam_impact trim metadata.
 
@@ -81,6 +91,9 @@ def generate_steer(
                       or the per-call override). Used in hint phrasing.
         max_bytes:    The byte budget that was applied (SEAM_IMPACT_MAX_BYTES or the
                       per-call override). Used in hint phrasing. 0 = unlimited.
+        tier_order:   Risk tiers in DISPLAY (highest-priority-first) order. Injected by
+                      the handler from impact.py's TIER_* constants (single source of truth).
+        direction_order: Directions in display order. Injected by the handler.
 
     Returns:
         list[str]: Prose hint lines. Empty list when nothing to say.
@@ -93,9 +106,15 @@ def generate_steer(
             risk_summary=risk_summary,
             limit=limit,
             max_bytes=max_bytes,
+            tier_order=tier_order,
+            direction_order=direction_order,
         )
     except Exception:
         # Safety net: never break the read path. Empty steer is always safe.
+        # Logged (matching _apply_byte_ceiling's failure precedent) so a malformed-input
+        # bug that silently drops the steer — including the all-trimmed anti-false-safe
+        # warning generated inside this path — is observable rather than invisible.
+        logger.warning("seam_impact steer generation failed; omitting next_actions", exc_info=True)
         return []
 
 
@@ -158,6 +177,8 @@ def _generate_steer_impl(
     risk_summary: dict[str, dict[str, int]],
     limit: int,
     max_bytes: int,
+    tier_order: tuple[str, ...],
+    direction_order: tuple[str, ...],
 ) -> list[str]:
     """Inner implementation — only called when input types are validated by caller.
 
@@ -203,56 +224,58 @@ def _generate_steer_impl(
         return hints
 
     # ── (a) Count-cap hints — one per direction+tier with count-cap omissions ──
-    # Count-cap portion = truncated[dir][tier] - byte_cap_portion.
-    # Since byte_capped.omitted is a global total (not per-tier), we distribute
-    # the byte_omitted evenly as a deduction from the total, but only emit a
-    # count-cap hint when the count-cap portion is positive.
+    # truncated[dir][tier] is the MERGED omitted count (count-cap drops + byte-ceiling
+    # drops, additive). To attribute it correctly we must isolate the count-cap-only
+    # portion, because the two have DIFFERENT remedies: count-cap drops are revealed by
+    # raising `limit`, byte-ceiling drops only by raising `max_bytes`. Misattributing a
+    # byte-dropped entry to the count cap yields a hint ("Raise limit to N") that, when
+    # followed, does NOT reveal the entry — the agent re-queries, sees the same truncation,
+    # and may wrongly conclude the dependent is phantom.
     #
-    # Simpler approach (spec-compliant): when both fired, the count-cap hint
-    # uses the truncated[dir][tier] value directly (merged total) but the
-    # caller is already told the byte ceiling fires separately. The spec says
-    # "without double-counting" but the two remedies are distinct: one says
-    # "raise limit", the other says "raise max_bytes". Emitting both is safe.
-    # We deduct byte_omitted from the smallest-risk tiers to compute the
-    # count-cap-only portion for hint accuracy.
-    remaining_byte_omitted = byte_omitted  # how many were byte-only drops
-
-    for direction in _DIRECTION_ORDER:
+    # The byte ceiling (fit_to_byte_budget) trims from the LEAST-valuable end first:
+    # downstream before upstream, MAY_NEED_TESTING before WILL_BREAK. So we deduct the
+    # byte-omitted total from the merged counts in that SAME reverse order; whatever
+    # remains in a (dir, tier) cell is its genuine count-cap portion.
+    count_cap_portion: dict[tuple[str, str], int] = {}
+    remaining_byte_omitted = byte_omitted
+    for direction in reversed(direction_order):
         dir_trunc = truncated.get(direction)
         if not isinstance(dir_trunc, dict):
             continue
-        dir_risk = risk_summary.get(direction, {})
-        if not isinstance(dir_risk, dict):
-            dir_risk = {}
-
-        for tier in _TIER_ORDER:
+        for tier in reversed(tier_order):
             merged_omitted = dir_trunc.get(tier, 0)
             if not isinstance(merged_omitted, int) or merged_omitted <= 0:
                 continue
-
-            # Deduct byte-ceiling portion from lowest-priority tier first
-            # (mirrors how fit_to_byte_budget drops from the least-valuable end).
             byte_portion = min(remaining_byte_omitted, merged_omitted)
-            count_cap_portion = merged_omitted - byte_portion
             remaining_byte_omitted -= byte_portion
+            count_cap_portion[(direction, tier)] = merged_omitted - byte_portion
 
-            if count_cap_portion <= 0:
+    # Emit count-cap hints in DISPLAY order (highest-priority tier first).
+    for direction in direction_order:
+        dir_risk = risk_summary.get(direction, {})
+        if not isinstance(dir_risk, dict):
+            dir_risk = {}
+        for tier in tier_order:
+            portion = count_cap_portion.get((direction, tier), 0)
+            if portion <= 0:
+                continue
+            # A count-cap drop is only possible when the count cap is active (limit > 0);
+            # with limit=0 (unlimited) every count-cap drop is really a byte-ceiling drop
+            # and the deduction above should have zeroed `portion`. Guard defensively.
+            if limit <= 0:
                 continue
 
-            # Suggest the minimum limit that would reveal all entries:
-            # risk_summary[dir][tier] is the total before any capping.
+            # Suggest the minimum limit that reveals all entries in this tier:
+            # risk_summary[dir][tier] is the honest pre-cap total. Clamp to never suggest
+            # a value <= the current limit (which would tell the agent to LOWER the cap
+            # and HIDE entries) — the suggestion must always be enough to reveal `portion`
+            # more entries on top of what is shown.
             total_in_tier = dir_risk.get(tier, 0)
             if not isinstance(total_in_tier, int):
                 total_in_tier = 0
-            suggested_limit = (
-                total_in_tier
-                if total_in_tier > 0
-                else (
-                    count_cap_portion  # fallback: at minimum show the omitted ones
-                )
-            )
+            suggested_limit = max(total_in_tier, limit + portion)
             hints.append(
-                f"Raise limit to {suggested_limit} to see {count_cap_portion} more "
+                f"Raise limit to {suggested_limit} to see {portion} more "
                 f"{tier} {direction} dependents "
                 f"(currently capped at {limit})."
             )

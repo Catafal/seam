@@ -191,6 +191,14 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
                            Null is RETAINED (null = "static edge", the informative common
                            case — unlike best_candidate which is E1-omitted when null).
                            Stripped in lean mode (verbose=false), like resolved_by.
+                           AMBIGUITY (important): null does NOT, on its own, prove this
+                           edge is static — an index that was never synthesis-rebuilt
+                           (pre-v12, or SEAM_EDGE_SYNTHESIS=off at index time) carries
+                           null for EVERY edge. So all-null across a result can mean
+                           "no synthesized edges traversed" OR "synthesis never ran" — it
+                           does not distinguish them; run `seam init` to populate. A
+                           MISSING key (not null) means SEAM_EDGE_PROVENANCE=off or lean
+                           mode stripped it — three distinct "no value" states.
           Set SEAM_EDGE_PROVENANCE=off for byte-identical pre-E4 output.
 
         E4 — Truncation steer (SEAM_IMPACT_STEER=on, default):
@@ -280,6 +288,12 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
                            Lets you see which hops in a path rest on over-approximations.
                            In lean mode (verbose=false), synthesized_by is stripped
                            (like resolved_by) — kind is always kept.
+                           AMBIGUITY (important): null on a hop does NOT prove the hop is
+                           static — an index never synthesis-rebuilt (pre-v12, or
+                           SEAM_EDGE_SYNTHESIS=off at index time) carries null for EVERY
+                           hop. all-null can mean "no synthesized hops" OR "synthesis never
+                           ran"; run `seam init` to populate. A MISSING key means lean mode
+                           or SEAM_EDGE_PROVENANCE=off.
 
         Also returns one-hop callers and callees for both symbols so you can see
         the immediate neighborhood alongside the path.

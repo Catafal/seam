@@ -116,6 +116,21 @@ _IMPACT_META_KEYS: frozenset[str] = frozenset(
 )
 
 
+def _render_next_actions(result: dict[str, Any]) -> None:
+    """Render the E4 next_actions steer footer (Rich), if the handler produced one.
+
+    Shared by both the normal impact render and the all-trimmed early-return branch so
+    the human CLI surface always shows the same actionable hints (incl. the all-trimmed
+    anti-false-safe warning) that JSON/MCP consumers receive. No-op when absent (steer
+    off, or nothing was trimmed).
+    """
+    next_actions = result.get("next_actions")
+    if next_actions and isinstance(next_actions, list):
+        console.print("\n[bold cyan]Next actions:[/bold cyan]")
+        for hint in next_actions:
+            console.print(f"  [dim]→[/dim] {hint}")
+
+
 def _watcher_is_alive(pid_file: Path) -> int | None:
     """Return the PID if a live watcher process is recorded, else None.
 
@@ -868,6 +883,11 @@ def impact_cmd(
             )
         else:
             console.print(f"[dim]No dependents found for [bold]{symbol}[/bold].[/dim]")
+        # E4 (WATCH-3): render the steer here too, so the human surface gets the same
+        # actionable next_actions (incl. the richer all-trimmed anti-false-safe warning)
+        # that JSON/MCP consumers receive. Without this, the early return below hid the
+        # footer for the all-trimmed case.
+        _render_next_actions(result)
         return
 
     # Print a tiered summary per direction.
@@ -969,14 +989,8 @@ def impact_cmd(
             f"use --include-tests to show them)[/dim]"
         )
 
-    # E4: next_actions steer footer — printed when the handler generated steer hints.
-    # Gated by SEAM_IMPACT_STEER (handled at the handler layer; absent when nothing
-    # was trimmed or when the knob is off). Each hint is a ready-to-act prose string.
-    next_actions = result.get("next_actions")
-    if next_actions and isinstance(next_actions, list):
-        console.print("\n[bold cyan]Next actions:[/bold cyan]")
-        for hint in next_actions:
-            console.print(f"  [dim]→[/dim] {hint}")
+    # E4: next_actions steer footer (shared with the all-trimmed early-return branch).
+    _render_next_actions(result)
 
 
 @app.command(name="trace")
@@ -1009,7 +1023,7 @@ def trace_cmd(
       red    = AMBIGUOUS (name collision — verify manually)
 
     When SEAM_EDGE_PROVENANCE=on (default), synthesized hops from the edge-synthesis
-    post-pass are labelled [synth:<channel>] so you can tell a heuristic edge from a
+    post-pass are labelled (synth:<channel>) so you can tell a heuristic edge from a
     statically-extracted one.
 
     Also shows direct callers and callees of both source and target.

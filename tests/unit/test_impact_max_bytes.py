@@ -530,3 +530,53 @@ def test_invalid_input_no_byte_capped(tmp_path: Path) -> None:
 
     assert "byte_capped" not in result
     assert "error" in result
+
+
+# ── E4 remediation: the next_actions steer must stay WITHIN the byte ceiling ─────
+
+
+def test_steer_does_not_breach_byte_ceiling(tmp_path: Path) -> None:
+    """The FULL response (entries + metadata + next_actions) must fit max_bytes.
+
+    Regression for the /backend-taste + /review STOP finding: next_actions was appended
+    AFTER _apply_byte_ceiling and escaped the budget. The fix reserves room for the steer
+    inside the ceiling. We measure with byte_budget.serialized_size — the SAME serializer
+    the handler's ceiling uses — so the assertion matches the budget arithmetic exactly.
+    """
+    from seam.analysis.byte_budget import serialized_size as handler_serialized_size
+
+    db_path = _make_hub_db(tmp_path, n_direct=30, n_indirect=8)
+    conn = _open(db_path)
+    try:
+        full_result = handle_seam_impact(conn, "hub", ROOT, limit=0)
+        full_size = handler_serialized_size(full_result)
+        # A tight budget that forces the ceiling to fire (so the steer is generated).
+        budget = full_size // 3
+        result = handle_seam_impact(conn, "hub", ROOT, limit=0, max_bytes=budget)
+    finally:
+        conn.close()
+
+    # The ceiling must have fired AND the steer must be present (there is more to see).
+    assert "byte_capped" in result, "expected the byte ceiling to fire on a tight budget"
+    assert result.get("next_actions"), "expected a next_actions steer when entries were trimmed"
+    # The hard ceiling must hold for the WHOLE response, steer included.
+    final_size = handler_serialized_size(result)
+    assert final_size <= budget, (
+        f"response with next_actions ({final_size}) exceeds max_bytes={budget} — "
+        "the steer escaped the byte ceiling"
+    )
+
+
+def test_steer_off_keeps_byte_ceiling_byte_identical(tmp_path: Path, monkeypatch) -> None:
+    """With SEAM_IMPACT_STEER=off there is no next_actions and the ceiling is unchanged."""
+    db_path = _make_hub_db(tmp_path, n_direct=30, n_indirect=8)
+    conn = _open(db_path)
+    try:
+        full_result = handle_seam_impact(conn, "hub", ROOT, limit=0)
+        budget = _serialized_size(full_result) // 3
+        monkeypatch.setattr(config, "SEAM_IMPACT_STEER", "off")
+        result = handle_seam_impact(conn, "hub", ROOT, limit=0, max_bytes=budget)
+    finally:
+        conn.close()
+
+    assert "next_actions" not in result
