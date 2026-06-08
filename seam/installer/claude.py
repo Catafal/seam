@@ -9,7 +9,15 @@ Entry shape requires "type": "stdio" (Claude Code requires it; not implied by `c
 import json
 from pathlib import Path
 
+from seam.installer import guide
 from seam.installer.core import AgentTarget, InstallResult, install_entry, uninstall_entry
+from seam.installer.markdownfile import (
+    remove_block,
+    remove_file,
+    upsert_block,
+    wrap_block,
+    write_file,
+)
 
 _SERVER_NAME = "seam"
 
@@ -46,3 +54,44 @@ class ClaudeTarget(AgentTarget):
 
     def render_entry(self, command: str, args: list[str]) -> str:
         return json.dumps({"mcpServers": {_SERVER_NAME: self._entry(command, args)}}, indent=2)
+
+    # ── CLI guidance: a project skill + a thin CLAUDE.md discovery pointer ─────
+
+    def _skill_path(self, root: Path) -> Path:
+        return root / ".claude" / "skills" / _SERVER_NAME / "SKILL.md"
+
+    def _claude_md(self, root: Path) -> Path:
+        return root / "CLAUDE.md"
+
+    def install_guidance(self, root: Path) -> list[InstallResult]:
+        skill = self._skill_path(root)
+        claude_md = self._claude_md(root)
+        return [
+            InstallResult(write_file(skill, guide.render_skill()), str(skill)),
+            InstallResult(
+                upsert_block(claude_md, guide.render_claude_hook(), marker=guide.BLOCK_MARKER),
+                str(claude_md),
+            ),
+        ]
+
+    def uninstall_guidance(self, root: Path) -> list[InstallResult]:
+        skill = self._skill_path(root)
+        claude_md = self._claude_md(root)
+        action = remove_file(skill)
+        # Tidy the now-empty skill directory we created; ignore if non-empty/missing.
+        skill_dir = skill.parent
+        if skill_dir.exists() and not any(skill_dir.iterdir()):
+            skill_dir.rmdir()
+        return [
+            InstallResult(action, str(skill)),
+            InstallResult(remove_block(claude_md, marker=guide.BLOCK_MARKER), str(claude_md)),
+        ]
+
+    def guidance_previews(self, root: Path) -> list[tuple[str, str]]:
+        return [
+            (str(self._skill_path(root)), guide.render_skill()),
+            (
+                str(self._claude_md(root)),
+                wrap_block(guide.render_claude_hook(), guide.BLOCK_MARKER),
+            ),
+        ]

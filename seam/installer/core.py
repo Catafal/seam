@@ -64,6 +64,26 @@ class AgentTarget(ABC):
     def render_entry(self, command: str, args: list[str]) -> str:
         """Human-readable preview of the entry this target would write (for --print-config)."""
 
+    # ── CLI-first guidance (the install default) ──────────────────────────────
+    # Guidance is the token-lean playbook the agent reads to use the `seam` CLI.
+    # It is ALWAYS project-scoped (it lives in the repo: a skill, a rule, or an
+    # AGENTS.md block), independent of the MCP `location` — so it ignores location
+    # and a target whose MCP is user-only (Codex) can still receive repo guidance.
+    # A target may write more than one artifact (Claude writes a skill + a hook),
+    # hence list[InstallResult].
+
+    @abstractmethod
+    def install_guidance(self, root: Path) -> list[InstallResult]:
+        """Write this target's CLI guidance artifact(s) into the repo. Idempotent."""
+
+    @abstractmethod
+    def uninstall_guidance(self, root: Path) -> list[InstallResult]:
+        """Remove this target's CLI guidance artifact(s) if present."""
+
+    @abstractmethod
+    def guidance_previews(self, root: Path) -> list[tuple[str, str]]:
+        """(path, content) pairs this target would write — for --print-config."""
+
 
 def _backup_if_corrupt(path: Path) -> bool:
     """If `path` exists but does not parse as JSON, copy it to <path>.backup.

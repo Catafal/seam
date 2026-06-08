@@ -27,8 +27,10 @@ Local code intelligence MCP server — indexes codebases with tree-sitter, store
 - `uv run seam flows [entry]` — execution flows: list entry points (call-graph roots ranked by
   downstream reach), or expand one entry's forward call-chain tree; `--json`/`--quiet`
 - `uv run seam structure [path]` — whole-repo directory/file/container structure tree; `--json`/`--quiet`
-- `uv run seam install` — Write the MCP config into an agent (`--target claude|cursor|codex|all`,
-  `--location project|user`, `--print-config`); `uv run seam uninstall` reverses it
+- `uv run seam install` — CLI-FIRST default: write token-lean CLI guidance into an agent
+  (Claude Code skill / Cursor `.mdc` rule / Codex `AGENTS.md` block); `--with-mcp` ALSO writes
+  the MCP config (`--target claude|cursor|codex|all`, `--location project|user`,
+  `--print-config`); `uv run seam uninstall` reverses both (guidance + MCP)
 - `uv run seam serve` — Start the local Seam Explorer web server (FastAPI, 127.0.0.1:7420);
   requires `[web]` extra (`pip install 'seam-mcp[web]'`); `--host`, `--port`, `--no-open`
 - `uv sync` installs the CLI only; `uv sync --extra server` adds the optional MCP server (`mcp` package); `uv sync --extra semantic` adds fastembed for semantic search
@@ -248,10 +250,19 @@ seam/analysis/processes.py   ← LEAF: execution flows (Flows) — list_entry_po
                                 call-chain tree, depth/breadth-capped, cycle-safe). Reuses confidence
                                 + testpaths; name-count confidence (no import promotion). Never raises.
 seam/installer/              ← `seam install`/`uninstall` engine (CLI-only; NO MCP tool)
+                                CLI-FIRST: bare install writes token-lean CLI guidance (project-scoped);
+                                  `--with-mcp` additionally writes the MCP config (respects --location)
                                 __init__.py: TARGETS registry {claude,cursor,codex} + resolve_seam_command()
-                                core.py: AgentTarget ABC + InstallResult + shared idempotent JSON merge
+                                core.py: AgentTarget ABC (+install_guidance/uninstall_guidance/guidance_previews)
+                                  + InstallResult + shared idempotent JSON merge
                                 jsonfile.py (LEAF, stdlib json) — Claude/Cursor; tomlfile.py (LEAF, tomlkit) — Codex
-                                claude.py/.mcp.json+type:stdio · cursor.py/.cursor/mcp.json · codex.py/~/.codex/config.toml
+                                guide.py (LEAF) — ONE guide template + 4 renderers (skill / .mdc / Codex AGENTS
+                                  block / thin CLAUDE.md hook); single source so the formats never drift
+                                markdownfile.py (LEAF, stdlib) — owned-file write + marker-delimited block
+                                  upsert/remove (`<!-- seam:start/end -->`) for AGENTS.md/CLAUDE.md; atomic
+                                claude.py: skill + CLAUDE.md hook (+ .mcp.json type:stdio when --with-mcp)
+                                cursor.py: .cursor/rules/seam.mdc agent-requested rule (+ .cursor/mcp.json w/ --with-mcp)
+                                codex.py: AGENTS.md guidance block (+ ~/.codex/config.toml when --with-mcp)
 seam/cli/install.py          ← `seam install`/`uninstall` Typer commands (registered onto app in main.py)
 seam/cli/read.py             ← `seam query`/`search`/`context` — CLI-only read commands over the
                                 transport-agnostic tools.py handlers (query SQLite directly; NO MCP)
@@ -491,6 +502,15 @@ tests/eval/                  ← P1 recall harness (edge-synthesis phase): fixtu
 - **Edges use string names** (not symbol IDs) — required for independent re-indexing
 
 ## Current Phase
+CLI-first agent guidance — `seam install` defaults to a token-lean CLI playbook; MCP is opt-in via `--with-mcp`. Installer-layer only (issue #106).
+- **Why (the token gap this closes):** Seam is agentic-first, but `seam install` wired up MCP, the most expensive path for an agent to *use* Seam — the 12 MCP tool schemas cost ~6,060 tokens of standing context/session, and the MCP tools bottom out at lean-JSON. The CLI's `--quiet` mode is ~14–17× leaner than the leanest MCP call (measured: `seam impact connect --quiet` = 170 tok vs 2,324), but nothing told the agent the CLI existed or when to escalate verbosity. This makes the cheap, on-brand path the default.
+- **CLI-first default; MCP opt-in:** bare `seam install` now writes a token-lean CLI **guidance** playbook into the repo (the escalation ladder `--quiet`→`--json --lean`→`--json`, `seam init`/`sync` freshness, when-to-use triggers, MCP-as-alternative note). `--with-mcp` ALSO writes the MCP config (the old behavior). `seam uninstall` reverses both. Seam unpublished → changing the default is safe.
+- **Per-agent rendering (token principle: tiny always-loaded + progressive detail):** Claude Code → a project **skill** (`.claude/skills/seam/SKILL.md`, body loads on invocation) + a thin `CLAUDE.md` discovery hook (~95% reliable vs ~70–85% description-only). Cursor → an **"Agent Requested" rule** (`.cursor/rules/seam.mdc`, `alwaysApply: false` + description + empty globs). Codex → an inline `AGENTS.md` block (no progressive mechanism). Guidance is **project-scoped** (lives in the repo), independent of the MCP `--location` — so Codex gets repo guidance even though its MCP is user-only.
+- **2 new pure leaves:** `seam/installer/guide.py` (ONE guide template + 4 renderers — single source, no drift) and `seam/installer/markdownfile.py` (owned-file write + marker-delimited block upsert/remove with `<!-- seam:start/end -->`, atomic; preserves foreign AGENTS.md/CLAUDE.md content, never duplicates). `AgentTarget` ABC extended with `install_guidance`/`uninstall_guidance`/`guidance_previews`.
+- **No new config knobs, no schema change, no re-index, MCP tool count stays 12.** Gate: ruff + mypy clean (100 files), full suite + 47 installer tests pass.
+See `progress.txt`.
+
+### Prior phase
 P2 — index staleness banner on the 5 graph-traversal tools + `tools.py` split. Handler-layer, read-path only.
 - **Why (the usability gap this closes):** agents had no signal that the index they were querying was stale. A file edited after `seam init` would silently produce incorrect blast-radius and change-risk answers with no indication. `seam status` had a freshness field but it wasn't surfaced inline on every graph query.
 - **Staleness banner (`index_status`):** after each of the 5 graph-traversal handlers (seam_impact, seam_changes, seam_affected, seam_context, seam_trace) produces its core result, `_maybe_attach_staleness()` appends a top-level `index_status` = `{stale: true, reason: str, hint: str}` key when the index is stale. ABSENT when fresh (presence = stale signal, like `next_actions`). Risk verdicts and all existing fields are byte-identical to pre-P2 — the banner is purely additive.
