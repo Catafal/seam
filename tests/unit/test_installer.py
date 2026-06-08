@@ -9,7 +9,9 @@ are on external behavior (file contents / InstallResult), not internals.
 import json
 from pathlib import Path
 
-from seam.installer import get_target, resolve_seam_command
+import yaml
+
+from seam.installer import get_target, guide, resolve_seam_command
 from seam.installer.claude import ClaudeTarget
 from seam.installer.codex import CodexTarget
 from seam.installer.core import install_entry, uninstall_entry
@@ -20,6 +22,13 @@ from seam.installer.jsonfile import (
     get_in,
     load_json,
     set_in,
+)
+from seam.installer.markdownfile import (
+    read_text,
+    remove_block,
+    remove_file,
+    upsert_block,
+    write_file,
 )
 from seam.installer.tomlfile import get_server_table, load_toml
 
@@ -190,3 +199,151 @@ def test_resolve_seam_command_returns_tuple() -> None:
     cmd, found = resolve_seam_command()
     assert isinstance(cmd, str) and cmd
     assert isinstance(found, bool)
+
+
+# ── markdownfile leaf: owned files ────────────────────────────────────────────
+
+
+def test_write_file_created_then_unchanged_then_updated(tmp_path: Path) -> None:
+    p = tmp_path / "sub" / "SKILL.md"
+    assert write_file(p, "hello") == "created"
+    assert p.read_text() == "hello\n"  # trailing newline normalised
+    assert write_file(p, "hello") == "unchanged"  # idempotent, no churn
+    assert write_file(p, "world") == "updated"
+    assert p.read_text() == "world\n"
+
+
+def test_remove_file_round_trip(tmp_path: Path) -> None:
+    p = tmp_path / "f.md"
+    write_file(p, "x")
+    assert remove_file(p) == "removed"
+    assert remove_file(p) == "not_present"
+
+
+# ── markdownfile leaf: shared-file marker blocks ──────────────────────────────
+
+
+def test_upsert_block_creates_file(tmp_path: Path) -> None:
+    p = tmp_path / "AGENTS.md"
+    assert upsert_block(p, "guide body", marker="seam") == "created"
+    text = p.read_text()
+    assert "<!-- seam:start -->" in text and "<!-- seam:end -->" in text
+    assert "guide body" in text
+
+
+def test_upsert_block_preserves_foreign_content_and_replaces_in_place(tmp_path: Path) -> None:
+    p = tmp_path / "AGENTS.md"
+    p.write_text("# My project rules\n\nDo the thing.\n")
+    assert upsert_block(p, "v1", marker="seam") == "updated"
+    text = p.read_text()
+    assert "# My project rules" in text  # foreign content preserved
+    assert "Do the thing." in text
+
+    assert upsert_block(p, "v1", marker="seam") == "unchanged"  # idempotent
+    assert upsert_block(p, "v2", marker="seam") == "updated"  # content swapped
+    text2 = p.read_text()
+    assert "v2" in text2 and "v1" not in text2
+    # exactly one block — never duplicated
+    assert text2.count("<!-- seam:start -->") == 1
+    assert "# My project rules" in text2  # still preserved after replace
+
+
+def test_remove_block_preserves_foreign_content(tmp_path: Path) -> None:
+    p = tmp_path / "AGENTS.md"
+    p.write_text("# Mine\n")
+    upsert_block(p, "seam stuff", marker="seam")
+    assert remove_block(p, marker="seam") == "removed"
+    text = p.read_text()
+    assert "# Mine" in text
+    assert "seam:start" not in text and "seam stuff" not in text
+    assert remove_block(p, marker="seam") == "not_present"
+
+
+def test_remove_block_absent_file_is_not_present(tmp_path: Path) -> None:
+    assert remove_block(tmp_path / "nope.md", marker="seam") == "not_present"
+
+
+def test_read_text_absent_returns_none(tmp_path: Path) -> None:
+    assert read_text(tmp_path / "nope.md") is None
+
+
+# ── guide renderers ───────────────────────────────────────────────────────────
+
+
+def test_render_skill_has_valid_yaml_frontmatter_and_body() -> None:
+    skill = guide.render_skill()
+    assert skill.startswith("---\n")
+    fm = yaml.safe_load(skill.split("---")[1])
+    assert fm["name"] == "seam"
+    assert "seam" in fm["description"] and fm["description"]
+    assert fm["when_to_use"]
+    assert "Escalation ladder" in skill  # the body is included
+
+
+def test_render_cursor_rule_is_agent_requested() -> None:
+    mdc = guide.render_cursor_rule()
+    fm = yaml.safe_load(mdc.split("---")[1])
+    assert fm["alwaysApply"] is False  # progressive, not always-applied
+    assert fm["description"]
+    assert fm["globs"] is None  # empty globs → description-surfaced
+    assert "Escalation ladder" in mdc
+
+
+def test_render_codex_block_is_the_full_guide_and_hook_is_thin() -> None:
+    body = guide.render_codex_block()
+    assert "Escalation ladder" in body  # codex gets the full guide
+    hook = guide.render_claude_hook()
+    assert "Escalation ladder" not in hook  # the CLAUDE.md hook is the thin pointer
+    assert "seam" in hook and "skill" in hook
+
+
+# ── target guidance methods ───────────────────────────────────────────────────
+
+
+def test_claude_guidance_writes_skill_and_claude_md(tmp_path: Path) -> None:
+    res = ClaudeTarget().install_guidance(tmp_path)
+    assert [r.action for r in res] == ["created", "created"]
+    skill = tmp_path / ".claude" / "skills" / "seam" / "SKILL.md"
+    assert "name: seam" in skill.read_text()
+    assert "<!-- seam:start -->" in (tmp_path / "CLAUDE.md").read_text()
+
+
+def test_claude_guidance_preserves_existing_claude_md(tmp_path: Path) -> None:
+    (tmp_path / "CLAUDE.md").write_text("# Project rules\n\nUse tabs.\n")
+    ClaudeTarget().install_guidance(tmp_path)
+    text = (tmp_path / "CLAUDE.md").read_text()
+    assert "Use tabs." in text  # foreign content preserved
+    assert "<!-- seam:start -->" in text
+
+
+def test_claude_guidance_uninstall_removes_skill_dir(tmp_path: Path) -> None:
+    t = ClaudeTarget()
+    t.install_guidance(tmp_path)
+    res = t.uninstall_guidance(tmp_path)
+    assert [r.action for r in res] == ["removed", "removed"]
+    assert not (tmp_path / ".claude" / "skills" / "seam").exists()  # empty dir tidied
+
+
+def test_cursor_guidance_writes_mdc_rule(tmp_path: Path) -> None:
+    res = CursorTarget().install_guidance(tmp_path)
+    assert res[0].action == "created"
+    rule = tmp_path / ".cursor" / "rules" / "seam.mdc"
+    assert rule.exists()
+    assert "alwaysApply: false" in rule.read_text()
+    assert CursorTarget().uninstall_guidance(tmp_path)[0].action == "removed"
+
+
+def test_codex_guidance_writes_agents_md_block(tmp_path: Path) -> None:
+    (tmp_path / "AGENTS.md").write_text("# Mine\n")
+    res = CodexTarget().install_guidance(tmp_path)
+    assert res[0].action == "updated"  # appended to existing file
+    text = (tmp_path / "AGENTS.md").read_text()
+    assert "# Mine" in text  # preserved
+    assert "Escalation ladder" in text  # full guide inline
+    assert CodexTarget().uninstall_guidance(tmp_path)[0].action == "removed"
+
+
+def test_guidance_is_project_scoped_and_idempotent(tmp_path: Path) -> None:
+    # Guidance ignores location — it always lives in the repo; second run = no-op.
+    CursorTarget().install_guidance(tmp_path)
+    assert CursorTarget().install_guidance(tmp_path)[0].action == "unchanged"

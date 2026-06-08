@@ -1,6 +1,159 @@
 # Architecture — Seam
 
-> Phase 0 + Phase 1 + Phase 2 (clustering) + Phase 3 (agent-first interface) + Phase 4 (node-field enrichment) + Phase 5 (import resolution & confidence promotion). See ADRs in `docs/adr/` for decision rationale.
+> **Current system overview (v0.3.0) is below.** For the conceptual *why* of each
+> subsystem see [`CONCEPTS.md`](CONCEPTS.md); for an illustrated version see
+> [`architecture.html`](architecture.html); for decision rationale see [`adr/`](adr/).
+> The phase-by-phase build history is preserved as an **appendix** further down.
+
+---
+
+## Current Architecture (v0.3.0)
+
+### System overview
+
+```text
+ ┌─────────────────────────────────────────────────────────────────────────┐
+ │  WRITE PATH                                                               │
+ │                                                                           │
+ │  source files (12 langs)                                                  │
+ │        │  tree-sitter (structural parse — never raises)                   │
+ │        ▼                                                                  │
+ │  indexer/pipeline.py ── parser → graph (symbols + 9-kind edges) → db      │
+ │        │                                                                  │
+ │        ▼                                                                  │
+ │  .seam/seam.db  (SQLite + FTS5, schema v12)                               │
+ │        │                                                                  │
+ │        ├─▶ clustering post-pass   (Louvain communities + labels)          │
+ │        └─▶ synthesis post-pass    (dynamic-dispatch edges; gated)         │
+ │            └ both run on `seam init` / `seam sync`, NOT the watcher        │
+ └─────────────────────────────────────────────────────────────────────────┘
+        │                                   ▲
+        │                                   │ debounced per-file re-index
+        ▼                                   │
+ ┌──────────────────────┐         ┌─────────┴───────────┐
+ │  READ PATH            │         │  watchdog daemon     │
+ │                       │         │  (seam start)        │
+ │  resolve_edge ─▶ BFS  │         └──────────────────────┘
+ │  traversal ─▶ shaping │
+ │  (caps · lean · steer │
+ │   · staleness banner) │
+ └──────────┬────────────┘
+            │
+   ┌────────┴───────────────────────────────────────┐
+   ▼                          ▼                       ▼
+ MCP server (stdio)     CLI read commands        Seam Explorer (web, [web] extra)
+ 12 read-only tools     query/impact/trace/…     FastAPI + React SPA, 127.0.0.1
+   │                          │                       │
+   └──────────────────────────┴───────────────────────┘
+                              ▼
+              AI agent (Claude Code · Cursor · Codex)
+```
+
+The **12 MCP tools** map to engine functions:
+
+| Tool | Engine entry point |
+|------|-------------------|
+| `seam_query` · `seam_search` · `seam_context` | `query/engine.py` (+ `query/semantic.py` hybrid) |
+| `seam_context_pack` | `query/pack.py` |
+| `seam_why` | `analysis/comments.py` |
+| `seam_clusters` | `query/clusters.py` |
+| `seam_structure` | `query/structure.py` |
+| `seam_impact` | `analysis/impact.py` → `server/impact_handler.py` |
+| `seam_trace` | `analysis/flows.py` → `server/trace_handler.py` |
+| `seam_changes` | `analysis/changes.py` |
+| `seam_affected` | `analysis/affected.py` |
+| `seam_flows` | `analysis/processes.py` |
+
+### Layered import hierarchy
+
+Dependencies flow strictly **downward** — a lower layer never imports an upper one.
+
+```text
+   cli/  ·  server/  ·  watcher/  ·  web/      ← entry points & transports
+                    │
+                    ▼
+                analysis/                       ← graph reasoning (impact, trace,
+                    │                              changes, affected, clusters,
+                    ▼                              synthesis, + pure leaves)
+                 query/                          ← read path (engine, pack,
+                    │                              semantic, structure, names)
+                    ▼
+             indexer/  ·  db                     ← write path (parse → extract →
+                                                   upsert) + SQLite schema
+```
+
+### The leaf discipline
+
+`analysis/` is built from **pure leaf modules** — they import only stdlib + `seam.config`,
+touch no database, perform no IO, and **never raise** (they degrade to an empty/neutral
+result on any error). This keeps each algorithm unit-testable in isolation and shrinks the
+failure surface of the hot read path. Notable leaves:
+
+| Leaf | Responsibility |
+|------|----------------|
+| `analysis/clustering.py` | Pure Louvain community detection (graph in → `{name: cluster_id}` out). |
+| `analysis/rwr.py` | Personalized PageRank for `context_pack` neighbor ranking. |
+| `analysis/relevance.py` | `seam_impact` external-vs-self-ref ordering. |
+| `analysis/byte_budget.py` | The `seam_impact` hard byte ceiling (`fit_to_byte_budget`). |
+| `analysis/steer.py` | The `next_actions` truncation-hint generator. |
+| `analysis/staleness.py` | Index-staleness verdict (single source of truth; CLI + MCP both use it). |
+| `analysis/builtins.py` · `imports.py` | Builtin vocabulary + per-language import resolution. |
+
+### The facade split (server layer)
+
+`server/tools.py` is a **thin facade** that re-exports every handler so `server/mcp.py`
+and all imports stay byte-identical, while the implementation lives in focused files under
+the 1000-line cap: `impact_handler.py` (all `seam_impact` shaping), `trace_handler.py`
+(`seam_trace`), and `handler_common.py` (shared serializers, limit constants, the
+`_maybe_attach_staleness` banner helper, the stable-`uid` resolver).
+
+### Write path (`seam init`)
+
+```text
+1. walk the tree, collect files by SEAM_LANGUAGE_MAP extension
+2. per file:  parse → extract symbols + edges + comments + import_mappings → upsert (atomic)
+              (FTS5 stays in sync via triggers; field-access/holds/uses edges extracted here)
+3. clustering post-pass    (whole graph; excludes synthesized edges)
+4. synthesis post-pass     (whole graph; AFTER clustering; gated in sync on graph_changed)
+5. [--semantic] embedding post-pass
+6. commit; watcher starts
+```
+
+### Read path (a tool call)
+
+```text
+1. server/tools handler validates + clamps inputs (or CLI routes through the same handler)
+2. resolve_edge recomputes confidence against the live name-count map (+ import promotion)
+3. analysis/traversal BFS walks the kind-agnostic edge graph from the expanded seed set
+4. output shaping: risk tiers · relevance order · per-tier cap · lean · byte ceiling · steer
+5. _maybe_attach_staleness appends index_status if the index has drifted
+6. _finalize normalizes the MCP envelope (raise on error → isError; None → {found:false})
+```
+
+### Storage (SQLite, schema v12)
+
+| Table | Holds |
+|-------|-------|
+| `files` | indexed files with hash + mtime + `indexed_at` |
+| `symbols` | nodes: kind (incl. `field`), name, qualified_name, signature, decorators, visibility, is_exported, cluster_id, entry_score, search_text |
+| `edges` | directed relationships: source, target, `kind` (9 kinds), `confidence`, `receiver`, `synthesized_by` |
+| `comments` | WHY / HACK / NOTE / TODO / FIXME markers |
+| `clusters` | Louvain communities: id, label, size, naming_source, cohesion |
+| `import_mappings` | per-file import bindings (powers read-time import promotion) |
+| `embeddings` | optional semantic vectors (model, dim, blob) — populated by `--semantic` only |
+| `symbols_fts` | FTS5 virtual table over name + docstring + signature + search_text |
+
+Schema is loaded packaged-first (`seam/_data/schema.sql`, force-included in the wheel) and
+auto-migrates additively on `connect()`. See [`database/schema.sql`](database/schema.sql)
+for the authoritative DDL.
+
+---
+
+# Phase History (Appendix)
+
+> Everything below is the **historical, phase-by-phase build record**, preserved for
+> provenance. It accumulated as the project was built; the *current* state is the overview
+> above. Where the two differ, the overview and [`CONCEPTS.md`](CONCEPTS.md) are authoritative.
 
 ---
 
