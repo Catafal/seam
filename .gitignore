@@ -64,3 +64,8 @@ graphify-out/
 
 # QA artifacts (gstack /qa reports + screenshots) — local, not committed
 .gstack/
+
+# Internal session-scratch / dev artifacts — not for the public repo
+progress.txt
+lessons.md
+memory/

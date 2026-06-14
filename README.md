@@ -8,6 +8,8 @@
 
 `v0.3.0` · 12 languages · 12 MCP tools · SQLite-backed · **zero network calls at query time** · gate-green (~3,055 tests)
 
+[![CI](https://github.com/Catafal/seam/actions/workflows/ci.yml/badge.svg)](https://github.com/Catafal/seam/actions/workflows/ci.yml)
+
 ---
 
 ## The problem
@@ -279,6 +281,13 @@ make eval          # run the recall-regression harness
 ```
 
 **Conventions:** max 200 lines/function, 1000 lines/file · all imports at top · config only from `seam/config.py` · type hints required (`X | None`, not `Optional[X]`) · tests in `tests/` mirroring the package.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the gate workflow, and project conventions.
+Bug reports and feature requests: use the [issue templates](https://github.com/Catafal/seam/issues/new/choose).
+Security issues: see [SECURITY.md](SECURITY.md).
+Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 

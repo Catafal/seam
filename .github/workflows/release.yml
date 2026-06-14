@@ -1,0 +1,53 @@
+name: Release
+
+# Build and publish `seam-code` to PyPI when a version tag is pushed.
+# Auth uses PyPI Trusted Publishing (OIDC) — no API token anywhere.
+# Tag a release with:  git tag v0.3.1 && git push origin v0.3.1
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  # Gate the release on the same checks as CI — never publish a red build.
+  build:
+    name: build distribution
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # The OIDC environment PyPI Trusted Publishing is configured against.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/seam-code/
+    permissions:
+      # Required for Trusted Publishing — mints the short-lived OIDC token.
+      id-token: write
+    steps:
+      - name: Download built distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI (Trusted Publishing)
+        uses: pypa/gh-action-pypi-publish@release/v1
