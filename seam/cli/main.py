@@ -113,7 +113,19 @@ app.command(name="serve")(serve_command)
 # groups and, in the count path, len() is called on an int → TypeError.
 # E4: 'next_actions' added — the steer list is top-level metadata, not a direction group.
 _IMPACT_META_KEYS: frozenset[str] = frozenset(
-    {"found", "target", "hidden_tests", "risk_summary", "truncated", "byte_capped", "next_actions"}
+    {
+        "found",
+        "target",
+        "hidden_tests",
+        "hidden_self_refs",
+        "risk_summary",
+        "truncated",
+        "byte_capped",
+        "next_actions",
+        # P2 staleness banner — a top-level dict; without this guard the quiet/Rich
+        # renderers walk it as a direction group and crash on its bool `stale` value.
+        "index_status",
+    }
 )
 
 

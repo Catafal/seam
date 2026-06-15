@@ -23,6 +23,10 @@ Without Seam:  "what calls init_db?"  → grep → 14 files → read each → tr
 With Seam:     seam_impact init_db    → blast radius by risk tier → ~4.5k tokens, graph-accurate
 ```
 
+<p align="center">
+  <img src="docs/assets/seam-demo.gif" alt="Terminal demo: seam init indexes the repo, seam impact init_db returns the blast radius by risk tier, seam search ranks concept matches" width="100%">
+</p>
+
 The win compounds: every structural question — callers, blast radius, call paths, functional areas, which tests to run — is one tool call against a graph that stays fresh automatically.
 
 ## The mental model
