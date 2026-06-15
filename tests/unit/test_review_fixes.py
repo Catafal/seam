@@ -585,10 +585,15 @@ class TestFindingL:
         from seam.server.tools import handle_seam_search
 
         conn = init_db(Path(":memory:"))
-        # Inject a genuinely malformed FTS5 expression by patching build_match_query
-        # to return something that SQLite's FTS5 parser will reject.
+        # Force a real FTS5 OperationalError deterministically. We patch engine.search
+        # to raise rather than relying on a specific malformed string — whether SQLite's
+        # FTS5 parser rejects a given expression is version-dependent (newer SQLite on CI
+        # tolerated the old sentinel and returned []), so a literal bad query is brittle.
+        # The contract under test is purely the handler's mapping: OperationalError →
+        # INVALID_QUERY.
         with patch(
-            "seam.query.engine.fts.build_match_query", return_value='"MATCH SYNTAX ERROR{{{'
+            "seam.query.engine.search",
+            side_effect=sqlite3.OperationalError("fts5: syntax error"),
         ):
             result = handle_seam_search(conn, "anything", Path("/project"))
         conn.close()
