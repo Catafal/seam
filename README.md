@@ -180,6 +180,33 @@ Twelve languages, parsed with [tree-sitter](https://tree-sitter.github.io/). All
 
 ---
 
+## Benchmarks
+
+Two reproducible, deliberately-honest benchmarks back the pitch.
+
+**Token reduction vs. `grep` + read** — [`docs/benchmark.md`](docs/benchmark.md)
+
+> **91.8% fewer tokens** vs. realistic whole-file grep (88.7% vs. a conservative
+> windowed grep), across 6 structural questions — 314k → 26k estimated tokens. Every
+> query is a win; the largest are the things grep is worst at (`seam_clusters` 97.9%,
+> `seam_search` 97%).
+
+Reproduce: `seam init . && python benchmarks/run_benchmark.py`.
+
+**Head-to-head vs. gitnexus / CodeGraph / graphify** — [`docs/competitive-benchmark.md`](docs/competitive-benchmark.md)
+
+Run on an external repo Seam had never seen:
+
+- **Fastest index — 0.26s** (others 0.60–4.04s) and **smallest footprint — 1.1 MB** (others 3.4–45 MB).
+- **The only tool that writes nothing outside its own `.seam/` folder** — others mutate your `AGENTS.md`/`CLAUDE.md` or config on install.
+- Leanest answer on concept search.
+
+Both are static *retrieval-context* proxies (chars ÷ 4), not live agent-session A/Bs —
+the docs state their own limitations. The competitive run predates the Phase 8 impact-tool
+fix, so current output is leaner than it shows.
+
+---
+
 ## Core concepts
 
 A short tour — the full treatment is in [`docs/CONCEPTS.md`](docs/CONCEPTS.md).

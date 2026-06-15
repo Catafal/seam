@@ -74,6 +74,9 @@ dev = [
     "pytest-cov>=5.0.0",
     "ruff>=0.4.0",
     "mypy>=1.10.0",
+    # test-only: validates the installer's generated YAML frontmatter
+    # (tests/unit/test_installer.py). Not a runtime dependency.
+    "pyyaml>=6.0",
 ]
 
 # ── Ruff ─────────────────────────────────────────────────────────────────────
