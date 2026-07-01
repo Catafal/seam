@@ -35,6 +35,7 @@ from seam.analysis.changes import (
 )
 from seam.analysis.processes import Flow, build_flow, list_entry_points
 from seam.query import engine
+from seam.query.architecture import describe_architecture
 from seam.query.clusters import cluster_members as query_cluster_members
 from seam.query.clusters import list_clusters as query_list_clusters
 from seam.query.comments import why as comments_why
@@ -656,6 +657,29 @@ def handle_seam_schema(
 ) -> dict[str, Any]:
     """Handler for the seam_schema MCP tool — read-only index capability map."""
     return describe_schema(conn, root=root, verbose=verbose)
+
+
+def handle_seam_architecture(
+    conn: sqlite3.Connection,
+    root: Path,
+    *,
+    scope: str | None = None,
+    sections: list[str] | None = None,
+    limit: int = 10,
+    max_bytes: int = 0,
+) -> dict[str, Any]:
+    """Handler for seam_architecture — thin adapter over the query module."""
+    try:
+        return describe_architecture(
+            conn,
+            root=root,
+            scope=scope,
+            sections=sections,
+            limit=limit,
+            max_bytes=max_bytes,
+        )
+    except ValueError as exc:
+        return _invalid_input(str(exc))
 
 
 def handle_seam_snippet(

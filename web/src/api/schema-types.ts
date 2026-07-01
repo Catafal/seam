@@ -6,7 +6,7 @@
  * overwritten. These aliases are stable convenience re-exports that the rest
  * of the codebase imports from.
  *
- * All types are derived from the Pydantic response models in seam/server/web.py.
+ * All types are derived from the Pydantic response models behind the FastAPI app.
  */
 
 import type { components } from "./types";
@@ -40,6 +40,7 @@ export type HubsResponse = components["schemas"]["HubsResponse"];
 export type StructureSymbol = components["schemas"]["StructureSymbol"];
 export type StructureResponse = components["schemas"]["StructureResponse"];
 export type SchemaResponse = components["schemas"]["SchemaResponse"];
+export type ArchitectureResponse = components["schemas"]["ArchitectureResponse"];
 export type SnippetCandidate = components["schemas"]["SnippetCandidate"];
 export type SnippetFreshness = components["schemas"]["SnippetFreshness"];
 export type SnippetResponse = components["schemas"]["SnippetResponse"];

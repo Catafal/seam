@@ -158,6 +158,7 @@ def test_openapi_schema_works_without_db(tmp_path: Path) -> None:
     assert "paths" in schema
     assert "/api/status" in schema["paths"]
     assert "/api/schema" in schema["paths"]
+    assert "/api/architecture" in schema["paths"]
     assert "/api/snippet" in schema["paths"]
     assert "/api/graph/search" in schema["paths"]
     assert "/api/search" in schema["paths"]

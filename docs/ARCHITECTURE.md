@@ -42,18 +42,19 @@
    ┌────────┴───────────────────────────────────────┐
    ▼                          ▼                       ▼
  MCP server (stdio)     CLI read commands        Seam Explorer (web, [web] extra)
- 15 read-only tools     schema/query/impact/…    FastAPI + React SPA, 127.0.0.1
+ 16 read-only tools     schema/query/impact/…    FastAPI + React SPA, 127.0.0.1
    │                          │                       │
    └──────────────────────────┴───────────────────────┘
                               ▼
               AI agent (Claude Code · Cursor · Codex)
 ```
 
-The **15 MCP tools** map to engine functions:
+The **16 MCP tools** map to engine functions:
 
 | Tool | Engine entry point |
 |------|-------------------|
 | `seam_schema` | `query/schema.py` |
+| `seam_architecture` | `query/architecture.py` |
 | `seam_snippet` | `query/snippet.py` |
 | `seam_graph_search` | `query/graph_search.py` |
 | `seam_query` · `seam_search` · `seam_context` | `query/engine.py` (+ `query/semantic.py` hybrid) |
@@ -122,7 +123,7 @@ the 1000-line cap: `impact_handler.py` (all `seam_impact` shaping), `trace_handl
 6. commit; watcher starts
 ```
 
-### Read path (a tool call)
+### Read path (a graph tool call)
 
 ```text
 1. server/tools handler validates + clamps inputs (or CLI routes through the same handler)
@@ -138,6 +139,12 @@ index only to resolve identity and line ranges, then checks root containment and
 live file directly. That split gives agents exact implementation text after discovery results
 without inflating every discovery response with source bodies, while still warning when the
 indexed range may be stale.
+
+`seam_architecture` is another deliberate exception: it composes a bounded repository
+briefing from existing index tables instead of walking a single seed through the graph.
+It returns metadata, ranked sections, warnings, truncation, and next-call guidance, then
+expects callers to switch to `seam_graph_search`, `seam_context`, `seam_snippet`, or
+`seam_impact` for precise follow-up work.
 
 ### Storage (SQLite, schema v12)
 

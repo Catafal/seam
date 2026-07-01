@@ -272,7 +272,7 @@ def test_graph_search_handler_and_mcp_registration(tmp_path: Path) -> None:
     server = create_server(conn, root)
     tool_names = list(server._tool_manager._tools.keys())
     assert "seam_graph_search" in tool_names
-    assert len(tool_names) == 15
+    assert len(tool_names) == 16
 
 
 def test_graph_search_cli_json_and_quiet(tmp_path: Path) -> None:

@@ -108,6 +108,81 @@ tools:
       - NO_INDEX
       - DB_ERROR
 
+  seam_architecture:
+    status: IMPLEMENTED
+    phase: phase-11-p1-4
+    description: |
+      Read-only repository architecture briefing.
+
+      Use this after seam_schema when an agent needs to understand the indexed repo
+      before choosing precise follow-up tools. It composes existing index evidence into
+      bounded sections: language distribution, physical areas, clusters, entry points,
+      fan-in hotspots, fan-out orchestrators, cross-area boundaries, edge mix,
+      optional-surface status, warnings, truncation metadata, and concrete next calls.
+    input:
+      scope:
+        type: string
+        required: false
+        nullable: true
+        description: Root-relative path to summarize. Out-of-root scopes return a warning and empty scoped counts.
+      sections:
+        type: array
+        required: false
+        nullable: true
+        description: |
+          Optional section names to include. Repeatable on CLI/Web as --section / section query params.
+          Unknown names return INVALID_INPUT.
+        allowed_values:
+          - summary
+          - languages
+          - physical
+          - clusters
+          - entry_points
+          - hotspots
+          - orchestrators
+          - boundaries
+          - edge_mix
+          - tests
+          - optional_surfaces
+      limit:
+        type: integer
+        default: 10
+        min: 1
+        max: 100
+        description: Default per-section item limit.
+      max_bytes:
+        type: integer
+        default: 0
+        min: 0
+        description: Compact JSON byte budget; 0 disables byte trimming.
+    output:
+      type: object
+      description: |
+        identity:
+          schema_version, seam_version, and index_seam_version.
+        freshness:
+          stale bool plus reason/hint from the shared staleness checker.
+        scope:
+          requested path and whether it was applied.
+        counts:
+          scoped file/symbol/edge/test/production counts plus global optional counts.
+        sections:
+          selected architecture sections. Default sections include summary, languages,
+          physical, clusters, entry_points, hotspots, orchestrators, boundaries,
+          edge_mix, tests, and optional_surfaces.
+        warnings:
+          structured {code, message, hint}; includes stale, empty index, unsupported
+          route/config/resource/test-edge surfaces, scope issues, and byte-budget trimming.
+        truncation:
+          section and byte-budget truncation metadata.
+        next_calls:
+          concrete follow-up tool suggestions with safe params.
+      found_false_ok: false
+    errors:
+      - INVALID_INPUT
+      - NO_INDEX
+      - DB_ERROR
+
   seam_snippet:
     status: IMPLEMENTED
     phase: phase-11-p1-2

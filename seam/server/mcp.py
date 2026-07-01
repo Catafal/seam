@@ -1,4 +1,4 @@
-"""MCP server setup — FastMCP stdio transport, fifteen tools registered.
+"""MCP server setup — FastMCP stdio transport, sixteen tools registered.
 
 Creates and configures the MCP server instance.
 Tool handlers in tools.py are thin adapters; this module wires them to FastMCP.
@@ -21,6 +21,7 @@ Tools registered (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3 + Phase 6 + T
     seam_flows        — execution flows: entry points + forward call-chain expansion
     seam_structure    — whole-repo directory/file/container structure tree (Tier D11)
     seam_schema       — read-only index capability and freshness map (Phase 11)
+    seam_architecture — bounded repository architecture briefing (Phase 11)
     seam_snippet      — exact bounded source retrieval for one indexed symbol (Phase 11)
     seam_graph_search — typed structural graph discovery over symbols/edges (Phase 11)
 
@@ -43,6 +44,7 @@ import seam.config as config
 from seam.analysis.changes import DEFAULT_BASE_REF
 from seam.server.tools import (
     handle_seam_affected,
+    handle_seam_architecture,
     handle_seam_changes,
     handle_seam_clusters,
     handle_seam_context,
@@ -99,7 +101,7 @@ def _finalize(result: Any) -> Any:
 
 
 def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
-    """Configure and return a FastMCP server with all fifteen Seam tools registered.
+    """Configure and return a FastMCP server with all sixteen Seam tools registered.
 
     Phase 0:  seam_query, seam_context, seam_search
     Phase 1:  seam_impact, seam_trace, seam_changes
@@ -109,7 +111,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
     Phase 6:  seam_context_pack
     Flows:    seam_flows
     Tier D11: seam_structure
-    Phase 11: seam_schema, seam_snippet, seam_graph_search
+    Phase 11: seam_schema, seam_architecture, seam_snippet, seam_graph_search
 
     Args:
         conn: Open SQLite connection to the Seam index DB.
@@ -170,6 +172,31 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         or mutates the index.
         """
         return _finalize(handle_seam_schema(conn, root, verbose=verbose))
+
+    @mcp.tool()
+    def seam_architecture(
+        scope: str | None = None,
+        sections: list[str] | None = None,
+        limit: int = 10,
+        max_bytes: int = 0,
+    ) -> Any:
+        """Brief an agent on the indexed repository architecture.
+
+        Use after seam_schema when you need a bounded repo overview before
+        choosing precise follow-up tools. The result is read-only and summarizes
+        physical areas, clusters, topology, boundaries, edge mix, optional
+        surfaces, and recommended next calls.
+        """
+        return _finalize(
+            handle_seam_architecture(
+                conn,
+                root,
+                scope=scope,
+                sections=sections,
+                limit=limit,
+                max_bytes=max_bytes,
+            )
+        )
 
     @mcp.tool()
     def seam_snippet(

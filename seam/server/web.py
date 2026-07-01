@@ -55,11 +55,10 @@ from seam.server.tools import (
     handle_seam_trace,
     handle_seam_why,
 )
+from seam.server.web_architecture import register_architecture_routes
 from seam.server.web_graph_search import register_graph_search_routes
 from seam.server.web_schema import SchemaResponse, SnippetResponse
 
-# ── Pydantic response models (source of truth for TS codegen) ─────────────────
-# These models define the exact JSON shape that openapi-typescript will consume.
 # Keep field names snake_case — the TS codegen will use them verbatim.
 
 
@@ -516,6 +515,7 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
         version="1.0.0",
     )
     register_graph_search_routes(app, db_path=db_path, root=root)
+    register_architecture_routes(app, db_path=db_path, root=root)
 
     # ── Route: GET /api/schema ────────────────────────────────────────────────
 

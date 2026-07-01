@@ -132,6 +132,13 @@ def _tool_registry() -> list[dict[str, Any]]:
             "depends_on": ["edges"],
         },
         {
+            "name": "seam_architecture",
+            "transports": ["cli", "mcp", "web"],
+            "read_only": True,
+            "use_when": "You need a bounded repository architecture briefing before choosing precise follow-up tools.",
+            "depends_on": ["edges"],
+        },
+        {
             "name": "seam_query",
             "transports": ["cli", "mcp"],
             "read_only": True,
@@ -327,6 +334,7 @@ def describe_schema(
         "recommended_next_calls": [
             "Call seam_schema first to inspect index capability and freshness.",
             "Use seam_search for keyword discovery.",
+            "Use seam_architecture for a repo-level briefing with physical areas, clusters, hotspots, boundaries, and follow-up calls.",
             "Use seam_graph_search for dead-code suspects, hotspots, field access, and inheritance.",
             "Use seam_snippet with a search/query/graph-search uid when you need exact source text.",
             "Use seam_context before editing a known symbol.",

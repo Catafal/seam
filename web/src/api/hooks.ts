@@ -29,6 +29,7 @@ import type {
   HubSymbol,
   StructureSymbol,
   SchemaResponse,
+  ArchitectureResponse,
   SnippetResponse,
   GraphSearchResponse,
 } from "./schema-types";
@@ -84,6 +85,14 @@ export interface GraphSearchFilters {
   includePreview?: boolean;
   previewLimit?: number;
   regex?: boolean;
+}
+
+/** Filters accepted by GET /api/architecture. */
+export interface ArchitectureFilters {
+  scope?: string;
+  sections?: string[];
+  limit?: number;
+  maxBytes?: number;
 }
 
 // ── useStatus ─────────────────────────────────────────────────────────────────
@@ -304,6 +313,32 @@ export function useSchema(verbose: boolean = false, enabled: boolean = true) {
     queryKey: ["schema", verbose],
     queryFn: () =>
       apiFetch<SchemaResponse>("/api/schema", { params: { verbose } }),
+    enabled,
+  });
+}
+
+// ── useArchitecture ─────────────────────────────────────────────────────────
+
+/**
+ * Fetch a bounded repository architecture briefing from GET /api/architecture.
+ * Kept as a full response because sections, warnings, truncation, and next calls
+ * are all part of the overview contract.
+ */
+export function useArchitecture(
+  filters: ArchitectureFilters = {},
+  enabled: boolean = true,
+) {
+  return useQuery<ArchitectureResponse>({
+    queryKey: ["architecture", filters],
+    queryFn: () =>
+      apiFetch<ArchitectureResponse>("/api/architecture", {
+        params: {
+          scope: filters.scope,
+          section: filters.sections?.join(","),
+          limit: filters.limit,
+          max_bytes: filters.maxBytes,
+        },
+      }),
     enabled,
   });
 }
