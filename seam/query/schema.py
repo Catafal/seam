@@ -122,7 +122,14 @@ def _tool_registry() -> list[dict[str, Any]]:
             "name": "seam_snippet",
             "transports": ["cli", "mcp", "web"],
             "read_only": True,
-            "use_when": "You need bounded source text for one exact symbol after search/query.",
+            "use_when": "You need bounded source text for one exact symbol from any result uid.",
+        },
+        {
+            "name": "seam_graph_search",
+            "transports": ["cli", "mcp", "web"],
+            "read_only": True,
+            "use_when": "You need structural discovery by kind, edge, degree, path, or preset.",
+            "depends_on": ["edges"],
         },
         {
             "name": "seam_query",
@@ -320,7 +327,8 @@ def describe_schema(
         "recommended_next_calls": [
             "Call seam_schema first to inspect index capability and freshness.",
             "Use seam_search for keyword discovery.",
-            "Use seam_snippet with a search/query uid when you need exact source text.",
+            "Use seam_graph_search for dead-code suspects, hotspots, field access, and inheritance.",
+            "Use seam_snippet with a search/query/graph-search uid when you need exact source text.",
             "Use seam_context before editing a known symbol.",
             "Use seam_impact before changing an existing symbol.",
         ],

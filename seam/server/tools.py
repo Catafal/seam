@@ -21,7 +21,7 @@ Error conventions (matching mcp-tools.yaml):
 import logging
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import seam.config as config
 from seam.analysis.affected import AffectedResult
@@ -38,6 +38,7 @@ from seam.query import engine
 from seam.query.clusters import cluster_members as query_cluster_members
 from seam.query.clusters import list_clusters as query_list_clusters
 from seam.query.comments import why as comments_why
+from seam.query.graph_search import graph_search as run_graph_search
 from seam.query.pack import ContextPack, NeighborRef
 from seam.query.pack import context_pack as run_context_pack
 from seam.query.schema import describe_schema
@@ -683,6 +684,70 @@ def handle_seam_snippet(
         max_bytes=max_bytes,
         include_neighbors=include_neighbors,
     )
+
+
+def handle_seam_graph_search(
+    conn: sqlite3.Connection,
+    root: Path,
+    *,
+    kind: str | None = None,
+    name_pattern: str | None = None,
+    qualified_name_pattern: str | None = None,
+    file_pattern: str | None = None,
+    language: str | None = None,
+    edge_kind: str | None = None,
+    direction: str = "both",
+    min_degree: int | None = None,
+    max_degree: int | None = None,
+    min_in_degree: int | None = None,
+    max_in_degree: int | None = None,
+    min_out_degree: int | None = None,
+    max_out_degree: int | None = None,
+    confidence: str | None = None,
+    synthesized: str = "any",
+    cluster_id: int | None = None,
+    visibility: str | None = None,
+    is_exported: bool | None = None,
+    test_scope: str = "any",
+    preset: str | None = None,
+    sort: str = "default",
+    limit: int = 20,
+    offset: int = 0,
+    include_preview: bool = False,
+    preview_limit: int = 3,
+    regex: bool = False,
+) -> dict[str, Any]:
+    """Delegate typed structural discovery to the transport-neutral query module."""
+    return cast(dict[str, Any], run_graph_search(
+        conn,
+        root=root,
+        kind=kind,
+        name_pattern=name_pattern,
+        qualified_name_pattern=qualified_name_pattern,
+        file_pattern=file_pattern,
+        language=language,
+        edge_kind=edge_kind,
+        direction=direction,  # type: ignore[arg-type]
+        min_degree=min_degree,
+        max_degree=max_degree,
+        min_in_degree=min_in_degree,
+        max_in_degree=max_in_degree,
+        min_out_degree=min_out_degree,
+        max_out_degree=max_out_degree,
+        confidence=confidence,
+        synthesized=synthesized,  # type: ignore[arg-type]
+        cluster_id=cluster_id,
+        visibility=visibility,
+        is_exported=is_exported,
+        test_scope=test_scope,  # type: ignore[arg-type]
+        preset=preset,
+        sort=sort,
+        limit=limit,
+        offset=offset,
+        include_preview=include_preview,
+        preview_limit=preview_limit,
+        regex=regex,
+    ))
 
 
 def handle_seam_structure(

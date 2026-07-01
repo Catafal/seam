@@ -4,6 +4,26 @@
  */
 
 export interface paths {
+    "/api/graph/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Graph Search
+         * @description Return typed structural graph-search results without source text.
+         */
+        get: operations["get_graph_search_api_graph_search_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/schema": {
         parameters: {
             query?: never;
@@ -474,6 +494,105 @@ export interface components {
             cluster_label: string | null;
             /** Definition Count */
             definition_count: number;
+        };
+        /**
+         * GraphSearchDegreeSummary
+         * @description Incoming/outgoing/total relationship counts for a structural result.
+         */
+        GraphSearchDegreeSummary: {
+            /** Incoming */
+            incoming: number;
+            /** Outgoing */
+            outgoing: number;
+            /** Total */
+            total: number;
+        };
+        /**
+         * GraphSearchItem
+         * @description One structural graph-search hit, intentionally metadata-only.
+         */
+        GraphSearchItem: {
+            /** Symbol */
+            symbol: string;
+            /** Uid */
+            uid: string;
+            /** Kind */
+            kind: string;
+            /** File */
+            file: string;
+            /** Line */
+            line: number;
+            /** End Line */
+            end_line: number;
+            /** Signature */
+            signature: string | null;
+            /** Qualified Name */
+            qualified_name: string | null;
+            /** Visibility */
+            visibility: string | null;
+            /** Is Exported */
+            is_exported: boolean | null;
+            /** Language */
+            language: string | null;
+            /** Cluster Id */
+            cluster_id: number | null;
+            /** Cluster Label */
+            cluster_label: string | null;
+            /** Is Test */
+            is_test: boolean;
+            degrees: components["schemas"]["GraphSearchDegreeSummary"];
+            /** Preview */
+            preview?: components["schemas"]["GraphSearchPreviewItem"][] | null;
+            /** Preview Truncated */
+            preview_truncated?: boolean | null;
+        };
+        /**
+         * GraphSearchPreviewItem
+         * @description One bounded connected-node preview entry.
+         */
+        GraphSearchPreviewItem: {
+            /** Direction */
+            direction: string;
+            /** Symbol */
+            symbol: string;
+            /** Uid */
+            uid: string | null;
+            /** Kind */
+            kind: string | null;
+            /** File */
+            file: string;
+            /** Line */
+            line: number;
+            /** Edge Kind */
+            edge_kind: string;
+            /** Confidence */
+            confidence: string;
+            /** Receiver */
+            receiver?: string | null;
+            /** Synthesized By */
+            synthesized_by?: string | null;
+        };
+        /**
+         * GraphSearchResponse
+         * @description Response for GET /api/graph/search.
+         */
+        GraphSearchResponse: {
+            /** Query */
+            query: {
+                [key: string]: unknown;
+            };
+            /** Items */
+            items: components["schemas"]["GraphSearchItem"][];
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Has More */
+            has_more: boolean;
+            /** Warnings */
+            warnings: components["schemas"]["SchemaWarning"][];
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1032,6 +1151,74 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    get_graph_search_api_graph_search_get: {
+        parameters: {
+            query?: {
+                /** @description Symbol kind filter. */
+                kind?: string | null;
+                /** @description Symbol name glob or regex. */
+                name_pattern?: string | null;
+                /** @description Qualified-name glob/regex. */
+                qualified_name_pattern?: string | null;
+                /** @description Root-relative file glob/regex. */
+                file_pattern?: string | null;
+                /** @description Indexed language filter. */
+                language?: string | null;
+                /** @description Edge kind or comma-separated edge kinds. */
+                edge_kind?: string | null;
+                /** @description incoming | outgoing | both */
+                direction?: string;
+                min_degree?: number | null;
+                max_degree?: number | null;
+                min_in_degree?: number | null;
+                max_in_degree?: number | null;
+                min_out_degree?: number | null;
+                max_out_degree?: number | null;
+                /** @description EXTRACTED | INFERRED | AMBIGUOUS */
+                confidence?: string | null;
+                /** @description any | parser | synthesized */
+                synthesized?: string;
+                cluster_id?: number | null;
+                visibility?: string | null;
+                is_exported?: boolean | null;
+                /** @description any | test | source */
+                test_scope?: string;
+                /** @description dead-code | hotspot | field-access | inheritance | isolates */
+                preset?: string | null;
+                /** @description default | in-degree | out-degree | total-degree | name | file | line */
+                sort?: string;
+                limit?: number;
+                offset?: number;
+                include_preview?: boolean;
+                preview_limit?: number;
+                regex?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GraphSearchResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_schema_api_schema_get: {
         parameters: {
             query?: {

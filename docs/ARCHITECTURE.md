@@ -42,19 +42,20 @@
    ┌────────┴───────────────────────────────────────┐
    ▼                          ▼                       ▼
  MCP server (stdio)     CLI read commands        Seam Explorer (web, [web] extra)
- 14 read-only tools     schema/query/impact/…    FastAPI + React SPA, 127.0.0.1
+ 15 read-only tools     schema/query/impact/…    FastAPI + React SPA, 127.0.0.1
    │                          │                       │
    └──────────────────────────┴───────────────────────┘
                               ▼
               AI agent (Claude Code · Cursor · Codex)
 ```
 
-The **14 MCP tools** map to engine functions:
+The **15 MCP tools** map to engine functions:
 
 | Tool | Engine entry point |
 |------|-------------------|
 | `seam_schema` | `query/schema.py` |
 | `seam_snippet` | `query/snippet.py` |
+| `seam_graph_search` | `query/graph_search.py` |
 | `seam_query` · `seam_search` · `seam_context` | `query/engine.py` (+ `query/semantic.py` hybrid) |
 | `seam_context_pack` | `query/pack.py` |
 | `seam_why` | `analysis/comments.py` |
@@ -134,7 +135,7 @@ the 1000-line cap: `impact_handler.py` (all `seam_impact` shaping), `trace_handl
 
 `seam_snippet` is the deliberate exception to the graph-traversal read path. It uses the
 index only to resolve identity and line ranges, then checks root containment and reads the
-live file directly. That split gives agents exact implementation text after search/query
+live file directly. That split gives agents exact implementation text after discovery results
 without inflating every discovery response with source bodies, while still warning when the
 indexed range may be stale.
 
@@ -240,17 +241,19 @@ Runs as a background thread/process alongside the MCP server. Uses watchdog's `O
 ### MCP Server
 **Files:** `seam/server/mcp.py`, `seam/server/tools.py`
 
-Stdio transport (no HTTP, no ports). The Python MCP SDK handles protocol framing. Ten tools exposed (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3 + Phase 6). Tool handlers in `tools.py` validate inputs and delegate to `query/engine.py`, `query/clusters.py`, or `analysis/`. Since Phase 4, `seam_context`, `seam_search`, and `seam_query` pass through the five enrichment fields from the engine layer unchanged. Since Phase 5, `seam_impact` and `seam_trace` additionally return `resolved_by` (provenance) and `best_candidate` (proximity pick on AMBIGUOUS entries) on each hop/entry.
+Stdio transport (no HTTP, no ports). The Python MCP SDK handles protocol framing. Fifteen read-only tools are exposed across search/query, context, risk, structure, schema, snippet, and structural graph-search workflows. Tool handlers in `tools.py` validate inputs and delegate to `query/*` or `analysis/*` modules. Since Phase 4, `seam_context`, `seam_search`, and `seam_query` pass through the five enrichment fields from the engine layer unchanged. Since Phase 5, `seam_impact` and `seam_trace` additionally return `resolved_by` (provenance) and `best_candidate` (proximity pick on AMBIGUOUS entries) on each hop/entry.
 
 ### Query Engine
 **File:** `seam/query/engine.py`
 
-The read path. Three query types:
+The read path. Four query families:
 - **FTS5 search** — BM25-ranked full-text search across symbol names + docstrings + signature (signature added Phase 4)
 - **Concept query** — FTS5 match + 1-hop graph expansion (connected symbols)
 - **Context** — Direct lookup by symbol name + join to get callers/callees
+- **Structural graph search** — typed predicates over symbol/edge metadata for dead-code
+  suspects, fan-in/fan-out hotspots, field access, inheritance, and bounded one-hop previews
 
-Since Phase 4, all three functions include the five enrichment fields in their output TypedDicts (`ContextResult`, `SearchResult`, `QueryResult`). Pre-v5 rows carry `null` for those fields — callers treat `null` as "unknown".
+Since Phase 4, the classic engine functions include the five enrichment fields in their output TypedDicts (`ContextResult`, `SearchResult`, `QueryResult`). Pre-v5 rows carry `null` for those fields — callers treat `null` as "unknown". `seam_graph_search` is a separate structural discovery module and returns compact metadata plus degree summaries instead of source or broad context.
 
 ### Clustering (Phase 2)
 **Files:** `seam/analysis/clustering.py`, `seam/analysis/cluster_naming.py`, `seam/indexer/cluster_index.py`, `seam/query/clusters.py`
@@ -435,7 +438,7 @@ same `handle_seam_*` handlers that the MCP server uses (`seam/server/tools.py`).
 the JSON payload inside the `data` envelope is byte-identical to what an MCP tool call would
 return — one code path for agents regardless of whether they invoke Seam via MCP or shell.
 
-**Commands with `--json`/`--quiet`:** `impact`, `trace`, `changes`, `why`, `clusters`, `status`, `affected`.
+**Commands with `--json`/`--quiet`:** `impact`, `trace`, `changes`, `why`, `clusters`, `status`, `affected`, `graph-search`.
 **Commands with `--stdin`:** `affected` (file list), `changes` (file list to narrow changed_symbols/new_files).
 
 Stable error codes (single source in `output.py` docstring):

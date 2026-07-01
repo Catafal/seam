@@ -92,4 +92,4 @@ def test_seam_flows_registered(tmp_path: Path) -> None:
     conn.close()
     tool_names = list(server._tool_manager._tools.keys())
     assert "seam_flows" in tool_names
-    assert len(tool_names) == 14
+    assert len(tool_names) == 15

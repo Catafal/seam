@@ -30,6 +30,7 @@ import type {
   StructureSymbol,
   SchemaResponse,
   SnippetResponse,
+  GraphSearchResponse,
 } from "./schema-types";
 import type {
   SearchResponse,
@@ -53,6 +54,36 @@ export interface SnippetSelector {
   maxLines?: number;
   maxBytes?: number;
   includeNeighbors?: boolean;
+}
+
+/** Typed filters accepted by GET /api/graph/search. */
+export interface GraphSearchFilters {
+  kind?: string;
+  namePattern?: string;
+  qualifiedNamePattern?: string;
+  filePattern?: string;
+  language?: string;
+  edgeKind?: string;
+  direction?: "incoming" | "outgoing" | "both";
+  minDegree?: number;
+  maxDegree?: number;
+  minInDegree?: number;
+  maxInDegree?: number;
+  minOutDegree?: number;
+  maxOutDegree?: number;
+  confidence?: "EXTRACTED" | "INFERRED" | "AMBIGUOUS";
+  synthesized?: "any" | "parser" | "synthesized";
+  clusterId?: number;
+  visibility?: string;
+  isExported?: boolean;
+  testScope?: "any" | "test" | "source";
+  preset?: "dead-code" | "hotspot" | "field-access" | "inheritance" | "isolates";
+  sort?: "default" | "in-degree" | "out-degree" | "total-degree" | "name" | "file" | "line";
+  limit?: number;
+  offset?: number;
+  includePreview?: boolean;
+  previewLimit?: number;
+  regex?: boolean;
 }
 
 // ── useStatus ─────────────────────────────────────────────────────────────────
@@ -307,5 +338,50 @@ export function useSnippet(selector: SnippetSelector, enabled: boolean = true) {
         },
       }),
     enabled: enabled && (hasUid || hasSymbol || hasLocation),
+  });
+}
+
+// ── useGraphSearch ──────────────────────────────────────────────────────────
+
+/**
+ * Fetch typed structural graph-search results from GET /api/graph/search.
+ * Kept as a full response because pagination, warnings, and normalized query
+ * metadata are part of the graph-search contract.
+ */
+export function useGraphSearch(filters: GraphSearchFilters = {}, enabled: boolean = true) {
+  return useQuery<GraphSearchResponse>({
+    queryKey: ["graph-search", filters],
+    queryFn: () =>
+      apiFetch<GraphSearchResponse>("/api/graph/search", {
+        params: {
+          kind: filters.kind,
+          name_pattern: filters.namePattern,
+          qualified_name_pattern: filters.qualifiedNamePattern,
+          file_pattern: filters.filePattern,
+          language: filters.language,
+          edge_kind: filters.edgeKind,
+          direction: filters.direction,
+          min_degree: filters.minDegree,
+          max_degree: filters.maxDegree,
+          min_in_degree: filters.minInDegree,
+          max_in_degree: filters.maxInDegree,
+          min_out_degree: filters.minOutDegree,
+          max_out_degree: filters.maxOutDegree,
+          confidence: filters.confidence,
+          synthesized: filters.synthesized,
+          cluster_id: filters.clusterId,
+          visibility: filters.visibility,
+          is_exported: filters.isExported,
+          test_scope: filters.testScope,
+          preset: filters.preset,
+          sort: filters.sort,
+          limit: filters.limit,
+          offset: filters.offset,
+          include_preview: filters.includePreview,
+          preview_limit: filters.previewLimit,
+          regex: filters.regex,
+        },
+      }),
+    enabled,
   });
 }

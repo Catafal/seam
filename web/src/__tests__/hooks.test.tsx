@@ -7,7 +7,7 @@
  * 3. Asserting the hook returns the expected data (or error state)
  *
  * Hooks under test:
- *   useStatus, useSearch, useNeighborhood, useSymbol, useClusters
+ *   useStatus, useSearch, useNeighborhood, useSymbol, useClusters, graph tools
  */
 
 import { renderHook, waitFor } from "@testing-library/react";
@@ -24,6 +24,7 @@ import {
   useChanges,
   useSchema,
   useSnippet,
+  useGraphSearch,
 } from "../api/hooks";
 import type {
   StatusResponse,
@@ -36,6 +37,7 @@ import type {
   ChangesResponse,
   SchemaResponse,
   SnippetResponse,
+  GraphSearchResponse,
 } from "../api/schema-types";
 
 // ── Test utilities ─────────────────────────────────────────────────────────────
@@ -392,6 +394,42 @@ const SCHEMA_FIXTURE: SchemaResponse = {
   tables: null,
 };
 
+const GRAPH_SEARCH_FIXTURE: GraphSearchResponse = {
+  query: {
+    kind: "function",
+    edge_kind: "call",
+    direction: "incoming",
+    limit: 20,
+    offset: 0,
+  },
+  items: [
+    {
+      symbol: "check",
+      uid: "abc12345:5",
+      kind: "function",
+      file: "auth.py",
+      line: 5,
+      end_line: 6,
+      signature: "def check(pw)",
+      qualified_name: "check",
+      visibility: "public",
+      is_exported: true,
+      language: "python",
+      cluster_id: null,
+      cluster_label: null,
+      is_test: false,
+      degrees: { incoming: 1, outgoing: 0, total: 1 },
+      preview: null,
+      preview_truncated: null,
+    },
+  ],
+  total: 1,
+  limit: 20,
+  offset: 0,
+  has_more: false,
+  warnings: [],
+};
+
 // ── useImpact ─────────────────────────────────────────────────────────────────
 
 describe("useImpact", () => {
@@ -464,6 +502,48 @@ describe("useChanges", () => {
   it("does NOT fetch when enabled=false (drawer closed)", () => {
     vi.stubGlobal("fetch", vi.fn());
     renderHook(() => useChanges("working", false), { wrapper: makeWrapper() });
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+});
+
+// ── useGraphSearch ───────────────────────────────────────────────────────────
+
+describe("useGraphSearch", () => {
+  it("fetches /api/graph/search with typed structural filters", async () => {
+    mockFetch(GRAPH_SEARCH_FIXTURE);
+    const { result } = renderHook(
+      () =>
+        useGraphSearch({
+          kind: "function",
+          edgeKind: "call",
+          direction: "incoming",
+          maxInDegree: 0,
+          includePreview: true,
+        }),
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(result.current.data).toEqual(GRAPH_SEARCH_FIXTURE);
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      expect.stringContaining("/api/graph/search"),
+      expect.any(Object),
+    );
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      expect.stringContaining("edge_kind=call"),
+      expect.any(Object),
+    );
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      expect.stringContaining("max_in_degree=0"),
+      expect.any(Object),
+    );
+  });
+
+  it("does NOT fetch when enabled=false", () => {
+    vi.stubGlobal("fetch", vi.fn());
+    renderHook(() => useGraphSearch({ preset: "hotspot" }, false), {
+      wrapper: makeWrapper(),
+    });
     expect(vi.mocked(fetch)).not.toHaveBeenCalled();
   });
 });
