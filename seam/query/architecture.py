@@ -40,6 +40,11 @@ _OPTIONAL_SURFACES: dict[str, dict[str, str]] = {
         "message": "Explicit test coverage edges are not supported by the current Seam graph schema.",
         "hint": "Test summaries currently use path heuristics, not coverage edges.",
     },
+    "exceptions": {
+        "code": "NO_EXCEPTION_EDGES",
+        "message": "Exception edges are not populated in the current Seam graph.",
+        "hint": "Run 'seam sync' or 'seam init' with P3.4 support to populate raises/catches edges.",
+    },
 }
 
 _DEFAULT_SECTIONS: tuple[str, ...] = (
@@ -51,6 +56,7 @@ _DEFAULT_SECTIONS: tuple[str, ...] = (
     "routes",
     "configs",
     "resources",
+    "exceptions",
     "hotspots",
     "orchestrators",
     "boundaries",
@@ -615,7 +621,7 @@ def _optional_surfaces() -> dict[str, Any]:
             "reason": surface["message"],
         }
         for name, surface in _OPTIONAL_SURFACES.items()
-        if name not in {"routes", "configs", "resources"}
+        if name not in {"routes", "configs", "resources", "exceptions"}
     }
 
 
@@ -787,6 +793,91 @@ def _resources_section(
     }
 
 
+def _exceptions_section(
+    conn: sqlite3.Connection,
+    root: Path,
+    allowed_files: set[str] | None = None,
+    limit: int = 10,
+) -> dict[str, Any]:
+    if not _table_exists(conn, "edges"):
+        surface = _OPTIONAL_SURFACES["exceptions"]
+        return {"status": "unsupported", "reason": surface["message"], "truncated": 0}
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                e.source_name,
+                e.target_name,
+                e.kind,
+                e.line,
+                e.confidence,
+                f.path AS file
+            FROM edges e
+            JOIN files f ON f.id = e.file_id
+            WHERE e.kind IN ('raises', 'catches') AND f.path NOT LIKE ':%'
+            ORDER BY e.kind, e.target_name, e.source_name, f.path, e.line
+            """
+        ).fetchall()
+    except sqlite3.Error:
+        rows = []
+    if allowed_files is not None:
+        rows = [row for row in rows if str(row["file"]) in allowed_files]
+
+    raised: dict[str, int] = defaultdict(int)
+    caught: dict[str, int] = defaultdict(int)
+    source_counts: dict[str, dict[str, int]] = defaultdict(lambda: {"raises": 0, "catches": 0})
+    broad_catches: list[dict[str, Any]] = []
+    broad_names = {"BaseException", "Exception", "Error", "RuntimeError", "Throwable"}
+    for row in rows:
+        target = str(row["target_name"])
+        kind = str(row["kind"])
+        source = str(row["source_name"])
+        if kind == "raises":
+            raised[target] += 1
+            source_counts[source]["raises"] += 1
+        elif kind == "catches":
+            caught[target] += 1
+            source_counts[source]["catches"] += 1
+            if target.rsplit(".", 1)[-1] in broad_names:
+                broad_catches.append({
+                    "source": source,
+                    "target": target,
+                    "file": _relativize(str(row["file"]), root),
+                    "line": int(row["line"]),
+                    "confidence": row["confidence"],
+                })
+
+    def _ranked_types(counts: dict[str, int]) -> list[dict[str, Any]]:
+        return [
+            {"target": target, "count": count}
+            for target, count in sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))[:limit]
+        ]
+
+    heavy_symbols = [
+        {"source": source, **counts}
+        for source, counts in sorted(
+            source_counts.items(),
+            key=lambda item: (-(item[1]["raises"] + item[1]["catches"]), item[0]),
+        )[:limit]
+    ]
+    return {
+        "status": "populated" if rows else "empty",
+        "raised_types": _ranked_types(raised),
+        "caught_types": _ranked_types(caught),
+        "broad_catches": broad_catches[:limit],
+        "heavy_symbols": heavy_symbols,
+        "truncated": max(
+            0,
+            max(
+                len(raised) - limit,
+                len(caught) - limit,
+                len(broad_catches) - limit,
+                len(source_counts) - limit,
+            ),
+        ),
+    }
+
+
 def _warnings(
     *,
     freshness: dict[str, Any],
@@ -794,6 +885,7 @@ def _warnings(
     routes_supported: bool,
     configs_supported: bool,
     resources_supported: bool,
+    exceptions_supported: bool,
 ) -> list[dict[str, str]]:
     warnings: list[dict[str, str]] = []
     if freshness["stale"]:
@@ -818,6 +910,8 @@ def _warnings(
         if name == "configs" and configs_supported:
             continue
         if name == "resources" and resources_supported:
+            continue
+        if name == "exceptions" and exceptions_supported:
             continue
         warnings.append(_warning(surface["code"], surface["message"], surface["hint"]))
     return warnings
@@ -873,6 +967,26 @@ def _next_calls_for_sections(sections: dict[str, Any]) -> list[dict[str, Any]]:
                 "params": {"target": top["symbol"], "direction": "downstream"},
             },
         )
+    exceptions = sections.get("exceptions")
+    if exceptions and exceptions.get("status") == "populated":
+        calls.insert(
+            1,
+            {
+                "tool": "seam_graph_search",
+                "reason": "Review explicit failure paths using exception-flow edges.",
+                "params": {"edge_kind": "raises,catches", "limit": 10},
+            },
+        )
+        heavy_symbols = exceptions.get("heavy_symbols", [])
+        if heavy_symbols:
+            calls.insert(
+                2,
+                {
+                    "tool": "seam_context",
+                    "reason": "Inspect the symbol with the densest explicit exception-flow evidence.",
+                    "params": {"symbol": heavy_symbols[0]["source"]},
+                },
+            )
     return calls
 
 
@@ -917,6 +1031,7 @@ def _fit_to_byte_budget(result: dict[str, Any], *, max_bytes: int) -> dict[str, 
         "routes",
         "configs",
         "resources",
+        "exceptions",
     )
 
     def _size() -> int:
@@ -1045,6 +1160,7 @@ def describe_architecture(
         "routes": _routes_section(conn, root, allowed_files, safe_limit),
         "configs": _configs_section(conn, root, allowed_files, safe_limit),
         "resources": _resources_section(conn, root, allowed_files, safe_limit),
+        "exceptions": _exceptions_section(conn, root, allowed_files, safe_limit),
         "edge_mix": _edge_mix_section(edge_rows),
         "tests": {
             "files": {"production": production_files, "test": test_files, "unknown": 0},
@@ -1082,6 +1198,7 @@ def describe_architecture(
             routes_supported=_table_exists(conn, "routes"),
             configs_supported=_table_exists(conn, "config_keys"),
             resources_supported=_table_exists(conn, "resources"),
+            exceptions_supported=_table_exists(conn, "edges"),
         ),
     ]
     return _fit_to_byte_budget(result, max_bytes=max_bytes)

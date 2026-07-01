@@ -65,6 +65,7 @@ class SchemaCapabilities(BaseModel):
     has_resource_nodes: bool
     has_reads_config: bool
     has_configures: bool
+    has_exception_edges: bool
 
 
 class SchemaToolGuide(BaseModel):
@@ -308,6 +309,18 @@ class ArchitectureEdgeMixSection(BaseModel):
     synthesized_total: int
 
 
+class ArchitectureExceptionsSection(BaseModel):
+    """Exception-flow summary for explicit raises/throws and typed catches."""
+
+    status: str
+    raised_types: list[dict[str, Any]] | None = None
+    caught_types: list[dict[str, Any]] | None = None
+    broad_catches: list[dict[str, Any]] | None = None
+    heavy_symbols: list[dict[str, Any]] | None = None
+    truncated: int
+    reason: str | None = None
+
+
 class ArchitectureTestsSection(BaseModel):
     """Test/prod split and explicit coverage-edge status."""
 
@@ -338,6 +351,7 @@ class ArchitectureSections(BaseModel):
     orchestrators: ArchitectureListSection | None = None
     boundaries: ArchitectureListSection | None = None
     edge_mix: ArchitectureEdgeMixSection | None = None
+    exceptions: ArchitectureExceptionsSection | None = None
     tests: ArchitectureTestsSection | None = None
     optional_surfaces: dict[str, ArchitectureOptionalSurface] | None = None
 

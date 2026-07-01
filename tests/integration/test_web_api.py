@@ -35,6 +35,7 @@ def _make_indexed_repo(tmp_path: Path) -> Path:
         "    return check(pw)\n"
         "\n"
         "def check(pw):\n"
+        "    raise ValueError('bad pw')\n"
         "    return True\n"
     )
     # Use the Typer CLI runner (same approach as test_cli_read.py) to index the repo.
@@ -255,6 +256,19 @@ def test_graph_search_invalid_filter_returns_400(client: TestClient) -> None:
     resp = client.get("/api/graph/search", params={"edge_kind": "HTTP_CALLS"})
     assert resp.status_code == 400
     assert resp.json()["detail"]["code"] == "INVALID_INPUT"
+
+
+def test_graph_search_accepts_exception_edges(client: TestClient) -> None:
+    """Exception edge kinds flow through the web graph-search endpoint."""
+    resp = client.get(
+        "/api/graph/search",
+        params={"edge_kind": "raises", "direction": "outgoing"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["items"][0]["symbol"] == "check"
+    assert data["items"][0]["degrees"]["outgoing"] == 1
 
 
 def test_graph_search_no_index(no_index_client: TestClient) -> None:

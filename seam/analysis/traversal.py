@@ -123,7 +123,8 @@ class Reached(TypedDict):
         kind           — E4: edge kind of the FINAL hop of the winning (strongest-confidence)
                          path to this symbol. Full closed vocabulary:
                          call | import | extends | implements | instantiates | holds |
-                         reads | writes | uses.
+                         reads | writes | uses | http_calls | reads_config | configures |
+                         raises | catches.
                          Same provenance source as resolved_by — all four fields describe
                          one coherent edge. Empty string for degenerate BFS cases.
         synthesized_by — E4: synthesis channel name when the final hop is a heuristic
@@ -164,6 +165,7 @@ def _fetch_neighbors_with_parents(
     conn: sqlite3.Connection,
     names: set[str],
     direction: str,
+    excluded_edge_kinds: set[str] | None = None,
 ) -> list[tuple[str, str, str, str, str, str, str | None]]:
     """Fetch one-hop neighbors for a set of symbol names, with file context for Phase 5.
 
@@ -256,6 +258,7 @@ def _fetch_neighbors_with_parents(
                 row["edge_synthesized_by"],
             )
             for row in rows
+            if excluded_edge_kinds is None or row["edge_kind"] not in excluded_edge_kinds
         )
 
     return all_rows
@@ -270,6 +273,7 @@ def walk(
     direction: str,
     max_depth: int,
     repo_root: Path | None = None,
+    excluded_edge_kinds: set[str] | None = None,
 ) -> list[Reached]:
     """Walk the edge graph from seed symbols, returning reachable symbols.
 
@@ -283,6 +287,10 @@ def walk(
                     each hop's confidence is resolved via resolve_edge() with full
                     import-promotion context (Phase 5 homonym fix).  When None or when
                     SEAM_IMPORT_RESOLUTION="off", falls back to name-count resolution.
+        excluded_edge_kinds:
+                    Optional edge kinds to omit from the walk. Impact uses this to
+                    keep explicit exception-flow evidence out of default blast-radius
+                    reports while graph-search/architecture still expose those edges.
 
     Returns:
         List of Reached dicts — one per reachable symbol (excluding the seeds themselves).
@@ -363,7 +371,12 @@ def walk(
         # Fetch one-hop neighbors for all symbols in the current frontier.
         # Returns (neighbor, parent, edge_target_name, ref_file_path, language, edge_kind, edge_synthesized_by).
         frontier_names = {name for name, _ in current_frontier}
-        rows = _fetch_neighbors_with_parents(conn, frontier_names, direction)
+        rows = _fetch_neighbors_with_parents(
+            conn,
+            frontier_names,
+            direction,
+            excluded_edge_kinds,
+        )
 
         if not rows:
             break

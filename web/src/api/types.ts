@@ -417,6 +417,34 @@ export interface components {
             synthesized_total: number;
         };
         /**
+         * ArchitectureExceptionsSection
+         * @description Exception-flow summary for explicit raises/throws and typed catches.
+         */
+        ArchitectureExceptionsSection: {
+            /** Status */
+            status: string;
+            /** Raised Types */
+            raised_types?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Caught Types */
+            caught_types?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Broad Catches */
+            broad_catches?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Heavy Symbols */
+            heavy_symbols?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Truncated */
+            truncated: number;
+            /** Reason */
+            reason?: string | null;
+        };
+        /**
          * ArchitectureFreshness
          * @description Index freshness block in GET /api/architecture.
          */
@@ -542,6 +570,7 @@ export interface components {
             orchestrators?: components["schemas"]["ArchitectureListSection"] | null;
             boundaries?: components["schemas"]["ArchitectureListSection"] | null;
             edge_mix?: components["schemas"]["ArchitectureEdgeMixSection"] | null;
+            exceptions?: components["schemas"]["ArchitectureExceptionsSection"] | null;
             tests?: components["schemas"]["ArchitectureTestsSection"] | null;
             /** Optional Surfaces */
             optional_surfaces?: {
@@ -995,6 +1024,8 @@ export interface components {
             has_reads_config: boolean;
             /** Has Configures */
             has_configures: boolean;
+            /** Has Exception Edges */
+            has_exception_edges: boolean;
         };
         /**
          * SchemaColumnInfo

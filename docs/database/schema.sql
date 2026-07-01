@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS edges (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     source_name TEXT NOT NULL,          -- Symbol name of the caller/importer
     target_name TEXT NOT NULL,          -- Symbol name of the callee/importee
-    kind        TEXT NOT NULL,          -- 'import' | 'call' | 'extends' | 'implements' | 'instantiates' | 'holds' | 'reads' | 'writes' [A3]
+    kind        TEXT NOT NULL,          -- 'import' | 'call' | 'extends' | 'implements' | 'instantiates' | 'holds' | 'reads' | 'writes' | 'uses' | 'http_calls' | 'reads_config' | 'configures' | 'raises' | 'catches'
     file_id     INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
     line        INTEGER NOT NULL,       -- Line where the relationship is expressed
     confidence  TEXT NOT NULL DEFAULT 'INFERRED',  -- EXTRACTED | INFERRED | AMBIGUOUS (DEFAULT is INFERRED: conservative)

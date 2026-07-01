@@ -366,7 +366,7 @@ const SCHEMA_FIXTURE: SchemaResponse = {
   breakdowns: {
     languages: { python: 10 },
     symbol_kinds: { function: 79, class: 20, route: 1, config: 1, resource: 1 },
-    edge_kinds: { call: 119, http_calls: 1, reads_config: 1, configures: 1 },
+    edge_kinds: { call: 119, http_calls: 1, reads_config: 1, configures: 1, raises: 1, catches: 1 },
     edge_confidence: { EXTRACTED: 120 },
     synthesized_edges: {},
     comment_markers: { WHY: 3 },
@@ -393,6 +393,7 @@ const SCHEMA_FIXTURE: SchemaResponse = {
     has_resource_nodes: true,
     has_reads_config: true,
     has_configures: true,
+    has_exception_edges: true,
   },
   tools: [
     {
