@@ -159,6 +159,7 @@ def test_openapi_schema_works_without_db(tmp_path: Path) -> None:
     assert "/api/status" in schema["paths"]
     assert "/api/schema" in schema["paths"]
     assert "/api/snippet" in schema["paths"]
+    assert "/api/graph/search" in schema["paths"]
     assert "/api/search" in schema["paths"]
     assert "/api/symbol/{name}" in schema["paths"]
     assert "/api/clusters" in schema["paths"]
@@ -224,6 +225,40 @@ def test_snippet_invalid_selector_returns_400(client: TestClient) -> None:
 def test_snippet_no_index(no_index_client: TestClient) -> None:
     """Snippet returns 503 NO_INDEX when no index exists."""
     resp = no_index_client.get("/api/snippet", params={"symbol": "check"})
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "NO_INDEX"
+
+
+# ── T1d: GET /api/graph/search — structural graph search ────────────────────
+
+
+def test_graph_search_happy_path(client: TestClient) -> None:
+    """Graph search returns compact structural results with root-relative paths."""
+    resp = client.get(
+        "/api/graph/search",
+        params={"kind": "function", "name_pattern": "check", "include_preview": "true"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["items"][0]["symbol"] == "check"
+    assert data["items"][0]["file"] == "auth.py"
+    assert data["items"][0]["uid"]
+    assert data["items"][0]["degrees"]["incoming"] == 1
+    assert "source" not in data["items"][0]
+    assert data["query"]["name_pattern"] == "check"
+
+
+def test_graph_search_invalid_filter_returns_400(client: TestClient) -> None:
+    """Invalid typed filters map to handler-style errors."""
+    resp = client.get("/api/graph/search", params={"edge_kind": "HTTP_CALLS"})
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "INVALID_INPUT"
+
+
+def test_graph_search_no_index(no_index_client: TestClient) -> None:
+    """Graph search returns 503 NO_INDEX when no index exists."""
+    resp = no_index_client.get("/api/graph/search", params={"kind": "function"})
     assert resp.status_code == 503
     assert resp.json()["detail"]["code"] == "NO_INDEX"
 

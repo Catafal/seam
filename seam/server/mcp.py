@@ -1,4 +1,4 @@
-"""MCP server setup — FastMCP stdio transport, fourteen tools registered.
+"""MCP server setup — FastMCP stdio transport, fifteen tools registered.
 
 Creates and configures the MCP server instance.
 Tool handlers in tools.py are thin adapters; this module wires them to FastMCP.
@@ -22,6 +22,7 @@ Tools registered (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3 + Phase 6 + T
     seam_structure    — whole-repo directory/file/container structure tree (Tier D11)
     seam_schema       — read-only index capability and freshness map (Phase 11)
     seam_snippet      — exact bounded source retrieval for one indexed symbol (Phase 11)
+    seam_graph_search — typed structural graph discovery over symbols/edges (Phase 11)
 
 Design:
 - One FastMCP instance per process; connection is injected at creation time.
@@ -47,6 +48,7 @@ from seam.server.tools import (
     handle_seam_context,
     handle_seam_context_pack,
     handle_seam_flows,
+    handle_seam_graph_search,
     handle_seam_impact,
     handle_seam_query,
     handle_seam_schema,
@@ -97,7 +99,7 @@ def _finalize(result: Any) -> Any:
 
 
 def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
-    """Configure and return a FastMCP server with all fourteen Seam tools registered.
+    """Configure and return a FastMCP server with all fifteen Seam tools registered.
 
     Phase 0:  seam_query, seam_context, seam_search
     Phase 1:  seam_impact, seam_trace, seam_changes
@@ -107,7 +109,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
     Phase 6:  seam_context_pack
     Flows:    seam_flows
     Tier D11: seam_structure
-    Phase 11: seam_schema, seam_snippet
+    Phase 11: seam_schema, seam_snippet, seam_graph_search
 
     Args:
         conn: Open SQLite connection to the Seam index DB.
@@ -200,6 +202,75 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
                 max_lines=max_lines,
                 max_bytes=max_bytes,
                 include_neighbors=include_neighbors,
+            )
+        )
+
+    @mcp.tool()
+    def seam_graph_search(
+        kind: str | None = None,
+        name_pattern: str | None = None,
+        qualified_name_pattern: str | None = None,
+        file_pattern: str | None = None,
+        language: str | None = None,
+        edge_kind: str | None = None,
+        direction: str = "both",
+        min_degree: int | None = None,
+        max_degree: int | None = None,
+        min_in_degree: int | None = None,
+        max_in_degree: int | None = None,
+        min_out_degree: int | None = None,
+        max_out_degree: int | None = None,
+        confidence: str | None = None,
+        synthesized: str = "any",
+        cluster_id: int | None = None,
+        visibility: str | None = None,
+        is_exported: bool | None = None,
+        test_scope: str = "any",
+        preset: str | None = None,
+        sort: str = "default",
+        limit: int = 20,
+        offset: int = 0,
+        include_preview: bool = False,
+        preview_limit: int = 3,
+        regex: bool = False,
+    ) -> Any:
+        """Find symbols by graph shape before you know the exact symbol name.
+
+        Use this for dead-code suspects, fan-in/fan-out hotspots, field readers
+        and writers, inheritance relationships, or other typed structural filters.
+        Results are metadata-only and include UIDs for follow-up seam_snippet,
+        seam_context, seam_impact, or seam_trace calls.
+        """
+        return _finalize(
+            handle_seam_graph_search(
+                conn,
+                root,
+                kind=kind,
+                name_pattern=name_pattern,
+                qualified_name_pattern=qualified_name_pattern,
+                file_pattern=file_pattern,
+                language=language,
+                edge_kind=edge_kind,
+                direction=direction,
+                min_degree=min_degree,
+                max_degree=max_degree,
+                min_in_degree=min_in_degree,
+                max_in_degree=max_in_degree,
+                min_out_degree=min_out_degree,
+                max_out_degree=max_out_degree,
+                confidence=confidence,
+                synthesized=synthesized,
+                cluster_id=cluster_id,
+                visibility=visibility,
+                is_exported=is_exported,
+                test_scope=test_scope,
+                preset=preset,
+                sort=sort,
+                limit=limit,
+                offset=offset,
+                include_preview=include_preview,
+                preview_limit=preview_limit,
+                regex=regex,
             )
         )
 

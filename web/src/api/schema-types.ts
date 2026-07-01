@@ -45,3 +45,7 @@ export type SnippetFreshness = components["schemas"]["SnippetFreshness"];
 export type SnippetResponse = components["schemas"]["SnippetResponse"];
 export type SnippetTruncation = components["schemas"]["SnippetTruncation"];
 export type SnippetWarning = components["schemas"]["SnippetWarning"];
+export type GraphSearchDegreeSummary = components["schemas"]["GraphSearchDegreeSummary"];
+export type GraphSearchItem = components["schemas"]["GraphSearchItem"];
+export type GraphSearchPreviewItem = components["schemas"]["GraphSearchPreviewItem"];
+export type GraphSearchResponse = components["schemas"]["GraphSearchResponse"];

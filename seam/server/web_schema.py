@@ -166,3 +166,60 @@ class SnippetResponse(BaseModel):
     message: str | None = None
     candidates: list[SnippetCandidate] = []
     warnings: list[SnippetWarning]
+
+
+class GraphSearchDegreeSummary(BaseModel):
+    """Incoming/outgoing/total relationship counts for a structural result."""
+
+    incoming: int
+    outgoing: int
+    total: int
+
+
+class GraphSearchPreviewItem(BaseModel):
+    """One bounded connected-node preview entry."""
+
+    direction: str
+    symbol: str
+    uid: str | None
+    kind: str | None
+    file: str
+    line: int
+    edge_kind: str
+    confidence: str
+    receiver: str | None = None
+    synthesized_by: str | None = None
+
+
+class GraphSearchItem(BaseModel):
+    """One structural graph-search hit, intentionally metadata-only."""
+
+    symbol: str
+    uid: str
+    kind: str
+    file: str
+    line: int
+    end_line: int
+    signature: str | None
+    qualified_name: str | None
+    visibility: str | None
+    is_exported: bool | None
+    language: str | None
+    cluster_id: int | None
+    cluster_label: str | None
+    is_test: bool
+    degrees: GraphSearchDegreeSummary
+    preview: list[GraphSearchPreviewItem] | None = None
+    preview_truncated: bool | None = None
+
+
+class GraphSearchResponse(BaseModel):
+    """Response for GET /api/graph/search."""
+
+    query: dict[str, Any]
+    items: list[GraphSearchItem]
+    total: int
+    limit: int
+    offset: int
+    has_more: bool
+    warnings: list[SchemaWarning]

@@ -6,7 +6,7 @@
 
 **Local code intelligence for AI agents.** Index a codebase once; agents query its structure instead of re-discovering it with `grep` every session.
 
-`v0.3.0` · 12 languages · 14 MCP tools · SQLite-backed · **zero network calls at query time** · gate-green (~3,055 tests)
+`v0.3.0` · 12 languages · 15 MCP tools · SQLite-backed · **zero network calls at query time** · gate-green (~3,055 tests)
 
 [![CI](https://github.com/Catafal/seam/actions/workflows/ci.yml/badge.svg)](https://github.com/Catafal/seam/actions/workflows/ci.yml)
 
@@ -42,7 +42,7 @@ Think of Seam as **a compiler's symbol table and call graph for your whole repos
                                             ┌───────────────┴───────────────┐
                                             ▼                               ▼
                                      MCP server (stdio)              CLI read commands
-                                     14 read-only tools              schema / query / impact …
+                                     15 read-only tools              schema / query / impact …
                                             │                               │
                                             └──────────────┬────────────────┘
                                                            ▼
@@ -88,6 +88,7 @@ cd /path/to/your/project
 uv run seam init                       # index the project (writes .seam/seam.db)
 uv run seam search "auth token"        # full-text (hybrid semantic when enabled)
 uv run seam query "verify user login"  # concept search + 1-hop graph expansion
+uv run seam graph-search --preset hotspot --json  # structural graph search
 uv run seam context authenticate_user  # 360° view: callers, callees, cluster, signature
 uv run seam impact  authenticate_user  # blast radius by risk tier
 uv run seam structure                  # whole-repo directory/container map
@@ -120,7 +121,7 @@ Prefer native tool-calling? Add `--with-mcp` (install the `server` extra first).
 
 ---
 
-## The 14 MCP tools
+## The 15 MCP tools
 
 Grouped by the question an agent is asking. Every tool is **read-only**; the server never writes the index.
 
@@ -131,6 +132,7 @@ Grouped by the question an agent is asking. Every tool is **read-only**; the ser
 | `seam_schema` | "What can this index answer?" — schema version, counts, optional capabilities, freshness, tool guidance, and warnings. | `verbose` |
 | `seam_search` | "Where is text X mentioned?" — FTS5 over names + docstrings + signatures, with fuzzy fallback; hybrid keyword+semantic when enabled. | `text`, `limit`, `semantic` |
 | `seam_query` | "Find all code related to concept X." — FTS5 match + 1-hop graph expansion, rescored by name/path/cluster signals. | `concept`, `limit`, `semantic` |
+| `seam_graph_search` | "Which symbols match this graph shape?" — typed structural discovery by kind, edge kind, degree, path, preset, and optional one-hop previews. | `kind`, `edge_kind`, `direction`, `preset`, `limit` |
 | `seam_snippet` | "Show me the exact code for this result." — bounded source text by UID, symbol, symbol+file, or file+line, with freshness/truncation warnings and optional same-file neighbor hints. | `uid`, `symbol`, `file`, `line`, `include_neighbors` |
 
 ### Understand a symbol

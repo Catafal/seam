@@ -114,8 +114,8 @@ tools:
     description: |
       Read-only exact source retrieval for one indexed symbol.
 
-      Use this after seam_search or seam_query when you need the implementation body
-      for a returned uid without requesting broad graph context. The tool resolves one
+      Use this after seam_search, seam_query, or seam_graph_search when you need the
+      implementation body for a returned uid without requesting broad graph context. The tool resolves one
       selector, proves the source path stays inside the project root, reads the live
       file range from disk, and returns bounded source text with freshness and
       truncation warnings.
@@ -124,7 +124,7 @@ tools:
         type: string
         required: false
         nullable: true
-        description: Preferred exact selector from seam_search/seam_query results.
+        description: Preferred exact selector from seam_search/seam_query/seam_graph_search results.
       symbol:
         type: string
         required: false
@@ -192,6 +192,156 @@ tools:
       found_false_ok: true
     errors:
       - INVALID_INPUT
+      - NO_INDEX
+      - DB_ERROR
+
+  seam_graph_search:
+    status: IMPLEMENTED
+    phase: phase-11-p1-3
+    description: |
+      Read-only typed structural graph search over indexed symbols and edges.
+
+      Use this when you know the graph shape you want before you know the exact
+      symbol name: dead-code suspects, fan-in/fan-out hotspots, field readers/writers,
+      inheritance relationships, path-scoped graph queries, and bounded one-hop previews.
+      This is intentionally not Cypher and never accepts arbitrary SQL.
+    input:
+      kind:
+        type: string
+        required: false
+        nullable: true
+        description: Symbol kind filter: function, class, method, interface, type, or field.
+      name_pattern:
+        type: string
+        required: false
+        nullable: true
+        description: Symbol name glob by default; regex when regex=true.
+      qualified_name_pattern:
+        type: string
+        required: false
+        nullable: true
+        description: Qualified-name glob/regex for class/member-aware searches.
+      file_pattern:
+        type: string
+        required: false
+        nullable: true
+        description: Root-relative file path glob/regex.
+      language:
+        type: string
+        required: false
+        nullable: true
+        description: Indexed language filter.
+      edge_kind:
+        type: string
+        required: false
+        nullable: true
+        description: Edge kind or comma-separated edge kinds; degree counts respect this filter.
+      direction:
+        type: string
+        default: both
+        enum: [incoming, outgoing, both]
+      min_degree:
+        type: integer
+        required: false
+        nullable: true
+      max_degree:
+        type: integer
+        required: false
+        nullable: true
+      min_in_degree:
+        type: integer
+        required: false
+        nullable: true
+      max_in_degree:
+        type: integer
+        required: false
+        nullable: true
+      min_out_degree:
+        type: integer
+        required: false
+        nullable: true
+      max_out_degree:
+        type: integer
+        required: false
+        nullable: true
+      confidence:
+        type: string
+        required: false
+        nullable: true
+        enum: [EXTRACTED, INFERRED, AMBIGUOUS]
+      synthesized:
+        type: string
+        default: any
+        enum: [any, parser, synthesized]
+      cluster_id:
+        type: integer
+        required: false
+        nullable: true
+      visibility:
+        type: string
+        required: false
+        nullable: true
+      is_exported:
+        type: bool
+        required: false
+        nullable: true
+      test_scope:
+        type: string
+        default: any
+        enum: [any, test, source]
+      preset:
+        type: string
+        required: false
+        nullable: true
+        enum: [dead-code, hotspot, field-access, inheritance, isolates]
+        description: Transparent preset compiled into the normalized query summary.
+      sort:
+        type: string
+        default: default
+        enum: [default, in-degree, out-degree, total-degree, name, file, line]
+      limit:
+        type: integer
+        default: 20
+        min: 0
+        max: 100
+      offset:
+        type: integer
+        default: 0
+        min: 0
+      include_preview:
+        type: bool
+        default: false
+      preview_limit:
+        type: integer
+        default: 3
+        min: 0
+        max: 10
+      regex:
+        type: bool
+        default: false
+    output:
+      type: object
+      description: |
+        query:
+          Normalized filters after defaults, caps, and preset expansion.
+        items:
+          Paginated symbol records. Each item includes symbol, uid, kind, root-relative
+          file, line/end_line, signature, qualified_name, visibility/export metadata,
+          language, cluster info, is_test, and degrees={incoming,outgoing,total}.
+          Source text is never included; call seam_snippet with uid for exact code.
+        total, limit, offset, has_more:
+          Honest pagination metadata for bounded traversal.
+        warnings:
+          Structured {code, message, hint}; includes missing enrichment/provenance
+          and preview/result cap warnings.
+        preview:
+          Present per item only when include_preview=true. One-hop metadata only:
+          connected symbol, uid when resolvable, file/line, edge_kind, confidence,
+          receiver, synthesized_by.
+      found_false_ok: false
+    errors:
+      - INVALID_INPUT
+      - INVALID_QUERY
       - NO_INDEX
       - DB_ERROR
 

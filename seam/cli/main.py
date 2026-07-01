@@ -57,6 +57,7 @@ from seam.analysis.impact import (
     TIER_WILL_BREAK,
 )
 from seam.analysis.staleness import _watcher_is_alive, check_staleness
+from seam.cli.graph_search import graph_search_command
 from seam.cli.install import install_command, uninstall_command
 from seam.cli.output import check_mutual_exclusion, emit_json, emit_json_error, print_quiet
 from seam.cli.read import context_command, query_command, search_command
@@ -107,6 +108,7 @@ app.command(name="search")(search_command)
 app.command(name="context")(context_command)
 app.command(name="schema")(schema_command)
 app.command(name="snippet")(snippet_command)
+app.command(name="graph-search")(graph_search_command)
 # serve starts the local Seam Explorer (FastAPI + uvicorn) — requires [web] extra.
 app.command(name="serve")(serve_command)
 

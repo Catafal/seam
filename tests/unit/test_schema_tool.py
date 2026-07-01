@@ -189,6 +189,8 @@ def test_describe_schema_summary_reports_capabilities(schema_repo, monkeypatch) 
     assert result["freshness"]["stale"] is False
     assert any(t["name"] == "seam_schema" for t in result["tools"])
     assert any(t["name"] == "seam_snippet" for t in result["tools"])
+    assert any(t["name"] == "seam_graph_search" for t in result["tools"])
+    assert any("seam_graph_search" in call for call in result["recommended_next_calls"])
     assert any("seam_snippet" in call for call in result["recommended_next_calls"])
     assert result["recommended_next_calls"]
     assert "tables" not in result
@@ -311,7 +313,8 @@ def test_schema_mcp_registration(schema_repo) -> None:
     tool_names = list(server._tool_manager._tools.keys())
     assert "seam_schema" in tool_names
     assert "seam_snippet" in tool_names
-    assert len(tool_names) == 14
+    assert "seam_graph_search" in tool_names
+    assert len(tool_names) == 15
 
 
 def test_schema_web_endpoint(schema_repo) -> None:
