@@ -377,8 +377,8 @@ def test_mcp_tool_count_includes_schema(tmp_path: Path) -> None:
     conn.close()
 
     tool_names = list(server._tool_manager._tools.keys())
-    assert len(tool_names) == 13, (
-        f"Expected 13 tools, got {len(tool_names)}: {sorted(tool_names)}"
+    assert len(tool_names) == 14, (
+        f"Expected 14 tools, got {len(tool_names)}: {sorted(tool_names)}"
     )
 
 

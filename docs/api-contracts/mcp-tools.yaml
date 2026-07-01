@@ -108,6 +108,93 @@ tools:
       - NO_INDEX
       - DB_ERROR
 
+  seam_snippet:
+    status: IMPLEMENTED
+    phase: phase-11-p1-2
+    description: |
+      Read-only exact source retrieval for one indexed symbol.
+
+      Use this after seam_search or seam_query when you need the implementation body
+      for a returned uid without requesting broad graph context. The tool resolves one
+      selector, proves the source path stays inside the project root, reads the live
+      file range from disk, and returns bounded source text with freshness and
+      truncation warnings.
+    input:
+      uid:
+        type: string
+        required: false
+        nullable: true
+        description: Preferred exact selector from seam_search/seam_query results.
+      symbol:
+        type: string
+        required: false
+        nullable: true
+        description: Symbol name. Ambiguous names return candidates instead of choosing.
+      file:
+        type: string
+        required: false
+        nullable: true
+        description: Root-relative or absolute file path for symbol+file or file+line selection.
+      line:
+        type: integer
+        required: false
+        nullable: true
+        description: 1-based line number for file+line selection.
+      context_lines:
+        type: integer
+        default: 0
+        min: 0
+        max: 20
+        description: Lines of context around the indexed symbol range.
+      max_lines:
+        type: integer
+        default: 200
+        min: 1
+        max: 2000
+        description: Maximum returned source lines.
+      max_bytes:
+        type: integer
+        default: 20000
+        min: 1
+        max: 200000
+        description: Maximum returned UTF-8 bytes.
+      include_neighbors:
+        type: bool
+        default: false
+        description: Include previous/next indexed symbols from the same file as metadata-only navigation hints.
+    output:
+      type: object
+      description: |
+        found:
+          (bool) true when an exact snippet was returned.
+        symbol, uid, kind, file, start_line, end_line:
+          Exact indexed identity. file is root-relative when inside the project root.
+        source_start_line, source_end_line:
+          Returned source range after context and truncation.
+        signature, docstring:
+          Indexed metadata when available.
+        source:
+          Bounded live source text for the selected range.
+        truncated:
+          {by_lines, by_bytes, original_line_count, returned_line_count}.
+        freshness:
+          {file_hash_matches, mtime_matches, index_stale}; stale means the live file
+          differs from indexed metadata and line ranges may be wrong.
+        warnings:
+          Structured {code, message, hint}. Common codes include AMBIGUOUS_SYMBOL,
+          UNKNOWN_UID, NO_SYMBOL_AT_LOCATION, SOURCE_FILE_MISSING, SOURCE_OUTSIDE_ROOT,
+          SOURCE_NOT_REGULAR_FILE, SOURCE_MAY_BE_STALE, SOURCE_RANGE_PAST_EOF,
+          SOURCE_DECODE_REPLACED, SNIPPET_TRUNCATED_LINES, SNIPPET_TRUNCATED_BYTES.
+        candidates:
+          Candidate selector rows for ambiguity or nearby-location recovery.
+        neighbors:
+          Previous/next same-file candidates when include_neighbors=true; empty otherwise.
+      found_false_ok: true
+    errors:
+      - INVALID_INPUT
+      - NO_INDEX
+      - DB_ERROR
+
   seam_query:
     description: |
       Find all code related to a concept using hybrid search (FTS5 + 1-hop graph expansion).

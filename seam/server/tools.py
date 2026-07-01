@@ -41,6 +41,7 @@ from seam.query.comments import why as comments_why
 from seam.query.pack import ContextPack, NeighborRef
 from seam.query.pack import context_pack as run_context_pack
 from seam.query.schema import describe_schema
+from seam.query.snippet import snippet as run_snippet
 from seam.query.structure import StructureResult
 from seam.query.structure import build_structure as run_build_structure
 
@@ -654,6 +655,34 @@ def handle_seam_schema(
 ) -> dict[str, Any]:
     """Handler for the seam_schema MCP tool — read-only index capability map."""
     return describe_schema(conn, root=root, verbose=verbose)
+
+
+def handle_seam_snippet(
+    conn: sqlite3.Connection,
+    root: Path,
+    *,
+    uid: str | None = None,
+    symbol: str | None = None,
+    file: str | None = None,
+    line: int | None = None,
+    context_lines: int = 0,
+    max_lines: int = 200,
+    max_bytes: int = 20_000,
+    include_neighbors: bool = False,
+) -> dict[str, Any]:
+    """Keep transport handlers byte-identical by delegating selector rules to query.snippet."""
+    return run_snippet(
+        conn,
+        root=root,
+        uid=uid,
+        symbol=symbol,
+        file=file,
+        line=line,
+        context_lines=context_lines,
+        max_lines=max_lines,
+        max_bytes=max_bytes,
+        include_neighbors=include_neighbors,
+    )
 
 
 def handle_seam_structure(

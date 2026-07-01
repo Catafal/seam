@@ -158,6 +158,7 @@ def test_openapi_schema_works_without_db(tmp_path: Path) -> None:
     assert "paths" in schema
     assert "/api/status" in schema["paths"]
     assert "/api/schema" in schema["paths"]
+    assert "/api/snippet" in schema["paths"]
     assert "/api/search" in schema["paths"]
     assert "/api/symbol/{name}" in schema["paths"]
     assert "/api/clusters" in schema["paths"]
@@ -194,6 +195,35 @@ def test_schema_verbose_includes_table_metadata(client: TestClient) -> None:
 def test_schema_no_index(no_index_client: TestClient) -> None:
     """Schema returns 503 NO_INDEX when no index exists."""
     resp = no_index_client.get("/api/schema")
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "NO_INDEX"
+
+
+# ── T1c: GET /api/snippet — exact source ────────────────────────────────────
+
+
+def test_snippet_happy_path(client: TestClient) -> None:
+    """Snippet endpoint returns bounded exact source for a unique symbol."""
+    resp = client.get("/api/snippet", params={"symbol": "check"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["found"] is True
+    assert data["symbol"] == "check"
+    assert data["file"] == "auth.py"
+    assert "def check(pw):" in data["source"]
+    assert data["warnings"] == []
+
+
+def test_snippet_invalid_selector_returns_400(client: TestClient) -> None:
+    """Invalid selector combinations map to the existing handler error style."""
+    resp = client.get("/api/snippet", params={"uid": "deadbeef:1", "symbol": "check"})
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "INVALID_INPUT"
+
+
+def test_snippet_no_index(no_index_client: TestClient) -> None:
+    """Snippet returns 503 NO_INDEX when no index exists."""
+    resp = no_index_client.get("/api/snippet", params={"symbol": "check"})
     assert resp.status_code == 503
     assert resp.json()["detail"]["code"] == "NO_INDEX"
 

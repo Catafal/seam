@@ -62,6 +62,7 @@ from seam.cli.output import check_mutual_exclusion, emit_json, emit_json_error, 
 from seam.cli.read import context_command, query_command, search_command
 from seam.cli.schema import schema_command
 from seam.cli.serve import serve_command
+from seam.cli.snippet import snippet_command
 from seam.indexer.cluster_index import get_llm_naming_summary, index_clusters
 from seam.indexer.db import connect, init_db
 from seam.indexer.embedding_index import index_embeddings
@@ -105,6 +106,7 @@ app.command(name="query")(query_command)
 app.command(name="search")(search_command)
 app.command(name="context")(context_command)
 app.command(name="schema")(schema_command)
+app.command(name="snippet")(snippet_command)
 # serve starts the local Seam Explorer (FastAPI + uvicorn) — requires [web] extra.
 app.command(name="serve")(serve_command)
 
