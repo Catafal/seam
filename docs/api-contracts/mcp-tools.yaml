@@ -20,7 +20,7 @@
 #
 # E4 edge provenance (closed follow-up): synthesized_by is now surfaced in seam_impact tier
 # entries and seam_trace hops when SEAM_EDGE_PROVENANCE=on (default). Edge kind vocabulary
-# is now 12: call | import | extends | implements | instantiates | holds | reads | writes | uses | http_calls | reads_config | configures
+# is now 14: call | import | extends | implements | instantiates | holds | reads | writes | uses | http_calls | reads_config | configures | raises | catches
 # Each seam_impact entry carries 'kind' (final hop's edge kind; always kept incl. lean mode)
 # and 'synthesized_by' (channel name or null; stripped in lean mode like resolved_by).
 # Each seam_trace hop carries 'synthesized_by' in addition to the existing 'kind'.
@@ -95,7 +95,8 @@ tools:
           has_receiver_column, has_search_text, has_signature_column,
           has_synthesized_by_column, has_routes_table, has_route_nodes,
           has_http_calls, has_config_keys_table, has_resources_table,
-          has_config_nodes, has_resource_nodes, has_reads_config, has_configures.
+          has_config_nodes, has_resource_nodes, has_reads_config, has_configures,
+          has_exception_edges.
         tools:
           (list) — read-only tool guide entries with transports, dependencies, and use_when.
         recommended_next_calls:
@@ -143,6 +144,7 @@ tools:
           - routes
           - configs
           - resources
+          - exceptions
           - hotspots
           - orchestrators
           - boundaries
@@ -173,11 +175,12 @@ tools:
           scoped file/symbol/edge/test/production counts plus global optional counts.
         sections:
           selected architecture sections. Default sections include summary, languages,
-          physical, clusters, entry_points, routes, configs, resources, hotspots,
+          physical, clusters, entry_points, routes, configs, resources, exceptions, hotspots,
           orchestrators, boundaries, edge_mix, tests, and optional_surfaces.
           configs items expose key, normalized_key, role, value_state,
           value_category, and provenance; resources items expose name,
-          normalized_name, category, and provenance.
+          normalized_name, category, and provenance. exceptions exposes status,
+          raised_types, caught_types, broad_catches, heavy_symbols, and truncated.
         warnings:
           structured {code, message, hint}; includes stale, empty index, unsupported
           config/resource/test-edge surfaces, scope issues, and byte-budget trimming.
@@ -319,7 +322,7 @@ tools:
         type: string
         required: false
         nullable: true
-        description: Edge kind or comma-separated edge kinds; includes http_calls, reads_config, and configures; degree counts respect this filter.
+        description: Edge kind or comma-separated edge kinds; includes http_calls, reads_config, configures, raises, and catches; degree counts respect this filter.
       direction:
         type: string
         default: both
@@ -938,9 +941,12 @@ tools:
                           project root). null when resolved_by != name-collision, or when
                           proximity data is unavailable (no conn, no referencing-file context).
 	          kind:           E4. Edge kind of the final hop of the winning path to this dependent.
-	                          Full closed vocabulary:
+	                          Impact vocabulary:
 	                            call | import | extends | implements | instantiates | holds |
 	                            reads | writes | uses | http_calls | reads_config | configures
+	                          Exception-flow edges (raises | catches) are indexed and available
+	                          to graph/search/trace surfaces, but default impact excludes them
+	                          so exception evidence does not inflate blast-radius risk.
 	                          Always present (empty string "" for degenerate/pre-E4 entries as
                           a defensive fallback). Kept in lean mode (verbose=false) — it is a
                           core field like 'confidence'. ABSENT entirely when
@@ -1009,7 +1015,8 @@ tools:
       Trace the call/dependency path between two symbols.
       Returns the shortest path from source to target as an ordered list of hops,
       where each hop carries the edge kind (call | import | extends | implements |
-      instantiates | holds | reads | writes | uses | http_calls | reads_config | configures) and per-edge confidence
+      instantiates | holds | reads | writes | uses | http_calls | reads_config | configures |
+      raises | catches) and per-edge confidence
       (EXTRACTED | INFERRED | AMBIGUOUS).
       The extends/implements kinds are class-inheritance edges added in P6a
       (SEAM_INHERITANCE_EDGES=on). The instantiates kind was added in Tier B B6:
@@ -1018,7 +1025,9 @@ tools:
       field/property or constructor parameter. The reads and writes kinds (A3) capture
       field-access data-flow: reads = field read, writes = field write/delete. The uses
       kind captures method-param coupling: a function references a user type as a
-      parameter. Tier B also enriches edge resolution: when a call's receiver type was
+      parameter. The raises and catches kinds capture explicit exception-flow hops:
+      visible raise/throw constructors and typed exception handlers. Tier B also enriches
+      edge resolution: when a call's receiver type was
       inferred at index time, the target is already qualified ('Type.method') so it
       resolves with EXTRACTED confidence when unique — no Tier A bridging needed for
       that hop.

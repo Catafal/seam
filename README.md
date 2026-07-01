@@ -221,7 +221,7 @@ fix, so current output is leaner than it shows.
 
 A short tour — the full treatment is in [`docs/CONCEPTS.md`](docs/CONCEPTS.md).
 
-**The graph.** Nodes are symbols (`function`, `class`, `method`, `interface`, `type`, `field`, `route`, `config`, `resource`). Edges are **typed** and capture twelve relationships:
+**The graph.** Nodes are symbols (`function`, `class`, `method`, `interface`, `type`, `field`, `route`, `config`, `resource`). Edges are **typed** and capture fourteen relationships:
 
 | Edge kind | Captures |
 |-----------|----------|
@@ -235,8 +235,10 @@ A short tour — the full treatment is in [`docs/CONCEPTS.md`](docs/CONCEPTS.md)
 | `http_calls` | a symbol calls a literal HTTP route |
 | `reads_config` | code reads a literal config or env key |
 | `configures` | a config key describes a runtime resource |
+| `raises` | a symbol explicitly raises or throws a visible exception type |
+| `catches` | a symbol explicitly handles a typed exception |
 
-Edges are keyed by **symbol name**, not row id — this is what lets the watcher re-index one file independently without rewriting the whole graph. Route, config, and resource nodes live as normal `symbols.kind` values; route metadata lives in `routes`, config metadata lives in `config_keys`, and resource metadata lives in `resources`. Config metadata stores key names and redacted value shape only, never raw values. All traversal is kind-agnostic, so every tool picks up every edge kind automatically.
+Edges are keyed by **symbol name**, not row id — this is what lets the watcher re-index one file independently without rewriting the whole graph. Route, config, and resource nodes live as normal `symbols.kind` values; route metadata lives in `routes`, config metadata lives in `config_keys`, and resource metadata lives in `resources`. Config metadata stores key names and redacted value shape only, never raw values. Traversal is kind-agnostic, and exception edges are exposed through graph search, trace, context, and architecture. Default blast-radius impact intentionally excludes `raises`/`catches` so exception evidence does not inflate change-risk tiers.
 
 **Confidence tiers.** Each edge resolves to `EXTRACTED` (target is unambiguous), `AMBIGUOUS` (name collides — verify), or `INFERRED` (heuristic / cross-module). A multi-hop path is only as strong as its weakest hop. Each result carries `resolved_by` provenance explaining *how* the tier was decided.
 

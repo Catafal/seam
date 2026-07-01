@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>P3.4 Exception Edges · Implementation Notes</title>
+  <style>
+    body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; max-width: 880px;
+           margin: 40px auto; padding: 0 24px; color: #292524; line-height: 1.55; }
+    h1 { border-bottom: 3px solid #0181c9; padding-bottom: 8px; }
+    h2 { margin-top: 36px; color: #0181c9; border-bottom: 1px solid #e5e5e5; padding-bottom: 4px; }
+    code { background: #f5f5f4; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+    .decision { background: #f0f9ff; border-left: 4px solid #0181c9; padding: 12px 16px; margin: 14px 0; }
+    .deviation { background: #fffbeb; border-left: 4px solid #d97706; padding: 12px 16px; margin: 14px 0; }
+    .tradeoff { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 12px 16px; margin: 14px 0; }
+    .open { background: #fef2f2; border-left: 4px solid #dc2626; padding: 12px 16px; margin: 14px 0; }
+    .tag { display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase;
+           letter-spacing: 0.5px; padding: 2px 8px; border-radius: 10px; color: #fff; }
+    .t-dec { background: #0181c9; } .t-dev { background: #d97706; }
+    .t-trade { background: #7c3aed; } .t-open { background: #dc2626; }
+    ul { margin-top: 6px; } .meta { color: #78716c; font-size: 0.9em; }
+    .done { color: #16a34a; font-weight: 600; }
+    table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+    th, td { border: 1px solid #e5e5e5; padding: 6px 10px; text-align: left; font-size: 0.92em; }
+    th { background: #fafaf9; }
+  </style>
+</head>
+<body>
+  <h1>P3.4 Exception Edges</h1>
+  <p class="meta">Branch <code>codex/p3-4-exception-edges</code> · started 2026-07-01 · implements PRD #155 and child issues #156-#160.</p>
+  <p>This is a <strong>living document</strong> capturing how the implementation interprets,
+     diverges from, or trades off against the spec.</p>
+
+  <h2>The spec, in one line</h2>
+  <p>Add conservative <code>raises</code> and <code>catches</code> graph edges for explicit Python and JS/TS exception evidence, then expose them through existing Seam schema, graph-search, architecture, web, Explorer, and documentation surfaces without runtime probing.</p>
+
+  <h2>Design decisions <span class="meta">(spec was ambiguous → here's the call I made)</span></h2>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Store exception evidence as normal edges.</strong>
+    The existing edge contract already carries kind, target, file, line, and confidence, so no exception metadata table or schema migration was needed for P3.4.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Attach only to named scopes.</strong>
+    The extractor uses the same enclosing-symbol resolver as call edges; module-level exception syntax is skipped because Seam has no module symbol row to target without inventing a new node model.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Architecture includes exceptions by default.</strong>
+    The section is bounded and compact, so the default repo briefing now surfaces raised types, caught types, broad catches, and raise/catch-heavy symbols.</div>
+
+  <h2>Deviations <span class="meta">(intentional departures from the spec/convention)</span></h2>
+
+  <div class="deviation"><span class="tag t-dev">Deviation</span> <strong>Typed catch extraction for JS/TS starts as unsupported.</strong>
+    Ordinary JavaScript and TypeScript catch clauses do not reliably expose concrete exception types, so P3.4 skips untyped catches instead of guessing from variable names.</div>
+
+  <h2>Tradeoffs <span class="meta">(alternatives considered)</span></h2>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>Deep extractor module vs. extending each graph extractor.</strong>
+    A standalone <code>exceptions</code> extractor avoids mixing failure-flow rules into call/import extractors and keeps unit tests focused on public extraction behavior.</div>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>Explicit evidence over propagation.</strong>
+    Exception propagation through callees would be tempting for impact analysis, but this phase keeps the graph trustworthy by indexing only visible raise/throw/catch syntax.</div>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>Keep default impact focused on direct change risk.</strong>
+    <code>seam_impact</code> excludes <code>raises</code>/<code>catches</code> by default so exception syntax is available for failure-path review without inflating blast-radius tiers.</div>
+
+  <h2>Open questions <span class="meta">(want your confirm/revise)</span></h2>
+
+  <div class="open"><span class="tag t-open">Open</span> <strong>Future propagation semantics.</strong>
+    Full exception propagation through call graphs remains out of scope and can be layered later if explicit edges prove valuable but insufficient.</div>
+
+  <h2>Build / verification</h2>
+  <ul>
+    <li>Initial worktree index: <code>uv run seam init</code> passed with 342 files, 6609 symbols, 32931 extraction edges.</li>
+    <li>Impact checked for <code>index_one_file</code>, <code>graph_search</code>, <code>schema</code>, and <code>architecture</code>.</li>
+    <li>Review follow-up fixed Python <code>except Foo as exc</code> extraction and JS/TS namespaced constructors like <code>new Remote.ApiError()</code>.</li>
+    <li>Focused backend suite passed: exception extraction, graph-search, schema, architecture, web API, and impact regression tests.</li>
+    <li>Full backend gate passed: <code>make gate</code>.</li>
+    <li>Frontend typecheck and full Vitest suite passed after <code>npm ci</code>.</li>
+    <li>Final Seam self-check passed: <code>uv run seam sync</code>, <code>seam schema</code>, <code>seam graph-search --edge-kind raises</code>, <code>seam architecture --section exceptions</code>, and <code>seam changes</code>.</li>
+    <li>No migrations, new dependencies, or env vars were added.</li>
+  </ul>
+
+  <h2>Progress</h2>
+  <table>
+    <tr><th>Slice</th><th>What</th><th>Status</th></tr>
+    <tr><td>1</td><td>Exception edge vocabulary and Python tracer bullet</td><td class="done">done</td></tr>
+    <tr><td>2</td><td>Expanded Python raise/except extraction</td><td class="done">done</td></tr>
+    <tr><td>3</td><td>TypeScript/JavaScript throw extraction</td><td class="done">done</td></tr>
+    <tr><td>4</td><td>Architecture and Explorer/read surfaces</td><td class="done">done</td></tr>
+    <tr><td>5</td><td>Docs, impact semantics, and regression hardening</td><td class="done">done</td></tr>
+  </table>
+</body>
+</html>

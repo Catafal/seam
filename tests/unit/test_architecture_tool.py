@@ -113,6 +113,8 @@ def _make_architecture_repo(tmp_path: Path) -> tuple[sqlite3.Connection, Path]:
         [
             _edge("orchestrate", "helper", service, line=2),
             _edge("helper", "helper", service, line=5),
+            _edge("orchestrate", "ValueError", service, line=2, kind="raises", confidence="INFERRED"),
+            _edge("orchestrate", "Exception", service, line=2, kind="catches", confidence="INFERRED"),
             _edge(
                 "orchestrate",
                 "helper",
@@ -171,7 +173,7 @@ def test_architecture_summary_reports_counts_edge_mix_and_next_calls(tmp_path: P
     assert result["scope"] == {"path": None, "applied": False}
     assert result["counts"]["files"] == 3
     assert result["counts"]["symbols"] == 5
-    assert result["counts"]["edges"] == 6
+    assert result["counts"]["edges"] == 8
     assert result["counts"]["clusters"] == 2
     assert result["counts"]["test_files"] == 1
     assert result["counts"]["production_files"] == 2
@@ -179,8 +181,17 @@ def test_architecture_summary_reports_counts_edge_mix_and_next_calls(tmp_path: P
         {"language": "python", "files": 3, "symbols": 5}
     ]
     assert result["sections"]["edge_mix"]["edge_kinds"]["call"] == 6
+    assert result["sections"]["edge_mix"]["edge_kinds"]["raises"] == 1
+    assert result["sections"]["edge_mix"]["edge_kinds"]["catches"] == 1
     assert result["sections"]["edge_mix"]["confidence"]["EXTRACTED"] == 5
-    assert result["sections"]["edge_mix"]["confidence"]["INFERRED"] == 1
+    assert result["sections"]["edge_mix"]["confidence"]["INFERRED"] == 3
+    assert result["sections"]["exceptions"]["status"] == "populated"
+    assert result["sections"]["exceptions"]["raised_types"] == [{"target": "ValueError", "count": 1}]
+    assert result["sections"]["exceptions"]["caught_types"] == [{"target": "Exception", "count": 1}]
+    assert result["sections"]["exceptions"]["broad_catches"][0]["source"] == "orchestrate"
+    assert result["sections"]["exceptions"]["heavy_symbols"] == [
+        {"source": "orchestrate", "raises": 1, "catches": 1}
+    ]
     assert result["sections"]["edge_mix"]["synthesized"]["interface-override"] == 1
     assert result["sections"]["routes"]["status"] == "empty"
     assert "routes" not in result["sections"]["optional_surfaces"]
@@ -202,7 +213,7 @@ def test_architecture_reports_physical_areas_and_cluster_representatives(tmp_pat
     assert physical["top_areas"][0]["path"] == "src"
     assert physical["top_areas"][0]["files"] == 2
     assert physical["top_areas"][0]["symbols"] == 4
-    assert physical["top_areas"][0]["edges"] == 5
+    assert physical["top_areas"][0]["edges"] == 7
     assert physical["structure"]["tree"]["name"] == root.name
     assert physical["structure"]["truncated"] == 0
 
@@ -234,8 +245,10 @@ def test_architecture_reports_entry_points_hotspots_and_orchestrators(tmp_path: 
 
     orchestrators = result["sections"]["orchestrators"]["items"]
     assert orchestrators[0]["symbol"] == "orchestrate"
-    assert orchestrators[0]["degrees"]["outgoing"] == 2
+    assert orchestrators[0]["degrees"]["outgoing"] == 4
     assert orchestrators[0]["edge_kinds"]["call"] == 2
+    assert orchestrators[0]["edge_kinds"]["raises"] == 1
+    assert orchestrators[0]["edge_kinds"]["catches"] == 1
 
     assert any(
         call["tool"] == "seam_context" and call["params"]["symbol"] == "entry" and call["params"]["uid"]

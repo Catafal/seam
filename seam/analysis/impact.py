@@ -68,6 +68,7 @@ _DEFAULT_DEPTH = 3
 
 # Valid direction values.
 _VALID_DIRECTIONS = {"upstream", "downstream", "both"}
+_DEFAULT_EXCLUDED_EDGE_KINDS = {"raises", "catches"}
 
 # ── Public types ───────────────────────────────────────────────────────────────
 
@@ -82,8 +83,12 @@ _VALID_DIRECTIONS = {"upstream", "downstream", "both"}
 #   tier           (str)        — WILL_BREAK | LIKELY_AFFECTED | MAY_NEED_TESTING
 #   file           (str | None) — absolute path if name is an indexed symbol; else None
 #   kind           (str)        — E4: edge kind of the final hop of the winning path.
-#                                 Full vocabulary: call | import | extends | implements |
-#                                 instantiates | holds | reads | writes | uses.
+#                                 Impact vocabulary: call | import | extends |
+#                                 implements | instantiates | holds | reads |
+#                                 writes | uses | http_calls | reads_config |
+#                                 configures. Default impact excludes raises/catches
+#                                 because exception evidence is not a direct change
+#                                 blast-radius signal.
 #                                 Empty string for degenerate / pre-E4 cases (never absent).
 #   synthesized_by (str | None) — E4: synthesis channel name when the final hop is
 #                                 heuristic (e.g. 'interface-override'), or None when
@@ -383,10 +388,24 @@ def impact(
     downstream_reached: list[Reached] = []
 
     if direction in ("upstream", "both"):
-        upstream_reached = walk(conn, seeds, "upstream", safe_depth, repo_root=repo_root)
+        upstream_reached = walk(
+            conn,
+            seeds,
+            "upstream",
+            safe_depth,
+            repo_root=repo_root,
+            excluded_edge_kinds=_DEFAULT_EXCLUDED_EDGE_KINDS,
+        )
 
     if direction in ("downstream", "both"):
-        downstream_reached = walk(conn, seeds, "downstream", safe_depth, repo_root=repo_root)
+        downstream_reached = walk(
+            conn,
+            seeds,
+            "downstream",
+            safe_depth,
+            repo_root=repo_root,
+            excluded_edge_kinds=_DEFAULT_EXCLUDED_EDGE_KINDS,
+        )
 
     # Batch lookup of files for all reached symbol names (single query per batch).
     all_names = [r["name"] for r in upstream_reached] + [r["name"] for r in downstream_reached]

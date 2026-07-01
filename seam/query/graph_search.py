@@ -65,6 +65,8 @@ DEFAULT_EDGE_KINDS = {
     "http_calls",
     "reads_config",
     "configures",
+    "raises",
+    "catches",
 }
 
 

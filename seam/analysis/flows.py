@@ -95,7 +95,8 @@ class Hop(TypedDict):
         to_name        — target symbol of this edge
         kind           — edge kind. Full closed vocabulary:
                          call | import | extends | implements | instantiates |
-                         holds | reads | writes | uses.
+                         holds | reads | writes | uses | http_calls | reads_config |
+                         configures | raises | catches.
         confidence     — edge confidence: EXTRACTED | INFERRED | AMBIGUOUS
         resolved_by    — Phase 5: how confidence was decided (see RESOLVED_BY_* in confidence.py).
                          None for fast-path hops (name-count only, no import mapping context).
@@ -133,7 +134,8 @@ class EdgeHop(TypedDict):
         name           — the neighboring symbol name
         kind           — edge kind. Full closed vocabulary:
                          call | import | extends | implements | instantiates |
-                         holds | reads | writes | uses.
+                         holds | reads | writes | uses | http_calls | reads_config |
+                         configures | raises | catches.
         confidence     — edge confidence: EXTRACTED | INFERRED | AMBIGUOUS
         resolved_by    — Phase 5: how confidence was decided. None for fast-path hops
                          (name-count only — full import-promotion context not available here).

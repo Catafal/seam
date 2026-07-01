@@ -152,7 +152,7 @@ expects callers to switch to `seam_graph_search`, `seam_context`, `seam_snippet`
 |-------|-------|
 | `files` | indexed files with hash + mtime + `indexed_at` |
 | `symbols` | nodes: kind (incl. `field`, `route`, `config`, and `resource`), name, qualified_name, signature, decorators, visibility, is_exported, cluster_id, entry_score, search_text |
-| `edges` | directed relationships: source, target, `kind` (12 kinds), `confidence`, `receiver`, `synthesized_by` |
+| `edges` | directed relationships: source, target, `kind` (14 kinds), `confidence`, `receiver`, `synthesized_by` |
 | `routes` | first-class HTTP route metadata keyed to route symbols: method, path, normalized_path, framework, handler, confidence, provenance |
 | `config_keys` | config/env key metadata keyed to config symbols: normalized key, source family, role, redacted value state/category, confidence, provenance |
 | `resources` | runtime resource metadata keyed to resource symbols: category, normalized name, source family, confidence, provenance |

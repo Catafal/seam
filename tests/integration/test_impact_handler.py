@@ -37,8 +37,14 @@ def _sym(name: str, file: str) -> Symbol:
     return Symbol(name=name, kind="function", file=file, start_line=1, end_line=2, docstring=None)
 
 
-def _edge(source: str, target: str, file: str, confidence: str = CONFIDENCE_EXTRACTED) -> Edge:
-    return Edge(source=source, target=target, kind="call", file=file, line=1, confidence=confidence)
+def _edge(
+    source: str,
+    target: str,
+    file: str,
+    confidence: str = CONFIDENCE_EXTRACTED,
+    kind: str = "call",
+) -> Edge:
+    return Edge(source=source, target=target, kind=kind, file=file, line=1, confidence=confidence)
 
 
 @pytest.fixture()
@@ -171,6 +177,25 @@ def test_downstream_happy_path(seeded_impact_db: tuple[sqlite3.Connection, Path]
     tg = result["downstream"]
     will_break_names = [e["name"] for e in tg.get(TIER_WILL_BREAK, [])]
     assert "B" in will_break_names
+
+
+def test_impact_excludes_exception_edges_by_default(
+    seeded_impact_db: tuple[sqlite3.Connection, Path],
+) -> None:
+    """Exception edges are queryable graph evidence, not default blast-radius expansion."""
+    conn, root = seeded_impact_db
+    src = root / "src.py"
+    conn.execute(
+        "INSERT INTO edges (source_name, target_name, kind, file_id, line, confidence) "
+        "SELECT 'B', 'ValueError', 'raises', id, 1, 'INFERRED' FROM files WHERE path = ?",
+        (str(src),),
+    )
+    conn.commit()
+
+    result = handle_seam_impact(conn, "B", root, direction="downstream", max_depth=1)
+
+    names = [entry["name"] for entry in result["downstream"][TIER_WILL_BREAK]]
+    assert names == ["A"]
 
 
 # ── T7: direction=both ────────────────────────────────────────────────────────

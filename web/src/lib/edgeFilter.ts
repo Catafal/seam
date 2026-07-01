@@ -31,6 +31,8 @@ export const ALL_EDGE_KINDS = [
   "http_calls",
   "reads_config",
   "configures",
+  "raises",
+  "catches",
 ] as const;
 export const ALL_CONFIDENCES = ["EXTRACTED", "AMBIGUOUS", "INFERRED"] as const;
 

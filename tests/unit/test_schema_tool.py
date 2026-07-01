@@ -134,6 +134,8 @@ def schema_repo() -> tuple[sqlite3.Connection, Path, Path]:
             [
                 _edge("entry", "helper", str(src)),
                 _edge("entry", "ROUTE GET /health", str(src), kind="http_calls"),
+                _edge("entry", "ValueError", str(src), kind="raises"),
+                _edge("entry", "Exception", str(src), kind="catches"),
             ],
             routes=[
                 {
@@ -194,7 +196,7 @@ def test_describe_schema_summary_reports_capabilities(schema_repo, monkeypatch) 
     assert result["schema_version"] >= 12
     assert result["counts"]["files"] == 1
     assert result["counts"]["symbols"] == 3
-    assert result["counts"]["edges"] == 3
+    assert result["counts"]["edges"] == 5
     assert result["counts"]["clusters"] == 1
     assert result["counts"]["comments"] == 1
     assert result["counts"]["import_mappings"] == 1
@@ -203,8 +205,10 @@ def test_describe_schema_summary_reports_capabilities(schema_repo, monkeypatch) 
     assert result["breakdowns"]["symbol_kinds"]["function"] == 2
     assert result["breakdowns"]["symbol_kinds"]["route"] == 1
     assert result["breakdowns"]["edge_kinds"]["call"] == 2
+    assert result["breakdowns"]["edge_kinds"]["raises"] == 1
+    assert result["breakdowns"]["edge_kinds"]["catches"] == 1
     assert result["breakdowns"]["edge_kinds"]["http_calls"] == 1
-    assert result["breakdowns"]["edge_confidence"]["EXTRACTED"] == 2
+    assert result["breakdowns"]["edge_confidence"]["EXTRACTED"] == 4
     assert result["capabilities"]["has_clusters"] is True
     assert result["capabilities"]["has_embeddings"] is True
     assert result["capabilities"]["embedding_model_matches"] is True
@@ -212,6 +216,7 @@ def test_describe_schema_summary_reports_capabilities(schema_repo, monkeypatch) 
     assert result["capabilities"]["has_routes_table"] is True
     assert result["capabilities"]["has_route_nodes"] is True
     assert result["capabilities"]["has_http_calls"] is True
+    assert result["capabilities"]["has_exception_edges"] is True
     assert result["freshness"]["stale"] is False
     assert any(t["name"] == "seam_schema" for t in result["tools"])
     assert any(t["name"] == "seam_architecture" for t in result["tools"])

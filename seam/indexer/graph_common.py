@@ -92,6 +92,8 @@ class Edge(TypedDict):
     #   'http_calls'   — statically visible HTTP client call to a route node [P3.1]
     #   'reads_config' — code reads a literal config/env key [P3.2]
     #   'configures'   — a config key describes a runtime resource [P3.2]
+    #   'raises'       — a named function/method explicitly raises or throws an exception [P3.4]
+    #   'catches'      — a named function/method explicitly handles a typed exception [P3.4]
     kind: str
     file: str
     line: int

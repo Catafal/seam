@@ -48,11 +48,14 @@ caller pin one exact homonym when it matters.
 
 ---
 
-## 2. The twelve edge kinds
+## 2. The fourteen edge kinds
 
-The traversal layer is **kind-agnostic** — it walks every edge regardless of kind — so
-adding a new edge kind makes every tool (`seam_impact`, `seam_context`, `seam_trace`,
-`seam_flows`, …) aware of the new relationship with no per-tool code.
+The traversal layer is **kind-agnostic** — it can walk every edge regardless of kind — so
+adding a new edge kind makes graph surfaces (`seam_graph_search`, `seam_context`,
+`seam_trace`, `seam_flows`, …) aware of the new relationship with little per-tool code.
+`seam_impact` is the deliberate exception: default blast-radius reports filter
+`raises`/`catches` so explicit exception syntax does not inflate change-risk tiers. Use
+`seam_graph_search --edge-kind raises,catches` for failure-path review.
 
 | Kind | Captures | Example | Confidence |
 |------|----------|---------|------------|
@@ -68,6 +71,8 @@ adding a new edge kind makes every tool (`seam_impact`, `seam_context`, `seam_tr
 | `http_calls` | A symbol calls a literal HTTP route | `fetch("/users")` → `ROUTE GET /users` | INFERRED |
 | `reads_config` | Code reads a literal config/env key | `os.getenv("DATABASE_URL")` → `CONFIG DATABASE_URL` | EXTRACTED |
 | `configures` | A config key describes a runtime resource | `CONFIG DATABASE_URL` → `RESOURCE database DATABASE` | INFERRED |
+| `raises` | A symbol explicitly raises or throws an exception | `raise ConfigError(...)` → `raises ConfigError` | EXTRACTED / INFERRED |
+| `catches` | A symbol explicitly handles a typed exception | `except ConfigError` → `catches ConfigError` | EXTRACTED / INFERRED |
 
 `call` and `import` are the structural backbone. `extends`/`implements`/`instantiates`
 capture object-oriented structure. `holds`/`uses` capture composition and dependency
@@ -79,6 +84,10 @@ the route target can be represented statically.
 `reads_config` and `configures` connect code to runtime configuration and operational
 resources without storing raw config values; Seam persists key names and redacted value
 shape only.
+`raises` and `catches` are intentionally explicit-only exception evidence. Seam does not
+guess runtime propagation through callees or infer thrown variable types; use
+`seam_graph_search --edge-kind raises,catches` when you need the static failure-path
+surface before changing an error contract.
 
 `seam_context` exposes the precise `reads`/`writes` split as `field_readers` /
 `field_writers`, complementing the inclusive `callers` view (which contains *all* edge

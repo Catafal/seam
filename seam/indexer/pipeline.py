@@ -21,6 +21,7 @@ from seam.indexer.config_resources import (
     is_config_resource_file,
 )
 from seam.indexer.db import upsert_file, upsert_import_mappings
+from seam.indexer.exceptions import extract_exception_edges
 from seam.indexer.graph import extract_comments, extract_edges, extract_symbols
 from seam.indexer.parser import (
     parse_c,
@@ -175,6 +176,7 @@ def index_one_file(conn: sqlite3.Connection, path: Path) -> tuple[int, int] | No
         # Pass symbols so extract_edges can resolve confidence (EXTRACTED/AMBIGUOUS/INFERRED)
         # against the same-file symbol set. Cross-file ambiguity is handled at query time.
         edges = extract_edges(root, language, path, symbols=symbols)
+        edges.extend(extract_exception_edges(root, language, path, symbols))
         route_symbols, route_edges, routes = extract_routes(root, language, path, symbols)
         if route_symbols:
             symbols.extend(route_symbols)

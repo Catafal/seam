@@ -73,7 +73,8 @@ def handle_seam_trace(
             to_name        (str)      — target of this edge
             kind           (str)      — full closed vocabulary: call | import | extends |
                                         implements | instantiates | holds | reads | writes |
-                                        uses | http_calls | reads_config | configures
+                                        uses | http_calls | reads_config | configures |
+                                        raises | catches
             confidence     (str)      — EXTRACTED | INFERRED | AMBIGUOUS
             synthesized_by (str|null) — E4: channel name for heuristic edges, null for static
                                         (present when SEAM_EDGE_PROVENANCE="on"; stripped in lean)

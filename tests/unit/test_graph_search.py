@@ -204,6 +204,26 @@ def test_graph_search_edge_filters_and_sorting_use_filtered_degrees(tmp_path: Pa
     assert item["degrees"] == {"incoming": 0, "outgoing": 1, "total": 1}
 
 
+def test_graph_search_accepts_exception_edge_filters(tmp_path: Path) -> None:
+    from seam.query.graph_search import graph_search
+
+    conn, root = _make_graph_repo(tmp_path)
+    app = root / "app.py"
+    conn.execute(
+        "INSERT INTO edges (source_name, target_name, kind, file_id, line, confidence) "
+        "SELECT 'entry', 'ValueError', 'raises', id, 2, 'INFERRED' FROM files WHERE path = ?",
+        (str(app),),
+    )
+    conn.commit()
+
+    result = graph_search(conn, root=root, edge_kind="raises", direction="outgoing")
+
+    assert "error" not in result
+    assert result["total"] == 1
+    assert result["items"][0]["symbol"] == "entry"
+    assert result["items"][0]["degrees"] == {"incoming": 0, "outgoing": 1, "total": 1}
+
+
 def test_graph_search_connected_preview_is_opt_in_and_capped(tmp_path: Path) -> None:
     """Previews are bounded one-hop metadata hints, not recursive context expansion."""
     from seam.query.graph_search import graph_search
