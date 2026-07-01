@@ -157,9 +157,45 @@ def test_openapi_schema_works_without_db(tmp_path: Path) -> None:
     schema = app.openapi()
     assert "paths" in schema
     assert "/api/status" in schema["paths"]
+    assert "/api/schema" in schema["paths"]
     assert "/api/search" in schema["paths"]
     assert "/api/symbol/{name}" in schema["paths"]
     assert "/api/clusters" in schema["paths"]
+
+
+# ── T1b: GET /api/schema — diagnostics ──────────────────────────────────────
+
+
+def test_schema_happy_path(client: TestClient) -> None:
+    """Schema endpoint returns bounded diagnostics without verbose table metadata by default."""
+    resp = client.get("/api/schema")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "freshness" in data
+    assert "counts" in data
+    assert "breakdowns" in data
+    assert "capabilities" in data
+    assert "tools" in data
+    assert "recommended_next_calls" in data
+    assert "warnings" in data
+    assert data["counts"]["symbols"] > 0
+    assert data["tables"] is None
+
+
+def test_schema_verbose_includes_table_metadata(client: TestClient) -> None:
+    """Schema endpoint includes DB table/column metadata only when verbose=true."""
+    resp = client.get("/api/schema?verbose=true")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["tables"]["symbols"]["exists"] is True
+    assert data["tables"]["symbols"]["columns"]["name"]["exists"] is True
+
+
+def test_schema_no_index(no_index_client: TestClient) -> None:
+    """Schema returns 503 NO_INDEX when no index exists."""
+    resp = no_index_client.get("/api/schema")
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "NO_INDEX"
 
 
 # ── T2: GET /api/status — happy path ─────────────────────────────────────────

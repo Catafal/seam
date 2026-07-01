@@ -171,14 +171,14 @@ class TestToolsOutputHasResolvedBy:
 
 
 class TestMcpToolCount:
-    """MCP tool count is still 9 — Phase 5 adds NO new tools."""
+    """MCP tool count includes the current read-only tool surface."""
 
     def test_tool_count_updated_for_phase6(self) -> None:
-        """tools module exports 11 handlers (seam_flows added on top of Phase 6's 10)."""
+        """tools module exports the current seam handlers, including seam_schema."""
         tool_handlers = [
             attr for attr in dir(tools)
             if attr.startswith("handle_seam_")
         ]
-        assert len(tool_handlers) == 12, (
-            f"Expected 12 MCP tool handlers, found {len(tool_handlers)}: {tool_handlers}"
+        assert len(tool_handlers) == 13, (
+            f"Expected 13 MCP tool handlers, found {len(tool_handlers)}: {tool_handlers}"
         )

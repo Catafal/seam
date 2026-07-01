@@ -5,7 +5,7 @@ Tests verify the observable surface (CLI render + MCP tool docstrings/schema) fo
   - CLI `seam impact` Rich mode prints next_actions footer when output is trimmed
   - CLI `seam impact` Rich mode omits next_actions footer when nothing is trimmed
   - CLI `seam trace` Rich mode shows synthesized marker on hops
-  - MCP tool count remains 12
+  - MCP tool count includes seam_schema
   - MCP seam_impact docstring documents kind/synthesized_by/next_actions fields
   - MCP seam_trace docstring documents synthesized_by on hops
 
@@ -433,18 +433,18 @@ def test_cli_trace_rich_shows_synthesized_marker(tmp_path: Path) -> None:
     ), f"Expected synthesized marker in trace output;\n{result.output}"
 
 
-# ── MCP_E4_1: MCP tool count remains 12 ──────────────────────────────────────
+# ── MCP_E4_1: MCP tool count includes seam_schema ────────────────────────────
 
 
-def test_mcp_tool_count_12_after_e4(tmp_path: Path) -> None:
-    """MCP_E4_1: MCP tool count must still be 12 after E4 changes."""
+def test_mcp_tool_count_13_after_schema(tmp_path: Path) -> None:
+    """MCP_E4_1: MCP tool count includes the read-only seam_schema tool."""
     db_path, root = _make_db_simple(tmp_path)
     conn = connect(db_path)
     server = create_server(conn, root)
     conn.close()
 
     tools = list(server._tool_manager._tools.keys())
-    assert len(tools) == 12, f"Expected 12 tools, got {len(tools)}: {sorted(tools)}"
+    assert len(tools) == 13, f"Expected 13 tools, got {len(tools)}: {sorted(tools)}"
 
 
 # ── MCP_E4_2: seam_impact docstring documents kind field ─────────────────────

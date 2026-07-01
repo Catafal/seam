@@ -367,8 +367,8 @@ class TestHandleSeamStructure:
             if p is not None:
                 assert not Path(p).is_absolute(), f"Absolute path leaked: {p}"
 
-    def test_tool_count_is_twelve(self, tmp_db) -> None:
-        """seam_structure is registered and the total tool count is 12."""
+    def test_tool_count_includes_schema(self, tmp_db) -> None:
+        """seam_structure and seam_schema are both registered."""
         from seam.server.mcp import create_server
 
         conn, tmp_path, _ = tmp_db
@@ -378,8 +378,8 @@ class TestHandleSeamStructure:
 
         tool_names = list(server._tool_manager._tools.keys())
         assert "seam_structure" in tool_names, f"seam_structure not in tools: {sorted(tool_names)}"
-        assert len(tool_names) == 12, (
-            f"Expected 12 tools, got {len(tool_names)}: {sorted(tool_names)}"
+        assert len(tool_names) == 13, (
+            f"Expected 13 tools, got {len(tool_names)}: {sorted(tool_names)}"
         )
 
 

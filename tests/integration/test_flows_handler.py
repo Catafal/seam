@@ -4,7 +4,7 @@
   F2 — drill mode: a Flow tree for a known entry
   F3 — unknown entry: handler returns None (MCP boundary → {"found": false})
   F4 — blank entry: INVALID_INPUT sentinel
-  F5 — seam_flows is registered (tool count 12 with seam_structure) and callable via the server
+  F5 — seam_flows is registered and callable via the current MCP server surface
 """
 
 import sqlite3
@@ -92,4 +92,4 @@ def test_seam_flows_registered(tmp_path: Path) -> None:
     conn.close()
     tool_names = list(server._tool_manager._tools.keys())
     assert "seam_flows" in tool_names
-    assert len(tool_names) == 12
+    assert len(tool_names) == 13

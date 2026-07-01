@@ -1,4 +1,4 @@
-"""MCP server setup — FastMCP stdio transport, twelve tools registered.
+"""MCP server setup — FastMCP stdio transport, thirteen tools registered.
 
 Creates and configures the MCP server instance.
 Tool handlers in tools.py are thin adapters; this module wires them to FastMCP.
@@ -20,6 +20,7 @@ Tools registered (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3 + Phase 6 + T
     seam_context_pack — enriched context bundle: target + neighbors + WHY + peers (Phase 6)
     seam_flows        — execution flows: entry points + forward call-chain expansion
     seam_structure    — whole-repo directory/file/container structure tree (Tier D11)
+    seam_schema       — read-only index capability and freshness map (Phase 11)
 
 Design:
 - One FastMCP instance per process; connection is injected at creation time.
@@ -47,6 +48,7 @@ from seam.server.tools import (
     handle_seam_flows,
     handle_seam_impact,
     handle_seam_query,
+    handle_seam_schema,
     handle_seam_search,
     handle_seam_structure,
     handle_seam_trace,
@@ -152,6 +154,17 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         Supports FTS5 operators: AND, OR, NOT, phrase search in quotes.
         """
         return _finalize(handle_seam_search(conn, text, root, limit=limit))
+
+    @mcp.tool()
+    def seam_schema(verbose: bool = False) -> Any:
+        """Describe the current Seam index capabilities before choosing deeper tools.
+
+        Use this as the first call in an unfamiliar repo. It reports index freshness,
+        schema/version identity, counts, feature population, warnings, tool guidance,
+        and optional verbose table/column metadata. It is read-only and never repairs
+        or mutates the index.
+        """
+        return _finalize(handle_seam_schema(conn, root, verbose=verbose))
 
     @mcp.tool()
     def seam_impact(

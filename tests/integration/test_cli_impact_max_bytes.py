@@ -11,7 +11,7 @@ Coverage:
   MB_CLI5 — --max-bytes default (config.SEAM_IMPACT_MAX_BYTES = 0) is byte-identical to no-ceiling
   MB_MCP1 — seam_impact MCP schema exposes 'max_bytes' integer param
   MB_MCP2 — max_bytes MCP param forwards to the handler (tight value trims output)
-  MB_MCP3 — MCP tool count still 12 after adding max_bytes param
+  MB_MCP3 — MCP tool count includes seam_schema after adding max_bytes param
   MB_MCP4 — max_bytes=0 on the MCP tool is byte-identical (no byte_capped) to default
 """
 
@@ -366,19 +366,19 @@ def test_mcp_max_bytes_zero_no_byte_capped(tmp_path: Path) -> None:
     assert "byte_capped" not in result
 
 
-# ── MB_MCP3: MCP tool count still 12 after adding max_bytes param ─────────────
+# ── MB_MCP3: MCP tool count includes seam_schema ──────────────────────────────
 
 
-def test_mcp_tool_count_still_12(tmp_path: Path) -> None:
-    """Tool count must remain 12 after adding max_bytes to seam_impact."""
+def test_mcp_tool_count_includes_schema(tmp_path: Path) -> None:
+    """Tool count includes seam_schema after adding max_bytes to seam_impact."""
     db_path, root = _make_db(tmp_path, n_direct=2)
     conn = connect(db_path)
     server = create_server(conn, root)
     conn.close()
 
     tool_names = list(server._tool_manager._tools.keys())
-    assert len(tool_names) == 12, (
-        f"Expected 12 tools, got {len(tool_names)}: {sorted(tool_names)}"
+    assert len(tool_names) == 13, (
+        f"Expected 13 tools, got {len(tool_names)}: {sorted(tool_names)}"
     )
 
 

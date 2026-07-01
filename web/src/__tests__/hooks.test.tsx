@@ -22,6 +22,7 @@ import {
   useImpact,
   useTrace,
   useChanges,
+  useSchema,
 } from "../api/hooks";
 import type {
   StatusResponse,
@@ -32,6 +33,7 @@ import type {
   ImpactResponse,
   TraceResponse,
   ChangesResponse,
+  SchemaResponse,
 } from "../api/schema-types";
 
 // ── Test utilities ─────────────────────────────────────────────────────────────
@@ -309,6 +311,56 @@ const CHANGES_FIXTURE: ChangesResponse = {
   partial: false,
 };
 
+const SCHEMA_FIXTURE: SchemaResponse = {
+  schema_version: 12,
+  seam_version: "0.3.0",
+  index_seam_version: "0.3.0",
+  freshness: { stale: false, reason: null, hint: null },
+  counts: {
+    files: 10,
+    symbols: 100,
+    edges: 120,
+    clusters: 4,
+    comments: 3,
+    import_mappings: 2,
+    embeddings: 0,
+  },
+  breakdowns: {
+    languages: { python: 10 },
+    symbol_kinds: { function: 80, class: 20 },
+    edge_kinds: { call: 120 },
+    edge_confidence: { EXTRACTED: 120 },
+    synthesized_edges: {},
+    comment_markers: { WHY: 3 },
+    embedding_models: {},
+  },
+  capabilities: {
+    has_clusters: true,
+    has_comments: true,
+    has_import_mappings: true,
+    has_embeddings: false,
+    embedding_model_matches: true,
+    has_synthesized_edges: false,
+    has_field_symbols: false,
+    has_receiver_column: true,
+    has_search_text: true,
+    has_signature_column: true,
+    has_synthesized_by_column: true,
+  },
+  tools: [
+    {
+      name: "seam_schema",
+      transports: ["cli", "mcp", "web"],
+      read_only: true,
+      use_when: "Discover index capabilities.",
+      depends_on: null,
+    },
+  ],
+  recommended_next_calls: ["Use seam_context before editing a known symbol."],
+  warnings: [],
+  tables: null,
+};
+
 // ── useImpact ─────────────────────────────────────────────────────────────────
 
 describe("useImpact", () => {
@@ -381,6 +433,29 @@ describe("useChanges", () => {
   it("does NOT fetch when enabled=false (drawer closed)", () => {
     vi.stubGlobal("fetch", vi.fn());
     renderHook(() => useChanges("working", false), { wrapper: makeWrapper() });
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+});
+
+// ── useSchema ────────────────────────────────────────────────────────────────
+
+describe("useSchema", () => {
+  it("fetches /api/schema with the verbose flag", async () => {
+    mockFetch(SCHEMA_FIXTURE);
+    const { result } = renderHook(() => useSchema(true), {
+      wrapper: makeWrapper(),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toEqual(SCHEMA_FIXTURE);
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      expect.stringContaining("verbose=true"),
+      expect.any(Object),
+    );
+  });
+
+  it("does NOT fetch when enabled=false", () => {
+    vi.stubGlobal("fetch", vi.fn());
+    renderHook(() => useSchema(false, false), { wrapper: makeWrapper() });
     expect(vi.mocked(fetch)).not.toHaveBeenCalled();
   });
 });
