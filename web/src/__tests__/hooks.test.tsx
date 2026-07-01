@@ -347,7 +347,7 @@ const CHANGES_FIXTURE: ChangesResponse = {
 };
 
 const SCHEMA_FIXTURE: SchemaResponse = {
-  schema_version: 12,
+  schema_version: 13,
   seam_version: "0.3.0",
   index_seam_version: "0.3.0",
   freshness: { stale: false, reason: null, hint: null },
@@ -359,11 +359,12 @@ const SCHEMA_FIXTURE: SchemaResponse = {
     comments: 3,
     import_mappings: 2,
     embeddings: 0,
+    routes: 1,
   },
   breakdowns: {
     languages: { python: 10 },
-    symbol_kinds: { function: 80, class: 20 },
-    edge_kinds: { call: 120 },
+    symbol_kinds: { function: 79, class: 20, route: 1 },
+    edge_kinds: { call: 119, http_calls: 1 },
     edge_confidence: { EXTRACTED: 120 },
     synthesized_edges: {},
     comment_markers: { WHY: 3 },
@@ -381,6 +382,9 @@ const SCHEMA_FIXTURE: SchemaResponse = {
     has_search_text: true,
     has_signature_column: true,
     has_synthesized_by_column: true,
+    has_routes_table: true,
+    has_route_nodes: true,
+    has_http_calls: true,
   },
   tools: [
     {
@@ -434,7 +438,7 @@ const GRAPH_SEARCH_FIXTURE: GraphSearchResponse = {
 
 const ARCHITECTURE_FIXTURE: ArchitectureResponse = {
   identity: {
-    schema_version: 12,
+    schema_version: 13,
     seam_version: "0.3.0",
     index_seam_version: "0.3.0",
   },
@@ -448,6 +452,7 @@ const ARCHITECTURE_FIXTURE: ArchitectureResponse = {
     comments: 0,
     import_mappings: 0,
     embeddings: 0,
+    routes: 1,
     test_files: 1,
     production_files: 2,
     unknown_files: 0,

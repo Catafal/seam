@@ -31,6 +31,7 @@ from seam.indexer.parser import (
     parse_swift,
     parse_typescript,
 )
+from seam.indexer.routes import extract_routes
 
 logger = logging.getLogger(__name__)
 
@@ -148,10 +149,15 @@ def index_one_file(conn: sqlite3.Connection, path: Path) -> tuple[int, int] | No
         # Pass symbols so extract_edges can resolve confidence (EXTRACTED/AMBIGUOUS/INFERRED)
         # against the same-file symbol set. Cross-file ambiguity is handled at query time.
         edges = extract_edges(root, language, path, symbols=symbols)
+        route_symbols, route_edges, routes = extract_routes(root, language, path, symbols)
+        if route_symbols:
+            symbols.extend(route_symbols)
+        if route_edges:
+            edges.extend(route_edges)
         # Extract semantic comments (WHY/HACK/NOTE/TODO/FIXME); never raises.
         comments = extract_comments(root, language, path)
 
-        upsert_file(conn, path, language, file_hash, symbols, edges, comments)
+        upsert_file(conn, path, language, file_hash, symbols, edges, comments, routes)
 
         # Phase 5: extract and store import mappings for this file.
         # Only runs when SEAM_IMPORT_RESOLUTION is 'on' (default).

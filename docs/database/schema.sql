@@ -1,4 +1,4 @@
--- Seam SQLite Schema (v12 — edge-synthesis post-pass: edges.synthesized_by provenance)
+-- Seam SQLite Schema (v13 — route nodes and HTTP route metadata)
 -- Run via db.py:init_db() — idempotent (CREATE TABLE IF NOT EXISTS).
 -- FTS5 is required; init_db() verifies availability before proceeding.
 -- Schema v2 adds: edges.confidence (DEFAULT 'INFERRED').
@@ -16,6 +16,7 @@
 --                  FTS5 rebuilt to index (name, docstring, signature, search_text)).
 -- Schema v12 adds: edges.synthesized_by (edge-synthesis post-pass provenance;
 --                  NULL = parser-extracted; channel name = synthesized by post-pass).
+-- Schema v13 adds: routes table for first-class route node metadata.
 -- Migration from v1: db.py:_run_migration_v1_to_v2() (guarded ALTER TABLE).
 -- Migration from v2: db.py:_run_migration_v2_to_v3() (guards schema_version bump).
 -- Migration from v3: db.py:_run_migration_v3_to_v4() (adds clusters table + cluster_id).
@@ -27,6 +28,7 @@
 -- Migration from v9: db.py:_run_migration_v9_to_v10() (adds edges.receiver column).
 -- Migration from v10: db.py:_run_migration_v10_to_v11() (adds symbols.search_text + FTS column).
 -- Migration from v11: db.py:_run_migration_v11_to_v12() (adds edges.synthesized_by column).
+-- Migration from v12: db.py:_run_migration_v12_to_v13() (adds routes table).
 
 PRAGMA journal_mode = WAL;      -- Write-ahead logging for concurrent reads
 PRAGMA foreign_keys = ON;
@@ -209,6 +211,29 @@ CREATE TABLE IF NOT EXISTS embeddings (
     vector    BLOB NOT NULL     -- float32 bytes: numpy.array(..., dtype=np.float32).tobytes()
 );
 
+-- ── Routes ───────────────────────────────────────────────────────────────────
+-- One row per first-class HTTP route symbol emitted during indexing.
+-- Route nodes live in symbols(kind='route') so existing graph surfaces can discover
+-- them. HTTP-specific fields stay here so generic symbols are not widened with
+-- route-only concepts.
+CREATE TABLE IF NOT EXISTS routes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id         INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    symbol_name     TEXT NOT NULL,
+    method          TEXT NOT NULL,
+    path            TEXT NOT NULL,
+    normalized_path TEXT NOT NULL,
+    framework       TEXT NOT NULL,
+    handler         TEXT,
+    line            INTEGER NOT NULL,
+    confidence      TEXT NOT NULL DEFAULT 'INFERRED',
+    provenance      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_routes_file_id ON routes(file_id);
+CREATE INDEX IF NOT EXISTS idx_routes_method_path ON routes(method, normalized_path);
+CREATE INDEX IF NOT EXISTS idx_routes_symbol_name ON routes(symbol_name);
+
 -- ── Metadata ─────────────────────────────────────────────────────────────────
 -- Key-value store for index metadata (version, created_at, etc.)
 CREATE TABLE IF NOT EXISTS metadata (
@@ -217,9 +242,9 @@ CREATE TABLE IF NOT EXISTS metadata (
 );
 
 -- NOTE: INSERT OR IGNORE does not update existing rows. Fresh DBs are seeded at
--- the CURRENT schema version ('12') so a brand-new `seam init` is born current and
+-- the CURRENT schema version ('13') so a brand-new `seam init` is born current and
 -- does NOT trigger any migration advisory.
 -- Existing older DBs keep their stored version; db.py migrations bump them in place.
 INSERT OR IGNORE INTO metadata(key, value) VALUES
-    ('schema_version', '12'),
+    ('schema_version', '13'),
     ('seam_version',   '0.2.0');

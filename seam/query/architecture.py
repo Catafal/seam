@@ -48,6 +48,7 @@ _DEFAULT_SECTIONS: tuple[str, ...] = (
     "physical",
     "clusters",
     "entry_points",
+    "routes",
     "hotspots",
     "orchestrators",
     "boundaries",
@@ -612,6 +613,63 @@ def _optional_surfaces() -> dict[str, Any]:
             "reason": surface["message"],
         }
         for name, surface in _OPTIONAL_SURFACES.items()
+        if name != "routes"
+    }
+
+
+def _routes_section(
+    conn: sqlite3.Connection,
+    root: Path,
+    allowed_files: set[str] | None = None,
+    limit: int = 10,
+) -> dict[str, Any]:
+    if not _table_exists(conn, "routes"):
+        surface = _OPTIONAL_SURFACES["routes"]
+        return {"status": "unsupported", "items": [], "reason": surface["message"], "truncated": 0}
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                r.symbol_name,
+                r.method,
+                r.path,
+                r.normalized_path,
+                r.framework,
+                r.handler,
+                r.line,
+                r.confidence,
+                r.provenance,
+                f.path AS file
+            FROM routes r
+            JOIN files f ON f.id = r.file_id
+            WHERE f.path NOT LIKE ':%'
+            ORDER BY r.method, r.normalized_path, f.path, r.line
+            """
+        ).fetchall()
+    except sqlite3.Error:
+        rows = []
+    if allowed_files is not None:
+        rows = [row for row in rows if str(row["file"]) in allowed_files]
+    items = [
+        {
+            "symbol": row["symbol_name"],
+            "uid": _compute_uid(str(row["file"]), int(row["line"])),
+            "method": row["method"],
+            "path": row["path"],
+            "normalized_path": row["normalized_path"],
+            "framework": row["framework"],
+            "handler": row["handler"],
+            "file": _relativize(str(row["file"]), root),
+            "line": row["line"],
+            "confidence": row["confidence"],
+            "provenance": row["provenance"],
+        }
+        for row in rows[:limit]
+    ]
+    return {
+        "status": "populated" if rows else "empty",
+        "items": items,
+        "truncated": max(0, len(rows) - limit),
     }
 
 
@@ -619,6 +677,7 @@ def _warnings(
     *,
     freshness: dict[str, Any],
     counts: dict[str, int],
+    routes_supported: bool,
 ) -> list[dict[str, str]]:
     warnings: list[dict[str, str]] = []
     if freshness["stale"]:
@@ -637,7 +696,9 @@ def _warnings(
                 "Run 'seam init' from the project root.",
             )
         )
-    for surface in _OPTIONAL_SURFACES.values():
+    for name, surface in _OPTIONAL_SURFACES.items():
+        if name == "routes" and routes_supported:
+            continue
         warnings.append(_warning(surface["code"], surface["message"], surface["hint"]))
     return warnings
 
@@ -733,6 +794,7 @@ def _fit_to_byte_budget(result: dict[str, Any], *, max_bytes: int) -> dict[str, 
         "entry_points",
         "hotspots",
         "languages",
+        "routes",
     )
 
     def _size() -> int:
@@ -839,6 +901,7 @@ def describe_architecture(
         "comments": _count(conn, "comments"),
         "import_mappings": _count(conn, "import_mappings"),
         "embeddings": _count(conn, "embeddings"),
+        "routes": _count(conn, "routes"),
         "test_files": test_files,
         "production_files": production_files,
         "unknown_files": 0,
@@ -855,6 +918,7 @@ def describe_architecture(
         "languages": _language_section(conn, allowed_files),
         "physical": _physical_section(conn, root, allowed_files, scope_path, safe_limit),
         "clusters": _cluster_section(conn, root, allowed_files, safe_limit),
+        "routes": _routes_section(conn, root, allowed_files, safe_limit),
         "edge_mix": _edge_mix_section(edge_rows),
         "tests": {
             "files": {"production": production_files, "test": test_files, "unknown": 0},
@@ -884,5 +948,12 @@ def describe_architecture(
         "truncation": {},
         "next_calls": _next_calls_for_sections(selected_sections),
     }
-    result["warnings"] = [*scope_warnings, *_warnings(freshness=freshness, counts=counts)]
+    result["warnings"] = [
+        *scope_warnings,
+        *_warnings(
+            freshness=freshness,
+            counts=counts,
+            routes_supported=_table_exists(conn, "routes"),
+        ),
+    ]
     return _fit_to_byte_budget(result, max_bytes=max_bytes)

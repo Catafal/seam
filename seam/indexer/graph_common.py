@@ -22,7 +22,7 @@ public TypedDicts so callers can do:
     from seam.indexer.graph import Symbol, Edge  # still works — graph re-exports these
 
 Contents:
-  - TypedDicts:  Confidence, Symbol, Edge, Comment
+  - TypedDicts:  Confidence, Symbol, Edge, RouteMetadata, Comment
   - Constants:   SEMANTIC_MARKERS, _MARKER_RE
   - Helpers:     _text, _node_name, _make_symbol, _match_marker,
                  _block_comment_lines, _arrow_function_name, _find_enclosing_function
@@ -59,7 +59,7 @@ Confidence = Literal["EXTRACTED", "INFERRED", "AMBIGUOUS"]
 
 class Symbol(TypedDict):
     name: str
-    kind: str  # 'function' | 'class' | 'method' | 'interface' | 'type'
+    kind: str  # 'function' | 'class' | 'method' | 'interface' | 'type' | 'field' | 'route'
     file: str  # str(path) — resolved at call time
     start_line: int
     end_line: int
@@ -88,6 +88,7 @@ class Edge(TypedDict):
     #   'uses'         — a function/method references a plain user type as a PARAMETER in its
     #                    signature (e.g. f(x: T) → f uses T). Complements 'holds' (stored
     #                    composition) with signature-level coupling. Gated by SEAM_PARAM_EDGES.
+    #   'http_calls'   — statically visible HTTP client call to a route node [P3.1]
     kind: str
     file: str
     line: int
@@ -118,6 +119,25 @@ class Edge(TypedDict):
     # Provenance is DERIVED: synthesized_by IS NOT NULL ⟹ heuristic edge. This avoids
     # a separate boolean column and keeps the schema additive.
     synthesized_by: NotRequired[str | None]
+
+
+class RouteMetadata(TypedDict):
+    """HTTP route evidence stored alongside a route symbol.
+
+    Route nodes live in `symbols` so the existing graph surfaces can discover
+    them. HTTP-specific fields stay here because method/path/framework are
+    route-only concepts and should not widen the generic symbol contract.
+    """
+
+    symbol_name: str
+    method: str
+    path: str
+    normalized_path: str
+    framework: str
+    handler: str | None
+    line: int
+    confidence: Confidence
+    provenance: str
 
 
 class Comment(TypedDict):

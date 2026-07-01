@@ -699,6 +699,74 @@ def _run_migration_v11_to_v12(conn: sqlite3.Connection) -> None:
         ) from exc
 
 
+def _run_migration_v12_to_v13(conn: sqlite3.Connection) -> None:
+    """Guarded migration: add route metadata table (v12 → v13).
+
+    Route nodes are stored as normal symbols so existing graph tools can see
+    them. The route-only fields (method, path, framework, provenance) live in a
+    separate table because widening symbols with HTTP-specific columns would make
+    the generic graph contract noisier.
+
+    Additive-only: creates the routes table and indexes if absent. Does NOT
+    backfill; route metadata appears after the next full `seam init`.
+    """
+    try:
+        row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
+        version = int(row["value"]) if row else 0
+
+        if version >= 13:
+            return
+
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS routes (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    file_id         INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+                    symbol_name     TEXT NOT NULL,
+                    method          TEXT NOT NULL,
+                    path            TEXT NOT NULL,
+                    normalized_path TEXT NOT NULL,
+                    framework       TEXT NOT NULL,
+                    handler         TEXT,
+                    line            INTEGER NOT NULL,
+                    confidence      TEXT NOT NULL DEFAULT 'INFERRED',
+                    provenance      TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_routes_file_id ON routes(file_id)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_routes_method_path ON routes(method, normalized_path)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_routes_symbol_name ON routes(symbol_name)"
+            )
+            conn.execute("UPDATE metadata SET value = '13' WHERE key = 'schema_version'")
+            conn.execute("COMMIT")
+
+            logger.info(
+                "Migrated Seam index v%d->v13 (added route metadata table). "
+                "Run 'seam init' to populate routes.",
+                version,
+            )
+        except Exception as exc:  # noqa: BLE001
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(
+                "Seam DB migration v12->v13 failed; run 'seam init' to rebuild the index"
+            ) from exc
+    except RuntimeError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "Seam DB migration v12->v13 failed; run 'seam init' to rebuild the index"
+        ) from exc
+
+
 def _run_migration_v10_to_v11(conn: sqlite3.Connection) -> None:
     """Guarded migration: add symbols.search_text + a 4th symbols_fts column (v10 → v11).
 

@@ -233,10 +233,10 @@ def test_graph_search_rejects_invalid_filters(tmp_path: Path) -> None:
 
     conn, root = _make_graph_repo(tmp_path)
 
-    bad_kind = graph_search(conn, root=root, kind="route")
+    bad_kind = graph_search(conn, root=root, kind="endpoint")
     bad_regex = graph_search(conn, root=root, name_pattern="[", regex=True)
     long_regex = graph_search(conn, root=root, name_pattern="a" * 300, regex=True)
-    bad_edge = graph_search(conn, root=root, edge_kind="http_calls")
+    bad_edge = graph_search(conn, root=root, edge_kind="http_callz")
 
     assert bad_kind["error"] == "INVALID_INPUT"
     assert bad_regex["error"] == "INVALID_QUERY"

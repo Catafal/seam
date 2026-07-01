@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 import seam.config as config
 from seam.indexer.db import init_db, upsert_file
 from seam.indexer.graph import Edge, Symbol
+from seam.indexer.pipeline import index_one_file
 
 
 def _hash(text: str) -> str:
@@ -181,9 +182,10 @@ def test_architecture_summary_reports_counts_edge_mix_and_next_calls(tmp_path: P
     assert result["sections"]["edge_mix"]["confidence"]["EXTRACTED"] == 5
     assert result["sections"]["edge_mix"]["confidence"]["INFERRED"] == 1
     assert result["sections"]["edge_mix"]["synthesized"]["interface-override"] == 1
-    assert result["sections"]["optional_surfaces"]["routes"]["status"] == "unsupported"
+    assert result["sections"]["routes"]["status"] == "empty"
+    assert "routes" not in result["sections"]["optional_surfaces"]
     assert any(call["tool"] == "seam_graph_search" for call in result["next_calls"])
-    assert any(w["code"] == "NO_ROUTE_EDGES" for w in result["warnings"])
+    assert not any(w["code"] == "NO_ROUTE_EDGES" for w in result["warnings"])
     assert not _contains_key(result, "source_text")
     assert not _contains_key(result, "source_code")
 
@@ -239,6 +241,52 @@ def test_architecture_reports_entry_points_hotspots_and_orchestrators(tmp_path: 
         call["tool"] == "seam_context" and call["params"]["symbol"] == "entry" and call["params"]["uid"]
         for call in result["next_calls"]
     )
+
+
+def test_architecture_routes_section_reports_indexed_routes(tmp_path: Path) -> None:
+    from seam.query.architecture import describe_architecture
+
+    root = tmp_path.resolve()
+    src = root / "api.py"
+    src.write_text(
+        "from fastapi import FastAPI\n"
+        "app = FastAPI()\n"
+        "\n"
+        "@app.post('/orders/{order_id}')\n"
+        "def update_order(order_id: str):\n"
+        "    return {'id': order_id}\n",
+        encoding="utf-8",
+    )
+    db = root / ".seam" / "seam.db"
+    db.parent.mkdir()
+    conn = init_db(db)
+    try:
+        index_one_file(conn, src)
+
+        result = describe_architecture(conn, root=root, sections=["routes"], limit=5)
+
+        assert result["counts"]["routes"] == 1
+        routes = result["sections"]["routes"]
+        assert routes["status"] == "populated"
+        assert routes["truncated"] == 0
+        assert routes["items"] == [
+            {
+                "symbol": "ROUTE POST /orders/{param}",
+                "uid": routes["items"][0]["uid"],
+                "method": "POST",
+                "path": "/orders/{order_id}",
+                "normalized_path": "/orders/{param}",
+                "framework": "fastapi",
+                "handler": "update_order",
+                "file": "api.py",
+                "line": 4,
+                "confidence": "EXTRACTED",
+                "provenance": "python-fastapi-decorator",
+            }
+        ]
+        assert routes["items"][0]["uid"]
+    finally:
+        conn.close()
 
 
 def test_architecture_scope_sections_boundaries_and_byte_budget(tmp_path: Path) -> None:

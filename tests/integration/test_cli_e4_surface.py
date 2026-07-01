@@ -519,7 +519,7 @@ def test_mcp_seam_trace_docstring_mentions_synthesized_by(tmp_path: Path) -> Non
 
 
 def test_mcp_seam_trace_docstring_has_full_vocabulary(tmp_path: Path) -> None:
-    """MCP_E4_6: seam_trace docstring uses the full 9-kind vocabulary, not just 'call | import'."""
+    """MCP_E4_6: seam_trace docstring uses the extended vocabulary, not just 'call | import'."""
     db_path, root = _make_db_simple(tmp_path)
     conn = connect(db_path)
     server = create_server(conn, root)

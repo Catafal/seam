@@ -56,6 +56,7 @@ from seam.indexer.graph_common import (
     Comment,
     Confidence,
     Edge,
+    RouteMetadata,
     Symbol,
 )
 from seam.indexer.graph_go_rust import (
@@ -105,6 +106,7 @@ __all__ = [
     "Comment",
     "Confidence",
     "Edge",
+    "RouteMetadata",
     "Symbol",
     "SEMANTIC_MARKERS",
     "extract_comments",
