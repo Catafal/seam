@@ -23,6 +23,7 @@ import {
   useTrace,
   useChanges,
   useSchema,
+  useArchitecture,
   useSnippet,
   useGraphSearch,
 } from "../api/hooks";
@@ -36,6 +37,7 @@ import type {
   TraceResponse,
   ChangesResponse,
   SchemaResponse,
+  ArchitectureResponse,
   SnippetResponse,
   GraphSearchResponse,
 } from "../api/schema-types";
@@ -430,6 +432,37 @@ const GRAPH_SEARCH_FIXTURE: GraphSearchResponse = {
   warnings: [],
 };
 
+const ARCHITECTURE_FIXTURE: ArchitectureResponse = {
+  identity: {
+    schema_version: 12,
+    seam_version: "0.3.0",
+    index_seam_version: "0.3.0",
+  },
+  freshness: { stale: false, reason: null, hint: null },
+  scope: { path: null, applied: false },
+  counts: {
+    files: 3,
+    symbols: 5,
+    edges: 5,
+    clusters: 2,
+    comments: 0,
+    import_mappings: 0,
+    embeddings: 0,
+    test_files: 1,
+    production_files: 2,
+    unknown_files: 0,
+  },
+  sections: {
+    languages: {
+      items: [{ language: "python", files: 3, symbols: 5 }],
+      truncated: 0,
+    },
+  },
+  warnings: [],
+  truncation: {},
+  next_calls: [],
+};
+
 // ── useImpact ─────────────────────────────────────────────────────────────────
 
 describe("useImpact", () => {
@@ -480,6 +513,34 @@ describe("useTrace", () => {
     vi.stubGlobal("fetch", vi.fn());
     renderHook(() => useTrace("authenticate_user", null), { wrapper: makeWrapper() });
     expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+});
+
+// ── useArchitecture ─────────────────────────────────────────────────────────
+
+describe("useArchitecture", () => {
+  it("fetches /api/architecture with scope and sections", async () => {
+    mockFetch(ARCHITECTURE_FIXTURE);
+    const { result } = renderHook(
+      () => useArchitecture({ scope: "src", sections: ["languages", "hotspots"] }),
+      { wrapper: makeWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(result.current.data).toEqual(ARCHITECTURE_FIXTURE);
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      expect.stringContaining("/api/architecture"),
+      expect.any(Object),
+    );
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      expect.stringContaining("scope=src"),
+      expect.any(Object),
+    );
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      expect.stringContaining("section=languages%2Chotspots"),
+      expect.any(Object),
+    );
   });
 });
 

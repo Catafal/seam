@@ -192,7 +192,7 @@ def test_snippet_mcp_registration(tmp_path: Path) -> None:
 
     tool_names = list(server._tool_manager._tools.keys())
     assert "seam_snippet" in tool_names
-    assert len(tool_names) == 15
+    assert len(tool_names) == 16
 
 
 def test_snippet_unique_symbol_selector(tmp_path: Path) -> None:

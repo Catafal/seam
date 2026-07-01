@@ -223,3 +223,123 @@ class GraphSearchResponse(BaseModel):
     offset: int
     has_more: bool
     warnings: list[SchemaWarning]
+
+
+class ArchitectureIdentity(BaseModel):
+    """Version identity for GET /api/architecture."""
+
+    schema_version: int | str
+    seam_version: str
+    index_seam_version: str | None
+
+
+class ArchitectureFreshness(BaseModel):
+    """Index freshness block in GET /api/architecture."""
+
+    stale: bool
+    reason: str | None
+    hint: str | None
+
+
+class ArchitectureScope(BaseModel):
+    """Scope application metadata for GET /api/architecture."""
+
+    path: str | None
+    applied: bool
+
+
+class ArchitectureCounts(BaseModel):
+    """Scoped and global population counts for GET /api/architecture."""
+
+    files: int
+    symbols: int
+    edges: int
+    clusters: int
+    comments: int
+    import_mappings: int
+    embeddings: int
+    test_files: int
+    production_files: int
+    unknown_files: int
+
+
+class ArchitectureSummarySection(BaseModel):
+    """Human-readable one-line summary."""
+
+    text: str
+
+
+class ArchitectureListSection(BaseModel):
+    """Ranked section with bounded, schema-flexible item dictionaries."""
+
+    items: list[dict[str, Any]]
+    truncated: int
+
+
+class ArchitecturePhysicalSection(BaseModel):
+    """Filesystem-oriented architecture section."""
+
+    top_areas: list[dict[str, Any]]
+    structure: dict[str, Any]
+    truncated: int
+
+
+class ArchitectureEdgeMixSection(BaseModel):
+    """Relationship-kind and confidence distribution."""
+
+    edge_kinds: dict[str, int]
+    confidence: dict[str, int]
+    synthesized: dict[str, int]
+    synthesized_total: int
+
+
+class ArchitectureTestsSection(BaseModel):
+    """Test/prod split and explicit coverage-edge status."""
+
+    files: dict[str, int]
+    coverage_edges: dict[str, Any]
+
+
+class ArchitectureOptionalSurface(BaseModel):
+    """Status placeholder for route/config/resource/test-edge surfaces."""
+
+    status: str
+    items: list[dict[str, Any]]
+    reason: str
+
+
+class ArchitectureSections(BaseModel):
+    """Optional architecture sections selected by the caller."""
+
+    summary: ArchitectureSummarySection | None = None
+    languages: ArchitectureListSection | None = None
+    physical: ArchitecturePhysicalSection | None = None
+    clusters: ArchitectureListSection | None = None
+    entry_points: ArchitectureListSection | None = None
+    hotspots: ArchitectureListSection | None = None
+    orchestrators: ArchitectureListSection | None = None
+    boundaries: ArchitectureListSection | None = None
+    edge_mix: ArchitectureEdgeMixSection | None = None
+    tests: ArchitectureTestsSection | None = None
+    optional_surfaces: dict[str, ArchitectureOptionalSurface] | None = None
+
+
+class ArchitectureNextCall(BaseModel):
+    """Recommended follow-up Seam call."""
+
+    tool: str
+    reason: str
+    params: dict[str, Any]
+
+
+class ArchitectureResponse(BaseModel):
+    """Response for GET /api/architecture."""
+
+    identity: ArchitectureIdentity
+    freshness: ArchitectureFreshness
+    scope: ArchitectureScope
+    counts: ArchitectureCounts
+    sections: ArchitectureSections
+    warnings: list[SchemaWarning]
+    truncation: dict[str, Any]
+    next_calls: list[ArchitectureNextCall]

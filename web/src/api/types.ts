@@ -24,6 +24,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/architecture": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Architecture
+         * @description Return a bounded architecture overview that chains into precise Seam tools.
+         */
+        get: operations["get_architecture_api_architecture_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/schema": {
         parameters: {
             query?: never;
@@ -343,6 +363,203 @@ export interface components {
             confidence: string;
             /** Distance */
             distance: number;
+        };
+        /**
+         * ArchitectureCounts
+         * @description Scoped and global population counts for GET /api/architecture.
+         */
+        ArchitectureCounts: {
+            /** Files */
+            files: number;
+            /** Symbols */
+            symbols: number;
+            /** Edges */
+            edges: number;
+            /** Clusters */
+            clusters: number;
+            /** Comments */
+            comments: number;
+            /** Import Mappings */
+            import_mappings: number;
+            /** Embeddings */
+            embeddings: number;
+            /** Test Files */
+            test_files: number;
+            /** Production Files */
+            production_files: number;
+            /** Unknown Files */
+            unknown_files: number;
+        };
+        /**
+         * ArchitectureEdgeMixSection
+         * @description Relationship-kind and confidence distribution.
+         */
+        ArchitectureEdgeMixSection: {
+            /** Edge Kinds */
+            edge_kinds: {
+                [key: string]: number;
+            };
+            /** Confidence */
+            confidence: {
+                [key: string]: number;
+            };
+            /** Synthesized */
+            synthesized: {
+                [key: string]: number;
+            };
+            /** Synthesized Total */
+            synthesized_total: number;
+        };
+        /**
+         * ArchitectureFreshness
+         * @description Index freshness block in GET /api/architecture.
+         */
+        ArchitectureFreshness: {
+            /** Stale */
+            stale: boolean;
+            /** Reason */
+            reason: string | null;
+            /** Hint */
+            hint: string | null;
+        };
+        /**
+         * ArchitectureIdentity
+         * @description Version identity for GET /api/architecture.
+         */
+        ArchitectureIdentity: {
+            /** Schema Version */
+            schema_version: number | string;
+            /** Seam Version */
+            seam_version: string;
+            /** Index Seam Version */
+            index_seam_version: string | null;
+        };
+        /**
+         * ArchitectureListSection
+         * @description Ranked section with bounded, schema-flexible item dictionaries.
+         */
+        ArchitectureListSection: {
+            /** Items */
+            items: {
+                [key: string]: unknown;
+            }[];
+            /** Truncated */
+            truncated: number;
+        };
+        /**
+         * ArchitectureNextCall
+         * @description Recommended follow-up Seam call.
+         */
+        ArchitectureNextCall: {
+            /** Tool */
+            tool: string;
+            /** Reason */
+            reason: string;
+            /** Params */
+            params: {
+                [key: string]: unknown;
+            };
+        };
+        /**
+         * ArchitectureOptionalSurface
+         * @description Status placeholder for route/config/resource/test-edge surfaces.
+         */
+        ArchitectureOptionalSurface: {
+            /** Status */
+            status: string;
+            /** Items */
+            items: {
+                [key: string]: unknown;
+            }[];
+            /** Reason */
+            reason: string;
+        };
+        /**
+         * ArchitecturePhysicalSection
+         * @description Filesystem-oriented architecture section.
+         */
+        ArchitecturePhysicalSection: {
+            /** Top Areas */
+            top_areas: {
+                [key: string]: unknown;
+            }[];
+            /** Structure */
+            structure: {
+                [key: string]: unknown;
+            };
+            /** Truncated */
+            truncated: number;
+        };
+        /**
+         * ArchitectureResponse
+         * @description Response for GET /api/architecture.
+         */
+        ArchitectureResponse: {
+            identity: components["schemas"]["ArchitectureIdentity"];
+            freshness: components["schemas"]["ArchitectureFreshness"];
+            scope: components["schemas"]["ArchitectureScope"];
+            counts: components["schemas"]["ArchitectureCounts"];
+            sections: components["schemas"]["ArchitectureSections"];
+            /** Warnings */
+            warnings: components["schemas"]["SchemaWarning"][];
+            /** Truncation */
+            truncation: {
+                [key: string]: unknown;
+            };
+            /** Next Calls */
+            next_calls: components["schemas"]["ArchitectureNextCall"][];
+        };
+        /**
+         * ArchitectureScope
+         * @description Scope application metadata for GET /api/architecture.
+         */
+        ArchitectureScope: {
+            /** Path */
+            path: string | null;
+            /** Applied */
+            applied: boolean;
+        };
+        /**
+         * ArchitectureSections
+         * @description Optional architecture sections selected by the caller.
+         */
+        ArchitectureSections: {
+            summary?: components["schemas"]["ArchitectureSummarySection"] | null;
+            languages?: components["schemas"]["ArchitectureListSection"] | null;
+            physical?: components["schemas"]["ArchitecturePhysicalSection"] | null;
+            clusters?: components["schemas"]["ArchitectureListSection"] | null;
+            entry_points?: components["schemas"]["ArchitectureListSection"] | null;
+            hotspots?: components["schemas"]["ArchitectureListSection"] | null;
+            orchestrators?: components["schemas"]["ArchitectureListSection"] | null;
+            boundaries?: components["schemas"]["ArchitectureListSection"] | null;
+            edge_mix?: components["schemas"]["ArchitectureEdgeMixSection"] | null;
+            tests?: components["schemas"]["ArchitectureTestsSection"] | null;
+            /** Optional Surfaces */
+            optional_surfaces?: {
+                [key: string]: components["schemas"]["ArchitectureOptionalSurface"];
+            } | null;
+        };
+        /**
+         * ArchitectureSummarySection
+         * @description Human-readable one-line summary.
+         */
+        ArchitectureSummarySection: {
+            /** Text */
+            text: string;
+        };
+        /**
+         * ArchitectureTestsSection
+         * @description Test/prod split and explicit coverage-edge status.
+         */
+        ArchitectureTestsSection: {
+            /** Files */
+            files: {
+                [key: string]: number;
+            };
+            /** Coverage Edges */
+            coverage_edges: {
+                [key: string]: unknown;
+            };
         };
         /**
          * ChangedSymbol
@@ -1206,6 +1423,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GraphSearchResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_architecture_api_architecture_get: {
+        parameters: {
+            query?: {
+                /** @description Root-relative path to summarize. */
+                scope?: string | null;
+                /** @description Architecture section to include; repeatable. */
+                section?: string[] | null;
+                limit?: number;
+                max_bytes?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArchitectureResponse"];
                 };
             };
             /** @description Validation Error */

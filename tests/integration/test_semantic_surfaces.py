@@ -403,7 +403,7 @@ class TestMcpToolCount:
             # as the existing test_lean_parity.py tests)
             tool_names = list(server._tool_manager._tools.keys())
             count = len(tool_names)
-            assert count == 15, f"Expected 15 MCP tools, got {count}: {sorted(tool_names)}"
+            assert count == 16, f"Expected 16 MCP tools, got {count}: {sorted(tool_names)}"
         finally:
             conn.close()
 
