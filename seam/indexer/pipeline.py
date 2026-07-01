@@ -15,6 +15,11 @@ from pathlib import Path
 
 import seam.config as config
 from seam.analysis.imports import extract_import_mappings
+from seam.indexer.config_resources import (
+    extract_config_file,
+    extract_source_config_reads,
+    is_config_resource_file,
+)
 from seam.indexer.db import upsert_file, upsert_import_mappings
 from seam.indexer.graph import extract_comments, extract_edges, extract_symbols
 from seam.indexer.parser import (
@@ -119,12 +124,6 @@ def index_one_file(conn: sqlite3.Connection, path: Path) -> tuple[int, int] | No
     report an honest skipped-file count. Never raises.
     """
     try:
-        ext = path.suffix.lower()
-        language = config.SEAM_LANGUAGE_MAP.get(ext)
-        if language is None:
-            logger.debug("skip %s: unsupported extension", path)
-            return None
-
         try:
             if path.stat().st_size > config.SEAM_MAX_FILE_BYTES:
                 logger.debug("skip %s: over size limit", path)
@@ -132,6 +131,33 @@ def index_one_file(conn: sqlite3.Connection, path: Path) -> tuple[int, int] | No
         except OSError as exc:
             logger.debug("skip %s: stat failed: %s", path, exc)
             return None
+
+        ext = path.suffix.lower()
+        language = config.SEAM_LANGUAGE_MAP.get(ext)
+        if language is None:
+            if not is_config_resource_file(path):
+                logger.debug("skip %s: unsupported extension", path)
+                return None
+            try:
+                content = path.read_bytes()
+            except OSError as exc:
+                logger.debug("skip %s: read failed: %s", path, exc)
+                return None
+            file_hash = sha1(content)
+            symbols, edges, config_keys, resources = extract_config_file(path)
+            upsert_file(
+                conn,
+                path,
+                "config",
+                file_hash,
+                symbols,
+                edges,
+                [],
+                [],
+                config_keys,
+                resources,
+            )
+            return len(symbols), len(edges)
 
         root = _dispatch_parser(path, language)
         if root is None:
@@ -154,10 +180,31 @@ def index_one_file(conn: sqlite3.Connection, path: Path) -> tuple[int, int] | No
             symbols.extend(route_symbols)
         if route_edges:
             edges.extend(route_edges)
+        config_symbols, config_edges, config_keys, resources = extract_source_config_reads(
+            root,
+            language,
+            path,
+            symbols,
+        )
+        if config_symbols:
+            symbols.extend(config_symbols)
+        if config_edges:
+            edges.extend(config_edges)
         # Extract semantic comments (WHY/HACK/NOTE/TODO/FIXME); never raises.
         comments = extract_comments(root, language, path)
 
-        upsert_file(conn, path, language, file_hash, symbols, edges, comments, routes)
+        upsert_file(
+            conn,
+            path,
+            language,
+            file_hash,
+            symbols,
+            edges,
+            comments,
+            routes,
+            config_keys,
+            resources,
+        )
 
         # Phase 5: extract and store import mappings for this file.
         # Only runs when SEAM_IMPORT_RESOLUTION is 'on' (default).
@@ -196,7 +243,7 @@ def walk_project(root: Path) -> list[Path]:
             continue
         if (
             item.is_file()
-            and item.suffix.lower() in config.SEAM_LANGUAGE_MAP
+            and (item.suffix.lower() in config.SEAM_LANGUAGE_MAP or is_config_resource_file(item))
             and ".min." not in item.name  # skip minified bundles (foo.min.js, bundle.min.mjs)
         ):
             files.append(item)

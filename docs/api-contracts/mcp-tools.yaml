@@ -20,7 +20,7 @@
 #
 # E4 edge provenance (closed follow-up): synthesized_by is now surfaced in seam_impact tier
 # entries and seam_trace hops when SEAM_EDGE_PROVENANCE=on (default). Edge kind vocabulary
-# is now 10: call | import | extends | implements | instantiates | holds | reads | writes | uses | http_calls
+# is now 12: call | import | extends | implements | instantiates | holds | reads | writes | uses | http_calls | reads_config | configures
 # Each seam_impact entry carries 'kind' (final hop's edge kind; always kept incl. lean mode)
 # and 'synthesized_by' (channel name or null; stripped in lean mode like resolved_by).
 # Each seam_trace hop carries 'synthesized_by' in addition to the existing 'kind'.
@@ -84,7 +84,7 @@ tools:
         freshness:
           (object) — stale bool plus reason/hint from the shared staleness checker.
         counts:
-          (object) — files, symbols, edges, clusters, comments, import_mappings, embeddings, routes.
+          (object) — files, symbols, edges, clusters, comments, import_mappings, embeddings, routes, config_keys, resources.
         breakdowns:
           (object) — grouped maps for languages, symbol_kinds, edge_kinds,
           edge_confidence, synthesized_edges, comment_markers, embedding_models.
@@ -94,7 +94,8 @@ tools:
           embedding_model_matches, has_synthesized_edges, has_field_symbols,
           has_receiver_column, has_search_text, has_signature_column,
           has_synthesized_by_column, has_routes_table, has_route_nodes,
-          has_http_calls.
+          has_http_calls, has_config_keys_table, has_resources_table,
+          has_config_nodes, has_resource_nodes, has_reads_config, has_configures.
         tools:
           (list) — read-only tool guide entries with transports, dependencies, and use_when.
         recommended_next_calls:
@@ -118,7 +119,7 @@ tools:
       Use this after seam_schema when an agent needs to understand the indexed repo
       before choosing precise follow-up tools. It composes existing index evidence into
       bounded sections: language distribution, physical areas, clusters, entry points,
-      routes, fan-in hotspots, fan-out orchestrators, cross-area boundaries, edge mix,
+      routes, configs, resources, fan-in hotspots, fan-out orchestrators, cross-area boundaries, edge mix,
       optional-surface status, warnings, truncation metadata, and concrete next calls.
     input:
       scope:
@@ -140,6 +141,8 @@ tools:
           - clusters
           - entry_points
           - routes
+          - configs
+          - resources
           - hotspots
           - orchestrators
           - boundaries
@@ -170,8 +173,11 @@ tools:
           scoped file/symbol/edge/test/production counts plus global optional counts.
         sections:
           selected architecture sections. Default sections include summary, languages,
-          physical, clusters, entry_points, routes, hotspots, orchestrators, boundaries,
-          edge_mix, tests, and optional_surfaces.
+          physical, clusters, entry_points, routes, configs, resources, hotspots,
+          orchestrators, boundaries, edge_mix, tests, and optional_surfaces.
+          configs items expose key, normalized_key, role, value_state,
+          value_category, and provenance; resources items expose name,
+          normalized_name, category, and provenance.
         warnings:
           structured {code, message, hint}; includes stale, empty index, unsupported
           config/resource/test-edge surfaces, scope issues, and byte-budget trimming.
@@ -313,7 +319,7 @@ tools:
         type: string
         required: false
         nullable: true
-        description: Edge kind or comma-separated edge kinds; includes http_calls; degree counts respect this filter.
+        description: Edge kind or comma-separated edge kinds; includes http_calls, reads_config, and configures; degree counts respect this filter.
       direction:
         type: string
         default: both
@@ -934,7 +940,7 @@ tools:
 	          kind:           E4. Edge kind of the final hop of the winning path to this dependent.
 	                          Full closed vocabulary:
 	                            call | import | extends | implements | instantiates | holds |
-	                            reads | writes | uses | http_calls
+	                            reads | writes | uses | http_calls | reads_config | configures
 	                          Always present (empty string "" for degenerate/pre-E4 entries as
                           a defensive fallback). Kept in lean mode (verbose=false) — it is a
                           core field like 'confidence'. ABSENT entirely when
@@ -1003,7 +1009,7 @@ tools:
       Trace the call/dependency path between two symbols.
       Returns the shortest path from source to target as an ordered list of hops,
       where each hop carries the edge kind (call | import | extends | implements |
-      instantiates | holds | reads | writes | uses | http_calls) and per-edge confidence
+      instantiates | holds | reads | writes | uses | http_calls | reads_config | configures) and per-edge confidence
       (EXTRACTED | INFERRED | AMBIGUOUS).
       The extends/implements kinds are class-inheritance edges added in P6a
       (SEAM_INHERITANCE_EDGES=on). The instantiates kind was added in Tier B B6:

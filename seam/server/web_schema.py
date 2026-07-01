@@ -26,6 +26,8 @@ class SchemaCounts(BaseModel):
     import_mappings: int
     embeddings: int
     routes: int
+    config_keys: int
+    resources: int
 
 
 class SchemaBreakdowns(BaseModel):
@@ -57,6 +59,12 @@ class SchemaCapabilities(BaseModel):
     has_routes_table: bool
     has_route_nodes: bool
     has_http_calls: bool
+    has_config_keys_table: bool
+    has_resources_table: bool
+    has_config_nodes: bool
+    has_resource_nodes: bool
+    has_reads_config: bool
+    has_configures: bool
 
 
 class SchemaToolGuide(BaseModel):
@@ -263,6 +271,8 @@ class ArchitectureCounts(BaseModel):
     import_mappings: int
     embeddings: int
     routes: int
+    config_keys: int
+    resources: int
     test_files: int
     production_files: int
     unknown_files: int
@@ -310,7 +320,7 @@ class ArchitectureOptionalSurface(BaseModel):
 
     status: str
     items: list[dict[str, Any]]
-    reason: str
+    reason: str | None = None
 
 
 class ArchitectureSections(BaseModel):
@@ -322,6 +332,8 @@ class ArchitectureSections(BaseModel):
     clusters: ArchitectureListSection | None = None
     entry_points: ArchitectureListSection | None = None
     routes: ArchitectureListSection | None = None
+    configs: ArchitectureListSection | None = None
+    resources: ArchitectureListSection | None = None
     hotspots: ArchitectureListSection | None = None
     orchestrators: ArchitectureListSection | None = None
     boundaries: ArchitectureListSection | None = None

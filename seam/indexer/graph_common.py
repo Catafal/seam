@@ -22,7 +22,8 @@ public TypedDicts so callers can do:
     from seam.indexer.graph import Symbol, Edge  # still works — graph re-exports these
 
 Contents:
-  - TypedDicts:  Confidence, Symbol, Edge, RouteMetadata, Comment
+  - TypedDicts:  Confidence, Symbol, Edge, RouteMetadata, ConfigMetadata,
+                 ResourceMetadata, Comment
   - Constants:   SEMANTIC_MARKERS, _MARKER_RE
   - Helpers:     _text, _node_name, _make_symbol, _match_marker,
                  _block_comment_lines, _arrow_function_name, _find_enclosing_function
@@ -59,7 +60,7 @@ Confidence = Literal["EXTRACTED", "INFERRED", "AMBIGUOUS"]
 
 class Symbol(TypedDict):
     name: str
-    kind: str  # 'function' | 'class' | 'method' | 'interface' | 'type' | 'field' | 'route'
+    kind: str  # 'function' | 'class' | 'method' | 'interface' | 'type' | 'field' | 'route' | 'config' | 'resource'
     file: str  # str(path) — resolved at call time
     start_line: int
     end_line: int
@@ -89,6 +90,8 @@ class Edge(TypedDict):
     #                    signature (e.g. f(x: T) → f uses T). Complements 'holds' (stored
     #                    composition) with signature-level coupling. Gated by SEAM_PARAM_EDGES.
     #   'http_calls'   — statically visible HTTP client call to a route node [P3.1]
+    #   'reads_config' — code reads a literal config/env key [P3.2]
+    #   'configures'   — a config key describes a runtime resource [P3.2]
     kind: str
     file: str
     line: int
@@ -135,6 +138,38 @@ class RouteMetadata(TypedDict):
     normalized_path: str
     framework: str
     handler: str | None
+    line: int
+    confidence: Confidence
+    provenance: str
+
+
+class ConfigMetadata(TypedDict):
+    """Config-key evidence stored alongside config symbols.
+
+    Values are intentionally excluded. P3.2 only persists key names plus a
+    redacted safety/category shape so graph payloads cannot leak config secrets.
+    """
+
+    symbol_name: str
+    key: str
+    normalized_key: str
+    source_family: str
+    role: str
+    value_state: str
+    value_category: str | None
+    line: int
+    confidence: Confidence
+    provenance: str
+
+
+class ResourceMetadata(TypedDict):
+    """Runtime resource evidence stored alongside resource symbols."""
+
+    symbol_name: str
+    name: str
+    normalized_name: str
+    category: str
+    source_family: str
     line: int
     confidence: Confidence
     provenance: str

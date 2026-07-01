@@ -15,6 +15,7 @@ import {
   isEdgeVisible,
   toggleFilterValue,
   defaultEdgeFilter,
+  ALL_EDGE_KINDS,
 } from "../lib/edgeFilter";
 import { impactTierMap } from "../lib/impactOverlay";
 import { tracePathHighlight, edgeKey } from "../lib/tracePath";
@@ -56,7 +57,9 @@ describe("riskTier", () => {
 describe("edgeFilter", () => {
   it("default filter shows all kinds and confidences", () => {
     const f = defaultEdgeFilter();
-    expect(isEdgeVisible({ kind: "call", confidence: "EXTRACTED" }, f)).toBe(true);
+    for (const kind of ALL_EDGE_KINDS) {
+      expect(isEdgeVisible({ kind, confidence: "EXTRACTED" }, f)).toBe(true);
+    }
     expect(isEdgeVisible({ kind: "import", confidence: "INFERRED" }, f)).toBe(true);
   });
 

@@ -18,7 +18,20 @@ export interface EdgeFilterState {
 }
 
 /** All edge kinds and confidence tiers Seam can emit (the default "all on" set). */
-export const ALL_EDGE_KINDS = ["call", "import", "http_calls"] as const;
+export const ALL_EDGE_KINDS = [
+  "call",
+  "import",
+  "extends",
+  "implements",
+  "instantiates",
+  "holds",
+  "reads",
+  "writes",
+  "uses",
+  "http_calls",
+  "reads_config",
+  "configures",
+] as const;
 export const ALL_CONFIDENCES = ["EXTRACTED", "AMBIGUOUS", "INFERRED"] as const;
 
 /** Default filter state: everything visible. */

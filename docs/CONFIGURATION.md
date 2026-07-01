@@ -48,6 +48,11 @@ All extraction-time. `off` = byte-identical to before that edge kind existed; to
 | `SEAM_SWIFT_TYPE_INFERENCE` | `on` | Swift-specific receiver-type inference (independent of the above). |
 | `SEAM_TOKENIZE_IDENTIFIERS` | `on` | Write camelCase/snake_case-split tokens into `search_text` so `"push to talk"` matches `PushToTalkMonitor`. |
 
+P3.2 config/resource extraction has no separate knob. It indexes safe declaration files
+(`.env.example`, selected JSON/TOML/YAML config files, manifests, compose files) and literal
+Python/TS/JS config reads, but deliberately skips value-bearing `.env` files by default and
+never persists raw config values.
+
 ---
 
 ## Edge synthesis (post-pass)

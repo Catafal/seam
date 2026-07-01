@@ -1,4 +1,4 @@
--- Seam SQLite Schema (v13 — route nodes and HTTP route metadata)
+-- Seam SQLite Schema (v14 — config/resource metadata)
 -- Run via db.py:init_db() — idempotent (CREATE TABLE IF NOT EXISTS).
 -- FTS5 is required; init_db() verifies availability before proceeding.
 -- Schema v2 adds: edges.confidence (DEFAULT 'INFERRED').
@@ -17,6 +17,7 @@
 -- Schema v12 adds: edges.synthesized_by (edge-synthesis post-pass provenance;
 --                  NULL = parser-extracted; channel name = synthesized by post-pass).
 -- Schema v13 adds: routes table for first-class route node metadata.
+-- Schema v14 adds: config_keys and resources tables for no-secret config/resource metadata.
 -- Migration from v1: db.py:_run_migration_v1_to_v2() (guarded ALTER TABLE).
 -- Migration from v2: db.py:_run_migration_v2_to_v3() (guards schema_version bump).
 -- Migration from v3: db.py:_run_migration_v3_to_v4() (adds clusters table + cluster_id).
@@ -29,6 +30,7 @@
 -- Migration from v10: db.py:_run_migration_v10_to_v11() (adds symbols.search_text + FTS column).
 -- Migration from v11: db.py:_run_migration_v11_to_v12() (adds edges.synthesized_by column).
 -- Migration from v12: db.py:_run_migration_v12_to_v13() (adds routes table).
+-- Migration from v13: db.py:_run_migration_v13_to_v14() (adds config/resource tables).
 
 PRAGMA journal_mode = WAL;      -- Write-ahead logging for concurrent reads
 PRAGMA foreign_keys = ON;
@@ -234,6 +236,50 @@ CREATE INDEX IF NOT EXISTS idx_routes_file_id ON routes(file_id);
 CREATE INDEX IF NOT EXISTS idx_routes_method_path ON routes(method, normalized_path);
 CREATE INDEX IF NOT EXISTS idx_routes_symbol_name ON routes(symbol_name);
 
+-- ── Config / Resources ───────────────────────────────────────────────────────
+-- One row per config-key evidence item emitted during indexing.
+-- Config nodes live in symbols(kind='config') so graph surfaces can discover them.
+-- Raw values are intentionally NOT stored; value_state/value_category preserve only
+-- a redacted safety shape so graph/search/MCP payloads cannot leak secrets.
+CREATE TABLE IF NOT EXISTS config_keys (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id        INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    symbol_name    TEXT NOT NULL,
+    key            TEXT NOT NULL,
+    normalized_key TEXT NOT NULL,
+    source_family  TEXT NOT NULL,
+    role           TEXT NOT NULL, -- declaration | read
+    value_state    TEXT NOT NULL,
+    value_category TEXT,
+    line           INTEGER NOT NULL,
+    confidence     TEXT NOT NULL DEFAULT 'INFERRED',
+    provenance     TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_config_keys_file_id ON config_keys(file_id);
+CREATE INDEX IF NOT EXISTS idx_config_keys_normalized_key ON config_keys(normalized_key);
+CREATE INDEX IF NOT EXISTS idx_config_keys_symbol_name ON config_keys(symbol_name);
+
+-- One row per runtime-resource evidence item emitted during indexing.
+-- Resource nodes live in symbols(kind='resource'); resource-specific category and
+-- provenance live here to avoid widening the generic symbol contract.
+CREATE TABLE IF NOT EXISTS resources (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id         INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    symbol_name     TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    normalized_name TEXT NOT NULL,
+    category        TEXT NOT NULL,
+    source_family   TEXT NOT NULL,
+    line            INTEGER NOT NULL,
+    confidence      TEXT NOT NULL DEFAULT 'INFERRED',
+    provenance      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_resources_file_id ON resources(file_id);
+CREATE INDEX IF NOT EXISTS idx_resources_category ON resources(category);
+CREATE INDEX IF NOT EXISTS idx_resources_symbol_name ON resources(symbol_name);
+
 -- ── Metadata ─────────────────────────────────────────────────────────────────
 -- Key-value store for index metadata (version, created_at, etc.)
 CREATE TABLE IF NOT EXISTS metadata (
@@ -242,9 +288,9 @@ CREATE TABLE IF NOT EXISTS metadata (
 );
 
 -- NOTE: INSERT OR IGNORE does not update existing rows. Fresh DBs are seeded at
--- the CURRENT schema version ('13') so a brand-new `seam init` is born current and
+-- the CURRENT schema version ('14') so a brand-new `seam init` is born current and
 -- does NOT trigger any migration advisory.
 -- Existing older DBs keep their stored version; db.py migrations bump them in place.
 INSERT OR IGNORE INTO metadata(key, value) VALUES
-    ('schema_version', '13'),
+    ('schema_version', '14'),
     ('seam_version',   '0.2.0');

@@ -31,6 +31,7 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 import seam.config as config
+from seam.indexer.config_resources import is_config_resource_file
 from seam.indexer.db import connect, delete_file
 from seam.indexer.pipeline import index_one_file
 
@@ -174,9 +175,9 @@ class SeamWatcher(FileSystemEventHandler):
     def _schedule_index(self, path: Path) -> None:
         """Cancel any existing timer for path, start a fresh debounce timer.
 
-        Only schedules for extensions in config.SEAM_LANGUAGE_MAP.
+        Only schedules source files and safe config/resource files.
         """
-        if path.suffix.lower() not in config.SEAM_LANGUAGE_MAP:
+        if path.suffix.lower() not in config.SEAM_LANGUAGE_MAP and not is_config_resource_file(path):
             return  # not a file we care about
 
         key = str(path)

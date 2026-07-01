@@ -49,6 +49,8 @@ _DEFAULT_SECTIONS: tuple[str, ...] = (
     "clusters",
     "entry_points",
     "routes",
+    "configs",
+    "resources",
     "hotspots",
     "orchestrators",
     "boundaries",
@@ -613,7 +615,7 @@ def _optional_surfaces() -> dict[str, Any]:
             "reason": surface["message"],
         }
         for name, surface in _OPTIONAL_SURFACES.items()
-        if name != "routes"
+        if name not in {"routes", "configs", "resources"}
     }
 
 
@@ -673,11 +675,125 @@ def _routes_section(
     }
 
 
+def _configs_section(
+    conn: sqlite3.Connection,
+    root: Path,
+    allowed_files: set[str] | None = None,
+    limit: int = 10,
+) -> dict[str, Any]:
+    if not _table_exists(conn, "config_keys"):
+        surface = _OPTIONAL_SURFACES["configs"]
+        return {"status": "unsupported", "items": [], "reason": surface["message"], "truncated": 0}
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                c.symbol_name,
+                c.key,
+                c.normalized_key,
+                c.source_family,
+                c.role,
+                c.value_state,
+                c.value_category,
+                c.line,
+                c.confidence,
+                c.provenance,
+                f.path AS file
+            FROM config_keys c
+            JOIN files f ON f.id = c.file_id
+            WHERE f.path NOT LIKE ':%'
+            ORDER BY c.normalized_key, c.role, f.path, c.line
+            """
+        ).fetchall()
+    except sqlite3.Error:
+        rows = []
+    if allowed_files is not None:
+        rows = [row for row in rows if str(row["file"]) in allowed_files]
+    items = [
+        {
+            "symbol": row["symbol_name"],
+            "uid": _compute_uid(str(row["file"]), int(row["line"])),
+            "key": row["key"],
+            "normalized_key": row["normalized_key"],
+            "source_family": row["source_family"],
+            "role": row["role"],
+            "value_state": row["value_state"],
+            "value_category": row["value_category"],
+            "file": _relativize(str(row["file"]), root),
+            "line": row["line"],
+            "confidence": row["confidence"],
+            "provenance": row["provenance"],
+        }
+        for row in rows[:limit]
+    ]
+    return {
+        "status": "populated" if rows else "empty",
+        "items": items,
+        "truncated": max(0, len(rows) - limit),
+    }
+
+
+def _resources_section(
+    conn: sqlite3.Connection,
+    root: Path,
+    allowed_files: set[str] | None = None,
+    limit: int = 10,
+) -> dict[str, Any]:
+    if not _table_exists(conn, "resources"):
+        surface = _OPTIONAL_SURFACES["resources"]
+        return {"status": "unsupported", "items": [], "reason": surface["message"], "truncated": 0}
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                r.symbol_name,
+                r.name,
+                r.normalized_name,
+                r.category,
+                r.source_family,
+                r.line,
+                r.confidence,
+                r.provenance,
+                f.path AS file
+            FROM resources r
+            JOIN files f ON f.id = r.file_id
+            WHERE f.path NOT LIKE ':%'
+            ORDER BY r.category, r.normalized_name, f.path, r.line
+            """
+        ).fetchall()
+    except sqlite3.Error:
+        rows = []
+    if allowed_files is not None:
+        rows = [row for row in rows if str(row["file"]) in allowed_files]
+    items = [
+        {
+            "symbol": row["symbol_name"],
+            "uid": _compute_uid(str(row["file"]), int(row["line"])),
+            "name": row["name"],
+            "normalized_name": row["normalized_name"],
+            "category": row["category"],
+            "source_family": row["source_family"],
+            "file": _relativize(str(row["file"]), root),
+            "line": row["line"],
+            "confidence": row["confidence"],
+            "provenance": row["provenance"],
+        }
+        for row in rows[:limit]
+    ]
+    return {
+        "status": "populated" if rows else "empty",
+        "items": items,
+        "truncated": max(0, len(rows) - limit),
+    }
+
+
 def _warnings(
     *,
     freshness: dict[str, Any],
     counts: dict[str, int],
     routes_supported: bool,
+    configs_supported: bool,
+    resources_supported: bool,
 ) -> list[dict[str, str]]:
     warnings: list[dict[str, str]] = []
     if freshness["stale"]:
@@ -698,6 +814,10 @@ def _warnings(
         )
     for name, surface in _OPTIONAL_SURFACES.items():
         if name == "routes" and routes_supported:
+            continue
+        if name == "configs" and configs_supported:
+            continue
+        if name == "resources" and resources_supported:
             continue
         warnings.append(_warning(surface["code"], surface["message"], surface["hint"]))
     return warnings
@@ -795,6 +915,8 @@ def _fit_to_byte_budget(result: dict[str, Any], *, max_bytes: int) -> dict[str, 
         "hotspots",
         "languages",
         "routes",
+        "configs",
+        "resources",
     )
 
     def _size() -> int:
@@ -902,6 +1024,8 @@ def describe_architecture(
         "import_mappings": _count(conn, "import_mappings"),
         "embeddings": _count(conn, "embeddings"),
         "routes": _count(conn, "routes"),
+        "config_keys": _count(conn, "config_keys"),
+        "resources": _count(conn, "resources"),
         "test_files": test_files,
         "production_files": production_files,
         "unknown_files": 0,
@@ -919,6 +1043,8 @@ def describe_architecture(
         "physical": _physical_section(conn, root, allowed_files, scope_path, safe_limit),
         "clusters": _cluster_section(conn, root, allowed_files, safe_limit),
         "routes": _routes_section(conn, root, allowed_files, safe_limit),
+        "configs": _configs_section(conn, root, allowed_files, safe_limit),
+        "resources": _resources_section(conn, root, allowed_files, safe_limit),
         "edge_mix": _edge_mix_section(edge_rows),
         "tests": {
             "files": {"production": production_files, "test": test_files, "unknown": 0},
@@ -954,6 +1080,8 @@ def describe_architecture(
             freshness=freshness,
             counts=counts,
             routes_supported=_table_exists(conn, "routes"),
+            configs_supported=_table_exists(conn, "config_keys"),
+            resources_supported=_table_exists(conn, "resources"),
         ),
     ]
     return _fit_to_byte_budget(result, max_bytes=max_bytes)
