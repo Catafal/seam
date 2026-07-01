@@ -23,6 +23,7 @@ import {
   useTrace,
   useChanges,
   useSchema,
+  useSnippet,
 } from "../api/hooks";
 import type {
   StatusResponse,
@@ -34,6 +35,7 @@ import type {
   TraceResponse,
   ChangesResponse,
   SchemaResponse,
+  SnippetResponse,
 } from "../api/schema-types";
 
 // ── Test utilities ─────────────────────────────────────────────────────────────
@@ -139,6 +141,35 @@ const CLUSTERS_FIXTURE: ClustersResponse = {
     { cluster_id: 1, label: "parser", size: 12, representative: "parse" },
     { cluster_id: 2, label: "engine", size: 8, representative: "query" },
   ],
+};
+
+const SNIPPET_FIXTURE: SnippetResponse = {
+  found: true,
+  symbol: "parse",
+  uid: "abc12345:10",
+  kind: "function",
+  file: "seam/indexer/parser.py",
+  start_line: 10,
+  end_line: 14,
+  source_start_line: 10,
+  source_end_line: 14,
+  signature: "def parse(code: str) -> Tree",
+  docstring: null,
+  source: "def parse(code: str) -> Tree:\n  ...\n",
+  truncated: {
+    by_lines: false,
+    by_bytes: false,
+    original_line_count: 5,
+    returned_line_count: 5,
+  },
+  freshness: {
+    file_hash_matches: true,
+    mtime_matches: true,
+    index_stale: false,
+  },
+  neighbors: [],
+  candidates: [],
+  warnings: [],
 };
 
 // ── useStatus ─────────────────────────────────────────────────────────────────
@@ -456,6 +487,46 @@ describe("useSchema", () => {
   it("does NOT fetch when enabled=false", () => {
     vi.stubGlobal("fetch", vi.fn());
     renderHook(() => useSchema(false, false), { wrapper: makeWrapper() });
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+});
+
+// ── useSnippet ──────────────────────────────────────────────────────────────
+
+describe("useSnippet", () => {
+  it("fetches /api/snippet with uid and caps", async () => {
+    mockFetch(SNIPPET_FIXTURE);
+    const { result } = renderHook(
+      () =>
+        useSnippet({
+          uid: "abc12345:10",
+          contextLines: 2,
+          maxLines: 50,
+          includeNeighbors: true,
+        }),
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toEqual(SNIPPET_FIXTURE);
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      expect.stringContaining("uid=abc12345%3A10"),
+      expect.any(Object),
+    );
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      expect.stringContaining("context_lines=2"),
+      expect.any(Object),
+    );
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      expect.stringContaining("include_neighbors=true"),
+      expect.any(Object),
+    );
+  });
+
+  it("does NOT fetch without a complete selector", () => {
+    vi.stubGlobal("fetch", vi.fn());
+    renderHook(() => useSnippet({ file: "src/app.py" }), {
+      wrapper: makeWrapper(),
+    });
     expect(vi.mocked(fetch)).not.toHaveBeenCalled();
   });
 });

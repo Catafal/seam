@@ -119,6 +119,12 @@ def _tool_registry() -> list[dict[str, Any]]:
             "use_when": "You know a keyword but not the exact symbol name.",
         },
         {
+            "name": "seam_snippet",
+            "transports": ["cli", "mcp", "web"],
+            "read_only": True,
+            "use_when": "You need bounded source text for one exact symbol after search/query.",
+        },
+        {
             "name": "seam_query",
             "transports": ["cli", "mcp"],
             "read_only": True,
@@ -314,6 +320,7 @@ def describe_schema(
         "recommended_next_calls": [
             "Call seam_schema first to inspect index capability and freshness.",
             "Use seam_search for keyword discovery.",
+            "Use seam_snippet with a search/query uid when you need exact source text.",
             "Use seam_context before editing a known symbol.",
             "Use seam_impact before changing an existing symbol.",
         ],

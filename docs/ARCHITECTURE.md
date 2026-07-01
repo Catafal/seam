@@ -42,18 +42,19 @@
    ┌────────┴───────────────────────────────────────┐
    ▼                          ▼                       ▼
  MCP server (stdio)     CLI read commands        Seam Explorer (web, [web] extra)
- 13 read-only tools     schema/query/impact/…    FastAPI + React SPA, 127.0.0.1
+ 14 read-only tools     schema/query/impact/…    FastAPI + React SPA, 127.0.0.1
    │                          │                       │
    └──────────────────────────┴───────────────────────┘
                               ▼
               AI agent (Claude Code · Cursor · Codex)
 ```
 
-The **13 MCP tools** map to engine functions:
+The **14 MCP tools** map to engine functions:
 
 | Tool | Engine entry point |
 |------|-------------------|
 | `seam_schema` | `query/schema.py` |
+| `seam_snippet` | `query/snippet.py` |
 | `seam_query` · `seam_search` · `seam_context` | `query/engine.py` (+ `query/semantic.py` hybrid) |
 | `seam_context_pack` | `query/pack.py` |
 | `seam_why` | `analysis/comments.py` |
@@ -130,6 +131,12 @@ the 1000-line cap: `impact_handler.py` (all `seam_impact` shaping), `trace_handl
 5. _maybe_attach_staleness appends index_status if the index has drifted
 6. _finalize normalizes the MCP envelope (raise on error → isError; None → {found:false})
 ```
+
+`seam_snippet` is the deliberate exception to the graph-traversal read path. It uses the
+index only to resolve identity and line ranges, then checks root containment and reads the
+live file directly. That split gives agents exact implementation text after search/query
+without inflating every discovery response with source bodies, while still warning when the
+indexed range may be stale.
 
 ### Storage (SQLite, schema v12)
 

@@ -179,6 +179,6 @@ class TestMcpToolCount:
             attr for attr in dir(tools)
             if attr.startswith("handle_seam_")
         ]
-        assert len(tool_handlers) == 13, (
-            f"Expected 13 MCP tool handlers, found {len(tool_handlers)}: {tool_handlers}"
+        assert len(tool_handlers) == 14, (
+            f"Expected 14 MCP tool handlers, found {len(tool_handlers)}: {tool_handlers}"
         )

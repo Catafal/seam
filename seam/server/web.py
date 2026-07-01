@@ -51,10 +51,11 @@ from seam.server.tools import (
     handle_seam_impact,
     handle_seam_schema,
     handle_seam_search,
+    handle_seam_snippet,
     handle_seam_trace,
     handle_seam_why,
 )
-from seam.server.web_schema import SchemaResponse
+from seam.server.web_schema import SchemaResponse, SnippetResponse
 
 # ── Pydantic response models (source of truth for TS codegen) ─────────────────
 # These models define the exact JSON shape that openapi-typescript will consume.
@@ -531,6 +532,43 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
             conn.close()
 
         return SchemaResponse(**result)
+
+    # ── Route: GET /api/snippet ───────────────────────────────────────────────
+
+    @app.get("/api/snippet", response_model=SnippetResponse, tags=["source"])
+    def get_snippet(
+        uid: str | None = Query(None, description="Exact symbol UID from search/query."),
+        symbol: str | None = Query(None, description="Symbol name to retrieve."),
+        file: str | None = Query(None, description="Root-relative or absolute file path."),
+        line: int | None = Query(None, ge=1, description="1-based source line."),
+        context_lines: int = Query(0, ge=0, le=20, description="Context lines around symbol."),
+        max_lines: int = Query(200, ge=1, le=2000, description="Maximum source lines."),
+        max_bytes: int = Query(20_000, ge=1, le=200_000, description="Maximum UTF-8 bytes."),
+        include_neighbors: bool = Query(
+            False,
+            description="Include previous/next indexed symbols from the same file.",
+        ),
+    ) -> SnippetResponse:
+        """Expose the same exact-source contract to the Explorer without duplicating rules."""
+        conn = _get_readonly_conn(db_path)
+        try:
+            result = handle_seam_snippet(
+                conn,
+                root,
+                uid=uid,
+                symbol=symbol,
+                file=file,
+                line=line,
+                context_lines=context_lines,
+                max_lines=max_lines,
+                max_bytes=max_bytes,
+                include_neighbors=include_neighbors,
+            )
+        finally:
+            conn.close()
+
+        _check_handler_error(result)
+        return SnippetResponse(**cast(dict[str, Any], result))
 
     # ── Route: GET /api/status ────────────────────────────────────────────────
 

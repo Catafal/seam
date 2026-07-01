@@ -29,6 +29,7 @@ import type {
   HubSymbol,
   StructureSymbol,
   SchemaResponse,
+  SnippetResponse,
 } from "./schema-types";
 import type {
   SearchResponse,
@@ -41,6 +42,18 @@ import type {
 export type ImpactDirection = "both" | "upstream" | "downstream";
 /** Git-diff scope (matches the API Literal). */
 export type ChangesScope = "working" | "staged" | "branch";
+
+/** Selectors accepted by GET /api/snippet. */
+export interface SnippetSelector {
+  uid?: string;
+  symbol?: string;
+  file?: string;
+  line?: number;
+  contextLines?: number;
+  maxLines?: number;
+  maxBytes?: number;
+  includeNeighbors?: boolean;
+}
 
 // ── useStatus ─────────────────────────────────────────────────────────────────
 
@@ -261,5 +274,38 @@ export function useSchema(verbose: boolean = false, enabled: boolean = true) {
     queryFn: () =>
       apiFetch<SchemaResponse>("/api/schema", { params: { verbose } }),
     enabled,
+  });
+}
+
+// ── useSnippet ──────────────────────────────────────────────────────────────
+
+/**
+ * Fetch bounded exact source from GET /api/snippet.
+ * Disabled until one complete selector is available.
+ */
+export function useSnippet(selector: SnippetSelector, enabled: boolean = true) {
+  const hasUid = selector.uid !== undefined && selector.uid.trim().length > 0;
+  const hasSymbol = selector.symbol !== undefined && selector.symbol.trim().length > 0;
+  const hasLocation =
+    selector.file !== undefined &&
+    selector.file.trim().length > 0 &&
+    selector.line !== undefined;
+
+  return useQuery<SnippetResponse>({
+    queryKey: ["snippet", selector],
+    queryFn: () =>
+      apiFetch<SnippetResponse>("/api/snippet", {
+        params: {
+          uid: selector.uid,
+          symbol: selector.symbol,
+          file: selector.file,
+          line: selector.line,
+          context_lines: selector.contextLines,
+          max_lines: selector.maxLines,
+          max_bytes: selector.maxBytes,
+          include_neighbors: selector.includeNeighbors,
+        },
+      }),
+    enabled: enabled && (hasUid || hasSymbol || hasLocation),
   });
 }

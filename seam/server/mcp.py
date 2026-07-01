@@ -1,4 +1,4 @@
-"""MCP server setup — FastMCP stdio transport, thirteen tools registered.
+"""MCP server setup — FastMCP stdio transport, fourteen tools registered.
 
 Creates and configures the MCP server instance.
 Tool handlers in tools.py are thin adapters; this module wires them to FastMCP.
@@ -21,6 +21,7 @@ Tools registered (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3 + Phase 6 + T
     seam_flows        — execution flows: entry points + forward call-chain expansion
     seam_structure    — whole-repo directory/file/container structure tree (Tier D11)
     seam_schema       — read-only index capability and freshness map (Phase 11)
+    seam_snippet      — exact bounded source retrieval for one indexed symbol (Phase 11)
 
 Design:
 - One FastMCP instance per process; connection is injected at creation time.
@@ -50,6 +51,7 @@ from seam.server.tools import (
     handle_seam_query,
     handle_seam_schema,
     handle_seam_search,
+    handle_seam_snippet,
     handle_seam_structure,
     handle_seam_trace,
     handle_seam_why,
@@ -95,7 +97,7 @@ def _finalize(result: Any) -> Any:
 
 
 def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
-    """Configure and return a FastMCP server with all twelve Seam tools registered.
+    """Configure and return a FastMCP server with all fourteen Seam tools registered.
 
     Phase 0:  seam_query, seam_context, seam_search
     Phase 1:  seam_impact, seam_trace, seam_changes
@@ -105,6 +107,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
     Phase 6:  seam_context_pack
     Flows:    seam_flows
     Tier D11: seam_structure
+    Phase 11: seam_schema, seam_snippet
 
     Args:
         conn: Open SQLite connection to the Seam index DB.
@@ -165,6 +168,40 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         or mutates the index.
         """
         return _finalize(handle_seam_schema(conn, root, verbose=verbose))
+
+    @mcp.tool()
+    def seam_snippet(
+        uid: str | None = None,
+        symbol: str | None = None,
+        file: str | None = None,
+        line: int | None = None,
+        context_lines: int = 0,
+        max_lines: int = 200,
+        max_bytes: int = 20_000,
+        include_neighbors: bool = False,
+    ) -> Any:
+        """Retrieve bounded live source for one exact indexed symbol.
+
+        Use this after seam_search or seam_query when you need the implementation
+        body for a returned uid without asking for broad graph context. Source is
+        read only after root containment is checked, and the response reports
+        freshness and truncation warnings when the live file may not match the
+        indexed range.
+        """
+        return _finalize(
+            handle_seam_snippet(
+                conn,
+                root,
+                uid=uid,
+                symbol=symbol,
+                file=file,
+                line=line,
+                context_lines=context_lines,
+                max_lines=max_lines,
+                max_bytes=max_bytes,
+                include_neighbors=include_neighbors,
+            )
+        )
 
     @mcp.tool()
     def seam_impact(

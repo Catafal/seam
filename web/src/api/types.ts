@@ -24,6 +24,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/snippet": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Snippet
+         * @description Expose the same exact-source contract to the Explorer without duplicating rules.
+         */
+        get: operations["get_snippet_api_snippet_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/status": {
         parameters: {
             query?: never;
@@ -756,6 +776,111 @@ export interface components {
             cluster_label: string | null;
         };
         /**
+         * SnippetCandidate
+         * @description Candidate selector returned instead of guessing when a source lookup is ambiguous.
+         */
+        SnippetCandidate: {
+            /** Symbol */
+            symbol: string;
+            /** Uid */
+            uid: string;
+            /** Kind */
+            kind: string;
+            /** File */
+            file: string;
+            /** Start Line */
+            start_line: number;
+            /** End Line */
+            end_line: number;
+            /** Signature */
+            signature: string | null;
+        };
+        /**
+         * SnippetFreshness
+         * @description Freshness signals protect callers from trusting line ranges after local edits.
+         */
+        SnippetFreshness: {
+            /** File Hash Matches */
+            file_hash_matches: boolean;
+            /** Mtime Matches */
+            mtime_matches: boolean;
+            /** Index Stale */
+            index_stale: boolean;
+        };
+        /**
+         * SnippetResponse
+         * @description Typed union-style payload because not-found and ambiguity are successful reads.
+         */
+        SnippetResponse: {
+            /** Found */
+            found: boolean;
+            /** Symbol */
+            symbol?: string | null;
+            /** Uid */
+            uid?: string | null;
+            /** Kind */
+            kind?: string | null;
+            /** File */
+            file?: string | null;
+            /** Start Line */
+            start_line?: number | null;
+            /** End Line */
+            end_line?: number | null;
+            /** Source Start Line */
+            source_start_line?: number | null;
+            /** Source End Line */
+            source_end_line?: number | null;
+            /** Signature */
+            signature?: string | null;
+            /** Docstring */
+            docstring?: string | null;
+            /** Source */
+            source?: string | null;
+            truncated?: components["schemas"]["SnippetTruncation"] | null;
+            freshness?: components["schemas"]["SnippetFreshness"] | null;
+            /** Neighbors */
+            neighbors?: components["schemas"]["SnippetCandidate"][] | null;
+            /** Ambiguous */
+            ambiguous?: boolean | null;
+            /** Reason */
+            reason?: string | null;
+            /** Message */
+            message?: string | null;
+            /**
+             * Candidates
+             * @default []
+             */
+            candidates: components["schemas"]["SnippetCandidate"][];
+            /** Warnings */
+            warnings: components["schemas"]["SnippetWarning"][];
+        };
+        /**
+         * SnippetTruncation
+         * @description Truncation metadata preserves the difference between a small symbol and a capped read.
+         */
+        SnippetTruncation: {
+            /** By Lines */
+            by_lines: boolean;
+            /** By Bytes */
+            by_bytes: boolean;
+            /** Original Line Count */
+            original_line_count: number;
+            /** Returned Line Count */
+            returned_line_count: number;
+        };
+        /**
+         * SnippetWarning
+         * @description Machine-readable warning so UI callers can route stale/truncated reads distinctly.
+         */
+        SnippetWarning: {
+            /** Code */
+            code: string;
+            /** Message */
+            message: string;
+            /** Hint */
+            hint: string;
+        };
+        /**
          * StatusResponse
          * @description Response for GET /api/status.
          */
@@ -926,6 +1051,52 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SchemaResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_snippet_api_snippet_get: {
+        parameters: {
+            query?: {
+                /** @description Exact symbol UID from search/query. */
+                uid?: string | null;
+                /** @description Symbol name to retrieve. */
+                symbol?: string | null;
+                /** @description Root-relative or absolute file path. */
+                file?: string | null;
+                /** @description 1-based source line. */
+                line?: number | null;
+                /** @description Context lines around symbol. */
+                context_lines?: number;
+                /** @description Maximum source lines. */
+                max_lines?: number;
+                /** @description Maximum UTF-8 bytes. */
+                max_bytes?: number;
+                /** @description Include previous/next indexed symbols from the same file. */
+                include_neighbors?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SnippetResponse"];
                 };
             };
             /** @description Validation Error */
