@@ -767,6 +767,95 @@ def _run_migration_v12_to_v13(conn: sqlite3.Connection) -> None:
         ) from exc
 
 
+def _run_migration_v13_to_v14(conn: sqlite3.Connection) -> None:
+    """Guarded migration: add config/resource metadata tables (v13 -> v14).
+
+    Config and resource nodes live in symbols so existing graph tools can find
+    them. Domain fields live in side tables because config/resource evidence has
+    a stricter no-secret contract than normal code symbols.
+
+    Additive-only: creates tables and indexes if absent. Does NOT backfill;
+    metadata appears after the next full `seam init`.
+    """
+    try:
+        row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
+        version = int(row["value"]) if row else 0
+
+        if version >= 14:
+            return
+
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS config_keys (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    file_id         INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+                    symbol_name     TEXT NOT NULL,
+                    key             TEXT NOT NULL,
+                    normalized_key  TEXT NOT NULL,
+                    source_family   TEXT NOT NULL,
+                    role            TEXT NOT NULL,
+                    value_state     TEXT NOT NULL,
+                    value_category  TEXT,
+                    line            INTEGER NOT NULL,
+                    confidence      TEXT NOT NULL DEFAULT 'INFERRED',
+                    provenance      TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS resources (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    file_id         INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+                    symbol_name     TEXT NOT NULL,
+                    name            TEXT NOT NULL,
+                    normalized_name TEXT NOT NULL,
+                    category        TEXT NOT NULL,
+                    source_family   TEXT NOT NULL,
+                    line            INTEGER NOT NULL,
+                    confidence      TEXT NOT NULL DEFAULT 'INFERRED',
+                    provenance      TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_config_keys_file_id ON config_keys(file_id)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_config_keys_normalized_key ON config_keys(normalized_key)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_config_keys_symbol_name ON config_keys(symbol_name)"
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_resources_file_id ON resources(file_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_resources_category ON resources(category)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_resources_symbol_name ON resources(symbol_name)"
+            )
+            conn.execute("UPDATE metadata SET value = '14' WHERE key = 'schema_version'")
+            conn.execute("COMMIT")
+
+            logger.info(
+                "Migrated Seam index v%d->v14 (added config/resource metadata tables). "
+                "Run 'seam init' to populate config/resource evidence.",
+                version,
+            )
+        except Exception as exc:  # noqa: BLE001
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(
+                "Seam DB migration v13->v14 failed; run 'seam init' to rebuild the index"
+            ) from exc
+    except RuntimeError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "Seam DB migration v13->v14 failed; run 'seam init' to rebuild the index"
+        ) from exc
+
+
 def _run_migration_v10_to_v11(conn: sqlite3.Connection) -> None:
     """Guarded migration: add symbols.search_text + a 4th symbols_fts column (v10 → v11).
 

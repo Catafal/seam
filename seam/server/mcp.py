@@ -328,10 +328,10 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         E4 — Edge provenance (SEAM_EDGE_PROVENANCE=on, default):
           kind           — the edge kind via which this dependent was reached. Full
                            vocabulary: call | import | extends | implements | instantiates
-                           | holds | reads | writes | uses | http_calls. Lets you distinguish a hard
+                           | holds | reads | writes | uses | http_calls | reads_config | configures. Lets you distinguish a hard
                            call-edge dependent from a data-coupling (reads/holds) or
                            signature-coupling (uses) dependent, or an HTTP boundary
-                           dependency (http_calls). Always present in both
+                           dependency (http_calls) from operational config/resource links. Always present in both
                            verbose and lean modes (core field, never stripped).
           synthesized_by — synthesis channel name when the edge is heuristic (e.g.
                            "interface-override", "closure-collection", "event-emitter"),
@@ -426,11 +426,11 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         (EXTRACTED | INFERRED | AMBIGUOUS).
 
         Full edge kind vocabulary:
-          call | import | extends | implements | instantiates | holds | reads | writes | uses | http_calls
+          call | import | extends | implements | instantiates | holds | reads | writes | uses | http_calls | reads_config | configures
         The hop kind reflects the actual relationship traversed — e.g. a 'holds' hop
         means one class stores the other as a typed field, while a 'reads' hop means
-        a field-access read edge was traversed and an 'http_calls' hop means a symbol
-        calls a literal HTTP route.
+        a field-access read edge was traversed, an 'http_calls' hop means a symbol
+        calls a literal HTTP route, and config/resource hops use reads_config/configures.
 
         E4 — synthesized_by on each hop (SEAM_EDGE_PROVENANCE=on, default):
           synthesized_by — synthesis channel name when the hop is a heuristic synthesized

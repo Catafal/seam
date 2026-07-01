@@ -55,7 +55,9 @@ from seam.indexer.graph_common import (
     SEMANTIC_MARKERS,
     Comment,
     Confidence,
+    ConfigMetadata,
     Edge,
+    ResourceMetadata,
     RouteMetadata,
     Symbol,
 )
@@ -104,8 +106,10 @@ from seam.indexer.graph_typescript import (
 # Keep these names visible for `from seam.indexer.graph import ...` callers.
 __all__ = [
     "Comment",
+    "ConfigMetadata",
     "Confidence",
     "Edge",
+    "ResourceMetadata",
     "RouteMetadata",
     "Symbol",
     "SEMANTIC_MARKERS",

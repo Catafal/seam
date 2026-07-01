@@ -131,10 +131,10 @@ Grouped by the question an agent is asking. Every tool is **read-only**; the ser
 | Tool | Answers | Key args |
 |------|---------|----------|
 | `seam_schema` | "What can this index answer?" — schema version, counts, optional capabilities, freshness, tool guidance, and warnings. | `verbose` |
-| `seam_architecture` | "What kind of repo is this?" — bounded architecture briefing with physical areas, clusters, entry points, routes, hotspots, boundaries, edge mix, warnings, and next calls. | `scope`, `sections` (MCP) / `section` (CLI/Web), `limit`, `max_bytes` |
+| `seam_architecture` | "What kind of repo is this?" — bounded architecture briefing with physical areas, clusters, entry points, routes, configs, resources, hotspots, boundaries, edge mix, warnings, and next calls. | `scope`, `sections` (MCP) / `section` (CLI/Web), `limit`, `max_bytes` |
 | `seam_search` | "Where is text X mentioned?" — FTS5 over names + docstrings + signatures, with fuzzy fallback; hybrid keyword+semantic when enabled. | `text`, `limit`, `semantic` |
 | `seam_query` | "Find all code related to concept X." — FTS5 match + 1-hop graph expansion, rescored by name/path/cluster signals. | `concept`, `limit`, `semantic` |
-| `seam_graph_search` | "Which symbols match this graph shape?" — typed structural discovery by kind, edge kind, degree, path, preset, route nodes, and optional one-hop previews. | `kind`, `edge_kind`, `direction`, `preset`, `limit` |
+| `seam_graph_search` | "Which symbols match this graph shape?" — typed structural discovery by kind, edge kind, degree, path, preset, route/config/resource nodes, and optional one-hop previews. | `kind`, `edge_kind`, `direction`, `preset`, `limit` |
 | `seam_snippet` | "Show me the exact code for this result." — bounded source text by UID, symbol, symbol+file, or file+line, with freshness/truncation warnings and optional same-file neighbor hints. | `uid`, `symbol`, `file`, `line`, `include_neighbors` |
 
 ### Understand a symbol
@@ -221,7 +221,7 @@ fix, so current output is leaner than it shows.
 
 A short tour — the full treatment is in [`docs/CONCEPTS.md`](docs/CONCEPTS.md).
 
-**The graph.** Nodes are symbols (`function`, `class`, `method`, `interface`, `type`, `field`, `route`). Edges are **typed** and capture ten relationships:
+**The graph.** Nodes are symbols (`function`, `class`, `method`, `interface`, `type`, `field`, `route`, `config`, `resource`). Edges are **typed** and capture twelve relationships:
 
 | Edge kind | Captures |
 |-----------|----------|
@@ -233,8 +233,10 @@ A short tour — the full treatment is in [`docs/CONCEPTS.md`](docs/CONCEPTS.md)
 | `uses` | a function **references** a user type as a parameter (signature coupling) |
 | `reads` · `writes` | a field/property is read or written (data-flow) |
 | `http_calls` | a symbol calls a literal HTTP route |
+| `reads_config` | code reads a literal config or env key |
+| `configures` | a config key describes a runtime resource |
 
-Edges are keyed by **symbol name**, not row id — this is what lets the watcher re-index one file independently without rewriting the whole graph. Route nodes live as normal `symbols.kind = 'route'`, while method/path/framework/provenance live in the `routes` metadata table. All traversal is kind-agnostic, so every tool picks up every edge kind automatically.
+Edges are keyed by **symbol name**, not row id — this is what lets the watcher re-index one file independently without rewriting the whole graph. Route, config, and resource nodes live as normal `symbols.kind` values; route metadata lives in `routes`, config metadata lives in `config_keys`, and resource metadata lives in `resources`. Config metadata stores key names and redacted value shape only, never raw values. All traversal is kind-agnostic, so every tool picks up every edge kind automatically.
 
 **Confidence tiers.** Each edge resolves to `EXTRACTED` (target is unambiguous), `AMBIGUOUS` (name collides — verify), or `INFERRED` (heuristic / cross-module). A multi-hop path is only as strong as its weakest hop. Each result carries `resolved_by` provenance explaining *how* the tier was decided.
 

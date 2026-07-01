@@ -385,6 +385,10 @@ export interface components {
             embeddings: number;
             /** Routes */
             routes: number;
+            /** Config Keys */
+            config_keys: number;
+            /** Resources */
+            resources: number;
             /** Test Files */
             test_files: number;
             /** Production Files */
@@ -474,7 +478,7 @@ export interface components {
                 [key: string]: unknown;
             }[];
             /** Reason */
-            reason: string;
+            reason?: string | null;
         };
         /**
          * ArchitecturePhysicalSection
@@ -532,6 +536,8 @@ export interface components {
             clusters?: components["schemas"]["ArchitectureListSection"] | null;
             entry_points?: components["schemas"]["ArchitectureListSection"] | null;
             routes?: components["schemas"]["ArchitectureListSection"] | null;
+            configs?: components["schemas"]["ArchitectureListSection"] | null;
+            resources?: components["schemas"]["ArchitectureListSection"] | null;
             hotspots?: components["schemas"]["ArchitectureListSection"] | null;
             orchestrators?: components["schemas"]["ArchitectureListSection"] | null;
             boundaries?: components["schemas"]["ArchitectureListSection"] | null;
@@ -977,6 +983,18 @@ export interface components {
             has_route_nodes: boolean;
             /** Has Http Calls */
             has_http_calls: boolean;
+            /** Has Config Keys Table */
+            has_config_keys_table: boolean;
+            /** Has Resources Table */
+            has_resources_table: boolean;
+            /** Has Config Nodes */
+            has_config_nodes: boolean;
+            /** Has Resource Nodes */
+            has_resource_nodes: boolean;
+            /** Has Reads Config */
+            has_reads_config: boolean;
+            /** Has Configures */
+            has_configures: boolean;
         };
         /**
          * SchemaColumnInfo
@@ -1015,6 +1033,10 @@ export interface components {
             embeddings: number;
             /** Routes */
             routes: number;
+            /** Config Keys */
+            config_keys: number;
+            /** Resources */
+            resources: number;
         };
         /**
          * SchemaFreshness

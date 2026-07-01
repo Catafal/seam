@@ -48,7 +48,7 @@ caller pin one exact homonym when it matters.
 
 ---
 
-## 2. The ten edge kinds
+## 2. The twelve edge kinds
 
 The traversal layer is **kind-agnostic** — it walks every edge regardless of kind — so
 adding a new edge kind makes every tool (`seam_impact`, `seam_context`, `seam_trace`,
@@ -66,6 +66,8 @@ adding a new edge kind makes every tool (`seam_impact`, `seam_context`, `seam_tr
 | `reads` | A field/property is read | `obj.url` (rvalue) → `reads Config.url` | INFERRED |
 | `writes` | A field/property is written | `obj.url = x` / `del obj.url` | INFERRED |
 | `http_calls` | A symbol calls a literal HTTP route | `fetch("/users")` → `ROUTE GET /users` | INFERRED |
+| `reads_config` | Code reads a literal config/env key | `os.getenv("DATABASE_URL")` → `CONFIG DATABASE_URL` | EXTRACTED |
+| `configures` | A config key describes a runtime resource | `CONFIG DATABASE_URL` → `RESOURCE database DATABASE` | INFERRED |
 
 `call` and `import` are the structural backbone. `extends`/`implements`/`instantiates`
 capture object-oriented structure. `holds`/`uses` capture composition and dependency
@@ -74,6 +76,9 @@ functions that *receive* it, not only the call sites. `reads`/`writes` capture d
 so renaming a field surfaces every reader and writer, which a pure call graph misses
 entirely. `http_calls` connects literal client calls to first-class `route` symbols when
 the route target can be represented statically.
+`reads_config` and `configures` connect code to runtime configuration and operational
+resources without storing raw config values; Seam persists key names and redacted value
+shape only.
 
 `seam_context` exposes the precise `reads`/`writes` split as `field_readers` /
 `field_writers`, complementing the inclusive `callers` view (which contains *all* edge

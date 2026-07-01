@@ -101,6 +101,18 @@ def test_watcher_indexes_new_file(watch_env) -> None:
     )
 
 
+def test_watcher_indexes_safe_config_file(watch_env) -> None:
+    """Writing a safe config template must update the DB with config/resource nodes."""
+    root, db_path, _ = watch_env
+
+    src = root / ".env.example"
+    src.write_text("DATABASE_URL=postgres://example.invalid/app\n")
+
+    assert _poll_symbols(db_path, "CONFIG DATABASE_URL", timeout=2.0), (
+        "Config node did not appear in the DB within 2 s after .env.example creation"
+    )
+
+
 def test_watcher_reindexes_modified_file(watch_env) -> None:
     """Modifying a .py file must update the DB with the new symbol within 2 s."""
     root, db_path, _ = watch_env

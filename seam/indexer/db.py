@@ -10,7 +10,8 @@ Key design decisions:
   v5->v6 (Phase 5 import_mappings table), v6->v7 (semantic embeddings table),
   v9->v10 (Tier B B1: edges.receiver column for call-edge receiver capture),
   v11->v12 (edge-synthesis post-pass: edges.synthesized_by column),
-  v12->v13 (routes table for first-class HTTP route metadata).
+  v12->v13 (routes table for first-class HTTP route metadata),
+  v13->v14 (config/resource metadata tables).
 - upsert_file is a single transaction: INSERT OR REPLACE the file row,
   DELETE old symbols/edges/comments, then re-insert. Triggers handle FTS sync.
 - delete_file DELETE FROM files cascades to symbols/edges/comments via FK; FTS
@@ -52,12 +53,20 @@ from seam.indexer.migrations import (
     _run_migration_v10_to_v11,
     _run_migration_v11_to_v12,
     _run_migration_v12_to_v13,
+    _run_migration_v13_to_v14,
 )
 from seam.indexer.tokenize import build_search_text
 
 if TYPE_CHECKING:
     from seam.analysis.imports import ImportMapping
-    from seam.indexer.graph import Comment, Edge, RouteMetadata, Symbol
+    from seam.indexer.graph import (
+        Comment,
+        ConfigMetadata,
+        Edge,
+        ResourceMetadata,
+        RouteMetadata,
+        Symbol,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +134,7 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
     Guard: only run when:
       1. The metadata table EXISTS (i.e. this is an initialized DB, not a fresh
          empty file with no schema yet).
-      2. schema_version < current version (13).
+      2. schema_version < current version (14).
 
     Fresh-DB safety: a brand-new empty file (no metadata table yet) is left alone —
     init_db() will create the schema and run all migrations in the correct order.
@@ -154,7 +163,7 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
         row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
         version = int(row["value"]) if row else 0
 
-        if version >= 13:
+        if version >= 14:
             return  # Already up to date — no-op.
 
         # Version is < 13: run pending migrations in order.
@@ -193,6 +202,9 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
         # v12→v13: route metadata table.
         if version < 13:
             _run_migration_v12_to_v13(conn)
+        # v13→v14: config/resource metadata tables.
+        if version < 14:
+            _run_migration_v13_to_v14(conn)
 
     except Exception as exc:  # noqa: BLE001
         # Do NOT raise here — failing to auto-migrate should not crash a read-only
@@ -271,6 +283,9 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     # Run v12->v13 migration guard (adds routes table — route nodes and HTTP metadata).
     _run_migration_v12_to_v13(conn)
 
+    # Run v13->v14 migration guard (adds config/resource metadata tables).
+    _run_migration_v13_to_v14(conn)
+
     return conn
 
 
@@ -283,6 +298,8 @@ def upsert_file(
     edges: "list[Edge]",
     comments: "list[Comment] | None" = None,
     routes: "list[RouteMetadata] | None" = None,
+    config_keys: "list[ConfigMetadata] | None" = None,
+    resources: "list[ResourceMetadata] | None" = None,
 ) -> None:
     """Atomically replace all data for a file. Idempotent: safe to call twice.
 
@@ -301,6 +318,7 @@ def upsert_file(
                                   Edge['target'] -> target_name.
       6. INSERT new comments (schema v3). Each Comment has marker, text, line.
       7. INSERT new route metadata (schema v13).
+      8. INSERT new config/resource metadata (schema v14).
     """
     mtime = filepath.stat().st_mtime
     indexed_at = time.time()
@@ -333,6 +351,8 @@ def upsert_file(
         conn.execute("DELETE FROM symbols WHERE file_id = ?", (file_id,))
         conn.execute("DELETE FROM comments WHERE file_id = ?", (file_id,))
         conn.execute("DELETE FROM routes WHERE file_id = ?", (file_id,))
+        conn.execute("DELETE FROM config_keys WHERE file_id = ?", (file_id,))
+        conn.execute("DELETE FROM resources WHERE file_id = ?", (file_id,))
 
         # 4. Insert symbols — includes Phase 4 enrichment fields (schema v5) and the
         #    P6b framework entry_score (schema v9, computed at index time from the
@@ -446,6 +466,58 @@ def upsert_file(
                         route["provenance"],
                     )
                     for route in routes
+                ],
+            )
+
+        if config_keys:
+            conn.executemany(
+                """
+                INSERT INTO config_keys (
+                    file_id, symbol_name, key, normalized_key, source_family,
+                    role, value_state, value_category, line, confidence, provenance
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        file_id,
+                        config_key["symbol_name"],
+                        config_key["key"],
+                        config_key["normalized_key"],
+                        config_key["source_family"],
+                        config_key["role"],
+                        config_key["value_state"],
+                        config_key["value_category"],
+                        config_key["line"],
+                        config_key["confidence"],
+                        config_key["provenance"],
+                    )
+                    for config_key in config_keys
+                ],
+            )
+
+        if resources:
+            conn.executemany(
+                """
+                INSERT INTO resources (
+                    file_id, symbol_name, name, normalized_name, category,
+                    source_family, line, confidence, provenance
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        file_id,
+                        resource["symbol_name"],
+                        resource["name"],
+                        resource["normalized_name"],
+                        resource["category"],
+                        resource["source_family"],
+                        resource["line"],
+                        resource["confidence"],
+                        resource["provenance"],
+                    )
+                    for resource in resources
                 ],
             )
 

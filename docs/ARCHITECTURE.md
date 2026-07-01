@@ -18,10 +18,10 @@
  │  source files (12 langs)                                                  │
  │        │  tree-sitter (structural parse — never raises)                   │
  │        ▼                                                                  │
- │  indexer/pipeline.py ── parser → graph (symbols + 10-kind edges) → db     │
+ │  indexer/pipeline.py ── parser → graph (symbols + 12-kind edges) → db     │
  │        │                                                                  │
  │        ▼                                                                  │
- │  .seam/seam.db  (SQLite + FTS5, schema v13)                               │
+ │  .seam/seam.db  (SQLite + FTS5, schema v14)                               │
  │        │                                                                  │
  │        ├─▶ clustering post-pass   (Louvain communities + labels)          │
  │        └─▶ synthesis post-pass    (dynamic-dispatch edges; gated)         │
@@ -146,14 +146,16 @@ It returns metadata, ranked sections, warnings, truncation, and next-call guidan
 expects callers to switch to `seam_graph_search`, `seam_context`, `seam_snippet`, or
 `seam_impact` for precise follow-up work.
 
-### Storage (SQLite, schema v13)
+### Storage (SQLite, schema v14)
 
 | Table | Holds |
 |-------|-------|
 | `files` | indexed files with hash + mtime + `indexed_at` |
-| `symbols` | nodes: kind (incl. `field` and `route`), name, qualified_name, signature, decorators, visibility, is_exported, cluster_id, entry_score, search_text |
-| `edges` | directed relationships: source, target, `kind` (10 kinds), `confidence`, `receiver`, `synthesized_by` |
+| `symbols` | nodes: kind (incl. `field`, `route`, `config`, and `resource`), name, qualified_name, signature, decorators, visibility, is_exported, cluster_id, entry_score, search_text |
+| `edges` | directed relationships: source, target, `kind` (12 kinds), `confidence`, `receiver`, `synthesized_by` |
 | `routes` | first-class HTTP route metadata keyed to route symbols: method, path, normalized_path, framework, handler, confidence, provenance |
+| `config_keys` | config/env key metadata keyed to config symbols: normalized key, source family, role, redacted value state/category, confidence, provenance |
+| `resources` | runtime resource metadata keyed to resource symbols: category, normalized name, source family, confidence, provenance |
 | `comments` | WHY / HACK / NOTE / TODO / FIXME markers |
 | `clusters` | Louvain communities: id, label, size, naming_source, cohesion |
 | `import_mappings` | per-file import bindings (powers read-time import promotion) |

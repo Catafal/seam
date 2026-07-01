@@ -347,7 +347,7 @@ const CHANGES_FIXTURE: ChangesResponse = {
 };
 
 const SCHEMA_FIXTURE: SchemaResponse = {
-  schema_version: 13,
+  schema_version: 14,
   seam_version: "0.3.0",
   index_seam_version: "0.3.0",
   freshness: { stale: false, reason: null, hint: null },
@@ -360,11 +360,13 @@ const SCHEMA_FIXTURE: SchemaResponse = {
     import_mappings: 2,
     embeddings: 0,
     routes: 1,
+    config_keys: 1,
+    resources: 1,
   },
   breakdowns: {
     languages: { python: 10 },
-    symbol_kinds: { function: 79, class: 20, route: 1 },
-    edge_kinds: { call: 119, http_calls: 1 },
+    symbol_kinds: { function: 79, class: 20, route: 1, config: 1, resource: 1 },
+    edge_kinds: { call: 119, http_calls: 1, reads_config: 1, configures: 1 },
     edge_confidence: { EXTRACTED: 120 },
     synthesized_edges: {},
     comment_markers: { WHY: 3 },
@@ -385,6 +387,12 @@ const SCHEMA_FIXTURE: SchemaResponse = {
     has_routes_table: true,
     has_route_nodes: true,
     has_http_calls: true,
+    has_config_keys_table: true,
+    has_resources_table: true,
+    has_config_nodes: true,
+    has_resource_nodes: true,
+    has_reads_config: true,
+    has_configures: true,
   },
   tools: [
     {
@@ -438,7 +446,7 @@ const GRAPH_SEARCH_FIXTURE: GraphSearchResponse = {
 
 const ARCHITECTURE_FIXTURE: ArchitectureResponse = {
   identity: {
-    schema_version: 13,
+    schema_version: 14,
     seam_version: "0.3.0",
     index_seam_version: "0.3.0",
   },
@@ -453,6 +461,8 @@ const ARCHITECTURE_FIXTURE: ArchitectureResponse = {
     import_mappings: 0,
     embeddings: 0,
     routes: 1,
+    config_keys: 1,
+    resources: 1,
     test_files: 1,
     production_files: 2,
     unknown_files: 0,

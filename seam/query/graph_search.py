@@ -41,7 +41,17 @@ VALID_CONFIDENCE = {"EXTRACTED", "INFERRED", "AMBIGUOUS"}
 VALID_SYNTHESIZED = {"any", "parser", "synthesized"}
 VALID_TEST_SCOPE = {"any", "test", "source"}
 VALID_PRESETS = {"dead-code", "hotspot", "field-access", "inheritance", "isolates"}
-DEFAULT_SYMBOL_KINDS = {"function", "class", "method", "interface", "type", "field", "route"}
+DEFAULT_SYMBOL_KINDS = {
+    "function",
+    "class",
+    "method",
+    "interface",
+    "type",
+    "field",
+    "route",
+    "config",
+    "resource",
+}
 DEFAULT_EDGE_KINDS = {
     "call",
     "import",
@@ -53,6 +63,8 @@ DEFAULT_EDGE_KINDS = {
     "writes",
     "uses",
     "http_calls",
+    "reads_config",
+    "configures",
 }
 
 
