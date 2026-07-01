@@ -53,6 +53,61 @@
 
 tools:
 
+  seam_schema:
+    status: IMPLEMENTED
+    phase: phase-11-p1-1
+    description: |
+      Read-only index capability and schema introspection.
+
+      This is the cheapest first call for an agent entering an unfamiliar Seam index.
+      It reports the index schema version, Seam version, freshness, population counts,
+      optional capability flags, grouped count breakdowns, warnings, and tool guidance.
+      With verbose=true it also includes table/column metadata for diagnostics.
+
+      The handler never mutates the DB and does not require source-file reads beyond
+      the existing staleness check. Missing optional tables degrade into counts=false
+      capabilities plus structured warnings instead of hard failures.
+    input:
+      verbose:
+        type: bool
+        default: false
+        description: Include table and column metadata for diagnostics.
+    output:
+      type: object
+      description: |
+        schema_version:
+          (int | str) — metadata.schema_version when present; "0" fallback coerced to int.
+        seam_version:
+          (str) — installed Seam package version.
+        index_seam_version:
+          (str | null) — metadata.seam_version when present.
+        freshness:
+          (object) — stale bool plus reason/hint from the shared staleness checker.
+        counts:
+          (object) — files, symbols, edges, clusters, comments, import_mappings, embeddings.
+        breakdowns:
+          (object) — grouped maps for languages, symbol_kinds, edge_kinds,
+          edge_confidence, synthesized_edges, comment_markers, embedding_models.
+        capabilities:
+          (object) — derived booleans for optional features and important columns:
+          has_clusters, has_comments, has_import_mappings, has_embeddings,
+          embedding_model_matches, has_synthesized_edges, has_field_symbols,
+          has_receiver_column, has_search_text, has_signature_column,
+          has_synthesized_by_column.
+        tools:
+          (list) — read-only tool guide entries with transports, dependencies, and use_when.
+        recommended_next_calls:
+          (list[str]) — agent-ready next-call guidance.
+        warnings:
+          (list) — structured {code, message, hint}; includes stale, empty index,
+          missing optional tables, no clusters, no embeddings, and embedding model mismatch.
+        tables:
+          (object | null) — present only when verbose=true; table existence and column metadata.
+      found_false_ok: false
+    errors:
+      - NO_INDEX
+      - DB_ERROR
+
   seam_query:
     description: |
       Find all code related to a concept using hybrid search (FTS5 + 1-hop graph expansion).

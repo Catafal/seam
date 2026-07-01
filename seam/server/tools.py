@@ -40,6 +40,7 @@ from seam.query.clusters import list_clusters as query_list_clusters
 from seam.query.comments import why as comments_why
 from seam.query.pack import ContextPack, NeighborRef
 from seam.query.pack import context_pack as run_context_pack
+from seam.query.schema import describe_schema
 from seam.query.structure import StructureResult
 from seam.query.structure import build_structure as run_build_structure
 
@@ -643,6 +644,16 @@ def handle_seam_context_pack(
         "cluster_peers": pack["cluster_peers"],
         "truncated": pack["truncated"],
     }
+
+
+def handle_seam_schema(
+    conn: sqlite3.Connection,
+    root: Path,
+    *,
+    verbose: bool = False,
+) -> dict[str, Any]:
+    """Handler for the seam_schema MCP tool — read-only index capability map."""
+    return describe_schema(conn, root=root, verbose=verbose)
 
 
 def handle_seam_structure(

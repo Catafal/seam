@@ -4,6 +4,26 @@
  */
 
 export interface paths {
+    "/api/schema": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Schema
+         * @description Return index capability metadata for diagnostics and feature gating.
+         */
+        get: operations["get_schema_api_schema_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/status": {
         parameters: {
             query?: never;
@@ -532,6 +552,182 @@ export interface components {
             edges: components["schemas"]["GraphEdge"][];
         };
         /**
+         * SchemaBreakdowns
+         * @description Small grouped-count maps for GET /api/schema.
+         */
+        SchemaBreakdowns: {
+            /** Languages */
+            languages: {
+                [key: string]: number;
+            };
+            /** Symbol Kinds */
+            symbol_kinds: {
+                [key: string]: number;
+            };
+            /** Edge Kinds */
+            edge_kinds: {
+                [key: string]: number;
+            };
+            /** Edge Confidence */
+            edge_confidence: {
+                [key: string]: number;
+            };
+            /** Synthesized Edges */
+            synthesized_edges: {
+                [key: string]: number;
+            };
+            /** Comment Markers */
+            comment_markers: {
+                [key: string]: number;
+            };
+            /** Embedding Models */
+            embedding_models: {
+                [key: string]: number;
+            };
+        };
+        /**
+         * SchemaCapabilities
+         * @description Derived feature booleans for GET /api/schema.
+         */
+        SchemaCapabilities: {
+            /** Has Clusters */
+            has_clusters: boolean;
+            /** Has Comments */
+            has_comments: boolean;
+            /** Has Import Mappings */
+            has_import_mappings: boolean;
+            /** Has Embeddings */
+            has_embeddings: boolean;
+            /** Embedding Model Matches */
+            embedding_model_matches: boolean;
+            /** Has Synthesized Edges */
+            has_synthesized_edges: boolean;
+            /** Has Field Symbols */
+            has_field_symbols: boolean;
+            /** Has Receiver Column */
+            has_receiver_column: boolean;
+            /** Has Search Text */
+            has_search_text: boolean;
+            /** Has Signature Column */
+            has_signature_column: boolean;
+            /** Has Synthesized By Column */
+            has_synthesized_by_column: boolean;
+        };
+        /**
+         * SchemaColumnInfo
+         * @description Verbose column metadata for GET /api/schema?verbose=true.
+         */
+        SchemaColumnInfo: {
+            /** Exists */
+            exists: boolean;
+            /** Type */
+            type: string | null;
+            /** Notnull */
+            notnull: boolean;
+            /** Default */
+            default: unknown;
+            /** Primary Key */
+            primary_key: boolean;
+        };
+        /**
+         * SchemaCounts
+         * @description Top-level index population counts in GET /api/schema.
+         */
+        SchemaCounts: {
+            /** Files */
+            files: number;
+            /** Symbols */
+            symbols: number;
+            /** Edges */
+            edges: number;
+            /** Clusters */
+            clusters: number;
+            /** Comments */
+            comments: number;
+            /** Import Mappings */
+            import_mappings: number;
+            /** Embeddings */
+            embeddings: number;
+        };
+        /**
+         * SchemaFreshness
+         * @description Index freshness block in GET /api/schema.
+         */
+        SchemaFreshness: {
+            /** Stale */
+            stale: boolean;
+            /** Reason */
+            reason: string | null;
+            /** Hint */
+            hint: string | null;
+        };
+        /**
+         * SchemaResponse
+         * @description Response for GET /api/schema.
+         */
+        SchemaResponse: {
+            /** Schema Version */
+            schema_version: number | string;
+            /** Seam Version */
+            seam_version: string;
+            /** Index Seam Version */
+            index_seam_version: string | null;
+            freshness: components["schemas"]["SchemaFreshness"];
+            counts: components["schemas"]["SchemaCounts"];
+            breakdowns: components["schemas"]["SchemaBreakdowns"];
+            capabilities: components["schemas"]["SchemaCapabilities"];
+            /** Tools */
+            tools: components["schemas"]["SchemaToolGuide"][];
+            /** Recommended Next Calls */
+            recommended_next_calls: string[];
+            /** Warnings */
+            warnings: components["schemas"]["SchemaWarning"][];
+            /** Tables */
+            tables?: {
+                [key: string]: components["schemas"]["SchemaTableInfo"];
+            } | null;
+        };
+        /**
+         * SchemaTableInfo
+         * @description Verbose table metadata for GET /api/schema?verbose=true.
+         */
+        SchemaTableInfo: {
+            /** Exists */
+            exists: boolean;
+            /** Columns */
+            columns: {
+                [key: string]: components["schemas"]["SchemaColumnInfo"];
+            };
+        };
+        /**
+         * SchemaToolGuide
+         * @description One tool-guidance entry in GET /api/schema.
+         */
+        SchemaToolGuide: {
+            /** Name */
+            name: string;
+            /** Transports */
+            transports: string[];
+            /** Read Only */
+            read_only: boolean;
+            /** Use When */
+            use_when: string;
+            /** Depends On */
+            depends_on?: string[] | null;
+        };
+        /**
+         * SchemaWarning
+         * @description Structured warning emitted by GET /api/schema.
+         */
+        SchemaWarning: {
+            /** Code */
+            code: string;
+            /** Message */
+            message: string;
+            /** Hint */
+            hint: string;
+        };
+        /**
          * SearchResponse
          * @description Response for GET /api/search.
          */
@@ -711,6 +907,38 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    get_schema_api_schema_get: {
+        parameters: {
+            query?: {
+                /** @description Include verbose table and column metadata for diagnostics. */
+                verbose?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SchemaResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_status_api_status_get: {
         parameters: {
             query?: never;

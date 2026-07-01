@@ -6,7 +6,7 @@
 
 **Local code intelligence for AI agents.** Index a codebase once; agents query its structure instead of re-discovering it with `grep` every session.
 
-`v0.3.0` · 12 languages · 12 MCP tools · SQLite-backed · **zero network calls at query time** · gate-green (~3,055 tests)
+`v0.3.0` · 12 languages · 13 MCP tools · SQLite-backed · **zero network calls at query time** · gate-green (~3,055 tests)
 
 [![CI](https://github.com/Catafal/seam/actions/workflows/ci.yml/badge.svg)](https://github.com/Catafal/seam/actions/workflows/ci.yml)
 
@@ -42,7 +42,7 @@ Think of Seam as **a compiler's symbol table and call graph for your whole repos
                                             ┌───────────────┴───────────────┐
                                             ▼                               ▼
                                      MCP server (stdio)              CLI read commands
-                                     12 read-only tools              query / impact / trace …
+                                     13 read-only tools              schema / query / impact …
                                             │                               │
                                             └──────────────┬────────────────┘
                                                            ▼
@@ -120,7 +120,7 @@ Prefer native tool-calling? Add `--with-mcp` (install the `server` extra first).
 
 ---
 
-## The 12 MCP tools
+## The 13 MCP tools
 
 Grouped by the question an agent is asking. Every tool is **read-only**; the server never writes the index.
 
@@ -128,6 +128,7 @@ Grouped by the question an agent is asking. Every tool is **read-only**; the ser
 
 | Tool | Answers | Key args |
 |------|---------|----------|
+| `seam_schema` | "What can this index answer?" — schema version, counts, optional capabilities, freshness, tool guidance, and warnings. | `verbose` |
 | `seam_search` | "Where is text X mentioned?" — FTS5 over names + docstrings + signatures, with fuzzy fallback; hybrid keyword+semantic when enabled. | `text`, `limit`, `semantic` |
 | `seam_query` | "Find all code related to concept X." — FTS5 match + 1-hop graph expansion, rescored by name/path/cluster signals. | `concept`, `limit`, `semantic` |
 

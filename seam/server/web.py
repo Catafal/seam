@@ -37,6 +37,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from seam.indexer.db import connect
+from seam.indexer.readonly import open_readonly_connection
 from seam.server.graph_api import (
     build_constellation,
     build_neighborhood,
@@ -48,10 +49,12 @@ from seam.server.tools import (
     handle_seam_clusters,
     handle_seam_context,
     handle_seam_impact,
+    handle_seam_schema,
     handle_seam_search,
     handle_seam_trace,
     handle_seam_why,
 )
+from seam.server.web_schema import SchemaResponse
 
 # ── Pydantic response models (source of truth for TS codegen) ─────────────────
 # These models define the exact JSON shape that openapi-typescript will consume.
@@ -374,6 +377,22 @@ def _get_conn(db_path: Path) -> sqlite3.Connection:
         ) from exc
 
 
+def _get_readonly_conn(db_path: Path) -> sqlite3.Connection:
+    """Open a non-migrating read connection for diagnostic endpoints."""
+    if not db_path.exists():
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "NO_INDEX", "message": "No index found. Run 'seam init' first."},
+        )
+    try:
+        return open_readonly_connection(db_path)
+    except sqlite3.Error as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "DB_ERROR", "message": f"Failed to open database: {exc}"},
+        ) from exc
+
+
 def _check_handler_error(result: Any) -> None:
     """Raise HTTPException if the handler returned an error dict.
 
@@ -494,6 +513,24 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
         description="Local code-intelligence graph explorer for Seam indexes.",
         version="1.0.0",
     )
+
+    # ── Route: GET /api/schema ────────────────────────────────────────────────
+
+    @app.get("/api/schema", response_model=SchemaResponse, tags=["schema"])
+    def get_schema(
+        verbose: bool = Query(
+            False,
+            description="Include verbose table and column metadata for diagnostics.",
+        ),
+    ) -> SchemaResponse:
+        """Return index capability metadata for diagnostics and feature gating."""
+        conn = _get_readonly_conn(db_path)
+        try:
+            result = handle_seam_schema(conn, root, verbose=verbose)
+        finally:
+            conn.close()
+
+        return SchemaResponse(**result)
 
     # ── Route: GET /api/status ────────────────────────────────────────────────
 

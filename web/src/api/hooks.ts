@@ -28,6 +28,7 @@ import type {
   ChangesResponse,
   HubSymbol,
   StructureSymbol,
+  SchemaResponse,
 } from "./schema-types";
 import type {
   SearchResponse,
@@ -243,6 +244,22 @@ export function useStructure(enabled: boolean = true) {
       const resp = await apiFetch<StructureResponse>("/api/structure");
       return resp.symbols;
     },
+    enabled,
+  });
+}
+
+// ── useSchema ────────────────────────────────────────────────────────────────
+
+/**
+ * Fetch index capability metadata from GET /api/schema.
+ * Kept as a full response because callers need freshness, warnings, capabilities,
+ * and optionally verbose table metadata.
+ */
+export function useSchema(verbose: boolean = false, enabled: boolean = true) {
+  return useQuery<SchemaResponse>({
+    queryKey: ["schema", verbose],
+    queryFn: () =>
+      apiFetch<SchemaResponse>("/api/schema", { params: { verbose } }),
     enabled,
   });
 }

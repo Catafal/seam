@@ -42,17 +42,18 @@
    ┌────────┴───────────────────────────────────────┐
    ▼                          ▼                       ▼
  MCP server (stdio)     CLI read commands        Seam Explorer (web, [web] extra)
- 12 read-only tools     query/impact/trace/…     FastAPI + React SPA, 127.0.0.1
+ 13 read-only tools     schema/query/impact/…    FastAPI + React SPA, 127.0.0.1
    │                          │                       │
    └──────────────────────────┴───────────────────────┘
                               ▼
               AI agent (Claude Code · Cursor · Codex)
 ```
 
-The **12 MCP tools** map to engine functions:
+The **13 MCP tools** map to engine functions:
 
 | Tool | Engine entry point |
 |------|-------------------|
+| `seam_schema` | `query/schema.py` |
 | `seam_query` · `seam_search` · `seam_context` | `query/engine.py` (+ `query/semantic.py` hybrid) |
 | `seam_context_pack` | `query/pack.py` |
 | `seam_why` | `analysis/comments.py` |
