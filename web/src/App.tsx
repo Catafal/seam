@@ -254,8 +254,7 @@ interface LandingPageProps {
  * grid (named after files like `unit/test_impact`) was unreadable and confusing.
  * Instead we lead SEARCH-FIRST with a SMALL curated set of entry points — the
  * repo's hub symbols (highest-degree) and its largest functional areas — and
- * send the full map to the Overview tab. Mirrors how graphify/gitnexus orient a
- * user (graph/search first), not a giant list.
+ * send the full map to the Overview tab: graph/search first, not a giant list.
  */
 function LandingPage({ onSelect, onOpenOverview }: LandingPageProps) {
   const { data: hubs, isLoading: hubsLoading } = useHubs(LANDING_HUBS);

@@ -201,7 +201,7 @@ Two reproducible, deliberately-honest benchmarks back the pitch.
 
 Reproduce: `seam init . && python benchmarks/run_benchmark.py`.
 
-**Head-to-head vs. gitnexus / CodeGraph / graphify** — [`docs/competitive-benchmark.md`](docs/competitive-benchmark.md)
+**Head-to-head vs. CodeGraph / graphify** — [`docs/competitive-benchmark.md`](docs/competitive-benchmark.md)
 
 Run on an external repo Seam had never seen:
 

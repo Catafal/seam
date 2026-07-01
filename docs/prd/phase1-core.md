@@ -18,7 +18,7 @@ Today, when an agent (or the developer) is about to change a function, it has no
 
 Worse, the graph the agent *would* reason over is known to be imprecise: edges store **string names, not symbol IDs** (ADR rationale: independent re-indexing). When two symbols share a name, their caller/callee counts are conflated and `seam_context` returns an arbitrary one of them. Any blast-radius answer built on top would silently over- or under-count — and the agent would have no signal that the answer is shaky. An unreliable impact tool is worse than none: it teaches the agent to trust a wrong answer.
 
-This is the exact capability gap that keeps the project dependent on GitNexus for its own development (see `CLAUDE.md` — Seam is being built to supersede it).
+This is the capability gap Phase 1 closed so Seam can own its own code-intelligence workflow.
 
 ## Solution
 
@@ -170,7 +170,7 @@ MCP handler tests follow the existing `tests/integration/test_mcp_tools.py` patt
 
 - **Semantic comment nodes** (`# WHY:` / `# NOTE:` / `# HACK:` extraction) — deferred to **Phase 1b**. (Validated via Graphify; not in this slice.)
 - **Go and Rust parsers** — deferred to **Phase 1b** (ADR-005 plans them; cheap tree-sitter add, but separable).
-- **Precomputed named processes / execution-flow resources** (GitNexus `process/{name}` style) — Phase 2; flows are on-demand only here.
+- **Precomputed named processes / execution-flow resources** — Phase 2; flows are on-demand only here.
 - **Leiden/Louvain community detection / clustering** — Phase 2 (`DISCOVERY.md`).
 - **Any LLM layer** (flow naming, semantic summaries, PR triage) — explicitly excluded by ADR-003; Phase 2 at the earliest, as an optional plugin.
 - **Symbol-ID edges.** The string-name design is retained; confidence tagging mitigates its weakness rather than replacing the model.
@@ -182,6 +182,6 @@ MCP handler tests follow the existing `tests/integration/test_mcp_tools.py` patt
 ## Further Notes
 
 - **Build order is dependency-forced, not preference:** edge hardening + confidence must land first because impact, trace, and detect_changes all read confidence and all degrade to noise on a weak edge graph. Then the traversal engine (shared), then impact, then detect_changes (impact + git), then flow tracing. Ship and dogfood incrementally — each step is independently useful.
-- **Self-supersession milestone:** completing impact + detect_changes is the point at which Seam can replace GitNexus for this repo's own "impact before edit / detect_changes before commit" workflow (`CLAUDE.md`). That's the concrete success signal for the slice.
+- **Self-hosting milestone:** completing impact + detect_changes is the point at which Seam can own this repo's own "impact before edit / detect_changes before commit" workflow (`CLAUDE.md`). That's the concrete success signal for the slice.
 - **Confidence is the headline idea of the slice** — borrowed from Graphify, it converts a known accuracy *liability* (string-name collisions) into an *honesty feature* (the engine tells you when it's unsure). Keep it visible in every surfaced result.
 - A follow-up `lessons.md` entry and updates to `progress.txt` / `IMPLEMENTATION_PLAN.md` should accompany implementation; ADR-003 and ADR-005 move from "revisit for Phase 1" toward "implemented (Core)" / "Phase 1b" respectively.

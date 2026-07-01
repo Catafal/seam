@@ -6,7 +6,7 @@ Accepted — 2026-06-01
 ## Context
 Seam needs a primary implementation language. Two candidates were seriously evaluated:
 
-- **TypeScript** — The npm `seam` package name is available; tree-sitter npm bindings are described as "more mature" in community discussions; CodeGraph and GitNexus (direct inspirations) are TypeScript.
+- **TypeScript** — The npm `seam` package name is available; tree-sitter npm bindings are described as "more mature" in community discussions; several adjacent code-intelligence tools are TypeScript.
 - **Python** — Aligns with the primary author's stack (Bach, Koda, Skillia are all Python); `uvx seam` distribution is simple; Python MCP SDK is first-class (maintained by Anthropic); `watchdog` is a battle-tested file watcher.
 
 ## Decision

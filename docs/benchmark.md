@@ -8,7 +8,7 @@
 > Prior runs: `6690bb1` (Phase 7) 83.4%/77.6%; `7415d32` (72 files) 88.7%/85.8%.
 
 > **See also:** [`competitive-benchmark.md`](competitive-benchmark.md) — head-to-head vs.
-> gitnexus, CodeGraph, and graphify on a real external codebase (Bach), with a scorecard
+> CodeGraph and graphify on a real external codebase (Bach), with a scorecard
 > and honest per-use-case verdicts.
 
 ## The claim under test

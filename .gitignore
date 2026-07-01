@@ -33,9 +33,6 @@ coverage.xml
 # Shipped inside the wheel via hatch artifacts config; not committed to git.
 seam/_web/
 
-# GitNexus index
-.gitnexus/
-
 # Competitor index artifacts (benchmark only — never committed)
 .codegraph/
 graphify-out/

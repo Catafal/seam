@@ -9,7 +9,7 @@ Seam targets 20+ languages by v1.0. Phase 0 must pick a minimal set.
 Languages considered for Phase 0:
 - Python — author's primary language; easy to dogfood immediately
 - TypeScript/JavaScript — most common in the target user base; CodeGraph data shows highest demand
-- Go — high demand from CodeGraph/GitNexus users; tree-sitter grammar is excellent
+- Go — high demand from adjacent code-intelligence users; tree-sitter grammar is excellent
 - Rust — growing demand; tree-sitter grammar is mature
 
 ## Decision

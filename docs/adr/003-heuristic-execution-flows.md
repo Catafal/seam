@@ -16,7 +16,7 @@ Specific reasons:
 1. Phase 0 doesn't implement execution flows at all (they're in Phase 1). This ADR documents the Phase 1 approach decision.
 2. Heuristic tracing is sufficient to demonstrate the core value proposition (token reduction benchmark).
 3. Forcing an LLM API key requirement violates the "zero external dependencies" principle.
-4. GitNexus implements heuristic flow tracing and it is the most-used feature in practice.
+4. Heuristic flow tracing is a proven high-use pattern in adjacent code-intelligence tools.
 
 ## Alternatives Rejected
 - **LLM-only flows:** API key dependency; latency; cost; not "local-first."

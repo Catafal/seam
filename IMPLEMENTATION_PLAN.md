@@ -17,7 +17,7 @@
 - [x] 1.6 — Python package scaffold created (empty modules)
 - [x] 1.7 — Makefile + pyproject.toml + gate command verified passing
 - [x] 1.8 — .gitignore, .env.example committed
-- [x] 1.9 — GitNexus analyze run; CLAUDE.md finalized
+- [x] 1.9 — Seam agent guidance finalized
 
 ---
 

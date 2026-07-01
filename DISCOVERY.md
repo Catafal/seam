@@ -54,4 +54,4 @@ This is enough to start using Seam daily and prove the value proposition.
 - **No semantic comment nodes in Phase 0** — `# WHY:` parsing is Phase 1
 - **No Go/Rust parsers in Phase 0** — Python + TypeScript only; Go + Rust added in Phase 1
 - **No npm package** — Python first (`uvx seam` or `pip install seam`); npm is blocked by seamapi namespace collision
-- **Not replacing GitNexus** — Seam is built to eventually supersede GitNexus on your own projects; they coexist until Seam reaches Phase 1
+- **No external code-intelligence dependency** — Seam is built to be the local source of truth for code search, graph traversal, impact analysis, and pre-commit risk.

@@ -63,7 +63,6 @@ conn.execute("CREATE VIRTUAL TABLE t USING fts5(content)")  # must not raise
 | Tool | Purpose | Version |
 |---|---|---|
 | uv | Package + project manager | 0.9.14 (dev machine) |
-| GitNexus | Code intelligence (while Seam Phase 0) | 1.6.0 |
 
 ---
 

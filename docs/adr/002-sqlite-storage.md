@@ -6,7 +6,7 @@ Accepted — 2026-06-01
 ## Context
 Seam stores a code graph: symbols (nodes) and edges (relationships). Options considered:
 
-- **Neo4j** — Native graph DB; powerful Cypher query language; used by GitNexus.
+- **Neo4j** — Native graph DB; powerful Cypher query language.
 - **NetworkX** — In-memory Python graph library; no persistence.
 - **SQLite with adjacency list** — Relational tables for nodes + edges; FTS5 built-in; zero external dependencies.
 

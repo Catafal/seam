@@ -231,7 +231,7 @@ ImpactResult = dict[str, Any]
 | `TIER_LIKELY_AFFECTED`   | `"LIKELY_AFFECTED"`   | d == 2   |
 | `TIER_MAY_NEED_TESTING`  | `"MAY_NEED_TESTING"`  | d >= 3   |
 
-These match CLAUDE.md d=1/2/3 and the GitNexus impact risk levels.
+These match CLAUDE.md d=1/2/3 and Seam's impact risk levels.
 
 ### Path-confidence rule (traversal.py)
 
