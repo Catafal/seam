@@ -126,8 +126,28 @@ def schema_repo() -> tuple[sqlite3.Connection, Path, Path]:
             src,
             "python",
             "hash1",
-            [_sym("entry", str(src), line=1), _sym("helper", str(src), line=4)],
-            [_edge("entry", "helper", str(src))],
+            [
+                _sym("entry", str(src), line=1),
+                _sym("helper", str(src), line=4),
+                _sym("ROUTE GET /health", str(src), kind="route", line=1),
+            ],
+            [
+                _edge("entry", "helper", str(src)),
+                _edge("entry", "ROUTE GET /health", str(src), kind="http_calls"),
+            ],
+            routes=[
+                {
+                    "symbol_name": "ROUTE GET /health",
+                    "method": "GET",
+                    "path": "/health",
+                    "normalized_path": "/health",
+                    "framework": "fastapi",
+                    "handler": "entry",
+                    "line": 1,
+                    "confidence": "EXTRACTED",
+                    "provenance": "python-fastapi-decorator",
+                }
+            ],
         )
         conn.execute(
             "INSERT INTO comments (file_id, line, marker, text) "
@@ -173,19 +193,25 @@ def test_describe_schema_summary_reports_capabilities(schema_repo, monkeypatch) 
 
     assert result["schema_version"] >= 12
     assert result["counts"]["files"] == 1
-    assert result["counts"]["symbols"] == 2
-    assert result["counts"]["edges"] == 2
+    assert result["counts"]["symbols"] == 3
+    assert result["counts"]["edges"] == 3
     assert result["counts"]["clusters"] == 1
     assert result["counts"]["comments"] == 1
     assert result["counts"]["import_mappings"] == 1
     assert result["counts"]["embeddings"] == 1
+    assert result["counts"]["routes"] == 1
     assert result["breakdowns"]["symbol_kinds"]["function"] == 2
+    assert result["breakdowns"]["symbol_kinds"]["route"] == 1
     assert result["breakdowns"]["edge_kinds"]["call"] == 2
-    assert result["breakdowns"]["edge_confidence"]["EXTRACTED"] == 1
+    assert result["breakdowns"]["edge_kinds"]["http_calls"] == 1
+    assert result["breakdowns"]["edge_confidence"]["EXTRACTED"] == 2
     assert result["capabilities"]["has_clusters"] is True
     assert result["capabilities"]["has_embeddings"] is True
     assert result["capabilities"]["embedding_model_matches"] is True
     assert result["capabilities"]["has_synthesized_edges"] is True
+    assert result["capabilities"]["has_routes_table"] is True
+    assert result["capabilities"]["has_route_nodes"] is True
+    assert result["capabilities"]["has_http_calls"] is True
     assert result["freshness"]["stale"] is False
     assert any(t["name"] == "seam_schema" for t in result["tools"])
     assert any(t["name"] == "seam_architecture" for t in result["tools"])
@@ -243,12 +269,12 @@ def test_schema_cli_json_and_quiet(schema_repo) -> None:
     assert json_result.exit_code == 0, json_result.output
     payload = json.loads(json_result.output)
     assert payload["ok"] is True
-    assert payload["data"]["counts"]["symbols"] == 2
+    assert payload["data"]["counts"]["symbols"] == 3
 
     quiet_result = runner.invoke(app, ["schema", str(root), "--quiet"])
     assert quiet_result.exit_code == 0, quiet_result.output
     assert "freshness=fresh" in quiet_result.output
-    assert "symbols=2" in quiet_result.output
+    assert "symbols=3" in quiet_result.output
 
 
 def test_schema_cli_verbose_and_no_index(schema_repo, tmp_path: Path) -> None:
@@ -334,7 +360,7 @@ def test_schema_web_endpoint(schema_repo) -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["counts"]["symbols"] == 2
+    assert body["counts"]["symbols"] == 3
     assert body["capabilities"]["has_clusters"] is True
     assert "important reason" not in json.dumps(body)
 

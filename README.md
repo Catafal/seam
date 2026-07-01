@@ -131,10 +131,10 @@ Grouped by the question an agent is asking. Every tool is **read-only**; the ser
 | Tool | Answers | Key args |
 |------|---------|----------|
 | `seam_schema` | "What can this index answer?" — schema version, counts, optional capabilities, freshness, tool guidance, and warnings. | `verbose` |
-| `seam_architecture` | "What kind of repo is this?" — bounded architecture briefing with physical areas, clusters, entry points, hotspots, boundaries, edge mix, warnings, and next calls. | `scope`, `sections` (MCP) / `section` (CLI/Web), `limit`, `max_bytes` |
+| `seam_architecture` | "What kind of repo is this?" — bounded architecture briefing with physical areas, clusters, entry points, routes, hotspots, boundaries, edge mix, warnings, and next calls. | `scope`, `sections` (MCP) / `section` (CLI/Web), `limit`, `max_bytes` |
 | `seam_search` | "Where is text X mentioned?" — FTS5 over names + docstrings + signatures, with fuzzy fallback; hybrid keyword+semantic when enabled. | `text`, `limit`, `semantic` |
 | `seam_query` | "Find all code related to concept X." — FTS5 match + 1-hop graph expansion, rescored by name/path/cluster signals. | `concept`, `limit`, `semantic` |
-| `seam_graph_search` | "Which symbols match this graph shape?" — typed structural discovery by kind, edge kind, degree, path, preset, and optional one-hop previews. | `kind`, `edge_kind`, `direction`, `preset`, `limit` |
+| `seam_graph_search` | "Which symbols match this graph shape?" — typed structural discovery by kind, edge kind, degree, path, preset, route nodes, and optional one-hop previews. | `kind`, `edge_kind`, `direction`, `preset`, `limit` |
 | `seam_snippet` | "Show me the exact code for this result." — bounded source text by UID, symbol, symbol+file, or file+line, with freshness/truncation warnings and optional same-file neighbor hints. | `uid`, `symbol`, `file`, `line`, `include_neighbors` |
 
 ### Understand a symbol
@@ -221,7 +221,7 @@ fix, so current output is leaner than it shows.
 
 A short tour — the full treatment is in [`docs/CONCEPTS.md`](docs/CONCEPTS.md).
 
-**The graph.** Nodes are symbols (`function`, `class`, `method`, `interface`, `type`, `field`). Edges are **typed** and capture nine relationships:
+**The graph.** Nodes are symbols (`function`, `class`, `method`, `interface`, `type`, `field`, `route`). Edges are **typed** and capture ten relationships:
 
 | Edge kind | Captures |
 |-----------|----------|
@@ -232,8 +232,9 @@ A short tour — the full treatment is in [`docs/CONCEPTS.md`](docs/CONCEPTS.md)
 | `holds` | a class **stores** a typed field/property (composition / DI) |
 | `uses` | a function **references** a user type as a parameter (signature coupling) |
 | `reads` · `writes` | a field/property is read or written (data-flow) |
+| `http_calls` | a symbol calls a literal HTTP route |
 
-Edges are keyed by **symbol name**, not row id — this is what lets the watcher re-index one file independently without rewriting the whole graph. All traversal is kind-agnostic, so every tool picks up every edge kind automatically.
+Edges are keyed by **symbol name**, not row id — this is what lets the watcher re-index one file independently without rewriting the whole graph. Route nodes live as normal `symbols.kind = 'route'`, while method/path/framework/provenance live in the `routes` metadata table. All traversal is kind-agnostic, so every tool picks up every edge kind automatically.
 
 **Confidence tiers.** Each edge resolves to `EXTRACTED` (target is unambiguous), `AMBIGUOUS` (name collides — verify), or `INFERRED` (heuristic / cross-module). A multi-hop path is only as strong as its weakest hop. Each result carries `resolved_by` provenance explaining *how* the tier was decided.
 
@@ -274,7 +275,7 @@ seam serve         # opens http://127.0.0.1:7420
 seam serve --no-open --port 8000
 ```
 
-A React + TypeScript SPA (React Flow) served by FastAPI. Nothing leaves the machine. Features: command-palette search, a depth-1 caller/callee card-canvas with confidence-styled edges, lazy expand, a detail panel, an impact overlay that paints blast radius by risk tier, a trace-path highlighter, a git-changes drawer, a schema/architecture read API, and a whole-repo cluster constellation. Explorer routes reuse the **same handlers** that power the CLI/MCP tools — a third transport, no query logic duplicated.
+A React + TypeScript SPA (React Flow) served by FastAPI. Nothing leaves the machine. Features: command-palette search, a depth-1 caller/callee card-canvas with confidence-styled edges including HTTP calls, lazy expand, a detail panel, an impact overlay that paints blast radius by risk tier, a trace-path highlighter, a git-changes drawer, a schema/architecture read API, and a whole-repo cluster constellation. Explorer routes reuse the **same handlers** that power the CLI/MCP tools — a third transport, no query logic duplicated.
 
 ---
 

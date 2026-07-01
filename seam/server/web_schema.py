@@ -25,6 +25,7 @@ class SchemaCounts(BaseModel):
     comments: int
     import_mappings: int
     embeddings: int
+    routes: int
 
 
 class SchemaBreakdowns(BaseModel):
@@ -53,6 +54,9 @@ class SchemaCapabilities(BaseModel):
     has_search_text: bool
     has_signature_column: bool
     has_synthesized_by_column: bool
+    has_routes_table: bool
+    has_route_nodes: bool
+    has_http_calls: bool
 
 
 class SchemaToolGuide(BaseModel):
@@ -258,6 +262,7 @@ class ArchitectureCounts(BaseModel):
     comments: int
     import_mappings: int
     embeddings: int
+    routes: int
     test_files: int
     production_files: int
     unknown_files: int
@@ -301,7 +306,7 @@ class ArchitectureTestsSection(BaseModel):
 
 
 class ArchitectureOptionalSurface(BaseModel):
-    """Status placeholder for route/config/resource/test-edge surfaces."""
+    """Status placeholder for config/resource/test-edge surfaces."""
 
     status: str
     items: list[dict[str, Any]]
@@ -316,6 +321,7 @@ class ArchitectureSections(BaseModel):
     physical: ArchitecturePhysicalSection | None = None
     clusters: ArchitectureListSection | None = None
     entry_points: ArchitectureListSection | None = None
+    routes: ArchitectureListSection | None = None
     hotspots: ArchitectureListSection | None = None
     orchestrators: ArchitectureListSection | None = None
     boundaries: ArchitectureListSection | None = None

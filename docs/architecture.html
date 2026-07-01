@@ -219,14 +219,14 @@
         <rect x="416" y="40" width="170" height="56" rx="4" fill="#021A4E" stroke="#0047C8"/>
         <rect x="420" y="44" width="162" height="48" rx="2" fill="none" stroke="rgba(77,143,239,0.3)" stroke-dasharray="4 3"/>
         <text x="501" y="64" text-anchor="middle" class="svg-label">indexer pipeline</text>
-        <text x="501" y="80" text-anchor="middle" class="svg-sub">symbols + 9-kind edges</text>
+        <text x="501" y="80" text-anchor="middle" class="svg-sub">symbols + 10-kind edges</text>
 
         <!-- DB -->
         <line x1="501" y1="96" x2="501" y2="134" stroke="#BFEF00" stroke-width="1.4" marker-end="url(#arrC)"/>
         <rect x="386" y="138" width="230" height="58" rx="4" fill="#002FA7" stroke="#1A66E0"/>
         <rect x="390" y="142" width="222" height="50" rx="2" fill="none" stroke="rgba(232,240,255,0.28)" stroke-dasharray="4 3"/>
         <text x="501" y="162" text-anchor="middle" class="svg-label">.seam/seam.db</text>
-        <text x="501" y="180" text-anchor="middle" class="svg-sub">SQLite + FTS5 · schema v12</text>
+        <text x="501" y="180" text-anchor="middle" class="svg-sub">SQLite + FTS5 · schema v13</text>
 
         <!-- post-passes -->
         <line x1="616" y1="167" x2="700" y2="167" stroke="#4D8FEF" stroke-width="1.2" marker-end="url(#arr)"/>
@@ -255,7 +255,7 @@
         <line x1="460" y1="332" x2="460" y2="368" stroke="#FF5FBA" stroke-width="1.2" marker-end="url(#arrM)"/>
         <line x1="540" y1="332" x2="600" y2="368" stroke="#FF5FBA" stroke-width="1.2" marker-end="url(#arrM)"/>
         <rect x="200" y="372" width="170" height="34" rx="4" fill="#021A4E" stroke="#0047C8"/>
-        <text x="285" y="393" text-anchor="middle" class="svg-label-sm">MCP server · 12 tools</text>
+        <text x="285" y="393" text-anchor="middle" class="svg-label-sm">MCP server · 16 tools</text>
         <rect x="378" y="372" width="164" height="34" rx="4" fill="#021A4E" stroke="#0047C8"/>
         <text x="460" y="393" text-anchor="middle" class="svg-label-sm">CLI read commands</text>
         <rect x="550" y="372" width="170" height="34" rx="4" fill="#021A4E" stroke="#0047C8"/>
@@ -321,7 +321,7 @@
 <section>
   <div class="wrap">
     <div class="eyebrow">04 · THE GRAPH</div>
-    <h2>Symbols are nodes. Nine relationships are edges.</h2>
+    <h2>Symbols are nodes. Ten relationships are edges.</h2>
     <p class="intro">Edges are keyed by symbol <em>name</em>, not row id — which is exactly what lets the watcher re-index one file without rewriting the rest of the graph. Traversal is kind-agnostic, so every tool sees every edge kind for free.</p>
     <div class="grid2">
       <figure class="panel">
@@ -386,6 +386,7 @@
             <tr><td class="mono">uses</td><td>function <em>references</em> a type as a parameter</td></tr>
             <tr><td class="mono">reads</td><td>a field is read (data-flow)</td></tr>
             <tr><td class="mono">writes</td><td>a field is written / deleted</td></tr>
+            <tr><td class="mono">http_calls</td><td>a symbol calls a literal HTTP route</td></tr>
           </tbody>
         </table>
       </div>
@@ -405,7 +406,7 @@
         <div class="term">
 <span class="m">1</span> walk tree → collect files by extension
 <span class="m">2</span> per file: <span class="p">parse → extract → upsert</span>
-<span class="m"> </span>  symbols · 9-kind edges · comments · imports
+<span class="m"> </span>  symbols · 10-kind edges · comments · imports · routes
 <span class="m">3</span> clustering post-pass <span class="m">(whole graph)</span>
 <span class="m">4</span> synthesis post-pass <span class="m">(after clusters)</span>
 <span class="m">5</span> <span class="c">[--semantic]</span> embedding post-pass
@@ -442,7 +443,7 @@
 <section>
   <div class="wrap">
     <div class="eyebrow">06 · THE INTERFACE</div>
-    <h2>Twelve read-only tools, grouped by question.</h2>
+    <h2>Sixteen read-only tools, grouped by question.</h2>
     <p class="intro">The server never writes the index. Each tool answers one question an agent actually asks.</p>
 
     <div class="toolgroup">
@@ -516,15 +517,16 @@
 <section>
   <div class="wrap">
     <div class="eyebrow">08 · STORAGE</div>
-    <h2>One SQLite file per project. Schema v12.</h2>
+    <h2>One SQLite file per project. Schema v13.</h2>
     <p class="intro">Loaded packaged-first from the wheel and auto-migrated additively on open. Gitignored — never leaves the machine.</p>
     <div class="panel">
       <table>
         <thead><tr><th>Table</th><th>Holds</th></tr></thead>
         <tbody>
           <tr><td class="mono">files</td><td>indexed files · hash · mtime · indexed_at</td></tr>
-          <tr><td class="mono">symbols</td><td>nodes · kind (incl. field) · qualified_name · signature · visibility · cluster_id · entry_score</td></tr>
-          <tr><td class="mono">edges</td><td>source · target · kind (9) · confidence · receiver · synthesized_by</td></tr>
+          <tr><td class="mono">symbols</td><td>nodes · kind (incl. field and route) · qualified_name · signature · visibility · cluster_id · entry_score</td></tr>
+          <tr><td class="mono">edges</td><td>source · target · kind (10) · confidence · receiver · synthesized_by</td></tr>
+          <tr><td class="mono">routes</td><td>HTTP route metadata · method · path · framework · handler · provenance</td></tr>
           <tr><td class="mono">comments</td><td>WHY / HACK / NOTE / TODO / FIXME markers</td></tr>
           <tr><td class="mono">clusters</td><td>Louvain communities · label · size · cohesion</td></tr>
           <tr><td class="mono">import_mappings</td><td>per-file import bindings (read-time promotion)</td></tr>
@@ -553,7 +555,7 @@
 
 <footer>
   <div class="wrap">
-    <p class="mono"><span class="kicker">SEAM</span> · local code intelligence · v0.3.0 · 12 languages · 12 tools · schema v12</p>
+    <p class="mono"><span class="kicker">SEAM</span> · local code intelligence · v0.3.0 · 12 languages · 16 tools · schema v13</p>
     <p>Narrative: <a href="ARCHITECTURE.md">ARCHITECTURE.md</a> &nbsp;·&nbsp; Concepts: <a href="CONCEPTS.md">CONCEPTS.md</a> &nbsp;·&nbsp; Config: <a href="CONFIGURATION.md">CONFIGURATION.md</a> &nbsp;·&nbsp; Decisions: <a href="adr/">adr/</a></p>
   </div>
 </footer>

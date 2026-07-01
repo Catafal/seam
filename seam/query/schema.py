@@ -15,7 +15,7 @@ import seam
 import seam.config as config
 from seam.analysis.staleness import check_staleness
 
-_OPTIONAL_TABLES = ("comments", "clusters", "import_mappings", "embeddings")
+_OPTIONAL_TABLES = ("comments", "clusters", "import_mappings", "embeddings", "routes")
 _INTROSPECT_TABLES = (
     "files",
     "symbols",
@@ -26,6 +26,7 @@ _INTROSPECT_TABLES = (
     "embeddings",
     "metadata",
     "symbols_fts",
+    "routes",
 )
 
 
@@ -128,7 +129,7 @@ def _tool_registry() -> list[dict[str, Any]]:
             "name": "seam_graph_search",
             "transports": ["cli", "mcp", "web"],
             "read_only": True,
-            "use_when": "You need structural discovery by kind, edge, degree, path, or preset.",
+            "use_when": "You need structural discovery by kind, edge, degree, route, path, or preset.",
             "depends_on": ["edges"],
         },
         {
@@ -291,6 +292,7 @@ def describe_schema(
         "comments": _count(conn, "comments"),
         "import_mappings": _count(conn, "import_mappings"),
         "embeddings": embeddings_count,
+        "routes": _count(conn, "routes"),
     }
     breakdowns = {
         "languages": _group_counts(conn, "files", "language", "path NOT LIKE ':%'"),
@@ -315,6 +317,9 @@ def describe_schema(
         "has_embeddings": counts["embeddings"] > 0,
         "embedding_model_matches": counts["embeddings"] == 0 or configured_embedding_count > 0,
         "has_synthesized_edges": synth_edges > 0,
+        "has_routes_table": _table_exists(conn, "routes"),
+        "has_route_nodes": breakdowns["symbol_kinds"].get("route", 0) > 0,
+        "has_http_calls": breakdowns["edge_kinds"].get("http_calls", 0) > 0,
         "has_field_symbols": breakdowns["symbol_kinds"].get("field", 0) > 0,
         "has_receiver_column": "receiver" in edges_columns,
         "has_search_text": "search_text" in symbols_columns,
@@ -336,6 +341,7 @@ def describe_schema(
             "Use seam_search for keyword discovery.",
             "Use seam_architecture for a repo-level briefing with physical areas, clusters, hotspots, boundaries, and follow-up calls.",
             "Use seam_graph_search for dead-code suspects, hotspots, field access, and inheritance.",
+            "Use seam_graph_search with kind=route or edge_kind=http_calls for HTTP boundary discovery when route data is populated.",
             "Use seam_snippet with a search/query/graph-search uid when you need exact source text.",
             "Use seam_context before editing a known symbol.",
             "Use seam_impact before changing an existing symbol.",

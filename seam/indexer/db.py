@@ -9,7 +9,8 @@ Key design decisions:
   v3->v4 (clusters + cluster_id), v4->v5 (Phase 4 node enrichment fields),
   v5->v6 (Phase 5 import_mappings table), v6->v7 (semantic embeddings table),
   v9->v10 (Tier B B1: edges.receiver column for call-edge receiver capture),
-  v11->v12 (edge-synthesis post-pass: edges.synthesized_by column).
+  v11->v12 (edge-synthesis post-pass: edges.synthesized_by column),
+  v12->v13 (routes table for first-class HTTP route metadata).
 - upsert_file is a single transaction: INSERT OR REPLACE the file row,
   DELETE old symbols/edges/comments, then re-insert. Triggers handle FTS sync.
 - delete_file DELETE FROM files cascades to symbols/edges/comments via FK; FTS
@@ -50,12 +51,13 @@ from seam.indexer.migrations import (
     _run_migration_v9_to_v10,
     _run_migration_v10_to_v11,
     _run_migration_v11_to_v12,
+    _run_migration_v12_to_v13,
 )
 from seam.indexer.tokenize import build_search_text
 
 if TYPE_CHECKING:
     from seam.analysis.imports import ImportMapping
-    from seam.indexer.graph import Comment, Edge, Symbol
+    from seam.indexer.graph import Comment, Edge, RouteMetadata, Symbol
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +125,7 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
     Guard: only run when:
       1. The metadata table EXISTS (i.e. this is an initialized DB, not a fresh
          empty file with no schema yet).
-      2. schema_version < current version (11).
+      2. schema_version < current version (13).
 
     Fresh-DB safety: a brand-new empty file (no metadata table yet) is left alone —
     init_db() will create the schema and run all migrations in the correct order.
@@ -152,10 +154,10 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
         row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
         version = int(row["value"]) if row else 0
 
-        if version >= 12:
+        if version >= 13:
             return  # Already up to date — no-op.
 
-        # Version is < 12: run pending migrations in order.
+        # Version is < 13: run pending migrations in order.
         # Each migration is guarded by its own version check — safe to call
         # when already at or above that version (they become no-ops).
         if version < 2:
@@ -188,6 +190,9 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
         # v11→v12: Edge-synthesis post-pass (adds edges.synthesized_by column).
         if version < 12:
             _run_migration_v11_to_v12(conn)
+        # v12→v13: route metadata table.
+        if version < 13:
+            _run_migration_v12_to_v13(conn)
 
     except Exception as exc:  # noqa: BLE001
         # Do NOT raise here — failing to auto-migrate should not crash a read-only
@@ -263,6 +268,9 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     # Run v11->v12 migration guard (adds edges.synthesized_by column — edge-synthesis post-pass).
     _run_migration_v11_to_v12(conn)
 
+    # Run v12->v13 migration guard (adds routes table — route nodes and HTTP metadata).
+    _run_migration_v12_to_v13(conn)
+
     return conn
 
 
@@ -274,6 +282,7 @@ def upsert_file(
     symbols: "list[Symbol]",
     edges: "list[Edge]",
     comments: "list[Comment] | None" = None,
+    routes: "list[RouteMetadata] | None" = None,
 ) -> None:
     """Atomically replace all data for a file. Idempotent: safe to call twice.
 
@@ -282,7 +291,7 @@ def upsert_file(
          across re-index (INSERT OR REPLACE would churn the autoincrement id
          and strand child rows). Captures new mtime + indexed_at.
       2. Retrieve the file_id for this path.
-      3. DELETE existing edges, symbols, and comments for that file_id. Both
+      3. DELETE existing edges, symbols, comments, and route metadata for that file_id. Both
          edges and symbols are deleted explicitly (deleting symbols does NOT
          cascade to edges — edges hang off files, not symbols). FTS triggers
          fire per-symbol DELETE. Comments are FK-cascaded but deleted explicitly
@@ -291,6 +300,7 @@ def upsert_file(
       5. INSERT new edges mapping Edge['source'] -> source_name,
                                   Edge['target'] -> target_name.
       6. INSERT new comments (schema v3). Each Comment has marker, text, line.
+      7. INSERT new route metadata (schema v13).
     """
     mtime = filepath.stat().st_mtime
     indexed_at = time.time()
@@ -322,6 +332,7 @@ def upsert_file(
         conn.execute("DELETE FROM edges WHERE file_id = ?", (file_id,))
         conn.execute("DELETE FROM symbols WHERE file_id = ?", (file_id,))
         conn.execute("DELETE FROM comments WHERE file_id = ?", (file_id,))
+        conn.execute("DELETE FROM routes WHERE file_id = ?", (file_id,))
 
         # 4. Insert symbols — includes Phase 4 enrichment fields (schema v5) and the
         #    P6b framework entry_score (schema v9, computed at index time from the
@@ -410,6 +421,32 @@ def upsert_file(
             conn.execute(
                 "INSERT INTO comments (file_id, line, marker, text) VALUES (?, ?, ?, ?)",
                 (file_id, comment["line"], comment["marker"], comment["text"]),
+            )
+
+        if routes:
+            conn.executemany(
+                """
+                INSERT INTO routes (
+                    file_id, symbol_name, method, path, normalized_path,
+                    framework, handler, line, confidence, provenance
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        file_id,
+                        route["symbol_name"],
+                        route["method"],
+                        route["path"],
+                        route["normalized_path"],
+                        route["framework"],
+                        route["handler"],
+                        route["line"],
+                        route["confidence"],
+                        route["provenance"],
+                    )
+                    for route in routes
+                ],
             )
 
 

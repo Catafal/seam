@@ -48,7 +48,7 @@ caller pin one exact homonym when it matters.
 
 ---
 
-## 2. The nine edge kinds
+## 2. The ten edge kinds
 
 The traversal layer is **kind-agnostic** — it walks every edge regardless of kind — so
 adding a new edge kind makes every tool (`seam_impact`, `seam_context`, `seam_trace`,
@@ -65,13 +65,15 @@ adding a new edge kind makes every tool (`seam_impact`, `seam_context`, `seam_tr
 | `uses` | A function **references** a user type as a parameter | `def show(m: Manager)` → `show uses Manager` | INFERRED |
 | `reads` | A field/property is read | `obj.url` (rvalue) → `reads Config.url` | INFERRED |
 | `writes` | A field/property is written | `obj.url = x` / `del obj.url` | INFERRED |
+| `http_calls` | A symbol calls a literal HTTP route | `fetch("/users")` → `ROUTE GET /users` | INFERRED |
 
 `call` and `import` are the structural backbone. `extends`/`implements`/`instantiates`
 capture object-oriented structure. `holds`/`uses` capture composition and dependency
 injection — so changing a type's constructor surfaces the classes that *store* it and the
 functions that *receive* it, not only the call sites. `reads`/`writes` capture data-flow —
 so renaming a field surfaces every reader and writer, which a pure call graph misses
-entirely.
+entirely. `http_calls` connects literal client calls to first-class `route` symbols when
+the route target can be represented statically.
 
 `seam_context` exposes the precise `reads`/`writes` split as `field_readers` /
 `field_writers`, complementing the inclusive `callers` view (which contains *all* edge

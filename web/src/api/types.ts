@@ -383,6 +383,8 @@ export interface components {
             import_mappings: number;
             /** Embeddings */
             embeddings: number;
+            /** Routes */
+            routes: number;
             /** Test Files */
             test_files: number;
             /** Production Files */
@@ -462,7 +464,7 @@ export interface components {
         };
         /**
          * ArchitectureOptionalSurface
-         * @description Status placeholder for route/config/resource/test-edge surfaces.
+         * @description Status placeholder for config/resource/test-edge surfaces.
          */
         ArchitectureOptionalSurface: {
             /** Status */
@@ -529,6 +531,7 @@ export interface components {
             physical?: components["schemas"]["ArchitecturePhysicalSection"] | null;
             clusters?: components["schemas"]["ArchitectureListSection"] | null;
             entry_points?: components["schemas"]["ArchitectureListSection"] | null;
+            routes?: components["schemas"]["ArchitectureListSection"] | null;
             hotspots?: components["schemas"]["ArchitectureListSection"] | null;
             orchestrators?: components["schemas"]["ArchitectureListSection"] | null;
             boundaries?: components["schemas"]["ArchitectureListSection"] | null;
@@ -968,6 +971,12 @@ export interface components {
             has_signature_column: boolean;
             /** Has Synthesized By Column */
             has_synthesized_by_column: boolean;
+            /** Has Routes Table */
+            has_routes_table: boolean;
+            /** Has Route Nodes */
+            has_route_nodes: boolean;
+            /** Has Http Calls */
+            has_http_calls: boolean;
         };
         /**
          * SchemaColumnInfo
@@ -1004,6 +1013,8 @@ export interface components {
             import_mappings: number;
             /** Embeddings */
             embeddings: number;
+            /** Routes */
+            routes: number;
         };
         /**
          * SchemaFreshness
