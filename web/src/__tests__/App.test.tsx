@@ -1,7 +1,7 @@
 // Task F1 scaffold test: verify the App renders the 'Seam Explorer' header.
 // This is the TDD anchor for the scaffold — failing before App.tsx exists,
 // passing after. Subsequent tasks add their own test files.
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "../App";
 
@@ -41,5 +41,15 @@ describe("App scaffold", () => {
   it("shows the Constellation tab button", () => {
     renderWithQuery(<App />);
     expect(screen.getByRole("button", { name: /constellation/i })).toBeInTheDocument();
+  });
+
+  // The "Seam Explorer" brand is a home button: it is a clickable control and
+  // clicking it lands on (or returns to) the landing hero without crashing.
+  it("brand acts as a home button to the landing page", () => {
+    renderWithQuery(<App />);
+    const home = screen.getByRole("button", { name: /back to home/i });
+    expect(home).toBeInTheDocument();
+    fireEvent.click(home);
+    expect(screen.getByText(/explore the codebase/i)).toBeInTheDocument();
   });
 });
