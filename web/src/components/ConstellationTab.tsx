@@ -8,14 +8,39 @@
  * Props:
  *   focusSymbol    — symbol name set from the 2D side (2D→3D sync)
  *   onFocusSymbol  — called when a node is selected (3D→2D sync)
+ *
+ * Pure helper (unit-tested):
+ *   computeHighlightedIds(selectedId, edges) → Set<number>
+ *     Returns the selected node id plus all direct neighbors (undirected).
  */
 
 import { useState, useMemo, useCallback } from "react";
 
 import { ConstellationScene, computeCameraTarget } from "./ConstellationScene";
+import { NodeDetailPanel } from "./NodeDetailPanel";
 import { useLayoutData } from "../hooks/useLayoutData";
 import type { CameraTarget } from "./ConstellationScene";
 import type { LayoutNode, LayoutEdge } from "../lib/layoutTypes";
+
+// ── Pure helper (extracted for unit-testability) ──────────────────────────────
+
+/**
+ * Given a selected node id and the full edge list, compute the set of
+ * highlighted ids: the selected node plus all direct neighbors (undirected).
+ *
+ * Pure — no React state, no hooks. Exported for vitest.
+ */
+export function computeHighlightedIds(
+  selectedId: number,
+  edges: LayoutEdge[],
+): Set<number> {
+  const ids = new Set<number>([selectedId]);
+  for (const e of edges) {
+    if (e.source === selectedId) ids.add(e.target);
+    if (e.target === selectedId) ids.add(e.source);
+  }
+  return ids;
+}
 
 // ── ConstellationTab ──────────────────────────────────────────────────────────
 
@@ -26,10 +51,12 @@ interface ConstellationTabProps {
 
 /**
  * Three-column shell:
- *   [future FilterPanel] | ConstellationScene (flex-1) | [future NodeDetailPanel]
+ *   ConstellationScene (flex-1, center) | NodeDetailPanel (right, when selected)
  *
- * For S2 this is the minimal wiring: data hook + scene + error/loading states.
- * FilterPanel, NodeDetailPanel, and ResizeHandle are added in later slices.
+ * Selection state machine:
+ *   handleSelect(node) → setSelectedNode + computeHighlightedIds + computeCameraTarget
+ *   handleNavigate(name) → find node by name in data, re-run handleSelect
+ *   handleClose() → clear selectedNode + highlightedIds + cameraTarget
  */
 export default function ConstellationTab({
   focusSymbol: _focusSymbol,
@@ -41,33 +68,48 @@ export default function ConstellationTab({
   const [hoveredNode, setHoveredNode] = useState<LayoutNode | null>(null);
   const [cameraTarget, setCameraTarget] = useState<CameraTarget | null>(null);
 
-  // Highlighted ids: selected node + its direct neighbors
+  // Highlighted ids: selected node + its direct neighbors (derived from selectedNode)
   const highlightedIds = useMemo<Set<number>>(() => {
     if (!selectedNode || !data) return new Set();
-    const ids = new Set<number>([selectedNode.id]);
-    for (const e of data.edges as LayoutEdge[]) {
-      if (e.source === selectedNode.id) ids.add(e.target);
-      if (e.target === selectedNode.id) ids.add(e.source);
-    }
-    return ids;
+    return computeHighlightedIds(selectedNode.id, data.edges as LayoutEdge[]);
   }, [selectedNode, data]);
 
+  /**
+   * Core selection handler: runs the full click state machine.
+   *   1. Update selectedNode state
+   *   2. Compute neighbor set
+   *   3. Fly camera to the selection centroid
+   *   4. Notify the 2D side via onFocusSymbol
+   */
   const handleSelect = useCallback(
     (node: LayoutNode) => {
       setSelectedNode(node);
-      const newIds = new Set<number>([node.id]);
-      if (data) {
-        for (const e of data.edges as LayoutEdge[]) {
-          if (e.source === node.id) newIds.add(e.target);
-          if (e.target === node.id) newIds.add(e.source);
-        }
-      }
+      const newIds = computeHighlightedIds(node.id, (data?.edges ?? []) as LayoutEdge[]);
       const target = computeCameraTarget(data?.nodes ?? [], newIds);
       setCameraTarget(target);
       onFocusSymbol?.(node.name);
     },
     [data, onFocusSymbol],
   );
+
+  /**
+   * Navigate from the detail panel: find the named node in the layout data
+   * and re-run the full selection state machine.
+   */
+  const handleNavigate = useCallback(
+    (name: string) => {
+      if (!data) return;
+      const target = (data.nodes as LayoutNode[]).find((n) => n.name === name);
+      if (target) handleSelect(target);
+    },
+    [data, handleSelect],
+  );
+
+  /** Deselect: clear node, highlights, and camera target. */
+  const handleClose = useCallback(() => {
+    setSelectedNode(null);
+    setCameraTarget(null);
+  }, []);
 
   const handleHover = useCallback((node: LayoutNode | null) => {
     setHoveredNode(node);
@@ -99,9 +141,9 @@ export default function ConstellationTab({
   // ── Scene ──────────────────────────────────────────────────────────────────
 
   return (
-    <div className="relative w-full h-full flex">
+    <div className="relative w-full h-full flex overflow-hidden">
       {/* Center: 3D WebGL canvas */}
-      <div className="flex-1 relative">
+      <div className="flex-1 relative min-w-0">
         <ConstellationScene
           nodes={data.nodes}
           edges={data.edges}
@@ -114,7 +156,14 @@ export default function ConstellationTab({
         />
       </div>
 
-      {/* Future: NodeDetailPanel slides in here when selectedNode is set */}
+      {/* Right: NodeDetailPanel — slides in when a node is selected */}
+      {selectedNode && (
+        <NodeDetailPanel
+          node={selectedNode}
+          onNavigate={handleNavigate}
+          onClose={handleClose}
+        />
+      )}
     </div>
   );
 }
