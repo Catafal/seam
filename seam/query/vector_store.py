@@ -224,26 +224,19 @@ def _write_store_impl(
     # If the matrix write fails, the old meta (if any) remains intact → load_store
     # will still validate the old artifact correctly. The meta is the sentinel for
     # "this artifact is complete" — we never write it until matrix+ids are on disk.
+    #
+    # WHY try/finally for temp-file cleanup:
+    #   NamedTemporaryFile(delete=False) creates the file immediately; if any step
+    #   between creation and os.replace raises, the temp file is left on disk and
+    #   never cleaned by the OS. The try/finally tracks each pending temp path and
+    #   sets it to None after a successful os.replace (which moves/removes the temp).
+    #   The finally block unlinks any surviving temp files so disk leaks don't
+    #   accumulate in .seam/ on repeated write failures (e.g. disk-full).
 
     matrix_path = store_dir / _MATRIX_FILE
     ids_path = store_dir / _IDS_FILE
     meta_path = store_dir / _META_FILE
 
-    # Write matrix
-    with tempfile.NamedTemporaryFile(
-        dir=store_dir, suffix=".tmp", delete=False
-    ) as f:
-        mat_tmp = f.name
-        mat.tofile(f)
-
-    # Write ids
-    with tempfile.NamedTemporaryFile(
-        dir=store_dir, suffix=".tmp", delete=False
-    ) as f:
-        ids_tmp = f.name
-        ids_arr.tofile(f)
-
-    # Write meta (LAST — so load_store never sees a meta without a valid matrix)
     meta = {
         "model": model,
         "dim": dim,
@@ -252,16 +245,51 @@ def _write_store_impl(
         "dtype": "float32",
         "byteorder": "little",
     }
-    with tempfile.NamedTemporaryFile(
-        dir=store_dir, suffix=".tmp", delete=False, mode="w", encoding="utf-8"
-    ) as f:
-        meta_tmp = f.name
-        json.dump(meta, f)
 
-    # Atomic rename: all three files in order
-    os.replace(mat_tmp, matrix_path)
-    os.replace(ids_tmp, ids_path)
-    os.replace(meta_tmp, meta_path)
+    mat_tmp: str | None = None
+    ids_tmp: str | None = None
+    meta_tmp: str | None = None
+    try:
+        # Write matrix
+        with tempfile.NamedTemporaryFile(
+            dir=store_dir, suffix=".tmp", delete=False
+        ) as f:
+            mat_tmp = f.name
+            mat.tofile(f)
+
+        # Write ids
+        with tempfile.NamedTemporaryFile(
+            dir=store_dir, suffix=".tmp", delete=False
+        ) as f:
+            ids_tmp = f.name
+            ids_arr.tofile(f)
+
+        # Write meta (LAST — so load_store never sees a meta without a valid matrix)
+        with tempfile.NamedTemporaryFile(
+            dir=store_dir, suffix=".tmp", delete=False, mode="w", encoding="utf-8"
+        ) as f:
+            meta_tmp = f.name
+            json.dump(meta, f)
+
+        # Atomic rename: all three files in order.
+        # After each successful os.replace, the temp path no longer exists on disk
+        # (rename consumed it), so we null it out to skip the finally cleanup.
+        os.replace(mat_tmp, matrix_path)
+        mat_tmp = None
+        os.replace(ids_tmp, ids_path)
+        ids_tmp = None
+        os.replace(meta_tmp, meta_path)
+        meta_tmp = None
+    finally:
+        # Clean up any temp files that were created but not yet moved to their
+        # final names. On success all three are None (moved); on failure one or
+        # more may still exist on disk.
+        for _tmp in (mat_tmp, ids_tmp, meta_tmp):
+            if _tmp is not None:
+                try:
+                    os.unlink(_tmp)
+                except OSError:
+                    pass  # Best-effort cleanup; ignore errors (e.g. already gone)
 
     logger.info(
         "write_store: wrote %d vectors (dim=%d, model=%r) to %s",
