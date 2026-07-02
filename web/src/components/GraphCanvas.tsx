@@ -51,12 +51,14 @@ import type { SymbolNodeData } from "./SymbolNode";
 import { getEdgeStyle } from "../lib/edgeStyle";
 import { Legend } from "./Legend";
 import { FilterBar } from "./FilterBar";
+import { GraphHUD } from "./GraphHUD";
 import {
   defaultEdgeFilter,
   toggleFilterValue,
   type EdgeFilterState,
 } from "../lib/edgeFilter";
 import { useGraphOverlays } from "../hooks/useGraphOverlays";
+import { computeHudCounts } from "../lib/hudCounts";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -327,6 +329,14 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
 
         <MiniMap maskColor="rgba(24,24,27,0.8)" style={{ background: "#18181b" }} />
         <Controls style={{ background: "#27272a", border: "1px solid #3f3f46" }} />
+
+        {/* Bottom-left: HUD overlay — below the legend to avoid overlap */}
+        <Panel position="bottom-left">
+          <GraphHUD
+            counts={computeHudCounts(displayNodes, displayEdges, selectedNode)}
+            impactActive={impactActive}
+          />
+        </Panel>
       </ReactFlow>
     </div>
   );
