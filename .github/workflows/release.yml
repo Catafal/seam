@@ -92,7 +92,7 @@ jobs:
 
   # ── Smoke ────────────────────────────────────────────────────────────────────
   # Install the built wheel into a CLEAN virtual environment on each supported
-  # Python version and verify `seam --version` exits 0.
+  # Python version and verify `seam --help` exits 0.
   #
   # WHY /tmp/smoke-env: outside the workspace, so no accidental source-tree
   # reads.  uv manages the exact CPython version requested.
