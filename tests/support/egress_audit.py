@@ -171,7 +171,11 @@ def scan_trace(text: str) -> list[str]:
         try:
             result = classify_connect_line(line)
         except Exception:
-            # classify_connect_line should never raise, but defensive guard.
+            # classify_connect_line should never raise, but if it does,
+            # fail-closed: treat the line as a potential external connection
+            # rather than silently passing it.  A false positive is cheaper
+            # than a missed violation in a security proof.
+            offenders.append(line)
             continue
         if result == "external":
             offenders.append(line)
