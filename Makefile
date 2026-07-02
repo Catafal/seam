@@ -59,7 +59,10 @@ eval-generate:
 # in the Python CI environment).
 test-npm:
 	@command -v node >/dev/null 2>&1 || { echo "test-npm: node not found, skipping"; exit 0; }
-	cd pkg/npm && npm test
+	# `npm ci` first so the target is self-contained on a clean checkout / CI —
+	# node_modules is gitignored, so `npm test` alone fails with "vitest: not found".
+	# `npm ci` uses the committed package-lock.json (reproducible, no lockfile drift).
+	cd pkg/npm && npm ci --silent && npm test
 
 # Remove build artifacts
 clean:
