@@ -1,0 +1,129 @@
+name: No-Egress Proof
+
+# WHY this workflow exists:
+#   Seam's contract is "zero outbound network connections" on its read path.
+#   This workflow proves it at the syscall level by running each Seam command
+#   (CLI + MCP server) under ``strace -f -e trace=connect``, then feeding the
+#   trace to ``tests/support/egress_audit.py``.  Any AF_INET/AF_INET6 connect()
+#   to a non-loopback address fails the job immediately.
+#
+# WHY strace only (not eBPF / seccomp):
+#   strace is available on ubuntu-latest without extra setup; it intercepts
+#   connect() at the kernel boundary regardless of language/runtime/TLS wrapping.
+#   False-positive local connects (SQLite WAL, Unix sockets) are already
+#   classified as 'local' by egress_audit.py.
+#
+# WHY NOT the semantic extra:
+#   ``seam init --semantic`` downloads a ~67 MB model on first run — that IS
+#   a legitimate network call (model bootstrap, not a read-path egress).
+#   The no-egress contract applies to the READ path: init (graph only), search,
+#   context, impact, and the MCP server after a warm index.
+#
+# WHY ``set -euo pipefail``:
+#   Each strace command propagates the child's exit code.  A crashed seam command
+#   would produce an empty trace, which egress_audit would pass — giving a false
+#   green.  Under ``set -e`` the job fails on non-zero exit from the traced
+#   command before egress_audit even runs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref to save CI minutes (mirrors ci.yml).
+concurrency:
+  group: no-egress-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  no-egress:
+    name: no-egress syscall audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies (server extra + dev group)
+        # server extra → mcp package needed for the MCP smoke driver.
+        # dev group    → pytest, ruff, etc. (also ensures egress_audit is on PYTHONPATH).
+        # NO semantic extra — model downloads are legitimate network calls, not read-path egress.
+        run: uv sync --extra server --dev --python 3.12
+
+      - name: Install strace
+        run: sudo apt-get update -qq && sudo apt-get install -y strace
+
+      # Index a small fixture directory so every subsequent read command has data.
+      # tests/fixtures/ contains 11 sample source files (~129 symbols) — fast to index
+      # and guaranteed to exist in the repo.
+      - name: Index fixtures directory
+        run: |
+          set -euo pipefail
+          uv run seam init tests/fixtures/
+          echo "Index complete. Verifying index status:"
+          cd tests/fixtures && uv run seam status
+
+      # ── strace probes ────────────────────────────────────────────────────────
+      # Each step: run the command under strace, write a tracefile, then audit it.
+      # ``strace -f`` follows forked children so multi-process commands are covered.
+      # ``-e trace=connect`` captures ONLY connect() syscalls — the minimal filter.
+      # The tracefile name matches the step for easy identification in failure output.
+
+      - name: Probe — seam init (graph only, no --semantic)
+        run: |
+          set -euo pipefail
+          # Re-run init on the fixtures dir (idempotent). The first indexed run above
+          # already proved the path; this run is traced for the egress proof.
+          strace -f -e trace=connect -o /tmp/init.trace \
+            uv run seam init tests/fixtures/
+          uv run python -m tests.support.egress_audit /tmp/init.trace
+
+      - name: Probe — seam search
+        run: |
+          set -euo pipefail
+          cd tests/fixtures
+          strace -f -e trace=connect -o /tmp/search.trace \
+            uv run seam search "add"
+          uv run python -m tests.support.egress_audit /tmp/search.trace
+
+      - name: Probe — seam context
+        run: |
+          set -euo pipefail
+          cd tests/fixtures
+          strace -f -e trace=connect -o /tmp/context.trace \
+            uv run seam context add
+          uv run python -m tests.support.egress_audit /tmp/context.trace
+
+      - name: Probe — seam impact
+        run: |
+          set -euo pipefail
+          cd tests/fixtures
+          strace -f -e trace=connect -o /tmp/impact.trace \
+            uv run seam impact add
+          uv run python -m tests.support.egress_audit /tmp/impact.trace
+
+      - name: Probe — MCP stdio server (via mcp_smoke driver)
+        # The smoke driver spawns ``seam start tests/fixtures/`` as a stdio child,
+        # performs a full MCP handshake (initialize + list_tools), prints the tool
+        # count, and exits 0.  strace -f follows the spawned server child so its
+        # connect() calls are captured in the same tracefile.
+        run: |
+          set -euo pipefail
+          strace -f -e trace=connect -o /tmp/start.trace \
+            uv run --extra server python -m tests.support.mcp_smoke tests/fixtures/
+          uv run python -m tests.support.egress_audit /tmp/start.trace
+
+      - name: All probes passed — no external connections detected
+        run: echo "No-egress proof complete. All connect() calls were local."
