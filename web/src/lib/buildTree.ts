@@ -4,6 +4,15 @@
  * — it organizes the codebase the way a human reads it (structure), not the way a
  * graph algorithm groups it (Louvain communities).
  *
+ * A2 additions (issue #215):
+ *   commonDirPrefix  — find the longest shared dir prefix so a scoped area can
+ *                      strip its own parent path before building the tree.
+ *   flattenSingleChild — collapse a/b/c/ chains where each dir has exactly one
+ *                        dir child, so the treemap doesn't waste clicks on empty
+ *                        intermediate dirs.
+ *   buildTree now accepts an optional stripPrefix (3rd param) that applies both
+ *   transformations in one call for callers like TreemapCanvas.
+ *
  * Pure + framework-free → unit-tested in isolation.
  */
 
@@ -96,6 +105,85 @@ function buildFileSymbols(symbols: StructureSymbol[]): TreeNode[] {
   return topLevel;
 }
 
+/**
+ * Compute the longest common directory prefix of the given file paths.
+ *
+ * Only the directory parts are compared — the filename is excluded. Returns ""
+ * when there is no shared prefix (different top-level dirs) or when paths is empty.
+ *
+ * Examples:
+ *   ["seam/server/tools.py", "seam/server/handler.py"] → "seam/server"
+ *   ["seam/server/tools.py", "seam/analysis/clustering.py"] → "seam"
+ *   ["web/app.ts", "seam/db.py"] → ""
+ */
+export function commonDirPrefix(paths: string[]): string {
+  if (paths.length === 0) return "";
+
+  // Strip filename from each path to get the directory part segments.
+  const allDirParts = paths.map((p) => {
+    const segments = p.split("/");
+    return segments.slice(0, -1); // everything except the filename
+  });
+
+  const first = allDirParts[0];
+  let commonLen = first.length;
+
+  // Walk all other paths and shrink commonLen to the last matching segment index.
+  for (let i = 1; i < allDirParts.length; i++) {
+    const parts = allDirParts[i];
+    let j = 0;
+    while (j < commonLen && j < parts.length && first[j] === parts[j]) j++;
+    commonLen = j;
+    if (commonLen === 0) return ""; // early exit — no common prefix
+  }
+
+  return first.slice(0, commonLen).join("/");
+}
+
+/**
+ * Collapse single-child directory chains into merged nodes.
+ *
+ * For each dir child that itself has exactly ONE dir child, those two levels are
+ * merged into a single node whose name combines both dirs with "/" (e.g. "a" that
+ * contains only "b" becomes "a/b"). The merge is applied recursively bottom-up so
+ * chains of any depth are collapsed in one pass.
+ *
+ * The node passed in is returned as-is structurally (it is the entry-point node,
+ * not a candidate for merging); only its children are collapsed.
+ *
+ * Non-dir nodes are returned as-is (identity, no mutation).
+ *
+ * Why: after stripping a common prefix there may still be a residual
+ * intermediate dir (e.g. a single "sub/" node above a flat file list). Collapsing
+ * it lets the user reach the files in one click instead of two.
+ */
+export function flattenSingleChild(node: TreeNode): TreeNode {
+  // Only dirs can have children to collapse; leave files/classes/symbols unchanged.
+  if (node.nodeKind !== "dir") return node;
+
+  // Recursively flatten each child's internal chains first (depth-first so the
+  // bottom of a chain is collapsed before we look at the top).
+  const kids = node.children.map(flattenSingleChild);
+
+  // For each dir child that has exactly one dir grandchild, merge those two levels:
+  // child becomes "child/grandchild" and inherits the grandchild's children.
+  // Recursing on the merged node handles any residual chain (e.g. after "a/b" is
+  // formed, "a/b" itself might still have a single dir child to collapse).
+  const flatKids = kids.map((kid) => {
+    if (kid.nodeKind !== "dir") return kid;
+    if (kid.children.length === 1 && kid.children[0].nodeKind === "dir") {
+      const grandkid = kid.children[0];
+      return flattenSingleChild({
+        ...grandkid,
+        name: `${kid.name}/${grandkid.name}`,
+      });
+    }
+    return kid;
+  });
+
+  return { ...node, children: flatKids };
+}
+
 /** Recursively assign counts = symbols beneath, counting self when it's a symbol.
  *  dir/file are structural (self=0); class/symbol are real symbols (self=1), so a
  *  class with 3 methods counts 4 (itself + 3). */
@@ -111,10 +199,25 @@ function rollupCounts(node: TreeNode): number {
  *
  * Returns a root "dir" node. Folder nesting comes from the file path; within a
  * file, classes contain their methods. Empty input → an empty root.
+ *
+ * @param stripPrefix — when provided, this directory prefix is stripped from
+ *   every file path before constructing the folder hierarchy. The original path
+ *   is still stored on each file node (for navigation) — only the tree structure
+ *   changes. After building, flattenSingleChild() is applied to collapse any
+ *   residual single-child dir chains. Use commonDirPrefix(paths) to compute the
+ *   right value before calling.
  */
-export function buildTree(symbols: StructureSymbol[], rootName = "root"): TreeNode {
+export function buildTree(
+  symbols: StructureSymbol[],
+  rootName = "root",
+  stripPrefix = "",
+): TreeNode {
   const root: TreeNode = { name: rootName, nodeKind: "dir", count: 0, children: [] };
   if (symbols.length === 0) return root;
+
+  // Normalize the prefix to end with "/" for consistent string slicing.
+  const prefixWithSlash =
+    stripPrefix && !stripPrefix.endsWith("/") ? `${stripPrefix}/` : stripPrefix;
 
   // Group symbols by file path (preserves input order within a file).
   const byFile = new Map<string, StructureSymbol[]>();
@@ -126,7 +229,14 @@ export function buildTree(symbols: StructureSymbol[], rootName = "root"): TreeNo
 
   // Insert each file into the dir tree by its path components.
   for (const [path, fileSymbols] of byFile) {
-    const parts = path.split("/").filter(Boolean);
+    // Strip the prefix from the path to avoid redundant intermediate dirs.
+    // The original `path` is still stored on the node so navigation works.
+    const displayPath =
+      prefixWithSlash && path.startsWith(prefixWithSlash)
+        ? path.slice(prefixWithSlash.length)
+        : path;
+
+    const parts = displayPath.split("/").filter(Boolean);
     if (parts.length === 0) continue;
     const fileName = parts[parts.length - 1];
     const dirs = parts.slice(0, -1);
@@ -145,6 +255,7 @@ export function buildTree(symbols: StructureSymbol[], rootName = "root"): TreeNo
     }
 
     // Create the file node with its symbol subtree.
+    // Keep original `path` (not the stripped displayPath) for graph navigation.
     cursor.children.push({
       name: fileName,
       nodeKind: "file",
@@ -155,5 +266,13 @@ export function buildTree(symbols: StructureSymbol[], rootName = "root"): TreeNo
   }
 
   rollupCounts(root);
+
+  // When a prefix was stripped, also collapse any residual single-child dir chains.
+  // flattenSingleChild(root) processes root's children (not the root itself), so
+  // the root name — used as the area name in the breadcrumb — is always preserved.
+  if (stripPrefix) {
+    return flattenSingleChild(root);
+  }
+
   return root;
 }
