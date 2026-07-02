@@ -36,4 +36,10 @@ describe("App scaffold", () => {
     // App renders the landing path (not GraphCanvas) on initial load.
     expect(screen.getByText(/explore the codebase/i)).toBeInTheDocument();
   });
+
+  // S2: assert the Constellation tab button is present in the header
+  it("shows the Constellation tab button", () => {
+    renderWithQuery(<App />);
+    expect(screen.getByRole("button", { name: /constellation/i })).toBeInTheDocument();
+  });
 });

@@ -52,3 +52,83 @@
 
 - None for S1. The layout engine is complete and all 3151 tests pass.
 - S2 (frontend) should start from Task 3 in the plan.
+
+---
+
+## 2026-07-02 — Slice S2: Minimal 3D Tab Renders (issue #170)
+
+### What was built
+
+**npm packages** — installed into `web/`:
+- `three@~0.183.0`, `@react-three/fiber@^9`, `@react-three/drei@^10`, `@react-three/postprocessing@^3`
+- `@types/three@~0.183.0` (devDependency)
+
+**web/src/lib/layoutTypes.ts** — TypeScript types for the layout API response:
+- `LayoutNode`, `LayoutEdge`, `ClusterSummary`, `LayoutData`
+- MI1: used `Layout*` names (NOT `GraphNode`/`GraphEdge`) to avoid colliding with the existing 2D `graph_api` types (different shapes, different API)
+
+**web/src/lib/constellationColors.ts** — teal-native color palette:
+- `EDGE_TYPE_COLORS` — all 9 edge kinds; `call` → `#1DA27E` (seafoam teal)
+- `KIND_COLORS` — 6 symbol kinds
+- `CANVAS_BG = "#04100f"` (teal-void)
+
+**web/src/hooks/useLayoutData.ts** — react-query hook:
+- `useLayoutData(maxNodes)` → `LayoutData`; staleTime 60s; error throws
+
+**web/src/components/NodeCloud.tsx** — InstancedMesh node cloud:
+- Pure `computeInstanceColor(node, isHighlighted, isDimmed) → [r, g, b]` (unit-tested)
+- Highlighted: boost = 1.2 + brightness×0.8 (>1.0 → Bloom fires)
+- Dimmed: ×0.15
+- `useFrame` writes matrices + colors; `useMemo` pre-computes colorArray on highlight change
+
+**web/src/components/ConstellationScene.tsx** — R3F canvas root:
+- Pure `computeCameraTarget(nodes, ids) → CameraTarget | null` (unit-tested)
+- Pure `easeOutCubic(p) → number` = `1 - (1-p)³` (unit-tested)
+- `buildEdgeGeometry(nodeMap, edges, highlightedIds)` extracted helper for EdgeLines
+- Canvas: `dpr=[1,1.5]`, `antialias=false`, `bg=CANVAS_BG`
+- `OrbitControls` with `dampingFactor=0.08`, idle auto-rotate after 60s
+- `EffectComposer` + `Bloom` (threshold=0.3, intensity=1.2, radius=0.6, mipmapBlur)
+- `CameraAnimator` using `easeOutCubic` + 0.08 lerp factor
+- `EdgeLines` with additive blending (intensity table from reference §2)
+
+**web/src/components/ConstellationTab.tsx** — lazy-loaded 3D tab:
+- Composes `useLayoutData` + `ConstellationScene`
+- Owns `selectedNode`, `hoveredNode`, `highlightedIds`, `cameraTarget` state
+- Error/loading branches with user-readable messages (IM4)
+- `onFocusSymbol` prop for 2D↔3D sync
+
+**web/src/App.tsx** — wired the Constellation tab:
+- Added `ViewMode = "neighborhood" | "overview" | "constellation"`
+- Added `focusSymbol` state for 2D↔3D sync
+- Added Constellation tab button (Orbit icon) in the header (`aria-label="Constellation"`)
+- `lazy(() => import("./components/ConstellationTab"))` + `<Suspense>` fallback
+- When mode==="constellation" renders the full-screen tab; other modes untouched
+
+### Key decisions
+
+**MI1 — LayoutNode vs GraphNode:** Used `LayoutNode`/`LayoutEdge` throughout to avoid collision with the existing 2D `GraphNode` (different structure, different API endpoint). Plan's Task 3 originally used `GraphNode` but the Applied Review Revisions section explicitly mandated `Layout*` names.
+
+**Pure helper extraction (IM2):** `computeInstanceColor`, `computeCameraTarget`, `easeOutCubic` are all top-level exports from their modules, not closures inside React components. This makes them trivially unit-testable in vitest without any WebGL/jsdom canvas setup.
+
+**THREE.WARNING in tests:** The nodeCloudHelpers test file imports from both `NodeCloud.tsx` (which imports three via R3F) and `ConstellationScene.tsx` (which imports three directly). This triggers three.js's "multiple instances" warning. It is benign in test context (no actual rendering) and does not affect test results. The warning comes from vitest loading both modules with separate module instances.
+
+**OrbitControls ref typing:** The R3F `OrbitControls` ref type is complex due to drei's polymorphic ref. Used a loose `{ autoRotate: boolean } | null` interface for the AutoRotateController to avoid importing the internal drei type. This is safe since we only access `.autoRotate`.
+
+**App.tsx Constellation button role:** The button has text content "Constellation" with an Orbit icon, making it discoverable by `getByRole("button", { name: /constellation/i })` in the test.
+
+### Tests added (128 frontend tests, all green)
+
+- `web/src/__tests__/constellationColors.test.ts` (4 tests) — EDGE_TYPE_COLORS all 9 kinds, call=#1DA27E, KIND_COLORS all 6 kinds, CANVAS_BG
+- `web/src/__tests__/nodeCloudHelpers.test.ts` (10 tests) — computeInstanceColor (3), computeCameraTarget (3), easeOutCubic (4)
+- `web/src/__tests__/App.test.tsx` — extended with Constellation tab button assertion
+
+### Deviations from plan
+
+- Plan's Task 3 used `GraphNode`/`GraphEdge` type names — overridden by MI1 to `LayoutNode`/`LayoutEdge`
+- `EdgeLines` was placed inside `ConstellationScene.tsx` (not a separate file) because it has no independent pure helpers to test and the file stays under 300 lines
+- `buildEdgeGeometry` was extracted as an exported helper in ConstellationScene.tsx for potential future testing
+
+### Open questions
+
+- The THREE.WARNING in tests is benign but could be resolved by mocking `three` in the test setup. Low priority.
+- S3 (visual layer: ClusterHalos, NodeLabels, NodeTooltip) and S4 (UI shell: FilterPanel, HUD, DetailPanel) are the next slices.

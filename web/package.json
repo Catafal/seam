@@ -13,12 +13,16 @@
     "gen:types": "openapi-typescript http://127.0.0.1:7420/openapi.json -o src/api/types.ts"
   },
   "dependencies": {
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.6.1",
+    "@react-three/postprocessing": "^3.0.4",
     "@tanstack/react-query": "^5.80.6",
     "@xyflow/react": "^12.6.4",
     "dagre": "^0.8.5",
     "lucide-react": "^0.511.0",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "three": "^0.183.2"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.6.3",
@@ -26,6 +30,7 @@
     "@types/dagre": "^0.7.52",
     "@types/react": "^19.1.6",
     "@types/react-dom": "^19.1.5",
+    "@types/three": "^0.183.1",
     "@vitejs/plugin-react": "^4.5.2",
     "autoprefixer": "^10.4.21",
     "jsdom": "^26.1.0",

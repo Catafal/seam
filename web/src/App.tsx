@@ -17,7 +17,7 @@
  * symbol name is stored but not yet rendered in a side panel.
  */
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, lazy, Suspense } from "react";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { DetailPanel } from "./components/DetailPanel";
 import { ChangesDrawer } from "./components/ChangesDrawer";
@@ -26,6 +26,10 @@ import { useStatus, useSearch, useClusters, useHubs } from "./api/hooks";
 import type { ClusterItem, SearchResultItem, HubSymbol } from "./api/schema-types";
 import { clusterColor } from "./lib/clusterColor";
 import { GitBranch, Orbit, Network, Route } from "lucide-react";
+
+// Lazy-load the 3D constellation tab to keep the main bundle small.
+// three.js + R3F are not loaded until the user clicks "Constellation".
+const ConstellationTab = lazy(() => import("./components/ConstellationTab"));
 
 // ── Utility: relative time formatter ─────────────────────────────────────────
 
@@ -368,8 +372,8 @@ function LandingPage({ onSelect, onOpenOverview }: LandingPageProps) {
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
-/** App view mode: per-symbol neighborhood, or whole-repo cluster overview. */
-type ViewMode = "neighborhood" | "overview";
+/** App view mode: per-symbol neighborhood, whole-repo cluster overview, or 3D constellation. */
+type ViewMode = "neighborhood" | "overview" | "constellation";
 
 /** A small header toggle pill (mode switch, drawer toggle). */
 function HeaderToggle({
@@ -413,8 +417,10 @@ function App() {
   const [traceTarget, setTraceTarget] = useState<string | null>(null);
   // changesOpen: toggles the git working-changes drawer
   const [changesOpen, setChangesOpen] = useState(false);
-  // mode: per-symbol neighborhood or whole-repo overview
+  // mode: per-symbol neighborhood, whole-repo overview, or 3D constellation
   const [mode, setMode] = useState<ViewMode>("neighborhood");
+  // focusSymbol: shared between 2D and 3D views for cross-tab navigation
+  const [focusSymbol, setFocusSymbol] = useState<string | null>(null);
 
   // Centering on a new symbol invalidates any in-flight trace (the old target
   // is meaningless relative to the new center) — reset it alongside the center.
@@ -464,6 +470,20 @@ function App() {
           icon={mode === "overview" ? <Network className="w-3.5 h-3.5" /> : <Orbit className="w-3.5 h-3.5" />}
           label={mode === "overview" ? "Neighborhood" : "Overview"}
         />
+
+        {/* Constellation tab: lazy 3D Explorer (S2) */}
+        <button
+          onClick={() => setMode((m) => (m === "constellation" ? "neighborhood" : "constellation"))}
+          aria-pressed={mode === "constellation"}
+          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs transition-colors border ${
+            mode === "constellation"
+              ? "bg-sky-500/15 border-sky-500/50 text-sky-300"
+              : "bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500"
+          }`}
+        >
+          <Orbit className="w-3.5 h-3.5" />
+          Constellation
+        </button>
 
         {/* Center: search box(es) — hidden in overview mode */}
         <div className="flex-1 flex justify-center items-center gap-2">
@@ -518,26 +538,47 @@ function App() {
 
       {/* ── Main content ───────────────────────────────────────────────── */}
       <main className="flex flex-1 overflow-hidden">
-        {/* Left: overview / graph canvas / landing page */}
-        <div className="flex-1 overflow-hidden relative">
-          {mode === "overview" ? (
-            <StructureOverview onSelectSymbol={handleOpenFromOverview} />
-          ) : showGraph ? (
-            <GraphCanvas
-              center={centerSymbol!}
-              onSelectSymbol={handleSelectSymbol}
-              traceTarget={traceTarget}
+        {/* Constellation tab: full-screen 3D canvas (lazy-loaded) */}
+        {mode === "constellation" ? (
+          <Suspense
+            fallback={
+              <div className="flex items-center justify-center w-full h-full text-zinc-500 text-sm animate-pulse">
+                Loading constellation…
+              </div>
+            }
+          >
+            <ConstellationTab
+              focusSymbol={focusSymbol}
+              onFocusSymbol={(name) => {
+                setFocusSymbol(name);
+                setCenterSymbol(name);
+              }}
             />
-          ) : (
-            <LandingPage
-              onSelect={setCenterSymbol}
-              onOpenOverview={() => setMode("overview")}
-            />
-          )}
-        </div>
+          </Suspense>
+        ) : (
+          <>
+            {/* Left: overview / graph canvas / landing page */}
+            <div className="flex-1 overflow-hidden relative">
+              {mode === "overview" ? (
+                <StructureOverview onSelectSymbol={handleOpenFromOverview} />
+              ) : showGraph ? (
+                <GraphCanvas
+                  center={centerSymbol!}
+                  onSelectSymbol={handleSelectSymbol}
+                  traceTarget={traceTarget}
+                />
+              ) : (
+                <LandingPage
+                  onSelect={setCenterSymbol}
+                  onOpenOverview={() => setMode("overview")}
+                />
+              )}
+            </div>
 
-        {/* Right: detail panel — shown in neighborhood mode with an active center */}
-        {showGraph && <DetailPanel selectedSymbol={selectedSymbol} />}
+            {/* Right: detail panel — shown in neighborhood mode with an active center */}
+            {showGraph && <DetailPanel selectedSymbol={selectedSymbol} />}
+          </>
+        )}
 
         {/* Rightmost: changes drawer — toggled from the header */}
         <ChangesDrawer
