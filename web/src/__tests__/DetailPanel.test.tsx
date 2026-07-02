@@ -54,8 +54,14 @@ const SYMBOL_FIXTURE: SymbolResponse = {
       decorators: [],
     },
   ],
-  callers: ["index_one_file", "walk_project"],
-  callees: ["_get_parser", "_parse_tree"],
+  callers: [
+    { name: "index_one_file", kind: "call", confidence: "INFERRED" },
+    { name: "walk_project", kind: "call", confidence: "INFERRED" },
+  ],
+  callees: [
+    { name: "_get_parser", kind: "call", confidence: "INFERRED" },
+    { name: "_parse_tree", kind: "call", confidence: "INFERRED" },
+  ],
   cluster: { id: 3, label: "parser" },
   peers: ["_get_parser", "walk_project"],
   why: [

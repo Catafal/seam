@@ -37,6 +37,8 @@ LAYER: seam.server (adapter layer) — may import from seam.query.* and seam.ind
 import sqlite3
 from typing import Any
 
+from seam.query.names import edge_match_names as _edge_match_names
+
 
 def _fetch_center_node(
     conn: sqlite3.Connection,
@@ -435,3 +437,59 @@ def list_structure(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         }
         for r in rows
     ]
+
+
+def fetch_edge_refs(
+    conn: sqlite3.Connection,
+    symbol_name: str,
+    *,
+    direction: str,
+) -> list[dict[str, str]]:
+    """Return enriched edge references for a symbol's callers or callees.
+
+    S2 web-layer enrichment: adds 'kind' and 'confidence' to each caller/callee name
+    by querying the edges table directly. The context handler returns bare name lists;
+    this helper enriches them at the web layer without touching the underlying handler.
+
+    When multiple edges exist for the same source→target pair (e.g. both a 'call'
+    and a 'reads' dependency), the first edge by MIN(id) is used — one entry per name,
+    deterministic across runs, matching the handler's deduplicated name list.
+
+    direction: 'callers' → edges.target_name IN match_names → source_name
+               'callees' → edges.source_name IN match_names → target_name
+
+    Returns [] on empty match_names or any DB error (never raises).
+    """
+    match_names = _edge_match_names(conn, symbol_name)
+    if not match_names:
+        return []
+    ph = ",".join("?" * len(match_names))
+    try:
+        if direction == "callers":
+            rows = conn.execute(
+                f"""
+                SELECT source_name AS name, kind, confidence
+                FROM edges
+                WHERE target_name IN ({ph})
+                GROUP BY source_name
+                ORDER BY MIN(id)
+                """,
+                match_names,
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"""
+                SELECT target_name AS name, kind, confidence
+                FROM edges
+                WHERE source_name IN ({ph})
+                GROUP BY target_name
+                ORDER BY MIN(id)
+                """,
+                match_names,
+            ).fetchall()
+        return [
+            {"name": r["name"], "kind": r["kind"] or "", "confidence": r["confidence"] or ""}
+            for r in rows
+        ]
+    except Exception:  # noqa: BLE001
+        return []
