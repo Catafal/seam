@@ -269,3 +269,55 @@ API field (`degree` on the structure rows) is the only backend change.
 
 **Gate status:** ruff clean, mypy clean (120 files), 2533 Python tests passed (4 skipped),
 378 frontend vitest tests passed, frontend typecheck clean.
+
+## B1 implementation notes
+
+**What changed:**
+
+- `web/src/api/hooks.ts` — Added `useMemo` import from `"react"`. Added `useAreas({ includeTests })` hook
+  at the bottom of the file. It composes `useStructure(true)` + `useHubs(60)` + `deriveAreas` via `useMemo`
+  and returns `{ areas: Area[], isLoading: boolean }`. This is the single derivation site for the "area"
+  concept — landing and Overview both consume it from here. `deriveAreas` itself is unchanged.
+
+- `web/src/components/StructureOverview.tsx` — Removed the inline `useStructure` + `useHubs` + `deriveAreas`
+  wiring; replaced with `useAreas({ includeTests })`. Added optional `initialArea?: Area | null` prop: when
+  set (from a landing card click), `useState(initialArea ?? null)` makes the component start in the drilled
+  treemap view immediately on mount. Since `StructureOverview` unmounts/remounts on every mode change, the
+  initial-value pattern is sufficient — no `useEffect` needed.
+
+- `web/src/App.tsx` — Changes to `LandingPage`:
+  - Removed `useClusters` call and `topAreas` derivation from clusters.
+  - Removed `clusterColor` and `ClusterItem` imports (no longer used in LandingPage).
+  - Added `useAreas({ includeTests: showTests })` — the same `showTests` toggle controls both hub chips
+    and area cards (one concept, one toggle).
+  - Area cards now render `Area` objects: name, `fileCount files · symbolCount symbols`, up to 3 `keySymbols`.
+  - `LandingPageProps` extended with `onOpenScopedOverview: (area: Area) => void`.
+  - Added `preselectedArea: Area | null` state to `App`.
+  - Added `handleOpenScopedOverview` callback: sets `preselectedArea` + `mode = "overview"`.
+  - Header Overview toggle resets `preselectedArea = null` when switching TO overview (so the area-cards
+    list shows first on a header-triggered open). The goHome action also clears it.
+  - `StructureOverview` now receives `initialArea={preselectedArea}`.
+  - `LandingPage` `onOpenOverview` now also clears `preselectedArea` before setting the mode.
+
+**Decisions:**
+
+- **Single toggle for hubs + areas:** the PRD says "mirror the existing Phase A show-tests hub toggle
+  semantics." Sharing the same `showTests` state for both sections avoids a second toggle and makes the
+  behaviour obvious: one switch, one meaning ("include tests" across the whole landing).
+- **`initialArea` as `useState` initial value (not `useEffect`):** `StructureOverview` unmounts when mode
+  leaves "overview", so it remounts fresh every time. The `useState(initialArea ?? null)` pattern is
+  sufficient and simpler than syncing via an effect — no ref, no extra render.
+- **`preselectedArea` reset on header open:** without the reset, navigating away from overview and back via
+  the header would re-drill the last landing-clicked area. Clearing on the header toggle ("entering overview
+  fresh") vs. the landing handler ("entering scoped") is the minimal stateful distinction needed.
+- **`useClusters` kept globally:** the DetailPanel cluster legend and SymbolNode color stripe still reference
+  it. Only the landing's areas section was migrated. No other consumer changed.
+
+**TDD cycle:**
+- `web/src/__tests__/useAreas.test.tsx` (4 tests) — written failing, then `useAreas` added to pass.
+- `web/src/__tests__/LandingAreas.test.tsx` (5 tests) — written failing, then `LandingPage` refactored to pass.
+  Two fixups after initial run: `useMemo` import source (React, not TanStack), `StructureSymbol` fixture
+  shape (no `file`/`is_test` fields), `globalThis` instead of `global` for jsdom compat, `getAllByText`
+  for "query" which appears both as hub chip and area name.
+
+**Gate status:** 387 frontend vitest tests passed, frontend typecheck clean, build green.
