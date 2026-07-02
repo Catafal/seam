@@ -385,6 +385,26 @@ SEAM_SEMANTIC_SCAN_CAP: int = int(os.getenv("SEAM_SEMANTIC_SCAN_CAP", "20000"))
 # Higher k flattens rank differences; lower k amplifies them.
 SEAM_RRF_K: int = int(os.getenv("SEAM_RRF_K", "60"))
 
+# ── WS1-A: Richer embedding input — body-slice enrichment ────────────────────
+
+# Gate for including a leading slice of each symbol's implementation body in its
+# embedding input. Default "off" — opt-in, mirrors SEAM_SEMANTIC.
+# When "on": index_embeddings reads each source file at most once and appends a
+# body slice (up to SEAM_EMBED_INPUT_MAX_CHARS chars) after the header. Vectors
+# change — requires a full `seam init --semantic` re-index to repopulate.
+# When "off": no disk reads, no body text, vectors byte-identical to pre-WS1-A.
+SEAM_EMBED_BODY: str = os.getenv("SEAM_EMBED_BODY", "off")
+
+# Character budget for the combined embedding input (header + body + comments) when
+# SEAM_EMBED_BODY=on. The header (name + signature + docstring) is NEVER truncated;
+# body fills any remaining budget, then comments fill any remaining after that.
+# Default 2000: ~500 tokens — a ~4-char/token proxy (no tokenizer dependency),
+# matches the SEAM_IMPACT_MAX_BYTES discipline.
+# 0 = unlimited (no cap on body/comment content beyond the header) — mirrors the
+# SEAM_IMPACT_MAX_BYTES convention where 0 = unlimited.  In practice, index_embeddings
+# maps 0 → a large internal sentinel so that body + comments are included in full.
+SEAM_EMBED_INPUT_MAX_CHARS: int = int(os.getenv("SEAM_EMBED_INPUT_MAX_CHARS", "2000"))
+
 
 # ── Tier A Slice 3: class/container member fan-out ───────────────────────────
 

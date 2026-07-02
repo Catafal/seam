@@ -16,12 +16,29 @@ Design decisions:
 - Upserts via INSERT OR REPLACE so repeated calls are idempotent (no duplicates).
 - dim is inferred from the first returned vector (len(blob) // 4) — avoids hard-coding.
 - Returns the count of upserted rows, or 0 when skipped, or -1 on failure.
+
+WS1-A: SEAM_EMBED_BODY=on gated body path:
+- Fetches file_id, start_line, end_line, and files.path alongside each symbol.
+- Reads each source file at most once (per-file dict cache; read → splitlines()).
+- A file that cannot be read degrades that file's symbols to header-only (logs warning).
+- Passes body slice + SEAM_EMBED_INPUT_MAX_CHARS to symbol_text() for enrichment.
+- When SEAM_EMBED_BODY=off (default): no disk reads, no body, byte-identical vectors.
+
+WS1-B: SEAM_EMBED_BODY=on also associates DB comments to each symbol by line-range:
+- For each symbol, fetches comments WHERE file_id = symbol.file_id AND
+  line BETWEEN symbol.start_line AND symbol.end_line.
+- WHY/HACK/NOTE comment texts are joined (space-separated) and passed as the
+  `comments` kwarg to symbol_text().
+- Gated by the same SEAM_EMBED_BODY knob — no new config knob.
+- When SEAM_EMBED_BODY=off: no comment join, byte-identical to pre-WS1-B.
+- Fetched in a single SQL pass via GROUP_CONCAT per symbol before the text-build loop.
 """
 
 import logging
 import sqlite3
 
-from seam.analysis.embeddings import embed_texts, is_available, symbol_text
+from seam.analysis.embeddings import embed_texts, extract_body_slice, is_available, symbol_text
+from seam.config import SEAM_EMBED_BODY, SEAM_EMBED_INPUT_MAX_CHARS
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +89,30 @@ def index_embeddings(
         return -1
 
 
+def _read_file_lines(path: str) -> list[str] | None:
+    """Read a source file and return its lines as a list, or None on any error.
+
+    WHY separate helper: keeps the read-and-split logic isolated and easily mockable
+    in tests that target the open() call path.
+
+    Returns:
+        List of lines (from str.splitlines()) on success, None on any IO error.
+        Never raises — degrades to None so callers can fall back gracefully.
+    """
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read().splitlines()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "embedding_index: cannot read source file %r (%s: %s) — "
+            "symbols in this file will use header-only embeddings.",
+            path,
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+
 def _index_embeddings_impl(
     conn: sqlite3.Connection,
     *,
@@ -85,20 +126,79 @@ def _index_embeddings_impl(
     about and test without needing to trigger the guard.
 
     Steps:
-      1. Fetch all symbols (id, name, signature, docstring) in one query.
-      2. Build canonical text for each symbol via symbol_text().
+      1. Fetch all symbols (id, name, signature, docstring, + body fields when on).
+      2. Build canonical text for each symbol via symbol_text() (+ body when on).
       3. Embed in batches using embed_texts().
       4. Upsert each embedding into the embeddings table (INSERT OR REPLACE).
       5. Return the total count of upserted rows.
     """
+    embed_body = SEAM_EMBED_BODY == "on"
+
+    # ── Effective char budget ─────────────────────────────────────────────────
+    # SEAM_EMBED_INPUT_MAX_CHARS=0 = unlimited (mirrors SEAM_IMPACT_MAX_BYTES
+    # discipline: 0 = unlimited = no cap on content beyond the header).
+    # symbol_text(max_chars=None) disables the body path entirely; we use a
+    # large-but-finite sentinel so body + comments are included without truncation.
+    _unlimited_sentinel = 1_000_000  # 1 M chars — effectively no cap
+    effective_max_chars = (
+        SEAM_EMBED_INPUT_MAX_CHARS if SEAM_EMBED_INPUT_MAX_CHARS > 0 else _unlimited_sentinel
+    )
+
     # ── Step 1: Read all symbols ──────────────────────────────────────────────
-    rows = conn.execute(
-        "SELECT id, name, signature, docstring FROM symbols ORDER BY id"
-    ).fetchall()
+    # When body enrichment is on, also fetch file_id, start_line, end_line, and
+    # the files.path so we can read source files once per file.
+    if embed_body:
+        rows = conn.execute(
+            """
+            SELECT s.id, s.name, s.signature, s.docstring,
+                   s.file_id, s.start_line, s.end_line, f.path AS file_path
+            FROM symbols s
+            JOIN files f ON f.id = s.file_id
+            ORDER BY s.id
+            """
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, name, signature, docstring FROM symbols ORDER BY id"
+        ).fetchall()
 
     if not rows:
         logger.debug("embedding_index: no symbols in index — nothing to embed")
         return 0
+
+    # ── Step 1b (body path only): build per-file line cache ──────────────────
+    # Read each source file at most once; missing files degrade to None (header-only).
+    # Key: absolute file path string → list[str] of lines (or None = unreadable).
+    file_line_cache: dict[str, list[str] | None] = {}
+    if embed_body:
+        for row in rows:
+            path = row["file_path"]
+            if path not in file_line_cache:
+                file_line_cache[path] = _read_file_lines(path)
+
+    # ── Step 1c (body path only): fetch per-symbol comment texts from DB ──────
+    # WS1-B: associate comments to symbols by line-range using a single SQL pass.
+    # GROUP_CONCAT aggregates all matched comment texts per symbol in one query.
+    # Key: symbol_id → joined comment string (or None if no comments).
+    # WHY a dict keyed by symbol_id: the rows list is already our authoritative
+    # iteration order; we look up comments per row to keep the loop below simple.
+    symbol_comments: dict[int, str | None] = {}
+    if embed_body:
+        comment_rows = conn.execute(
+            """
+            SELECT s.id AS symbol_id,
+                   GROUP_CONCAT(c.text, ' ') AS joined_comments
+            FROM symbols s
+            LEFT JOIN comments c
+              ON c.file_id = s.file_id
+             AND c.line BETWEEN s.start_line AND s.end_line
+            GROUP BY s.id
+            ORDER BY s.id
+            """
+        ).fetchall()
+        # Build lookup dict; GROUP_CONCAT returns None when no comments match.
+        for crow in comment_rows:
+            symbol_comments[crow["symbol_id"]] = crow["joined_comments"]
 
     # ── Step 2: Build canonical texts ─────────────────────────────────────────
     # Precompute (symbol_id, text) pairs; keep IDs aligned with text list.
@@ -106,13 +206,35 @@ def _index_embeddings_impl(
     texts: list[str] = []
     for row in rows:
         symbol_ids.append(row["id"])
-        texts.append(
-            symbol_text(
-                row["name"],
-                row["signature"],  # may be None
-                row["docstring"],  # may be None
+
+        if embed_body:
+            # Build body slice from cached file lines; fall back to None if unreadable
+            src_lines = file_line_cache.get(row["file_path"])
+            body: str | None = None
+            if src_lines is not None:
+                body = extract_body_slice(src_lines, row["start_line"], row["end_line"])
+
+            # WS1-B: retrieve pre-joined comment text for this symbol (may be None)
+            comments = symbol_comments.get(row["id"])
+
+            texts.append(
+                symbol_text(
+                    row["name"],
+                    row["signature"],  # may be None
+                    row["docstring"],  # may be None
+                    body=body,
+                    max_chars=effective_max_chars,
+                    comments=comments,
+                )
             )
-        )
+        else:
+            texts.append(
+                symbol_text(
+                    row["name"],
+                    row["signature"],  # may be None
+                    row["docstring"],  # may be None
+                )
+            )
 
     # ── Step 3 + 4: Embed in batches + upsert ─────────────────────────────────
     # All batches run inside a SINGLE outer transaction: if ANY batch fails
