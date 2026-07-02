@@ -10,9 +10,12 @@
  *   lets GraphCanvas stay outside the provider while keeping the viewport logic
  *   clean and unit-testable in isolation.
  *
- * Effect gating via prev-value ref:
- *   Only boolean TRANSITIONS trigger fitView. Stable active=true across re-renders
- *   (e.g. data refreshes, node expansions) never cause spurious jumps.
+ * Effect gating via prev-value refs:
+ *   fitView fires on the boolean activation transition AND on the first render
+ *   where the precise node set becomes available for the current activation
+ *   (impact/trace data arrives ASYNCHRONOUSLY, after the toggle). Later refreshes
+ *   for the same activation (node expansion, data re-fetch) are ignored via the
+ *   `framed` ref so a stable active overlay never causes spurious jumps.
  *
  * "Fit all" escape hatch:
  *   A small button on the canvas lets the user restore the full-graph view at any
@@ -56,6 +59,10 @@ export function ViewportController({
   // Track previous boolean values so we fire only on real transitions.
   const prevImpact = useRef<boolean>(impactActive);
   const prevTrace = useRef<boolean>(traceActive);
+  // Whether the precise node set has already been framed for the CURRENT
+  // activation. Reset when the overlay clears so the next activation reframes
+  // once its (async) data lands.
+  const framed = useRef<boolean>(false);
 
   useEffect(() => {
     const impactChanged = impactActive !== prevImpact.current;
@@ -63,21 +70,35 @@ export function ViewportController({
     prevImpact.current = impactActive;
     prevTrace.current = traceActive;
 
-    // No boolean changed → this is a data refresh or node expansion; do nothing.
-    if (!impactChanged && !traceChanged) return;
+    const active = impactActive || traceActive;
+
+    // Overlay cleared → restore the full-graph view, but only on the clearing
+    // transition (not on later inactive re-renders).
+    if (!active) {
+      if (impactChanged || traceChanged) {
+        framed.current = false;
+        void fitView({ duration: FIT_DURATION_MS, padding: FIT_PADDING });
+      }
+      return;
+    }
 
     const decision = fitDecision(impactActive, traceActive, tierMap, traceNodeNames);
 
-    if (decision.nodeIds.length > 0) {
-      // Fly to the specific node subset (impact blast radius or trace path).
+    // Overlay active but its node set is not available yet (the toggle fired
+    // before impact/trace data resolved). Do nothing now — the data-arrival
+    // render below reframes once tierMap/traceNodeNames populate.
+    if (decision.nodeIds.length === 0) return;
+
+    // Fire on the activation transition OR on the first render where the node
+    // set becomes available for this activation. Skip later refreshes so a
+    // stable active overlay (node expansion, re-fetch) never jumps the viewport.
+    if (impactChanged || traceChanged || !framed.current) {
+      framed.current = true;
       void fitView({
         nodes: decision.nodeIds.map((id) => ({ id })),
         duration: FIT_DURATION_MS,
         padding: FIT_PADDING,
       });
-    } else {
-      // Restoring full-graph view or fitting all (e.g. overlay cleared or data not yet loaded).
-      void fitView({ duration: FIT_DURATION_MS, padding: FIT_PADDING });
     }
   }, [impactActive, traceActive, tierMap, traceNodeNames, fitView]);
 

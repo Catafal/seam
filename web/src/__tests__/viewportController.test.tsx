@@ -157,6 +157,42 @@ describe("ViewportController", () => {
     expect(opts.nodes).toEqual(expect.arrayContaining([expect.objectContaining({ id: "X" })]));
   });
 
+  it("frames the blast radius when impact data arrives AFTER activation (async)", () => {
+    // Real flow: the Impact toggle flips active=true BEFORE the impact query
+    // resolves, so tierMap is empty on the activation render and only populates
+    // one render later. The controller must reframe on that data-arrival render.
+    const { rerender } = render(
+      <ViewportController
+        impactActive={true}
+        traceActive={false}
+        tierMap={new Map()}
+        traceNodeNames={new Set()}
+      />,
+    );
+    // Activation with empty data → no premature fit to an empty/stale set.
+    expect(mockFitView).not.toHaveBeenCalled();
+
+    // Data arrives: same impactActive=true, but tierMap now populated.
+    rerender(
+      <ViewportController
+        impactActive={true}
+        traceActive={false}
+        tierMap={new Map([["A", "WILL_BREAK"], ["B", "MAY_NEED_TESTING"]])}
+        traceNodeNames={new Set()}
+      />,
+    );
+
+    // Now the blast radius must be framed.
+    expect(mockFitView).toHaveBeenCalledTimes(1);
+    const opts = mockFitView.mock.calls[0][0];
+    expect(opts.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "A" }),
+        expect.objectContaining({ id: "B" }),
+      ]),
+    );
+  });
+
   it("does NOT call fitView again when the same overlay state stays active (data refresh)", () => {
     // Simulate a data refresh: same impactActive=true prop but new component render
     const tierMap = new Map([["A", "WILL_BREAK"]]);
