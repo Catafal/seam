@@ -269,7 +269,6 @@ export default function ConstellationTab({
         <ConstellationScene
           nodes={visibleNodes}
           edges={visibleEdges}
-          clusters={data.clusters}
           highlightedIds={highlightedIds}
           cameraTarget={cameraTarget}
           hoveredNode={hoveredNode}
