@@ -445,26 +445,45 @@ function App() {
     [setCenterSymbol],
   );
 
+  // Clicking the "Seam Explorer" brand returns to the landing page: reset the
+  // view to the default neighborhood mode with no centered/selected symbol, and
+  // close any open drawer. This is the app's "home" action.
+  const goHome = useCallback(() => {
+    setMode("neighborhood");
+    setCenterSymbol(null); // also clears the trace target
+    setSelectedSymbol(null);
+    setChangesOpen(false);
+  }, [setCenterSymbol]);
+
   const showGraph = mode === "neighborhood" && centerSymbol;
 
   return (
     <div className="flex flex-col h-full">
       {/* ── Header ─────────────────────────────────────────────────────── */}
       <header className="flex items-center gap-3 px-5 py-3 bg-zinc-900 border-b border-zinc-800 shrink-0">
-        {/* Graph icon */}
-        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-          <circle cx="10" cy="10" r="2.5" fill="#7dd3fc" />
-          <circle cx="3" cy="4" r="2" fill="#a5b4fc" />
-          <circle cx="17" cy="4" r="2" fill="#a5b4fc" />
-          <circle cx="3" cy="16" r="2" fill="#6ee7b7" />
-          <circle cx="17" cy="16" r="2" fill="#6ee7b7" />
-          <line x1="10" y1="10" x2="3" y2="4" stroke="#52525b" strokeWidth="1.5" />
-          <line x1="10" y1="10" x2="17" y2="4" stroke="#52525b" strokeWidth="1.5" />
-          <line x1="10" y1="10" x2="3" y2="16" stroke="#52525b" strokeWidth="1.5" />
-          <line x1="10" y1="10" x2="17" y2="16" stroke="#52525b" strokeWidth="1.5" />
-        </svg>
+        {/* Brand — click to return to the landing page (home action) */}
+        <button
+          type="button"
+          onClick={goHome}
+          aria-label="Seam Explorer — back to home"
+          title="Back to home"
+          className="flex items-center gap-3 rounded-md -mx-1 px-1 py-0.5 hover:opacity-80 transition-opacity cursor-pointer"
+        >
+          {/* Graph icon */}
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+            <circle cx="10" cy="10" r="2.5" fill="#7dd3fc" />
+            <circle cx="3" cy="4" r="2" fill="#a5b4fc" />
+            <circle cx="17" cy="4" r="2" fill="#a5b4fc" />
+            <circle cx="3" cy="16" r="2" fill="#6ee7b7" />
+            <circle cx="17" cy="16" r="2" fill="#6ee7b7" />
+            <line x1="10" y1="10" x2="3" y2="4" stroke="#52525b" strokeWidth="1.5" />
+            <line x1="10" y1="10" x2="17" y2="4" stroke="#52525b" strokeWidth="1.5" />
+            <line x1="10" y1="10" x2="3" y2="16" stroke="#52525b" strokeWidth="1.5" />
+            <line x1="10" y1="10" x2="17" y2="16" stroke="#52525b" strokeWidth="1.5" />
+          </svg>
 
-        <h1 className="text-sm font-semibold tracking-tight text-zinc-100">Seam Explorer</h1>
+          <h1 className="text-sm font-semibold tracking-tight text-zinc-100">Seam Explorer</h1>
+        </button>
 
         {/* Mode toggle: overview ⇄ neighborhood */}
         <HeaderToggle
