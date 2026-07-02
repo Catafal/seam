@@ -12,6 +12,7 @@
 
 import { useChanges } from "../api/hooks";
 import type { ChangedSymbol } from "../api/schema-types";
+import { filterCodeFiles } from "../lib/codeFileFilter";
 import { X, GitBranch } from "lucide-react";
 
 /** Risk level → badge classes. Covers the engine's rollup vocabulary. */
@@ -107,7 +108,11 @@ export function ChangesDrawer({ open, onClose, onSelectSymbol }: ChangesDrawerPr
       )}
 
       {/* Data */}
-      {data && (
+      {data && (() => {
+        // Filter to code files only — non-indexed files (docs, configs, logs) have no
+        // symbols in the graph and produce misleading entries in the drawer.
+        const codeSymbols = filterCodeFiles(data.changed_symbols);
+        return (
         <div className="flex-1">
           {data.ambiguous_warning && (
             <p className="text-[10px] text-amber-400/80 px-4 py-2 border-b border-zinc-800/60">
@@ -115,17 +120,17 @@ export function ChangesDrawer({ open, onClose, onSelectSymbol }: ChangesDrawerPr
             </p>
           )}
 
-          {data.changed_symbols.length === 0 && data.new_files.length === 0 ? (
+          {codeSymbols.length === 0 && data.new_files.length === 0 ? (
             <p className="text-xs text-zinc-500 p-4">No changes in the working tree.</p>
           ) : (
             <>
-              {data.changed_symbols.length > 0 && (
+              {codeSymbols.length > 0 && (
                 <section>
                   <h3 className="text-[10px] font-semibold uppercase tracking-widest text-zinc-600 px-3 pt-3 pb-1">
-                    Changed symbols ({data.changed_symbols.length})
+                    Changed symbols ({codeSymbols.length})
                   </h3>
                   <ul className="divide-y divide-zinc-900">
-                    {data.changed_symbols.map((s, i) => (
+                    {codeSymbols.map((s, i) => (
                       <ChangedRow key={`${s.name}:${s.file}:${i}`} sym={s} onSelect={onSelectSymbol} />
                     ))}
                   </ul>
@@ -155,7 +160,8 @@ export function ChangesDrawer({ open, onClose, onSelectSymbol }: ChangesDrawerPr
             </>
           )}
         </div>
-      )}
+        );
+      })()}
     </aside>
   );
 }
