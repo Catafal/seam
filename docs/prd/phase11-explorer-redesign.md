@@ -125,11 +125,12 @@ principle de-noises landing, treemap sizing, and clusters simultaneously.
 ## Phased Delivery (linear; each phase = its own PR via the audit→PRD→issues→build→review→docs
 pipeline, in a worktree off main)
 
-- **Phase A — Truth & de-noise** (low risk; dimension-independent):
+- **Phase A — Truth & de-noise** (low risk; dimension-independent): [delivered — PR #228]
   degree-based + test-excluded ranking (hubs/clusters/treemap sizing) with `show_tests`
   toggle; treemap prefix-strip + single-child collapse; empty-symbol graceful state; Changes
   hides non-code files; stopgap constellation blob-stop (delete `ClusterHalos`).
-- **Phase B — Landing, areas, snippet:** search-first landing with degree-ranked entry
+- **Phase B — Landing, areas, snippet:** [delivered — PRs #231–#234]
+  search-first landing with degree-ranked entry
   points (drop cluster cards); one folder-based areas concept on landing + Overview; treemap
   cell area = degree + single color signal; code-snippet panel in Symbol view.
 - **Phase C — Constellation redesign (both):** fixed legible 3D (degree-size, additive edges,

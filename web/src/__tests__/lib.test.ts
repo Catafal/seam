@@ -159,10 +159,10 @@ import type { StructureSymbol } from "../api/schema-types";
 
 describe("buildTree", () => {
   const symbols: StructureSymbol[] = [
-    { path: "seam/indexer/db.py", name: "init_db", kind: "function", line: 1, qualified_name: "init_db" },
-    { path: "seam/indexer/db.py", name: "upsert_file", kind: "function", line: 9, qualified_name: "upsert_file" },
-    { path: "seam/analysis/clustering.py", name: "Louvain", kind: "class", line: 1, qualified_name: "Louvain" },
-    { path: "seam/analysis/clustering.py", name: "detect", kind: "method", line: 5, qualified_name: "Louvain.detect" },
+    { path: "seam/indexer/db.py", name: "init_db", kind: "function", line: 1, qualified_name: "init_db", degree: 0 },
+    { path: "seam/indexer/db.py", name: "upsert_file", kind: "function", line: 9, qualified_name: "upsert_file", degree: 0 },
+    { path: "seam/analysis/clustering.py", name: "Louvain", kind: "class", line: 1, qualified_name: "Louvain", degree: 0 },
+    { path: "seam/analysis/clustering.py", name: "detect", kind: "method", line: 5, qualified_name: "Louvain.detect", degree: 0 },
   ];
 
   it("nests folders → files → symbols", () => {
@@ -247,6 +247,7 @@ describe("deriveAreas", () => {
     kind,
     line: 1,
     qualified_name: name,
+    degree: 0,
   });
 
   // pkg dominates (6 of 7 non-test symbols) and has sub-dirs → unwraps.

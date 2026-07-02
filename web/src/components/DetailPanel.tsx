@@ -7,6 +7,7 @@
  *   - All definitions (file:line), to handle homonyms
  *   - Signature from the first definition (wraps cleanly)
  *   - Docstring from the first definition (clamped with show-more for long text)
+ *   - Source section (B4) — indexed source via useSnippet, collapsible
  *   - WHY/HACK/NOTE/TODO/FIXME comments (with kind badge)
  *   - Callers grouped by edge kind with clickable rows (S3)
  *   - Callees grouped by edge kind with clickable rows (S3)
@@ -22,6 +23,14 @@
  *   - Per-group cap (GROUP_CAP=5) with a "show N more" expander
  *   - Docstring clamped at DOCSTRING_CHAR_LIMIT with a show-more toggle
  *
+ * B4 additions:
+ *   - Source section fed by useSnippet(buildSnippetSelector(symbol, firstDef))
+ *   - Collapsed by default; toggle to expand/collapse
+ *   - Renders source in a bounded max-height <pre> (no syntax-highlight dep)
+ *   - Truncation note when SnippetResponse.truncated is set
+ *   - Amber freshness note when freshness.index_stale OR !file_hash_matches
+ *   - Clear empty states: not-found, ambiguous, and reason/message cases
+ *
  * States:
  *   - selectedSymbol=null → empty-state placeholder ("Select a node…")
  *   - isLoading          → loading indicator
@@ -30,9 +39,10 @@
 
 import { useState, useCallback } from "react";
 import { clusterColor } from "../lib/clusterColor";
-import { useSymbol, useClusters } from "../api/hooks";
+import { useSymbol, useClusters, useSnippet } from "../api/hooks";
+import { buildSnippetSelector } from "../lib/buildSnippetSelector";
 import { ClusterLegend } from "./ClusterLegend";
-import type { SymbolDefinition, WhyComment, CallerRef } from "../api/schema-types";
+import type { SymbolDefinition, WhyComment, CallerRef, SnippetResponse } from "../api/schema-types";
 
 // ── Layout constants ──────────────────────────────────────────────────────────
 
@@ -312,6 +322,105 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
+// ── B4: Source section ─────────────────────────────────────────────────────────
+
+interface SourceSectionProps {
+  /** Resolved snippet payload from useSnippet (undefined while loading). */
+  snippet: SnippetResponse | undefined;
+  /** True while the snippet query is still in-flight. */
+  isLoading: boolean;
+}
+
+/**
+ * Collapsible Source section that shows the indexed source for the selected
+ * symbol. Collapsed by default so it does not push callers/callees off screen
+ * on hub symbols with long implementations.
+ *
+ * WHY a dedicated sub-component: isolates all snippet-rendering logic and
+ * empty-state copy so the main DetailPanel stays readable.
+ */
+function SourceSection({ snippet, isLoading }: SourceSectionProps) {
+  const [expanded, setExpanded] = useState(false);
+
+  const isStale =
+    snippet?.freshness != null &&
+    (snippet.freshness.index_stale || !snippet.freshness.file_hash_matches);
+
+  const truncation = snippet?.truncated ?? null;
+
+  return (
+    <section>
+      {/* ── Collapsible header toggle ──────────────────────────────────── */}
+      <button
+        onClick={() => setExpanded((e) => !e)}
+        aria-expanded={expanded}
+        className="flex items-center gap-1 w-full text-left mb-1 group"
+      >
+        <h3 className="text-[10px] font-semibold uppercase tracking-widest text-zinc-600 group-hover:text-zinc-400 transition-colors">
+          Source
+        </h3>
+        {/* Chevron indicator — down when collapsed, up when expanded */}
+        <span className="text-[9px] text-zinc-700 group-hover:text-zinc-500">
+          {expanded ? "▲" : "▼"}
+        </span>
+      </button>
+
+      {expanded && (
+        <div className="space-y-1">
+          {/* Amber freshness note — shown when index or file is stale */}
+          {isStale && (
+            <p className="text-[10px] text-amber-400 leading-snug">
+              Source may not match disk — re-run <code className="font-mono">seam sync</code> to refresh.
+            </p>
+          )}
+
+          {/* Loading state */}
+          {isLoading && (
+            <p className="text-[11px] text-zinc-500 animate-pulse">Loading source…</p>
+          )}
+
+          {/* Resolved: found */}
+          {!isLoading && snippet?.found && snippet.source != null && (
+            <>
+              {truncation && (
+                <p className="text-[10px] text-zinc-500 leading-snug">
+                  showing {truncation.returned_line_count} of {truncation.original_line_count} lines
+                </p>
+              )}
+              {/* Plain monospaced source — no syntax-highlight dep (mirrors signature <pre>) */}
+              <pre className="text-[10px] text-zinc-300 font-mono whitespace-pre overflow-x-auto leading-snug bg-zinc-900 border border-zinc-800 rounded px-2 py-1.5 max-h-64 overflow-y-auto">
+                {snippet.source}
+              </pre>
+            </>
+          )}
+
+          {/* Resolved: not found — ambiguous case */}
+          {!isLoading && snippet && !snippet.found && snippet.ambiguous && (
+            <p className="text-[11px] text-zinc-500 leading-snug">
+              Several definitions match — pick one from Definitions above.
+            </p>
+          )}
+
+          {/* Resolved: not found — with human-readable message/reason */}
+          {!isLoading && snippet && !snippet.found && !snippet.ambiguous && (snippet.message || snippet.reason) && (
+            <p className="text-[11px] text-zinc-500 leading-snug">
+              {snippet.message ?? snippet.reason}
+            </p>
+          )}
+
+          {/* Resolved: not found — generic fallback */}
+          {!isLoading && snippet && !snippet.found && !snippet.ambiguous && !snippet.message && !snippet.reason && (
+            <p className="text-[11px] text-zinc-500 leading-snug">
+              No indexed source for this symbol. Try re-running{" "}
+              <code className="font-mono text-zinc-400">seam init</code>.
+            </p>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export interface DetailPanelProps {
@@ -340,6 +449,16 @@ export function DetailPanel({ selectedSymbol, width, onNavigate }: DetailPanelPr
   const { data, isLoading } = useSymbol(selectedSymbol);
   // useClusters is always-enabled (TanStack Query caches it from the landing page call)
   const { data: clusters } = useClusters();
+
+  // B4: Snippet for the Source section — built from the first definition
+  // to match exactly what the panel is displaying (homonym-safe).
+  // enabled only when a symbol is selected (the panel only mounts then).
+  const firstDefForSnippet = data?.definitions[0] ?? null;
+  const snippetSelector = buildSnippetSelector(selectedSymbol, firstDefForSnippet);
+  const { data: snippet, isLoading: snippetLoading } = useSnippet(
+    snippetSelector ?? {},
+    snippetSelector !== undefined,
+  );
 
   // Stable no-op when onNavigate is not provided — avoids null checks in CallerRow
   const handleNavigate = useCallback(
@@ -446,6 +565,11 @@ export function DetailPanel({ selectedSymbol, width, onNavigate }: DetailPanelPr
         {firstDef?.docstring && (
           <DocstringSection text={firstDef.docstring} />
         )}
+
+        {/* ── Source section (B4) — indexed source, collapsible ─────────
+            Placed below signature/docstring so the most-readable metadata
+            (signature + docstring) is always visible above the fold. */}
+        <SourceSection snippet={snippet} isLoading={snippetLoading} />
 
         {/* ── Definitions (all — homonym support) ───────────────────────── */}
         <section>

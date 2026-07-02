@@ -595,7 +595,7 @@ def test_list_structure_returns_path_and_nesting(tmp_db: tuple[sqlite3.Connectio
     names = {r["name"] for r in rows}
     assert {"Widget", "render"} <= names
     for r in rows:
-        assert set(r.keys()) == {"path", "name", "kind", "line", "qualified_name"}
+        assert set(r.keys()) == {"path", "name", "kind", "line", "qualified_name", "degree"}
         assert r["path"] == a
 
 
@@ -605,3 +605,129 @@ def test_list_structure_empty_db_safe(tmp_db: tuple[sqlite3.Connection, Path]) -
     from seam.server.graph_api import list_structure
 
     assert list_structure(conn) == []
+
+
+# ── list_structure degree (B2) ────────────────────────────────────────────────
+
+
+def test_list_structure_degree_incoming(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """B2: degree = COUNT of edges pointing TO the symbol (fan-in / incoming only).
+
+    A symbol with N incoming edges returns degree==N. An isolated symbol (no
+    edges) and a symbol that only has OUTGOING edges both return degree==0.
+    """
+    from seam.server.graph_api import list_structure
+
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    # Target receives 2 incoming edges; Caller1 and Caller2 send 1 each (degree=0 for them).
+    # Isolated has no edges at all (degree=0).
+    upsert_file(
+        conn,
+        Path(a),
+        "python",
+        "h1",
+        [
+            _sym("Target", a, kind="function"),
+            _sym("Caller1", a, kind="function"),
+            _sym("Caller2", a, kind="function"),
+            _sym("Isolated", a, kind="function"),
+        ],
+        [
+            _edge("Caller1", "Target", a),
+            _edge("Caller2", "Target", a),
+        ],
+    )
+
+    rows = list_structure(conn)
+    by_name = {r["name"]: r for r in rows}
+
+    # Target: 2 incoming edges
+    assert by_name["Target"]["degree"] == 2
+    # Callers only have OUTGOING edges; their fan-in is 0
+    assert by_name["Caller1"]["degree"] == 0
+    assert by_name["Caller2"]["degree"] == 0
+    # Isolated: no edges in either direction
+    assert by_name["Isolated"]["degree"] == 0
+
+
+def test_list_structure_degree_method_bare_target(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """B3 fix: a method symbol ('Class.method') counts BARE-target inbound edges.
+
+    Methods are stored under their qualified name 'Class.method', but call edges
+    frequently store the bare target 'method' (un-inferable receiver). Fan-in must
+    match both the qualified name AND its bare trailing identifier, otherwise method
+    degree is systematically undercounted (~0) and the treemap signal is biased.
+    """
+    from seam.server.graph_api import list_structure
+
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    # 'Widget.render' is the qualified method symbol. Two callers reach it via a BARE
+    # 'render' target (the common un-inferable case) and one via the qualified form.
+    upsert_file(
+        conn,
+        Path(a),
+        "python",
+        "h1",
+        [
+            _sym("Widget.render", a, kind="method"),
+            _sym("caller_a", a, kind="function"),
+            _sym("caller_b", a, kind="function"),
+            _sym("caller_c", a, kind="function"),
+        ],
+        [
+            _edge("caller_a", "render", a),          # bare target
+            _edge("caller_b", "render", a),          # bare target
+            _edge("caller_c", "Widget.render", a),   # qualified target
+        ],
+    )
+
+    rows = list_structure(conn)
+    by_name = {r["name"]: r for r in rows}
+
+    # 2 bare-target + 1 qualified-target inbound = degree 3 (previously it was 1,
+    # dropping the two bare-target callers).
+    assert by_name["Widget.render"]["degree"] == 3
+
+
+def test_list_structure_degree_toplevel_not_double_counted(
+    tmp_db: tuple[sqlite3.Connection, Path],
+) -> None:
+    """B3 fix: a bare-named top-level function (bare == full) is counted ONCE.
+
+    The bare-name bridge must not add the same bucket twice when the stored name has
+    no dot — otherwise every function's degree would double.
+    """
+    from seam.server.graph_api import list_structure
+
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    upsert_file(
+        conn,
+        Path(a),
+        "python",
+        "h1",
+        [_sym("helper", a, kind="function"), _sym("c1", a), _sym("c2", a)],
+        [_edge("c1", "helper", a), _edge("c2", "helper", a)],
+    )
+
+    rows = list_structure(conn)
+    by_name = {r["name"]: r for r in rows}
+    # 2 inbound edges → degree 2, not 4.
+    assert by_name["helper"]["degree"] == 2
+
+
+def test_list_structure_degree_field_present(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """B2: every row carries a 'degree' key (additive — key always present)."""
+    from seam.server.graph_api import list_structure
+
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    upsert_file(conn, Path(a), "python", "h1", [_sym("Widget", a, kind="class")], [])
+
+    rows = list_structure(conn)
+    assert rows, "expected at least one row"
+    for r in rows:
+        assert "degree" in r, "every row must carry the 'degree' field"
+        assert isinstance(r["degree"], int), "degree must be an int"

@@ -681,7 +681,8 @@ def test_structure_happy_path(client: TestClient) -> None:
     names = [s["name"] for s in data["symbols"]]
     assert "authenticate_user" in names
     for s in data["symbols"]:
-        assert set(s.keys()) == {"path", "name", "kind", "line", "qualified_name"}
+        # B2 (#232) added an additive fan-in `degree` field to each structure row.
+        assert set(s.keys()) == {"path", "name", "kind", "line", "qualified_name", "degree"}
         assert not s["path"].startswith("/")  # relativized
 
 

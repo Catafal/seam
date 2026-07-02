@@ -47,6 +47,7 @@ import sqlite3
 from typing import Any
 
 from seam.analysis.testpaths import is_test_file as _is_test_file
+from seam.query.names import bare_name as _bare_name
 from seam.query.names import edge_match_names as _edge_match_names
 
 
@@ -444,37 +445,85 @@ def list_structure(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     Flat by design: the frontend builds the folder → file → class → method tree and
     the treemap from this list (one cheap query here; all hierarchy logic client-side).
 
-    Returns [{path, name, kind, line, qualified_name}] (absolute path — the web route
-    relativizes it). Ordered by path then symbol id for stable tree construction.
-    Empty list on any DB error. NEVER raises.
+    B2: `degree` = fan-in / incoming edge count (edges pointing TO the symbol).
+
+    WHY fan-in (incoming) only, not total degree: the treemap answers "what is
+    load-bearing — what should I understand before changing anything?" That is
+    fan-in (how many callers depend on this symbol). A high-fan-out orchestrator
+    that calls hundreds of helpers would masquerade as load-bearing under total
+    degree; with fan-in only, it scores low and the deeply-depended-on leaves
+    surface first. This also keeps the treemap consistent with Phase A's hub
+    ranking (`top_hub_symbols` uses the same fan-in metric), so the map and the
+    hub list always tell the same story.
+
+    Name-matching bridges the qualified/bare asymmetry (the same asymmetry Tier A's
+    ``edge_match_names`` bridges at read time): a method symbol is stored under its
+    QUALIFIED name ``Class.method`` (see graph_python ``_make_symbol(qualified, …)``),
+    but call edges frequently store the BARE target ``method`` (only Tier-B
+    type-inferred receivers emit a qualified ``Class.method`` target). Matching only on
+    ``s.name`` would therefore systematically undercount methods — dropping every
+    bare-target inbound call and biasing the treemap's size/color signal against
+    methods (the most numerous leaf kind) and in favor of classes/functions (which are
+    stored under bare names and DO match bare targets).
+
+    Fan-in for a symbol is counted as the number of edges whose ``target_name`` is
+    EITHER the symbol's full stored name OR — for qualified names only — its bare
+    trailing identifier. A degree map keyed by ``target_name`` is built in one scan of
+    the edges table, then joined in Python. Because bare names collapse homonyms, a
+    bare ``method`` edge is attributed to every ``Class.method`` sharing that name —
+    the same documented homonym-collapse limitation the rest of the edge graph carries;
+    this is an approximate visual signal, not blast-radius analysis. Top-level
+    functions (bare == full name) are counted once — never double-counted.
+
+    Returns [{path, name, kind, line, qualified_name, degree}] (absolute path —
+    the web route relativizes it). Ordered by path then symbol id for stable tree
+    construction. Empty list on any DB error. NEVER raises.
     """
     try:
         rows = conn.execute(
             """
             SELECT
-                f.path          AS path,
-                s.name          AS name,
-                s.kind          AS kind,
-                s.start_line    AS line,
+                f.path           AS path,
+                s.name           AS name,
+                s.kind           AS kind,
+                s.start_line     AS line,
                 s.qualified_name AS qualified_name
             FROM symbols s
             JOIN files f ON f.id = s.file_id
             ORDER BY f.path, s.id
             """
         ).fetchall()
+        degree_rows = conn.execute(
+            "SELECT target_name, COUNT(*) AS degree FROM edges GROUP BY target_name"
+        ).fetchall()
     except sqlite3.Error:
         return []
 
-    return [
-        {
-            "path": r["path"],
-            "name": r["name"],
-            "kind": r["kind"],
-            "line": r["line"],
-            "qualified_name": r["qualified_name"],
-        }
-        for r in rows
-    ]
+    # Degree keyed by edge target name. Both qualified (Class.method) and bare (method)
+    # target strings appear as keys — an edge stores exactly one of them.
+    degree_by_target: dict[str, int] = {d["target_name"]: d["degree"] for d in degree_rows}
+
+    result: list[dict[str, Any]] = []
+    for r in rows:
+        name = r["name"]
+        # Full-name match (bare-named functions/classes and Tier-B-qualified targets).
+        degree = degree_by_target.get(name, 0)
+        # Bare-name match — ONLY when the stored name is qualified (has a dot), so a
+        # top-level function (bare == full) is never counted twice.
+        bare = _bare_name(name)
+        if bare != name:
+            degree += degree_by_target.get(bare, 0)
+        result.append(
+            {
+                "path": r["path"],
+                "name": name,
+                "kind": r["kind"],
+                "line": r["line"],
+                "qualified_name": r["qualified_name"],
+                "degree": degree,
+            }
+        )
+    return result
 
 
 def fetch_edge_refs(

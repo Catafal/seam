@@ -380,3 +380,25 @@ class ArchitectureResponse(BaseModel):
     warnings: list[SchemaWarning]
     truncation: dict[str, Any]
     next_calls: list[ArchitectureNextCall]
+
+
+class StructureSymbol(BaseModel):
+    """One symbol row for the structure map (flat — the SPA builds the tree).
+
+    B2: `degree` = fan-in / incoming edge count (edges pointing TO this symbol).
+    Computed at read time via an additive LEFT JOIN — no schema change, no re-index.
+    Zero when a symbol has no incoming edges (isolated or outgoing-only).
+    """
+
+    path: str
+    name: str
+    kind: str
+    line: int
+    qualified_name: str | None
+    degree: int
+
+
+class StructureResponse(BaseModel):
+    """Response for GET /api/structure."""
+
+    symbols: list[StructureSymbol]

@@ -51,6 +51,7 @@ const SYMBOLS: StructureSymbol[] = [
     kind: "function",
     line: 1,
     qualified_name: "init_db",
+    degree: 0,
   },
   {
     path: "seam/indexer/db.py",
@@ -58,6 +59,7 @@ const SYMBOLS: StructureSymbol[] = [
     kind: "class",
     line: 10,
     qualified_name: "Db",
+    degree: 0,
   },
   {
     path: "seam/indexer/db.py",
@@ -65,6 +67,7 @@ const SYMBOLS: StructureSymbol[] = [
     kind: "method",
     line: 15,
     qualified_name: "Db.connect",
+    degree: 0,
   },
   {
     path: "seam/analysis/clustering.py",
@@ -72,6 +75,7 @@ const SYMBOLS: StructureSymbol[] = [
     kind: "function",
     line: 1,
     qualified_name: null, // no qualified name → bare name fallback
+    degree: 0,
   },
 ];
 

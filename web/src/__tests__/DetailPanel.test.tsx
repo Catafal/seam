@@ -11,6 +11,7 @@
  *   - cluster info
  *   - loading state while useSymbol is fetching
  *   - null state when no symbol is selected
+ *   - Source section (B4 — snippet panel below signature/docstring)
  *
  * ClusterLegend renders a colour swatch + label for each cluster,
  * reusing clusterColor() from lib/clusterColor.ts.
@@ -22,6 +23,14 @@
  *   - Qualified names show last segment as label; full name in title
  *   - Per-group cap with "show N more" expander
  *   - Docstring clamped with show-more toggle for long text
+ *
+ * B4 additions:
+ *   - Source section fed by useSnippet(buildSnippetSelector(...))
+ *   - Collapsed by default with a toggle button
+ *   - Renders source text inside a bounded <pre>
+ *   - Truncation note when SnippetResponse.truncated is set
+ *   - Amber stale note when freshness.index_stale OR !freshness.file_hash_matches
+ *   - Empty states for not-found, ambiguous, and reason/message cases
  */
 
 import { render, screen, fireEvent } from "@testing-library/react";
@@ -439,6 +448,187 @@ describe("DetailPanel S3 — docstring clamp", () => {
     // "Parse source code into an AST." is short — no show-more button for docstring
     const showMoreButtons = screen.queryAllByRole("button", { name: /show more/i });
     expect(showMoreButtons).toHaveLength(0);
+  });
+});
+
+// ── B4: Source section ────────────────────────────────────────────────────────
+//
+// The Source section is a collapsible panel below signature/docstring that
+// fetches the indexed source via useSnippet(buildSnippetSelector(...)). Tests
+// use a combined fetch stub that routes /api/snippet and /api/symbol separately.
+
+import type { SnippetResponse } from "../api/schema-types";
+
+/** Stub that routes /api/snippet and /api/symbol/{name} to distinct bodies. */
+function stubFetchWithSnippet(
+  symbolBody: SymbolResponse,
+  snippetBody: SnippetResponse,
+) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockImplementation((url: string) => {
+      const s = String(url);
+      let body: unknown;
+      if (s.includes("/api/clusters")) body = { clusters: [] };
+      else if (s.includes("/api/snippet")) body = snippetBody;
+      else body = symbolBody;
+      return Promise.resolve({ ok: true, status: 200, json: async () => body });
+    }),
+  );
+}
+
+const SNIPPET_FOUND: SnippetResponse = {
+  found: true,
+  symbol: "parse",
+  source: "def parse(code: str) -> Tree:\n    return PARSER.parse(code)",
+  candidates: [],
+  warnings: [],
+  freshness: { file_hash_matches: true, mtime_matches: true, index_stale: false },
+  truncated: null,
+};
+
+const SNIPPET_TRUNCATED: SnippetResponse = {
+  found: true,
+  symbol: "parse",
+  source: "def parse(code: str) -> Tree:\n    pass",
+  candidates: [],
+  warnings: [],
+  truncated: {
+    by_lines: true,
+    by_bytes: false,
+    returned_line_count: 2,
+    original_line_count: 50,
+  },
+  freshness: { file_hash_matches: true, mtime_matches: true, index_stale: false },
+};
+
+const SNIPPET_STALE: SnippetResponse = {
+  found: true,
+  symbol: "parse",
+  source: "def parse(code: str) -> Tree:\n    pass",
+  candidates: [],
+  warnings: [],
+  freshness: { file_hash_matches: false, mtime_matches: false, index_stale: true },
+  truncated: null,
+};
+
+const SNIPPET_NOT_FOUND: SnippetResponse = {
+  found: false,
+  candidates: [],
+  warnings: [],
+};
+
+const SNIPPET_AMBIGUOUS: SnippetResponse = {
+  found: false,
+  ambiguous: true,
+  candidates: [],
+  warnings: [],
+};
+
+const SNIPPET_WITH_REASON: SnippetResponse = {
+  found: false,
+  reason: "file_unreadable",
+  message: "Source file is not accessible.",
+  candidates: [],
+  warnings: [],
+};
+
+/** Helper: find and click the Source toggle button to expand it. */
+async function expandSourceSection() {
+  // The Source toggle button contains a "Source" heading text
+  const toggle = await screen.findByRole("button", { name: /source/i });
+  fireEvent.click(toggle);
+}
+
+describe("DetailPanel B4 — Source section: found branch", () => {
+  beforeEach(() => stubFetchWithSnippet(SYMBOL_FIXTURE, SNIPPET_FOUND));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("renders a 'Source' toggle button after data loads", async () => {
+    renderWithQuery(<DetailPanel selectedSymbol="parse" />);
+    await screen.findByRole("heading", { name: "parse" });
+    // The Source toggle button is always visible (collapsed by default)
+    expect(screen.getByRole("button", { name: /source/i })).toBeInTheDocument();
+  });
+
+  it("shows the source code when expanded", async () => {
+    renderWithQuery(<DetailPanel selectedSymbol="parse" />);
+    await screen.findByRole("heading", { name: "parse" });
+    await expandSourceSection();
+    // Source text should appear after expanding
+    await screen.findByText(/PARSER\.parse\(code\)/);
+  });
+
+  it("does NOT show a stale note when freshness is healthy", async () => {
+    renderWithQuery(<DetailPanel selectedSymbol="parse" />);
+    await screen.findByRole("heading", { name: "parse" });
+    await expandSourceSection();
+    await screen.findByText(/PARSER\.parse\(code\)/);
+    expect(screen.queryByText(/may not match disk/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("DetailPanel B4 — Source section: truncation note", () => {
+  beforeEach(() => stubFetchWithSnippet(SYMBOL_FIXTURE, SNIPPET_TRUNCATED));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("shows a 'showing N of M lines' note when the snippet is truncated", async () => {
+    renderWithQuery(<DetailPanel selectedSymbol="parse" />);
+    await screen.findByRole("heading", { name: "parse" });
+    await expandSourceSection();
+    // Should show the truncation note once expanded
+    await screen.findByText(/showing 2 of 50 lines/i);
+  });
+});
+
+describe("DetailPanel B4 — Source section: stale branch", () => {
+  beforeEach(() => stubFetchWithSnippet(SYMBOL_FIXTURE, SNIPPET_STALE));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("shows an amber stale note when index_stale is true", async () => {
+    renderWithQuery(<DetailPanel selectedSymbol="parse" />);
+    await screen.findByRole("heading", { name: "parse" });
+    await expandSourceSection();
+    // Stale note should appear immediately on expand (before fetch resolves)
+    // or after, depending on fetch speed — use findByText to wait.
+    await screen.findByText(/may not match disk/i);
+  });
+});
+
+describe("DetailPanel B4 — Source section: not-found branch", () => {
+  beforeEach(() => stubFetchWithSnippet(SYMBOL_FIXTURE, SNIPPET_NOT_FOUND));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("shows a not-found message with a hint to re-run seam init", async () => {
+    renderWithQuery(<DetailPanel selectedSymbol="parse" />);
+    await screen.findByRole("heading", { name: "parse" });
+    await expandSourceSection();
+    await screen.findByText(/no indexed source/i);
+    expect(screen.getByText(/seam init/i)).toBeInTheDocument();
+  });
+});
+
+describe("DetailPanel B4 — Source section: ambiguous branch", () => {
+  beforeEach(() => stubFetchWithSnippet(SYMBOL_FIXTURE, SNIPPET_AMBIGUOUS));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("shows an ambiguous message directing the user to Definitions", async () => {
+    renderWithQuery(<DetailPanel selectedSymbol="parse" />);
+    await screen.findByRole("heading", { name: "parse" });
+    await expandSourceSection();
+    await screen.findByText(/several definitions match/i);
+  });
+});
+
+describe("DetailPanel B4 — Source section: reason/message branch", () => {
+  beforeEach(() => stubFetchWithSnippet(SYMBOL_FIXTURE, SNIPPET_WITH_REASON));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("surfaces the human-readable message when reason is present", async () => {
+    renderWithQuery(<DetailPanel selectedSymbol="parse" />);
+    await screen.findByRole("heading", { name: "parse" });
+    await expandSourceSection();
+    await screen.findByText(/source file is not accessible/i);
   });
 });
 

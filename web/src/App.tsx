@@ -24,9 +24,9 @@ import { ChangesDrawer } from "./components/ChangesDrawer";
 import { StructureOverview } from "./components/StructureOverview";
 import { FileSidebar } from "./components/FileSidebar";
 import { ResizeHandle, clampPanelWidth, readPanelWidth } from "./components/ResizeHandle";
-import { useStatus, useSearch, useClusters, useHubs } from "./api/hooks";
-import type { ClusterItem, SearchResultItem, HubSymbol } from "./api/schema-types";
-import { clusterColor } from "./lib/clusterColor";
+import { useStatus, useSearch, useHubs, useAreas } from "./api/hooks";
+import type { SearchResultItem, HubSymbol } from "./api/schema-types";
+import type { Area } from "./lib/deriveAreas";
 import { GitBranch, Orbit, Network, Route } from "lucide-react";
 
 // ── 2D detail-panel resize constants ─────────────────────────────────────────
@@ -265,38 +265,41 @@ const LANDING_HUBS = 10;
 const LANDING_AREAS = 12;
 
 interface LandingPageProps {
-  /** Center the graph on a symbol name (used by both hub chips and area chips). */
+  /** Center the graph on a symbol name (used by hub chips). */
   onSelect: (name: string) => void;
-  /** Switch to the whole-repo Overview (structure treemap) view. */
+  /** Switch to the whole-repo Overview (structure treemap) view, no area pre-selected. */
   onOpenOverview: () => void;
+  /**
+   * B1: open the Overview pre-drilled into a specific folder-based area.
+   * Called when the user clicks a landing area card.
+   */
+  onOpenScopedOverview: (area: Area) => void;
 }
 
 /**
  * Landing empty-state shown when no center symbol is set.
  *
- * WHY this replaced the old flat 498-cluster wall: dumping every cluster as a
- * grid (named after files like `unit/test_impact`) was unreadable and confusing.
- * Instead we lead SEARCH-FIRST with a SMALL curated set of entry points — the
- * repo's hub symbols (highest-degree) and its largest functional areas — and
- * send the full map to the Overview tab: graph/search first, not a giant list.
+ * B1: "Largest areas" now comes from folder-based deriveAreas (via useAreas),
+ * replacing the old cluster-based list.  "Area" means the same thing on every
+ * screen — one concept, one hook, no drift. useClusters is NOT called here any
+ * more; the DetailPanel cluster legend still uses it from its own component.
  */
-function LandingPage({ onSelect, onOpenOverview }: LandingPageProps) {
-  // WHY local state for showTests: toggling triggers a re-fetch (cache key changes
-  // in useHubs) without any global state change — the toggle is scoped to the landing.
+function LandingPage({ onSelect, onOpenOverview, onOpenScopedOverview }: LandingPageProps) {
+  // WHY local state for showTests: toggling triggers a fresh derive without any
+  // global state change — the toggle is scoped to the landing section.
   const [showTests, setShowTests] = useState(false);
 
   const { data: hubs, isLoading: hubsLoading } = useHubs(LANDING_HUBS, showTests);
-  const { data: clusters, isError } = useClusters();
+  // B1: areas from the same hook the Overview uses — one derivation site.
+  const { areas, isLoading: areasLoading } = useAreas({ includeTests: showTests });
 
-  // Largest functional areas: sort clusters by size desc, take the top N.
-  // The rest are reachable via the Overview map (no more endless scroll).
-  const topAreas = (clusters ?? [])
-    .slice()
-    .sort((a, b) => b.size - a.size)
-    .slice(0, LANDING_AREAS);
+  const topAreas = areas.slice(0, LANDING_AREAS);
 
   const nothingIndexed =
-    !hubsLoading && (hubs?.length ?? 0) === 0 && (clusters?.length ?? 0) === 0;
+    !hubsLoading &&
+    !areasLoading &&
+    (hubs?.length ?? 0) === 0 &&
+    areas.length === 0;
 
   return (
     <div className="w-full h-full overflow-y-auto">
@@ -315,7 +318,8 @@ function LandingPage({ onSelect, onOpenOverview }: LandingPageProps) {
           </p>
         )}
 
-        {/* Key symbols — highest-degree hubs (the things everything touches) */}
+        {/* Key symbols — highest-degree hubs (the things everything touches).
+            Single toggle controls both hubs AND areas (same showTests state). */}
         {(hubs?.length ?? 0) > 0 && (
           <section className="w-full">
             <div className="flex items-baseline justify-between mb-2">
@@ -323,7 +327,8 @@ function LandingPage({ onSelect, onOpenOverview }: LandingPageProps) {
                 Key symbols
               </h3>
               {/* A1: toggle to re-include test-path symbols. Default is off because
-                  test helpers pollute the hub list with non-production entry points. */}
+                  test helpers pollute the hub list with non-production entry points.
+                  B1: also controls the areas section — one toggle, one concept. */}
               <button
                 onClick={() => setShowTests((prev) => !prev)}
                 aria-pressed={showTests}
@@ -355,8 +360,9 @@ function LandingPage({ onSelect, onOpenOverview }: LandingPageProps) {
           </section>
         )}
 
-        {/* Largest areas — top clusters by size; full map lives in Overview */}
-        {(isError || topAreas.length > 0) && (
+        {/* Largest areas — folder-based (B1); full treemap in Overview.
+            Clicking a card enters the Overview pre-drilled to that area. */}
+        {topAreas.length > 0 && (
           <section className="w-full">
             <div className="flex items-baseline justify-between mb-2">
               <h3 className="text-[10px] font-semibold uppercase tracking-widest text-zinc-600">
@@ -373,35 +379,26 @@ function LandingPage({ onSelect, onOpenOverview }: LandingPageProps) {
               className="grid gap-2"
               style={{ gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))" }}
             >
-              {topAreas.map((c: ClusterItem) => {
-                const colour = clusterColor(c.cluster_id);
-                return (
-                  <button
-                    key={c.cluster_id}
-                    // Center on a representative MEMBER symbol — a cluster is not a
-                    // symbol, so centering on its label/id opens an empty graph.
-                    onClick={() =>
-                      onSelect(c.representative ?? c.label ?? String(c.cluster_id))
-                    }
-                    className="flex items-center gap-2.5 px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-md hover:border-zinc-500 hover:bg-zinc-800 transition-colors text-left"
-                    aria-label={`Explore area ${c.label ?? c.cluster_id}`}
-                  >
-                    {colour && (
-                      <div
-                        className="w-2 h-2 rounded-full shrink-0"
-                        style={{ backgroundColor: colour }}
-                        aria-hidden="true"
-                      />
-                    )}
-                    <div className="flex flex-col min-w-0">
-                      <span className="text-xs font-semibold text-zinc-200 truncate">
-                        {c.label ?? `cluster-${c.cluster_id}`}
-                      </span>
-                      <span className="text-[10px] text-zinc-500">{c.size} symbols</span>
-                    </div>
-                  </button>
-                );
-              })}
+              {topAreas.map((a: Area) => (
+                <button
+                  key={a.key}
+                  onClick={() => onOpenScopedOverview(a)}
+                  className="flex flex-col gap-1 px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-md hover:border-zinc-500 hover:bg-zinc-800 transition-colors text-left"
+                  aria-label={`Explore area ${a.name}`}
+                >
+                  <span className="text-xs font-semibold text-zinc-200 truncate">
+                    {a.name}
+                  </span>
+                  <span className="text-[10px] text-zinc-500">
+                    {a.fileCount} files · {a.symbolCount} symbols
+                  </span>
+                  {a.keySymbols.length > 0 && (
+                    <span className="text-[10px] text-zinc-600 truncate">
+                      {a.keySymbols.join(", ")}
+                    </span>
+                  )}
+                </button>
+              ))}
             </div>
           </section>
         )}
@@ -461,6 +458,9 @@ function App() {
   const [mode, setMode] = useState<ViewMode>("neighborhood");
   // focusSymbol: shared between 2D and 3D views for cross-tab navigation
   const [focusSymbol, setFocusSymbol] = useState<string | null>(null);
+  // B1: preselectedArea — set when a landing area card is clicked; cleared when
+  // opening overview from the header so the area-cards list shows first.
+  const [preselectedArea, setPreselectedArea] = useState<Area | null>(null);
 
   // detailW: 2D detail-panel width in px, persisted to localStorage.
   // Initialized from localStorage so the user's last drag position survives reloads.
@@ -515,6 +515,12 @@ function App() {
     [setCenterSymbol],
   );
 
+  // B1: open the Overview pre-drilled into the given area (landing card click).
+  const handleOpenScopedOverview = useCallback((area: Area) => {
+    setPreselectedArea(area);
+    setMode("overview");
+  }, []);
+
   // Clicking the "Seam Explorer" brand returns to the landing page: reset the
   // view to the default neighborhood mode with no centered/selected symbol, and
   // close any open drawer. This is the app's "home" action.
@@ -523,6 +529,7 @@ function App() {
     setCenterSymbol(null); // also clears the trace target
     setSelectedSymbol(null);
     setChangesOpen(false);
+    setPreselectedArea(null);
   }, [setCenterSymbol]);
 
   const showGraph = mode === "neighborhood" && centerSymbol;
@@ -555,10 +562,17 @@ function App() {
           <h1 className="text-sm font-semibold tracking-tight text-zinc-100">Seam Explorer</h1>
         </button>
 
-        {/* Mode toggle: overview ⇄ neighborhood */}
+        {/* Mode toggle: overview ⇄ neighborhood.
+            B1: when switching TO overview via the header (not from a landing card),
+            reset preselectedArea so the full area-cards list shows first. */}
         <HeaderToggle
           active={mode === "overview"}
-          onClick={() => setMode((m) => (m === "overview" ? "neighborhood" : "overview"))}
+          onClick={() =>
+            setMode((m) => {
+              if (m !== "overview") setPreselectedArea(null); // entering overview fresh
+              return m === "overview" ? "neighborhood" : "overview";
+            })
+          }
           icon={mode === "overview" ? <Network className="w-3.5 h-3.5" /> : <Orbit className="w-3.5 h-3.5" />}
           label={mode === "overview" ? "Neighborhood" : "Overview"}
         />
@@ -665,7 +679,13 @@ function App() {
               style={{ minWidth: CANVAS_MIN_W }}
             >
               {mode === "overview" ? (
-                <StructureOverview onSelectSymbol={handleOpenFromOverview} />
+                // B1: pass initialArea so a landing card click pre-drills the treemap.
+                // StructureOverview remounts on mode change, so initialArea is the
+                // useState initial value — correctly consumed once on mount.
+                <StructureOverview
+                  onSelectSymbol={handleOpenFromOverview}
+                  initialArea={preselectedArea}
+                />
               ) : showGraph ? (
                 <GraphCanvas
                   center={centerSymbol!}
@@ -675,7 +695,11 @@ function App() {
               ) : (
                 <LandingPage
                   onSelect={setCenterSymbol}
-                  onOpenOverview={() => setMode("overview")}
+                  onOpenOverview={() => {
+                    setPreselectedArea(null);
+                    setMode("overview");
+                  }}
+                  onOpenScopedOverview={handleOpenScopedOverview}
                 />
               )}
             </div>
