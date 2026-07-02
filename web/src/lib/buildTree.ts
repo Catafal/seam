@@ -46,6 +46,13 @@ export interface TreeNode {
   qualifiedName?: string | null;
   /** Total symbols beneath (sizes the treemap rectangle). */
   count: number;
+  /**
+   * Rolled-up fan-in degree for the treemap's one signal (B3).
+   * Symbol/class: own degree; class also sums method degrees.
+   * File/dir: sum of children's degree. Use max(degree, 1) at the sizing site
+   * so zero-degree nodes still get a floor-size cell (never hidden).
+   */
+  degree: number;
   children: TreeNode[];
 }
 
@@ -72,6 +79,7 @@ function buildFileSymbols(symbols: StructureSymbol[]): TreeNode[] {
         line: s.line,
         qualifiedName: s.qualified_name,
         count: 1,
+        degree: s.degree ?? 0,
         children: [],
       };
       classes.set(s.name, node);
@@ -90,6 +98,7 @@ function buildFileSymbols(symbols: StructureSymbol[]): TreeNode[] {
       line: s.line,
       qualifiedName: s.qualified_name,
       count: 1,
+      degree: s.degree ?? 0,
       children: [],
     };
     const owner = s.kind === "method" ? methodOwner(s.qualified_name) : null;
@@ -195,6 +204,27 @@ function rollupCounts(node: TreeNode): number {
 }
 
 /**
+ * Recursively assign degree = fan-in degree beneath (B3).
+ *
+ * - symbol leaf: own degree (set from StructureSymbol at build time).
+ * - class node: own degree + sum of child method degrees.
+ * - file/dir node: sum of children's degree (structural nodes contribute 0 self).
+ *
+ * Mirrors rollupCounts; called immediately after rollupCounts in buildTree().
+ * The treemap sizing site uses max(node.degree, 1) so zero-degree nodes still
+ * get a floor-size cell and are never hidden.
+ */
+function rollupDegree(node: TreeNode): number {
+  // class and symbol nodes carry their own degree from the StructureSymbol.
+  // For dir/file nodes the self-degree is 0 (they are structural, not symbols).
+  const self =
+    node.nodeKind === "class" || node.nodeKind === "symbol" ? node.degree : 0;
+  const childSum = node.children.reduce((s, c) => s + rollupDegree(c), 0);
+  node.degree = self + childSum;
+  return node.degree;
+}
+
+/**
  * Build the full structural tree from a flat symbol list.
  *
  * Returns a root "dir" node. Folder nesting comes from the file path; within a
@@ -212,7 +242,7 @@ export function buildTree(
   rootName = "root",
   stripPrefix = "",
 ): TreeNode {
-  const root: TreeNode = { name: rootName, nodeKind: "dir", count: 0, children: [] };
+  const root: TreeNode = { name: rootName, nodeKind: "dir", count: 0, degree: 0, children: [] };
   if (symbols.length === 0) return root;
 
   // Normalize the prefix to end with "/" for consistent string slicing.
@@ -248,7 +278,7 @@ export function buildTree(
         (c) => c.nodeKind === "dir" && c.name === dir,
       );
       if (!child) {
-        child = { name: dir, nodeKind: "dir", count: 0, children: [] };
+        child = { name: dir, nodeKind: "dir", count: 0, degree: 0, children: [] };
         cursor.children.push(child);
       }
       cursor = child;
@@ -261,11 +291,13 @@ export function buildTree(
       nodeKind: "file",
       path,
       count: 0,
+      degree: 0,
       children: buildFileSymbols(fileSymbols),
     });
   }
 
   rollupCounts(root);
+  rollupDegree(root);
 
   // When a prefix was stripped, also collapse any residual single-child dir chains.
   // flattenSingleChild(root) processes root's children (not the root itself), so

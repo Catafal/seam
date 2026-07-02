@@ -75,10 +75,10 @@ describe("commonDirPrefix", () => {
 describe("flattenSingleChild", () => {
   /** Quick TreeNode factory for dir/file nodes. */
   function dir(name: string, ...kids: TreeNode[]): TreeNode {
-    return { name, nodeKind: "dir", count: kids.length, children: kids };
+    return { name, nodeKind: "dir", count: kids.length, degree: 0, children: kids };
   }
   function file(name: string): TreeNode {
-    return { name, nodeKind: "file", path: name, count: 0, children: [] };
+    return { name, nodeKind: "file", path: name, count: 0, degree: 0, children: [] };
   }
 
   it("collapses a single-child dir chain into one merged node", () => {
@@ -124,6 +124,7 @@ describe("flattenSingleChild", () => {
       name: "myFunc",
       nodeKind: "symbol",
       count: 1,
+      degree: 0,
       children: [],
     };
     expect(flattenSingleChild(sym)).toBe(sym); // identity — no mutation

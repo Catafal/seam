@@ -322,6 +322,50 @@ API field (`degree` on the structure rows) is the only backend change.
 
 **Gate status:** 387 frontend vitest tests passed, frontend typecheck clean, build green.
 
+## B3 implementation notes
+
+**Slice:** Treemap degree sizing + color (issue #233).
+**Gate status:** 423 frontend vitest tests passed (34 test files), typecheck clean, build green.
+
+### What changed
+
+- **`web/src/lib/degreeColor.ts` (new pure leaf):** `degreeColor(degree, maxDegree) → "#rrggbb"`.
+  - Sequential ramp: cool zinc floor `#3f3f46` (zinc-700) → hot amber ceiling `#f59e0b` (amber-500).
+  - Linear RGB interpolation via `t = clamp(degree, 0, maxDegree) / maxDegree`.
+  - Guard: `maxDegree <= 0` returns the cool floor (no divide-by-zero).
+  - Clamping: `degree > maxDegree` → same as ceiling; `degree < 0` → same as floor.
+  - Deterministic and pure (no IO, no state). 9 unit tests in `web/src/__tests__/degreeColor.test.ts`.
+
+- **`web/src/lib/buildTree.ts`:**
+  - `TreeNode` gains a `degree: number` field (mirrors the existing `count` field).
+  - `buildFileSymbols` now reads `s.degree ?? 0` from each `StructureSymbol` and stores it on class and symbol nodes.
+  - All `TreeNode` literal constructions (root dir, dir chain nodes, file nodes) initialize `degree: 0`.
+  - New `rollupDegree(node): number` function (mirrors `rollupCounts`): symbol/class self-degree is kept; class sums own + children's degrees; dir/file sum children only. Called immediately after `rollupCounts` in `buildTree()`.
+  - `flattenSingleChild` carries `degree` through unchanged because it spreads the existing node shape.
+
+- **`web/src/components/TreemapCanvas.tsx`:**
+  - Removed `hashColor` and the `PALETTE`/`getClusterPalette` import — retired for degree sizing/coloring (as specified).
+  - Squarify `value` changed from `Math.max(c.count, 0)` to `Math.max(c.degree, 1)`: zero-degree symbols still get a floor-size cell and are never dropped.
+  - `maxDegree` computed via `useMemo` as `reduce(max, 0)` over `current.children` (the currently visible level).
+  - Cell `backgroundColor` = `degreeColor(node.degree, maxDegree)` at full opacity for leaves; `${cellColor}40` (25% opacity) for containers (dirs/files/classes with children) so nesting structure remains visible.
+  - `border` color also uses `cellColor` (consistent signal).
+  - Cell `title` tooltip shows `fan-in degree: N` in addition to symbol count.
+  - Small degree annotation in the label area: `↙N` when degree > 0, `·` when zero.
+  - New `DegreeLegend` sub-component: a horizontal cool → hot gradient strip with "low fan-in" and "high fan-in (N)" labels. Rendered below the canvas (above nothing) when `maxDegree > 0`; hidden when everything is zero-degree (clean empty state).
+
+- **`web/src/__tests__/buildTree.test.ts`:** Added `degree: 0` to `dir()` and `file()` factory helpers and to the inline `TreeNode` literal in the `flattenSingleChild` suite (TypeScript now requires the field).
+
+- **`web/src/__tests__/degreeColor.test.ts` (new):** 9 unit tests: valid hex output, maxDegree=0 guard, floor/ceiling values, monotonicity, clamping, determinism.
+
+- **`web/src/__tests__/rollupDegree.test.ts` (new):** 9 unit tests via `buildTree`: symbol leaf, zero-degree symbol, class sums methods, zero-method class, file sum, dir sum, deep nesting, root total, all-zero tree.
+
+### Decisions
+
+- **`max(degree, 1)` at the sizing site, not at rollup:** The PRD specifies "floor size via max(node.degree, 1) at the sizing site." `rollupDegree` stores the real degree (including 0) so callers can distinguish truly isolated code from the floor cell. The floor is applied only in the squarify `value` expression.
+- **maxDegree from currently-visible children only (not the whole tree):** Using the local level's max instead of the root's max makes the ramp use the full scale at every drill level — a drilled-in view of a low-coupling subdir would otherwise show every cell as "cool" because the root max is much higher. Local scaling gives the developer the most readable signal at each level.
+- **25% opacity for containers:** Containers (dirs, files, classes with children) get `${cellColor}40` so the user can still see folder structure from the color but leaves (which the developer actually cares about) read at full saturation. This keeps the nesting hierarchy legible.
+- **`hashColor` fully removed from `TreemapCanvas`:** The function and its `PALETTE`/`getClusterPalette` imports are gone — they were the only consumer of those in this file. `getClusterPalette` is still imported in other components (SymbolNode, etc.) so the module itself is not deleted.
+
 ## B4 implementation notes
 
 **Slice:** Source snippet panel (issue #234).
