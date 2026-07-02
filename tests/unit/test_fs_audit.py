@@ -10,6 +10,8 @@ on it without re-validating the helper itself.
 
 from pathlib import Path
 
+import pytest
+
 from tests.support.fs_audit import (
     FsChanges,
     diff,
@@ -206,3 +208,50 @@ def test_diff_empty_snapshots_no_changes(tmp_path: Path) -> None:
     assert changes.created == set()
     assert changes.modified == set()
     assert changes.deleted == set()
+
+
+# ── Sentinel (unreadable-file safety) ─────────────────────────────────────────
+
+
+def test_snapshot_unreadable_file_appears_as_modified_not_dropped(tmp_path: Path) -> None:
+    """A file that becomes unreadable between snapshots appears in 'modified', not silently dropped.
+
+    WHY this matters: if an unreadable file were silently absent from the 'after' snapshot
+    it would appear in 'deleted' (or not at all), and a stray write that happened to also
+    revoke permissions would slip past the guard.  The sentinel contract says: the file is
+    ALWAYS represented — with a sentinel digest that differs from any real digest — so it
+    surfaces in 'modified', making the anomaly visible.
+    """
+    f = tmp_path / "secret.txt"
+    f.write_bytes(b"readable content")
+    before = snapshot([tmp_path])
+
+    # Make the file unreadable
+    f.chmod(0o000)
+    try:
+        can_read = True
+        try:
+            f.read_bytes()
+        except PermissionError:
+            can_read = False
+
+        if can_read:
+            # Running as root: chmod 0o000 doesn't restrict root reads — skip.
+            pytest.skip("Running as root; permission test is not meaningful")
+
+        after = snapshot([tmp_path])
+    finally:
+        # Restore so pytest can clean up tmp_path
+        f.chmod(0o644)
+
+    changes = diff(before, after)
+
+    key = str(f.resolve())
+    # Must appear in 'modified' (before: real digest; after: sentinel) — NOT in 'deleted'
+    assert key in changes.modified, (
+        "An unreadable file should appear in 'modified' via the sentinel digest, "
+        "not be silently absent from the snapshot"
+    )
+    assert key not in changes.deleted, (
+        "An unreadable file that still exists on disk must NOT appear in 'deleted'"
+    )

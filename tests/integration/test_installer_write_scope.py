@@ -54,7 +54,7 @@ import json
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
 
 from seam.cli.main import app
 from tests.support.fs_audit import FsChanges, diff, snapshot
@@ -84,7 +84,7 @@ def _setup_dirs(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     return root, home, sibling, canary
 
 
-def _invoke_and_diff(tmp_path: Path, cli_args: list[str]) -> tuple[object, FsChanges]:
+def _invoke_and_diff(tmp_path: Path, cli_args: list[str]) -> tuple[Result, FsChanges]:
     """Snapshot tmp_path-wide, run CLI, snapshot again, return (result, changes)."""
     before = snapshot([tmp_path])
     result = runner.invoke(app, cli_args)
@@ -632,3 +632,29 @@ def test_foreign_content_codex_preserved(
     )
 
     _assert_no_tmp(tmp_path)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Meta-tests: verify the guard helpers themselves are load-bearing
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_assert_safe_raises_on_stray_write() -> None:
+    """Negative meta-test: _assert_safe raises AssertionError for a path outside root∪home.
+
+    A guard that never fires is worthless — this confirms the sensitive-path
+    check is real and would catch any stray write outside the declared scope.
+    """
+    fake_root = Path("/tmp/fake_root_scope_guard_test")
+    fake_home = Path("/tmp/fake_home_scope_guard_test")
+
+    # Stray path is not under fake_root or fake_home — the guard must reject it.
+    stray_changes = FsChanges(
+        created={"/tmp/completely_elsewhere/stray_write.txt"},
+        modified=set(),
+        deleted=set(),
+    )
+
+    with pytest.raises(AssertionError, match="STRAY WRITE"):
+        # canary arg is never reached because the stray-path assert fires first
+        _assert_safe(stray_changes, fake_root, fake_home, Path("/unreachable/canary.txt"))

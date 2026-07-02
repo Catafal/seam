@@ -41,7 +41,7 @@ from pathlib import Path
 _UNREADABLE_SENTINEL = "UNREADABLE FILE (permission or OS error)"
 
 
-def snapshot(roots: "list[Path] | tuple[Path, ...]") -> "dict[str, str]":
+def snapshot(roots: list[Path] | tuple[Path, ...]) -> dict[str, str]:
     """Walk *roots* and return a mapping {absolute_path_str: sha256_hex}.
 
     Args:
@@ -93,12 +93,12 @@ class FsChanges:
         deleted:  Paths present in *before* but not in *after*.
     """
 
-    created: "set[str]"
-    modified: "set[str]"
-    deleted: "set[str]"
+    created: set[str]
+    modified: set[str]
+    deleted: set[str]
 
 
-def diff(before: "dict[str, str]", after: "dict[str, str]") -> FsChanges:
+def diff(before: dict[str, str], after: dict[str, str]) -> FsChanges:
     """Compute the difference between two snapshots produced by :func:`snapshot`.
 
     Args:
