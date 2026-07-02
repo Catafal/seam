@@ -57,10 +57,10 @@ from seam.server.tools import (
 )
 from seam.server.web_architecture import register_architecture_routes
 from seam.server.web_graph_search import register_graph_search_routes
+from seam.server.web_layout import register_layout_routes
 from seam.server.web_schema import SchemaResponse, SnippetResponse
 
 # Keep field names snake_case — the TS codegen will use them verbatim.
-
 
 class StatusResponse(BaseModel):
     """Response for GET /api/status."""
@@ -516,7 +516,7 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
     )
     register_graph_search_routes(app, db_path=db_path, root=root)
     register_architecture_routes(app, db_path=db_path, root=root)
-
+    register_layout_routes(app, db_path=db_path, root=root)
     # ── Route: GET /api/schema ────────────────────────────────────────────────
 
     @app.get("/api/schema", response_model=SchemaResponse, tags=["schema"])

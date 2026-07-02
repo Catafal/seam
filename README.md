@@ -280,7 +280,24 @@ seam serve         # opens http://127.0.0.1:7420
 seam serve --no-open --port 8000
 ```
 
-A React + TypeScript SPA (React Flow) served by FastAPI. Nothing leaves the machine. Features: command-palette search, a depth-1 caller/callee card-canvas with confidence-styled edges including HTTP calls and static test edges, lazy expand, a detail panel, an impact overlay that paints blast radius by risk tier, a trace-path highlighter, a git-changes drawer, a schema/architecture read API, and a whole-repo cluster constellation. Explorer routes reuse the **same handlers** that power the CLI/MCP tools — a third transport, no query logic duplicated.
+A React + TypeScript SPA (React Flow) served by FastAPI. Nothing leaves the machine. Features: command-palette search, a depth-1 caller/callee card-canvas with confidence-styled edges including HTTP calls and static test edges, lazy expand, a detail panel, an impact overlay that paints blast radius by risk tier, a trace-path highlighter, a git-changes drawer, a schema/architecture read API, a whole-repo cluster constellation, and a **3D Constellation Explorer** tab. Explorer routes reuse the **same handlers** that power the CLI/MCP tools — a third transport, no query logic duplicated.
+
+### 3D Constellation Explorer tab
+
+The Constellation tab renders the entire indexed graph as an interactive star field:
+
+- **Nodes** are spheres sized and colored by degree and symbol kind (red dwarf → blue giant stellar scale). Hub classes appear as large blue/white spheres; isolated helpers are small red dots.
+- **Edges** are additive-blended line segments color-coded by kind (teal = call, blue = import, purple = extends, cyan = holds, green = reads, red = writes, amber = uses).
+- **Cluster halos** are faint translucent spheres marking the spatial extent of each Louvain functional area. Click any node to fly the camera there and open a detail panel with neighbors.
+- **Filters** (left panel): show/hide node kinds and edge kinds. **HUD** (top-left): visible counts, max-nodes slider.
+
+The layout is computed server-side (ForceAtlas2 + ring seeds in numpy) and cached per index version, so the browser tab always loads pre-positioned positions with no client-side simulation cost. Positions are deterministic — the same index always produces the same layout.
+
+```bash
+pip install 'seam-code[web]'
+seam init          # index first
+seam serve         # opens http://127.0.0.1:7420 → click the "Constellation" tab
+```
 
 ---
 

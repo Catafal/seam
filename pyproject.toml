@@ -49,7 +49,7 @@ server = ["mcp>=1.0.0"]
 # Web explorer is OPTIONAL — `pip install 'seam-code[web]'` adds the `seam serve` HTTP
 # server + React SPA. FastAPI brings Starlette + Pydantic, but NOT the ASGI server —
 # uvicorn must be listed explicitly or `seam serve` exits with "uvicorn is not installed".
-web = ["fastapi>=0.110", "uvicorn>=0.30"]
+web = ["fastapi>=0.110", "uvicorn>=0.30", "numpy>=1.26"]
 # Semantic (embedding-based) search is OPTIONAL — `pip install 'seam-code[semantic]'`
 # adds local vector search via quantized ONNX on CPU (no torch, ~67MB model download).
 # Requires `seam init --semantic` to build the embeddings table before use.
