@@ -70,6 +70,10 @@ dev = [
     # fastapi here so integration tests (TestClient) run without needing --extra web.
     # End-users who only want the CLI get neither mcp nor fastapi.
     "fastapi>=0.110",
+    # numpy here so the constellation-layout tests (tests/unit/test_layout.py,
+    # tests/integration/test_web_api.py) collect without --extra web. numpy stays a
+    # [web] RUNTIME extra — the base CLI install never imports it (only web_layout does).
+    "numpy>=1.26",
     "pytest>=8.0.0",
     "pytest-cov>=5.0.0",
     "ruff>=0.4.0",
