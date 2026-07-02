@@ -1,5 +1,5 @@
 /**
- * FilterBar — toggle which edge kinds and confidence tiers are shown on the canvas.
+ * FilterBar — toggle which node kinds, edge kinds, and confidence tiers are shown.
  *
  * Issue #191 (S6a) upgrades:
  *   - All / None controls per group (select-all / clear-all in one click)
@@ -9,7 +9,12 @@
  *   - 6 phantom edge kinds removed from the kind list (the 9 real kinds only)
  *   - Scrollable-column layout when the horizontal strip overflows the viewport
  *
- * Purely visual: toggling drives a client-side `hidden` flag on edges (no refetch).
+ * Issue #192 (S6b) adds:
+ *   - Node-kind filter group with 6 symbol kinds, colored dots, per-kind counts,
+ *     and All/None controls. Node-kind filtering sets the React Flow `hidden` flag
+ *     via useGraphOverlays/applyNodeKindFilter (handled upstream in GraphCanvas).
+ *
+ * Purely visual: toggling drives a client-side `hidden` flag (no refetch).
  * Controlled component: state + handlers are owned by GraphCanvas.
  */
 
@@ -18,14 +23,15 @@ import {
   ALL_CONFIDENCES,
   type EdgeFilterState,
 } from "../lib/edgeFilter";
-import { EDGE_TYPE_COLORS, DEFAULT_EDGE_COLOR } from "../lib/constellationColors";
+import { ALL_NODE_KINDS } from "../lib/graphFilterState";
+import { EDGE_TYPE_COLORS, DEFAULT_EDGE_COLOR, KIND_COLORS, DEFAULT_KIND_COLOR } from "../lib/constellationColors";
 
 // ── Props ─────────────────────────────────────────────────────────────────────
 
 export interface FilterBarProps {
   /** Current filter state (which kinds + confidences are enabled). */
   filter: EdgeFilterState;
-  /** Toggle a single kind or confidence value on/off. */
+  /** Toggle a single edge kind or confidence value on/off. */
   onToggle: (field: "kinds" | "confidences", value: string) => void;
   /** Select all edge kinds. */
   onAllKinds: () => void;
@@ -46,6 +52,22 @@ export interface FilterBarProps {
    * Same semantics as kindCounts.
    */
   confidenceCounts: Record<string, number>;
+
+  // ── S6b node-kind props ─────────────────────────────────────────────────────
+
+  /** Which node kinds are currently enabled (drives canvas hidden flag). */
+  nodeKindFilter: Set<string>;
+  /** Toggle a single node kind on/off. */
+  onToggleNodeKind: (kind: string) => void;
+  /** Enable all node kinds. */
+  onAllNodeKinds: () => void;
+  /** Disable all node kinds. */
+  onNoneNodeKinds: () => void;
+  /**
+   * Per-node-kind counts from the BASE neighborhood (unfiltered corpus count).
+   * Chips show the raw count so users know what is hidden, not what is visible.
+   */
+  nodeCounts: Record<string, number>;
 }
 
 // ── All/None control ──────────────────────────────────────────────────────────
@@ -70,6 +92,53 @@ function AllNone({ onAll, onNone }: { onAll: () => void; onNone: () => void }) {
         none
       </button>
     </span>
+  );
+}
+
+// ── Node-kind pill (colored dot + count) ─────────────────────────────────────
+
+/**
+ * A single node-kind toggle pill with a colored dot (matching the symbol color
+ * from KIND_COLORS) and a corpus-count badge.
+ */
+function NodeKindPill({
+  kind,
+  active,
+  count,
+  onClick,
+}: {
+  kind: string;
+  active: boolean;
+  count: number;
+  onClick: () => void;
+}) {
+  const color = KIND_COLORS[kind] ?? DEFAULT_KIND_COLOR;
+  return (
+    <button
+      onClick={onClick}
+      aria-pressed={active}
+      className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors ${
+        active
+          ? "bg-zinc-700 text-zinc-100"
+          : "bg-zinc-900 text-zinc-600 line-through"
+      }`}
+      title={`${kind} — ${count} in graph`}
+    >
+      {/* Colored dot matching the symbol kind color */}
+      <span
+        className="inline-block w-1.5 h-1.5 rounded-full flex-shrink-0"
+        style={{ backgroundColor: active ? color : "#52525b" }}
+        aria-hidden="true"
+      />
+      {kind}
+      {count > 0 && (
+        <span
+          className={`text-[9px] ${active ? "text-zinc-400" : "text-zinc-700"}`}
+        >
+          {count}
+        </span>
+      )}
+    </button>
   );
 }
 
@@ -159,14 +228,16 @@ function ConfPill({
 // ── FilterBar ─────────────────────────────────────────────────────────────────
 
 /**
- * Renders kind and confidence filter controls in a responsive strip.
+ * Renders node-kind, edge-kind, and confidence filter controls in a panel.
  *
- * When the strip would overflow the viewport (many options), it shifts to a
- * scrollable-column layout (flex-col + overflow-y-auto) matching the 3D
- * FilterPanel pattern so content stays accessible on narrow viewports.
+ * Node-kind section (S6b): 6 symbol kinds with colored dots, corpus-count badges,
+ * and All/None controls. Toggling sets the React Flow `hidden` flag via upstream
+ * applyNodeKindFilter — no canvas refetch.
  *
- * Counts come from the post-overlay displayEdges (visible/non-hidden subset)
- * so they reflect the current impact/trace overlay state.
+ * Edge-kind and confidence sections are unchanged from S6a.
+ *
+ * When the panel would overflow the viewport it shifts to a scrollable layout
+ * matching the 3D FilterPanel pattern.
  */
 export function FilterBar({
   filter,
@@ -177,6 +248,11 @@ export function FilterBar({
   onNoneConfidences,
   kindCounts,
   confidenceCounts,
+  nodeKindFilter,
+  onToggleNodeKind,
+  onAllNodeKinds,
+  onNoneNodeKinds,
+  nodeCounts,
 }: FilterBarProps) {
   return (
     <div
@@ -186,13 +262,36 @@ export function FilterBar({
         px-2 py-2 backdrop-blur-sm
         max-h-[60vh] overflow-y-auto
       "
-      aria-label="Edge filter"
+      aria-label="Graph filter"
     >
-      {/* ── Kind group ─────────────────────────────────────────────────────── */}
+      {/* ── Node-kind group (S6b) ─────────────────────────────────────────── */}
       <div className="flex flex-col gap-1">
         <div className="flex items-center justify-between">
           <span className="text-[9px] text-zinc-500 uppercase tracking-wider">
-            kind
+            nodes
+          </span>
+          <AllNone onAll={onAllNodeKinds} onNone={onNoneNodeKinds} />
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {ALL_NODE_KINDS.map((k) => (
+            <NodeKindPill
+              key={k}
+              kind={k}
+              active={nodeKindFilter.has(k)}
+              count={nodeCounts[k] ?? 0}
+              onClick={() => onToggleNodeKind(k)}
+            />
+          ))}
+        </div>
+      </div>
+
+      <div className="w-full h-px bg-zinc-800" />
+
+      {/* ── Edge-kind group ───────────────────────────────────────────────── */}
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center justify-between">
+          <span className="text-[9px] text-zinc-500 uppercase tracking-wider">
+            edges
           </span>
           <AllNone onAll={onAllKinds} onNone={onNoneKinds} />
         </div>

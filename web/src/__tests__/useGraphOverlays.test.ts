@@ -11,6 +11,7 @@ import {
   buildOffCanvasNodes,
   decorateEdges,
   visibleClusters,
+  applyNodeKindFilter,
 } from "../hooks/useGraphOverlays";
 import { defaultEdgeFilter, toggleFilterValue } from "../lib/edgeFilter";
 import type { SymbolNodeData } from "../components/SymbolNode";
@@ -153,6 +154,52 @@ describe("decorateEdges", () => {
     const offPath = result.find((e) => e.id === "b->c")!;
     expect(onPath.animated).toBe(true);
     expect((offPath.style as Record<string, unknown>)?.opacity).toBe(0.15);
+  });
+});
+
+// ── applyNodeKindFilter ───────────────────────────────────────────────────────
+
+describe("applyNodeKindFilter", () => {
+  it("hides nodes whose kind is not in the enabled set", () => {
+    const nodes = [
+      makeNode("a", { kind: "function" }),
+      makeNode("b", { kind: "class" }),
+      makeNode("c", { kind: "method" }),
+    ];
+    const result = applyNodeKindFilter(nodes, new Set(["function"]));
+    expect(result.find((n) => n.id === "a")!.hidden).toBe(false);
+    expect(result.find((n) => n.id === "b")!.hidden).toBe(true);
+    expect(result.find((n) => n.id === "c")!.hidden).toBe(true);
+  });
+
+  it("shows all nodes when all kinds are enabled", () => {
+    const nodes = [
+      makeNode("a", { kind: "function" }),
+      makeNode("b", { kind: "class" }),
+    ];
+    const result = applyNodeKindFilter(nodes, new Set(["function", "class", "method"]));
+    for (const n of result) {
+      expect(n.hidden).toBe(false);
+    }
+  });
+
+  it("hides all nodes when enabled set is empty", () => {
+    const nodes = [makeNode("a", { kind: "function" }), makeNode("b", { kind: "class" })];
+    const result = applyNodeKindFilter(nodes, new Set());
+    for (const n of result) {
+      expect(n.hidden).toBe(true);
+    }
+  });
+
+  it("does not mutate the original nodes", () => {
+    const node = makeNode("x", { kind: "function" });
+    applyNodeKindFilter([node], new Set());
+    // original should not have hidden set
+    expect(node.hidden).toBeUndefined();
+  });
+
+  it("returns an empty array unchanged", () => {
+    expect(applyNodeKindFilter([], new Set(["function"]))).toHaveLength(0);
   });
 });
 

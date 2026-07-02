@@ -53,10 +53,16 @@ import { Legend } from "./Legend";
 import { FilterBar } from "./FilterBar";
 import { GraphHUD } from "./GraphHUD";
 import {
-  defaultEdgeFilter,
   toggleFilterValue,
-  type EdgeFilterState,
 } from "../lib/edgeFilter";
+import {
+  loadGraphFilter,
+  saveGraphFilter,
+  toggleNodeKind,
+  allNodeKinds,
+  noneNodeKinds,
+  type GraphFilterState,
+} from "../lib/graphFilterState";
 import { useGraphOverlays } from "../hooks/useGraphOverlays";
 import { computeHudCounts } from "../lib/hudCounts";
 import {
@@ -210,7 +216,9 @@ export interface GraphCanvasProps {
 
 export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvasProps) {
   const [expandTarget, setExpandTarget] = useState<string | null>(null);
-  const [filter, setFilter] = useState<EdgeFilterState>(defaultEdgeFilter());
+  // Filter state is initialized from localStorage so preferences persist across
+  // page reloads. It is NOT reset on center change (session-global by design).
+  const [filter, setFilter] = useState<GraphFilterState>(() => loadGraphFilter());
   const [impactActive, setImpactActive] = useState(false);
   // The node the user last clicked — impact analyses THIS (falls back to center),
   // so "click a node → Impact" shows that node's blast radius, not the center's.
@@ -226,6 +234,9 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
 
   const [nodes, setNodes, onNodesChange] = useNodesState<SymbolRFNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+
+  // Persist filter to localStorage whenever it changes.
+  useEffect(() => { saveGraphFilter(filter); }, [filter]);
 
   // Rebuild canvas + reset overlays when the center changes.
   useEffect(() => {
@@ -258,6 +269,7 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
     traceTarget,
     traceData,
     filter,
+    enabledNodeKinds: filter.nodeKinds,
   });
 
   // ── Filter counts from post-overlay edges (updates after impact/trace) ──────
@@ -270,6 +282,17 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
     () => countVisibleEdgesByConfidence(displayEdges),
     [displayEdges],
   );
+
+  // ── Node-kind counts (from base nodes before filtering) ───────────────────
+  // Count each kind in the raw neighborhood (pre-filter) so chips show corpus size.
+  const nodeCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const n of nodes) {
+      const k = n.data.kind ?? "";
+      if (k) counts[k] = (counts[k] ?? 0) + 1;
+    }
+    return counts;
+  }, [nodes]);
 
   // ── Handlers ──────────────────────────────────────────────────────────────
   const handleNodeClick: NodeMouseHandler<SymbolRFNode> = useCallback(
@@ -285,7 +308,9 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
   );
   const handleToggleFilter = useCallback(
     (field: "kinds" | "confidences", value: string) =>
-      setFilter((f) => toggleFilterValue(f, field, value)),
+      // toggleFilterValue returns EdgeFilterState; cast is safe because the
+      // spread preserves nodeKinds from the GraphFilterState input.
+      setFilter((f) => toggleFilterValue(f, field, value) as GraphFilterState),
     [],
   );
   // Select-all: enable every kind / confidence tier.
@@ -304,6 +329,20 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
   );
   const handleNoneConfidences = useCallback(
     () => setFilter((f) => ({ ...f, confidences: new Set<string>() })),
+    [],
+  );
+
+  // ── Node-kind filter handlers ─────────────────────────────────────────────
+  const handleToggleNodeKind = useCallback(
+    (kind: string) => setFilter((f) => toggleNodeKind(f, kind)),
+    [],
+  );
+  const handleAllNodeKinds = useCallback(
+    () => setFilter((f) => allNodeKinds(f)),
+    [],
+  );
+  const handleNoneNodeKinds = useCallback(
+    () => setFilter((f) => noneNodeKinds(f)),
     [],
   );
 
@@ -366,6 +405,11 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
               onNoneConfidences={handleNoneConfidences}
               kindCounts={kindCounts}
               confidenceCounts={confidenceCounts}
+              nodeKindFilter={filter.nodeKinds}
+              onToggleNodeKind={handleToggleNodeKind}
+              onAllNodeKinds={handleAllNodeKinds}
+              onNoneNodeKinds={handleNoneNodeKinds}
+              nodeCounts={nodeCounts}
             />
           </div>
         </Panel>

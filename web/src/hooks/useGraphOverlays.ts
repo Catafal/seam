@@ -2,9 +2,9 @@
  * useGraphOverlays — overlay-decoration logic for the GraphCanvas.
  *
  * Extracts the pure decoration functions (decorateNodes, buildOffCanvasNodes,
- * decorateEdges, visibleClusters) and wires them into useMemo calls. Consumers
- * receive ready-to-render displayNodes + displayEdges without knowing the
- * derivation details.
+ * decorateEdges, visibleClusters, applyNodeKindFilter) and wires them into
+ * useMemo calls. Consumers receive ready-to-render displayNodes + displayEdges
+ * without knowing the derivation details.
  *
  * WHY a hook instead of plain functions in GraphCanvas: GraphCanvas was
  * approaching the 1000-line limit. Extracting overlays keeps each file focused
@@ -12,6 +12,10 @@
  *
  * All pure functions are exported so unit tests can verify them in isolation
  * without needing React or a test renderer.
+ *
+ * S6b (issue #192): applyNodeKindFilter added — sets the React Flow `hidden`
+ * flag on nodes whose kind is not in the enabled set, after impact/trace
+ * decoration (overlay dimming and kind-hiding are independent).
  */
 
 import { useMemo } from "react";
@@ -146,6 +150,29 @@ export function visibleClusters(nodes: SymbolRFNode[]): LegendCluster[] {
   return [...seen.values()];
 }
 
+/**
+ * Apply node-kind visibility: set the React Flow `hidden` flag on nodes whose
+ * kind is not in enabledKinds.
+ *
+ * WHY a separate function from decorateNodes: node-kind filtering is independent
+ * of impact/trace overlay dimming. Separating them lets each be toggled and
+ * tested independently. Applied AFTER decorateNodes so impact/trace dimming
+ * logic is unaffected.
+ *
+ * Pure — no React state, no hooks. Exported for vitest.
+ */
+export function applyNodeKindFilter(
+  nodes: SymbolRFNode[],
+  enabledKinds: Set<string>,
+): SymbolRFNode[] {
+  return nodes.map((n) => ({
+    ...n,
+    // A node is hidden when its kind is not in the enabled set.
+    // Empty enabledKinds → all nodes hidden; full set → none hidden.
+    hidden: !enabledKinds.has(n.data.kind ?? ""),
+  }));
+}
+
 // ── Hook ───────────────────────────────────────────────────────────────────────
 
 export interface GraphOverlayInputs {
@@ -157,6 +184,8 @@ export interface GraphOverlayInputs {
   traceTarget: string | null | undefined;
   traceData: TraceResponse | undefined;
   filter: EdgeFilterState;
+  /** Which node kinds are currently visible — drives applyNodeKindFilter. */
+  enabledNodeKinds: Set<string>;
 }
 
 export interface GraphOverlays {
@@ -188,6 +217,7 @@ export function useGraphOverlays({
   traceTarget,
   traceData,
   filter,
+  enabledNodeKinds,
 }: GraphOverlayInputs): GraphOverlays {
   // Collapse the full impact result into a name→tier map (most-severe tier wins).
   const tierMap = useMemo(
@@ -213,8 +243,10 @@ export function useGraphOverlays({
     // Impacted symbols that are NOT depth-1 neighbors → faint appended cards.
     const baseIds = new Set(nodes.map((n) => n.id));
     const offCanvasNames = [...tierMap.keys()].filter((name) => !baseIds.has(name));
-    return [...decorated, ...buildOffCanvasNodes(offCanvasNames, tierMap, nodes)];
-  }, [nodes, tierMap, impactActive, impactTarget, traceHL]);
+    const withOffCanvas = [...decorated, ...buildOffCanvasNodes(offCanvasNames, tierMap, nodes)];
+    // Apply node-kind visibility AFTER overlay decoration (dimming and hiding are independent).
+    return applyNodeKindFilter(withOffCanvas, enabledNodeKinds);
+  }, [nodes, tierMap, impactActive, impactTarget, traceHL, enabledNodeKinds]);
 
   const displayEdges = useMemo(
     () => decorateEdges(edges, filter, traceHL.active, traceHL.edgeKeys),
