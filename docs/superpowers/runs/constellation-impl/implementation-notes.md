@@ -132,3 +132,62 @@
 
 - The THREE.WARNING in tests is benign but could be resolved by mocking `three` in the test setup. Low priority.
 - S3 (visual layer: ClusterHalos, NodeLabels, NodeTooltip) and S4 (UI shell: FilterPanel, HUD, DetailPanel) are the next slices.
+
+---
+
+## 2026-07-02 — Slice S3: EdgeLines, NodeLabels, NodeTooltip (issue #171)
+
+### What was built
+
+**web/src/components/EdgeLines.tsx** — standalone edge rendering component:
+- Pure `buildEdgeGeometry(nodeMap, edges, highlightedIds) → {positions, colors}` (exported for testing)
+- `EdgeLines` React component: `<lineSegments>` with `AdditiveBlending`, `depthWrite=false`, `toneMapped=false`
+- Intensity table: both-highlighted=0.5, one-highlighted=0.04, same-cluster=0.25, cross-cluster=0.06, dimmed=0 (skipped)
+
+**web/src/components/NodeLabels.tsx** — sprite labels for prominent nodes:
+- Pure `bareName(qualified) → string` — strips container prefix after last dot (exported for testing)
+- Pure `selectLabelNodes(nodes, cap=80) → LayoutNode[]` — top-cap by size DESC (exported for testing)
+- `NodeLabels` component: renders canvas-sprite `<LabelSprite>` per selected node; when highlight active, shows only highlighted nodes
+- `LabelSprite`: creates `THREE.CanvasTexture` on mount via `document.createElement("canvas")`, disposes on cleanup
+
+**web/src/components/NodeTooltip.tsx** — hover glass-card tooltip:
+- Uses `@react-three/drei <Html>` for 3D→screen projection, `pointerEvents:"none"`
+- Shows: KIND_COLORS dot, bareName (bold), full qualified name (if different), kind label, file basename
+- `distanceFactor={600}` keeps tooltip size consistent regardless of zoom level
+
+**web/src/components/ConstellationScene.tsx** — updated:
+- Removed duplicate `buildEdgeGeometry` and internal `EdgeLines` (extracted to standalone files)
+- Imports `EdgeLines` from `./EdgeLines`, `NodeLabels` from `./NodeLabels`, `NodeTooltip` from `./NodeTooltip`
+- Added `hoveredNode?: LayoutNode | null` prop; mounts `<NodeTooltip>` only when hoveredNode is set
+- Mounts `<NodeLabels>` inside the Canvas
+
+**web/src/components/ConstellationTab.tsx** — updated:
+- Passes `hoveredNode={hoveredNode}` to `ConstellationScene`
+- Removed the old inline S2 placeholder tooltip div
+
+### Key decisions
+
+**buildEdgeGeometry placement:** The plan said to "extract" `buildEdgeGeometry` from `ConstellationScene.tsx`. S2 had put it inline there. S3 moved it to the standalone `EdgeLines.tsx` where it belongs, making it independently testable and importable.
+
+**NodeLabels highlight behaviour:** When a highlight set is active, the label list is narrowed to only highlighted nodes before rendering. This reduces clutter — the highlight already draws attention, and filling the screen with labels for 80 nodes alongside an active selection would be noisy.
+
+**NodeTooltip distanceFactor:** Set to 600 (roughly the initial camera distance of 800 minus some margin). This keeps the tooltip at a readable size when starting zoomed out, without growing huge when zooming in.
+
+**LabelSprite canvas sizing:** Canvas width is computed from `ctx.measureText(text).width + padding` after a resize-reset, requiring the font to be re-applied after canvas resize (browser resets the 2d context on size change). Handled by setting `ctx.font` twice.
+
+### Tests added (15 new, 143 total — all green)
+
+- `buildEdgeGeometry` (7 tests): empty edges, position/color buffer sizes, missing nodeMap entries, intensity ordering, dimmed-edge skipping, position encoding
+- `bareName` (4 tests): qualified, unqualified, multi-level, trailing dot edge case
+- `selectLabelNodes` (4 tests): cap, custom cap, below-cap, selects-largest
+
+### Deviations from plan
+
+- Plan's Task 5 Step 1 test had only 3 bareName tests; added a 4th (trailing dot) for edge-case coverage
+- Plan kept `buildEdgeGeometry` in `ConstellationScene.tsx` as an export; moved it to `EdgeLines.tsx` (cleaner separation, matches plan description "extract pure buildEdgeGeometry")
+- `THREE.WARNING: Multiple instances` still appears in tests (benign; same as S2)
+
+### Open questions
+
+- ClusterHalos component is still `_clusters` (unused) in ConstellationScene — reserved for a future slice
+- S4 (FilterPanel, HUD, NodeDetailPanel, ResizeHandle) is the next slice
