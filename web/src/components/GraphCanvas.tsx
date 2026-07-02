@@ -65,6 +65,7 @@ import {
 } from "../lib/graphFilterState";
 import { useGraphOverlays } from "../hooks/useGraphOverlays";
 import { computeHudCounts } from "../lib/hudCounts";
+import { ViewportController } from "./ViewportController";
 import {
   countVisibleEdgesByKind,
   countVisibleEdgesByConfidence,
@@ -260,7 +261,7 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
   }, [expandData]);
 
   // ── Derived overlay state (delegated to useGraphOverlays) ───────────────────
-  const { displayNodes, displayEdges, clusters, tierMap } = useGraphOverlays({
+  const { displayNodes, displayEdges, clusters, tierMap, traceActive, traceNodeNames } = useGraphOverlays({
     nodes,
     edges,
     impactActive,
@@ -424,6 +425,15 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
             impactActive={impactActive}
           />
         </Panel>
+
+        {/* Viewport fly-to-fit controller: must live inside <ReactFlow> to access
+            useReactFlow(). Renders the "fit all" escape-hatch button (bottom-right). */}
+        <ViewportController
+          impactActive={impactActive}
+          traceActive={traceActive}
+          tierMap={tierMap}
+          traceNodeNames={traceNodeNames}
+        />
       </ReactFlow>
     </div>
   );

@@ -200,6 +200,13 @@ export interface GraphOverlays {
    * Exposed so the caller can check `tierMap.size > 0` to show the risk-tier Legend.
    */
   tierMap: Map<string, string>;
+  /**
+   * Node names on the highlighted trace path (from tracePathHighlight).
+   * Exposed so ViewportController can fly-to-fit the path when trace activates.
+   */
+  traceNodeNames: Set<string>;
+  /** True when a trace path is highlighted (same as traceHL.active). */
+  traceActive: boolean;
 }
 
 /**
@@ -255,5 +262,12 @@ export function useGraphOverlays({
 
   const clusters = useMemo(() => visibleClusters(nodes), [nodes]);
 
-  return { displayNodes, displayEdges, clusters, tierMap };
+  return {
+    displayNodes,
+    displayEdges,
+    clusters,
+    tierMap,
+    traceNodeNames: traceHL.nodeNames,
+    traceActive: traceHL.active,
+  };
 }
