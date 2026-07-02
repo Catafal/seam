@@ -180,14 +180,21 @@ def test_seam_npm_uvx_override_uses_custom_runner(tmp_path: Path) -> None:
 
 def test_missing_uvx_exits_nonzero_with_guidance(tmp_path: Path) -> None:
     """When uvx is not on PATH and no override is set, bin.js exits 1 with guidance."""
-    # Build a PATH that contains node's directory (so the subprocess can launch)
-    # but NOT any directory containing uvx — so resolveRunner returns null.
+    # Use an empty tmp_path as the sole PATH entry.  This guarantees neither
+    # `which`/`where` NOR `uvx` are present — regardless of where node lives
+    # on the host — so _defaultProbe() always returns false and resolveRunner
+    # returns null.  We invoke node via its absolute path so it does not need
+    # to be in PATH itself.
+    #
+    # WHY not use `PATH = node_dir`: if node lives in /usr/bin (which also
+    # contains `which`), the probe could execute and the test would depend on
+    # uvx being absent from /usr/bin — a host-configuration assumption that
+    # makes the test non-deterministic across environments.
     node_path = shutil.which("node")
     assert node_path is not None, "node must be on PATH for this test to run"
-    node_dir = str(Path(node_path).parent)
 
-    env = {**os.environ, "PATH": node_dir}
-    # Also ensure no SEAM_NPM_UVX override.
+    env = {**os.environ, "PATH": str(tmp_path)}
+    # Also ensure no SEAM_NPM_UVX override leaks in from the parent env.
     env.pop("SEAM_NPM_UVX", None)
 
     result = subprocess.run(

@@ -60,6 +60,7 @@ if (child.error) {
   process.exit(1);
 }
 
-// Propagate the child's exit code exactly. `status` is null on signal termination;
-// treat that as 1 so the caller always sees a non-zero exit on abnormal termination.
-process.exit(child.status ?? 0);
+// Propagate the child's exit code exactly. `status` is null on signal termination
+// (e.g. SIGKILL). Treat that as 1 so CI/pipelines always see a non-zero exit on
+// abnormal termination (null ?? 0 would silently succeed, which is wrong).
+process.exit(child.status ?? 1);

@@ -47,7 +47,7 @@ function resolveRunner(env, opts) {
 }
 
 /**
- * Default probe: check whether `cmd` resolves to an executable via `which`.
+ * Default probe: check whether `cmd` resolves to an executable.
  * Uses execFileSync so we never pass user-controlled data to a shell.
  *
  * Returns false on any error (command not found, permission denied, etc.)
@@ -57,11 +57,12 @@ function resolveRunner(env, opts) {
  * @returns {boolean}
  */
 function _defaultProbe(cmd) {
-  // `which` exits 0 when found, non-zero when not.
-  // On Windows `where` is the equivalent, but we target uv users who are
-  // typically on macOS/Linux; treating which-failure as "not found" is correct.
+  // `which` exits 0 when found, non-zero when not found (macOS/Linux).
+  // `where` is the Windows equivalent; use process.platform to select.
+  // If neither is on PATH (very unusual), execFileSync throws ENOENT → caught → false.
+  const locator = process.platform === 'win32' ? 'where' : 'which';
   try {
-    execFileSync('which', [cmd], { stdio: 'ignore' });
+    execFileSync(locator, [cmd], { stdio: 'ignore' });
     return true;
   } catch (_) {
     return false;
