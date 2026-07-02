@@ -494,20 +494,21 @@ class TestSyncSemanticFlag:
         data = json.loads(result.output)
         assert data["ok"] is True
 
-    def test_sync_semantic_with_embedder_calls_index_embeddings(
+    def test_sync_semantic_with_embedder_calls_sync_embeddings(
         self, tmp_path: Path
     ) -> None:
-        """`seam sync --semantic` with fastembed available calls index_embeddings."""
+        """`seam sync --semantic` calls sync_embeddings (WS3: incremental embed path)."""
         project_root, db_path = _make_project_with_index(tmp_path)
 
         embed_call_count = 0
 
-        def _mock_index_embeddings(conn, *, model, batch=32) -> int:
+        def _mock_sync_embeddings(conn, *, model, batch=32) -> int:
             nonlocal embed_call_count
             embed_call_count += 1
             return 1
 
-        with patch("seam.cli.main.index_embeddings", _mock_index_embeddings):
+        # WS3: sync --semantic now calls sync_embeddings (not index_embeddings).
+        with patch("seam.cli.main.sync_embeddings", _mock_sync_embeddings):
             with patch("seam.analysis.embeddings.is_available", return_value=True):
                 result = runner.invoke(
                     app,
@@ -523,5 +524,5 @@ class TestSyncSemanticFlag:
 
         assert result.exit_code == 0, f"sync --semantic failed: {result.output}"
         assert embed_call_count == 1, (
-            f"index_embeddings must be called; called {embed_call_count} times"
+            f"sync_embeddings must be called once; called {embed_call_count} times"
         )

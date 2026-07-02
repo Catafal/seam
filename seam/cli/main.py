@@ -66,7 +66,7 @@ from seam.cli.schema import schema_command
 from seam.cli.serve import serve_command
 from seam.cli.snippet import snippet_command
 from seam.indexer.db import connect
-from seam.indexer.embedding_index import index_embeddings
+from seam.indexer.embedding_index import sync_embeddings
 from seam.indexer.init_index import InitResult, run_init
 from seam.indexer.sync import sync as sync_project
 from seam.query.clusters import cluster_members as query_cluster_members
@@ -2370,7 +2370,8 @@ def sync_cmd(
         False,
         "--semantic",
         help=(
-            "Re-embed all symbols after sync (full re-embed, not incremental). "
+            "Incrementally embed new symbols after sync (orphan sweep + missing-set embed). "
+            "Faster than init --semantic — only embeds symbols added since last embed. "
             "Requires: pip install 'seam-code[semantic]'. "
             "Skips cleanly when fastembed is absent."
         ),
@@ -2475,21 +2476,24 @@ def sync_cmd(
     finally:
         conn.close()
 
-    # --semantic: re-embed all symbols after reconciliation.
+    # --semantic: incrementally embed only NEW symbols after reconciliation.
     # WHY re-open connection: conn was closed in the finally block above.
-    # Full re-embed (not incremental) — same as init --semantic.
+    # WHY sync_embeddings (not index_embeddings):
+    #   init --semantic always does a full re-embed (clean slate after full re-index).
+    #   sync --semantic should be fast — only embed missing symbols + sweep orphans.
+    #   sync_embeddings orchestrates: orphan sweep → missing-set → scoped embed → artifact.
     if semantic:
         try:
             embed_conn = connect(db_path)
             try:
-                _embed_count = index_embeddings(
+                _embed_count = sync_embeddings(
                     embed_conn,
                     model=config.SEAM_EMBED_MODEL,
                     batch=32,
                 )
             finally:
                 embed_conn.close()
-            # _embed_count: 0 = skipped (fastembed absent), -1 = failed, >=1 = success
+            # _embed_count: 0 = skipped (fastembed absent) or nothing new, -1 = failed, >=1 = new symbols
             if not quiet and _embed_count < 0:
                 console.print(
                     "[yellow]embeddings: failed[/yellow] "
