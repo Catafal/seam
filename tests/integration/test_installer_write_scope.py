@@ -431,6 +431,9 @@ def test_codex_project_with_mcp_rejected_writes_nothing(
 
 # Residue map: (target, location, with_mcp) → (root-relative residue, home-relative residue)
 # All residue is empty containers (empty file / empty JSON structure) left by the installer.
+# WHY containers survive: the installer removes only ITS block/entry from shared files
+# (CLAUDE.md, AGENTS.md, .mcp.json, .claude.json, config.toml) to preserve any foreign
+# content, but it does not delete the now-empty file.
 # Empty directories (.claude/, .cursor/ etc.) also persist but snapshot() only tracks files.
 _ROUND_TRIP_CASES: list[tuple[str, str, bool, set[str], set[str]]] = [
     # claude guidance-only: empty CLAUDE.md persists
@@ -439,7 +442,8 @@ _ROUND_TRIP_CASES: list[tuple[str, str, bool, set[str], set[str]]] = [
     ("claude", "project", True, {"CLAUDE.md", ".mcp.json"}, set()),
     # claude user-mcp: empty CLAUDE.md in root + .claude.json with empty structure in home
     ("claude", "user", True, {"CLAUDE.md"}, {".claude.json"}),
-    # cursor guidance-only: no residue (owned file fully removed)
+    # cursor guidance-only: ZERO residue — seam.mdc is an OWNED file (installer creates +
+    # fully controls it), so uninstall deletes it entirely rather than emptying a shared file.
     ("cursor", "project", False, set(), set()),
     # cursor project-mcp: empty .cursor/mcp.json persists
     ("cursor", "project", True, {".cursor/mcp.json"}, set()),
