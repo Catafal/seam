@@ -210,6 +210,13 @@ function rollupCounts(node: TreeNode): number {
  * - class node: own degree + sum of child method degrees.
  * - file/dir node: sum of children's degree (structural nodes contribute 0 self).
  *
+ * WHY summation, not max: a folder of ten moderately-coupled files is more
+ * architecturally significant than a folder with one hot file and nine isolates,
+ * because changing it touches more callers across the codebase. Summation lets
+ * folder weight reflect total coupling load; max would let a single hub symbol
+ * dominate its whole directory even if everything else there is uncoupled.
+ * This matches Phase A's hub ranking logic (total fan-in, not peak fan-in).
+ *
  * Mirrors rollupCounts; called immediately after rollupCounts in buildTree().
  * The treemap sizing site uses max(node.degree, 1) so zero-degree nodes still
  * get a floor-size cell and are never hidden.

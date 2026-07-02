@@ -1,0 +1,62 @@
+# Seam — Progress Tracker
+# Format: [x] = done, [>] = in progress, [ ] = not started
+# Update this EVERY session. It is the first thing the agent reads.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase B — Explorer redesign: Landing · Areas · Snippet
+# (issues #231/#232/#233/#234, worktree feat/explorer-redesign-phase-b)
+# ─────────────────────────────────────────────────────────────────────────────
+#   WHY this phase exists:
+#     Phase A stopped ranked views from lying (degree-based, test-excluded), but three
+#     coherence gaps remained: (1) the landing showed junk cluster cards labeled after test
+#     files while the Overview used a clean folder-based areas concept — two contradictory
+#     "areas" on the same product; (2) the treemap sized by raw symbol count and colored by a
+#     random per-name hash, so neither visual channel (size, color) carried signal; (3) opening
+#     a symbol never showed its source — a major gap for a code-navigation tool.
+#
+#   B2 — Additive `degree` field on /api/structure (#232):
+#     `list_structure` in graph_api.py gains a per-symbol fan-in degree (incoming edge count)
+#     via a LEFT JOIN against a pre-aggregated edges subquery — one scan, no correlated sub-
+#     select. Bridges the qualified/bare name asymmetry the same way Tier A does: adds the bare
+#     trailing identifier for qualified names so method call edges (stored bare) are not missed.
+#     `StructureSymbol` and `StructureResponse` Pydantic models moved to new `web_schema.py` to
+#     keep `web.py` under 1000 lines (was at 999; B2 adds 2 lines).
+#     Frontend: `StructureSymbol` type gains `degree: number`; `TreeNode` gains `degree: number`;
+#     `rollupDegree()` mirrors `rollupCounts()` summing degrees bottom-up. ONLY backend change.
+#
+#   B1 — Shared areas concept: useAreas hook (#231):
+#     Single `useAreas({ includeTests })` hook in hooks.ts composes `useStructure` + `useHubs`
+#     + `deriveAreas`. Both the landing and `StructureOverview` consume it — the "area" concept
+#     now has exactly one derivation site so landing and Overview cannot drift apart.
+#     Landing: replaced `useClusters` area cards with `deriveAreas`-based area cards (name,
+#     file/symbol counts, up to 3 key symbols). Clicking a card drills directly into the scoped
+#     treemap (`preselectedArea` state + `StructureOverview` `initialArea` prop). One `showTests`
+#     toggle controls both hub chips and area cards.
+#
+#   B3 — Treemap degree sizing + color (#233):
+#     New pure leaf `degreeColor(degree, maxDegree) → "#rrggbb"`: sequential ramp from cool zinc
+#     floor (#3f3f46) to hot amber ceiling (#f59e0b), linear RGB interpolation. `hashColor`
+#     retired from `TreemapCanvas` for leaves. Squarify `value` = `max(degree, 1)` (floor so
+#     zero-degree symbols still get a cell — low coupling is a reading, not an omission).
+#     `maxDegree` computed from the currently-visible children level (local scaling so a drilled
+#     low-coupling subdir uses the full ramp, not the root max). Containers get 25% opacity so
+#     nesting structure stays visible. `DegreeLegend` sub-component shows the cool→hot gradient.
+#
+#   B4 — Source snippet panel in Symbol detail view (#234):
+#     New pure leaf `buildSnippetSelector(symbol, firstDef) → SnippetSelector | undefined`:
+#     prefers file+line from the displayed definition to return the exact indexed source for the
+#     correct homonym. `DetailPanel` gains a collapsible `SourceSection` (collapsed by default so
+#     callers/callees are not pushed off screen on hub symbols). `useSnippet` is gated on the
+#     selector being defined (naturally lazy — only fetches after a symbol is selected and its
+#     definition resolves). Actionable empty states per the frontend-design copy rule.
+#
+#   Review fix commit: method degree was undercount for symbols used via inheritance; resolved by
+#     also attributing bare-target edges to methods sharing the bare name (same approach as
+#     list_structure's name-bridging logic).
+#
+#   Gate on merge: ruff + mypy clean (120 files), 3429 Python tests passed / 6 skipped,
+#     423 frontend vitest tests passed (34 test files), tsc clean, vite build green.
+#     web.py = 984 lines (under 1000). MCP tool count = 16 (unchanged).
+#     No schema change, no migration, no re-index, no new config knobs.
+#
+# NEXT: Phase C — Constellation redesign (fixed legible 3D + 2D cluster-graph fallback).

@@ -4,8 +4,14 @@
  * Maps a fan-in degree value to a hex color on a single sequential ramp:
  *   cool zinc floor  (#3f3f46)  → hot amber ceiling (#f59e0b)
  *
- * Size AND color encode the same quantity (fan-in degree) so they reinforce
- * rather than compete. The random-hash per-name color is retired for leaves.
+ * WHY this is the treemap's ONE signal: spending boldness in exactly one place
+ * (degree) means size and color agree — the biggest, hottest cell is
+ * unmistakably the most-coupled code, not merely the most numerous.
+ *
+ * WHY a sequential ramp (not categorical hues): degree is a continuous quantity.
+ * A lightness/saturation ramp reads as "more vs. less" at a glance; categorical
+ * hues read as "different kinds". One quantity → one ordered channel. The random
+ * per-name hashColor is retired because decoration on the primary signal is noise.
  *
  * Contract:
  *   degreeColor(degree, maxDegree) → "#rrggbb"

@@ -447,6 +447,15 @@ def list_structure(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
     B2: `degree` = fan-in / incoming edge count (edges pointing TO the symbol).
 
+    WHY fan-in (incoming) only, not total degree: the treemap answers "what is
+    load-bearing — what should I understand before changing anything?" That is
+    fan-in (how many callers depend on this symbol). A high-fan-out orchestrator
+    that calls hundreds of helpers would masquerade as load-bearing under total
+    degree; with fan-in only, it scores low and the deeply-depended-on leaves
+    surface first. This also keeps the treemap consistent with Phase A's hub
+    ranking (`top_hub_symbols` uses the same fan-in metric), so the map and the
+    hub list always tell the same story.
+
     Name-matching bridges the qualified/bare asymmetry (the same asymmetry Tier A's
     ``edge_match_names`` bridges at read time): a method symbol is stored under its
     QUALIFIED name ``Class.method`` (see graph_python ``_make_symbol(qualified, …)``),
