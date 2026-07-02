@@ -240,3 +240,87 @@ All in `selectionHelpers.test.ts`:
 
 - Plan's Task 6 also included FilterPanel, ConstellationHUD, and ResizeHandle. S4 (issue #172) is scoped to selection + detail panel + camera only; those other components are out of scope for this slice per the task description.
 - `computeHighlightedIds` takes `(selectedId: number, edges: LayoutEdge[])` instead of `(node: LayoutNode, edges: LayoutEdge[])` — using the id directly is cleaner and avoids pulling in the full node shape for the pure helper.
+
+---
+
+## 2026-07-02 — Slice S5: Filters, HUD, Resizable Panels, Error UI (issue #173)
+
+### What was built
+
+**web/src/components/FilterPanel.tsx** — left-side filter panel:
+- Pure `countByField(nodes, field) → Record<string, number>` (exported for vitest)
+- Counts from RAW (unfiltered) data — chip badge always reflects the full corpus
+- 6 node kinds: function, class, method, interface, type, field (color dots)
+- 9 edge kinds: call, import, extends, implements, instantiates, holds, reads, writes, uses (color bars)
+- All/none controls for both node and edge sections
+- Color dot per node kind (KIND_COLORS); color bar per edge kind (EDGE_TYPE_COLORS)
+
+**web/src/components/ConstellationHUD.tsx** — heads-up display overlay:
+- Visible node / edge counts (after filtering)
+- "Showing N of M" notice when `total_nodes > visibleNodes` (layout was capped)
+- Selected count when something is highlighted
+- max_nodes selector (500 / 1000 / 2000 / 3000) with pointer-events: auto
+- Freshness dot (green = indexed <10 min ago, amber = older/unknown) via `useStatus` / `last_indexed`
+- `pointer-events: none` on the overlay so it never blocks orbit dragging
+
+**web/src/components/ResizeHandle.tsx** — drag-to-resize divider:
+- `setPointerCapture` / `releasePointerCapture` for smooth drag even outside the element
+- Reports delta in pixels to parent via `onResize(delta)` callback
+- Exports `clampPanelWidth(w) → number` (clamped [150, 500]) and constants `PANEL_MIN_W`/`PANEL_MAX_W`
+
+**web/src/components/ConstellationTab.tsx** — updated three-column shell:
+- Left column: `<FilterPanel>` at `leftW` pixels (default 200)
+- Left `<ResizeHandle>` between filter panel and canvas
+- Center: `<ConstellationScene>` (flex-1) with `<ConstellationHUD>` as absolute overlay
+- Right `<ResizeHandle>` + `<NodeDetailPanel>` at `rightW` pixels (only when selectedNode)
+- `maxNodes` state drives the react-query key so changing the cap re-fetches
+- `visibleNodes`/`visibleEdges` derived via useMemo from filter state — passed to HUD for counts
+- Panel widths persisted to `localStorage` keys `seam-left-w` / `seam-right-w` via useEffect
+- isError / isLoading branches already present from S2 (verified by constellationError tests)
+
+### Key decisions
+
+**countByField on RAW data:** Filter counts come from `data.nodes` (full layout, before client-side
+kind filtering). This ensures chips always show "how many of this kind exist" not "how many are
+currently visible" — consistent with the plan's spec ("counts from RAW data").
+
+**ConstellationHUD freshness via `useStatus`:** The plan says "freshness dot from existing
+/api/status useStatus hook". StatusResponse has `last_indexed: string | null` but no explicit
+`stale` field. The HUD computes freshness as "indexed <10 minutes ago → green; else → amber".
+This is a reasonable proxy; a future enhancement could use the staleness banner if/when it's
+added to the web API.
+
+**ResizeHandle pointer capture pattern:** Using `e.currentTarget.hasPointerCapture(e.pointerId)`
+in `onPointerMove` to guard against move events that arrive before a pointerdown (browser quirk).
+The `onPointerCancel` handler also releases capture to prevent stuck states.
+
+**ConstellationScene receives filtered nodes/edges:** The scene now receives `visibleNodes` and
+`visibleEdges` (post-filter) so kind/edge toggles immediately affect the rendered geometry.
+Node IDs are preserved from the full layout so camera targets and edge references remain valid.
+
+**maxNodes selector in HUD, not parent:** The HUD owns the node-count selector display and calls
+`onChangeMaxNodes` back to the tab. This keeps the HUD self-contained while the actual state
+lives in the tab (which drives the react-query key).
+
+### Tests added (6 new, 155 total — all green, typecheck clean)
+
+**filterCounts.test.ts** (4 tests):
+- `countByField` counts by label, empty array, single node, all 6 kinds
+
+**constellationError.test.tsx** (2 tests — already pass since isError/isLoading were in S2):
+- fetch→500 shows "Failed to load constellation layout." message (not blank canvas)
+- pending fetch shows "Loading constellation…" animation
+
+### Deviations from plan
+
+- Plan described a 3000-node option in the HUD selector; added 500 as the smallest option
+  (500/1000/2000/3000) since the backend supports values down to 1.
+- `constellationError.test.tsx` tests passed without any code change (S2 already implemented
+  the error/loading branches). Recorded them as S5 tests since the plan attributes them here.
+- The right ResizeHandle is only mounted when `selectedNode` is active (the right panel itself
+  only shows when something is selected). When no node is selected, there is no handle to drag.
+
+### Open questions
+
+- None blocking. S6 (Task 8: regenerate types, production build, manual visual verification)
+  is the final slice.
