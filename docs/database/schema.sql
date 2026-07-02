@@ -93,20 +93,21 @@ CREATE TABLE IF NOT EXISTS edges (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     source_name TEXT NOT NULL,          -- Symbol name of the caller/importer
     target_name TEXT NOT NULL,          -- Symbol name of the callee/importee
-    kind        TEXT NOT NULL,          -- 'import' | 'call' | 'extends' | 'implements' | 'instantiates' | 'holds' | 'reads' | 'writes' | 'uses' | 'http_calls' | 'reads_config' | 'configures' | 'raises' | 'catches'
+    kind        TEXT NOT NULL,          -- 'import' | 'call' | 'extends' | 'implements' | 'instantiates' | 'holds' | 'reads' | 'writes' | 'uses' | 'http_calls' | 'reads_config' | 'configures' | 'raises' | 'catches' | 'tests'
     file_id     INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
     line        INTEGER NOT NULL,       -- Line where the relationship is expressed
     confidence  TEXT NOT NULL DEFAULT 'INFERRED',  -- EXTRACTED | INFERRED | AMBIGUOUS (DEFAULT is INFERRED: conservative)
     -- Tier B B1 (v10): receiver text from attribute call expressions (recv.method).
     -- NULL for import edges, bare calls, and pre-v10 rows (null-contract: same as Phase 4/5 fields).
     receiver    TEXT,
-    -- v12 (edge-synthesis post-pass): channel that synthesized this edge.
-    -- NULL = statically extracted by a parser (the default for all extractor-emitted edges).
-    -- A channel name string = synthesized by the post-pass, e.g. 'interface-override'.
-    -- Provenance is DERIVED: synthesized_by IS NOT NULL ⟹ heuristic edge.
-    -- Synthesized edges appear only after the next full 'seam init' (explicit backfill,
-    -- same null-contract as prior enrichment columns). The synthesis pass stores these
-    -- under a permanent ':synthesis:' file row (not a real on-disk file).
+    -- v12+: post-pass provenance for derived edges.
+    -- NULL = parser/direct extractor edge.
+    -- Non-NULL = derived by a named post-pass channel, e.g. 'interface-override',
+    -- 'test-call', 'test-import', or 'test-name-proximity'.
+    -- Do not interpret non-NULL as runtime coverage or as always heuristic: direct
+    -- test-call evidence is static evidence derived after the whole index is known.
+    -- Some synthesis channels use synthetic file rows; test-edge channels use the
+    -- test file where the evidence was observed.
     synthesized_by TEXT
 );
 

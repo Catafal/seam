@@ -141,7 +141,7 @@ Grouped by the question an agent is asking. Every tool is **read-only**; the ser
 
 | Tool | Answers | Key args |
 |------|---------|----------|
-| `seam_context` | "Show me everything about symbol X." — callers, callees, signature, cluster, `field_readers`/`field_writers`. Resolves bare/qualified/class names and merges homonyms. | `symbol` or `uid` |
+| `seam_context` | "Show me everything about symbol X." — callers, callees, signature, cluster, `field_readers`/`field_writers`, and static `test_callers`/`tested_symbols`. Resolves bare/qualified/class names and merges homonyms. | `symbol` or `uid` |
 | `seam_context_pack` | "Give me a paste-ready bundle for X." — `seam_context` + WHY comments + enriched neighbors + cluster peers in one call; neighbors ranked by relevance to the seed. | `symbol` |
 | `seam_why` | "Why is this code like this?" — the `WHY`/`HACK`/`NOTE`/`TODO`/`FIXME` comments. | `symbol`, `path` |
 
@@ -221,7 +221,7 @@ fix, so current output is leaner than it shows.
 
 A short tour — the full treatment is in [`docs/CONCEPTS.md`](docs/CONCEPTS.md).
 
-**The graph.** Nodes are symbols (`function`, `class`, `method`, `interface`, `type`, `field`, `route`, `config`, `resource`). Edges are **typed** and capture fourteen relationships:
+**The graph.** Nodes are symbols (`function`, `class`, `method`, `interface`, `type`, `field`, `route`, `config`, `resource`). Edges are **typed** and capture fifteen relationships:
 
 | Edge kind | Captures |
 |-----------|----------|
@@ -237,8 +237,9 @@ A short tour — the full treatment is in [`docs/CONCEPTS.md`](docs/CONCEPTS.md)
 | `configures` | a config key describes a runtime resource |
 | `raises` | a symbol explicitly raises or throws a visible exception type |
 | `catches` | a symbol explicitly handles a typed exception |
+| `tests` | a test symbol statically exercises or names a production symbol |
 
-Edges are keyed by **symbol name**, not row id — this is what lets the watcher re-index one file independently without rewriting the whole graph. Route, config, and resource nodes live as normal `symbols.kind` values; route metadata lives in `routes`, config metadata lives in `config_keys`, and resource metadata lives in `resources`. Config metadata stores key names and redacted value shape only, never raw values. Traversal is kind-agnostic, and exception edges are exposed through graph search, trace, context, and architecture. Default blast-radius impact intentionally excludes `raises`/`catches` so exception evidence does not inflate change-risk tiers.
+Edges are keyed by **symbol name**, not row id — this is what lets the watcher re-index one file independently without rewriting the whole graph. Route, config, and resource nodes live as normal `symbols.kind` values; route metadata lives in `routes`, config metadata lives in `config_keys`, and resource metadata lives in `resources`. Config metadata stores key names and redacted value shape only, never raw values. Traversal is kind-agnostic, and exception/test edges are exposed through graph search, trace, context, and architecture. Default blast-radius impact intentionally excludes `raises`/`catches` and `tests` so failure-path and test-evidence relationships do not inflate production change-risk tiers.
 
 **Confidence tiers.** Each edge resolves to `EXTRACTED` (target is unambiguous), `AMBIGUOUS` (name collides — verify), or `INFERRED` (heuristic / cross-module). A multi-hop path is only as strong as its weakest hop. Each result carries `resolved_by` provenance explaining *how* the tier was decided.
 
@@ -279,7 +280,7 @@ seam serve         # opens http://127.0.0.1:7420
 seam serve --no-open --port 8000
 ```
 
-A React + TypeScript SPA (React Flow) served by FastAPI. Nothing leaves the machine. Features: command-palette search, a depth-1 caller/callee card-canvas with confidence-styled edges including HTTP calls, lazy expand, a detail panel, an impact overlay that paints blast radius by risk tier, a trace-path highlighter, a git-changes drawer, a schema/architecture read API, and a whole-repo cluster constellation. Explorer routes reuse the **same handlers** that power the CLI/MCP tools — a third transport, no query logic duplicated.
+A React + TypeScript SPA (React Flow) served by FastAPI. Nothing leaves the machine. Features: command-palette search, a depth-1 caller/callee card-canvas with confidence-styled edges including HTTP calls and static test edges, lazy expand, a detail panel, an impact overlay that paints blast radius by risk tier, a trace-path highlighter, a git-changes drawer, a schema/architecture read API, and a whole-repo cluster constellation. Explorer routes reuse the **same handlers** that power the CLI/MCP tools — a third transport, no query logic duplicated.
 
 ---
 

@@ -289,7 +289,7 @@ def walk(
                     SEAM_IMPORT_RESOLUTION="off", falls back to name-count resolution.
         excluded_edge_kinds:
                     Optional edge kinds to omit from the walk. Impact uses this to
-                    keep explicit exception-flow evidence out of default blast-radius
+                    keep explicit exception/test evidence out of default blast-radius
                     reports while graph-search/architecture still expose those edges.
 
     Returns:

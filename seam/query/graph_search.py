@@ -67,6 +67,7 @@ DEFAULT_EDGE_KINDS = {
     "configures",
     "raises",
     "catches",
+    "tests",
 }
 
 

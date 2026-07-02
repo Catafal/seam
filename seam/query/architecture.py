@@ -534,6 +534,70 @@ def _edge_mix_section(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _tests_section(
+    edge_rows: list[dict[str, Any]],
+    symbol_meta: dict[str, dict[str, Any]],
+    *,
+    production_files: int,
+    test_files: int,
+    limit: int,
+) -> dict[str, Any]:
+    test_edges = [row for row in edge_rows if row["kind"] == "tests"]
+    incoming: dict[str, int] = defaultdict(int)
+    outgoing: dict[str, int] = defaultdict(int)
+    provenance: dict[str, int] = defaultdict(int)
+    non_test_degree: dict[str, int] = defaultdict(int)
+    for row in test_edges:
+        incoming[str(row["target"])] += 1
+        outgoing[str(row["source"])] += 1
+        if row["synthesized_by"]:
+            provenance[str(row["synthesized_by"])] += 1
+    for row in edge_rows:
+        if row["kind"] == "tests":
+            continue
+        non_test_degree[str(row["source"])] += 1
+        non_test_degree[str(row["target"])] += 1
+
+    def _target_item(name: str, count: int) -> dict[str, Any]:
+        base = dict(symbol_meta.get(name) or {"symbol": name, "uid": None, "kind": None, "file": None, "line": None})
+        base["test_edges"] = count
+        return base
+
+    top_tested = [
+        _target_item(name, count)
+        for name, count in sorted(incoming.items(), key=lambda pair: (-pair[1], pair[0]))[:limit]
+    ]
+    test_heavy_sources = [
+        {"source": name, "test_edges": count}
+        for name, count in sorted(outgoing.items(), key=lambda pair: (-pair[1], pair[0]))[:limit]
+    ]
+    untested_hotspots = []
+    for name, meta in sorted(
+        symbol_meta.items(),
+        key=lambda pair: (-non_test_degree.get(pair[0], 0), str(pair[1].get("file")), pair[0]),
+    ):
+        if bool(meta.get("is_test")) or name in incoming or non_test_degree.get(name, 0) <= 0:
+            continue
+        item = dict(meta)
+        item["coupling_edges"] = non_test_degree[name]
+        untested_hotspots.append(item)
+        if len(untested_hotspots) >= limit:
+            break
+    truncated = max(0, len(incoming) - len(top_tested)) + max(0, len(outgoing) - len(test_heavy_sources))
+    return {
+        "files": {"production": production_files, "test": test_files, "unknown": 0},
+        "coverage_edges": {
+            "status": "populated" if test_edges else "empty",
+            "count": len(test_edges),
+            "provenance": dict(sorted(provenance.items())),
+        },
+        "top_tested_symbols": top_tested,
+        "test_heavy_sources": test_heavy_sources,
+        "untested_hotspots": untested_hotspots,
+        "truncated": truncated,
+    }
+
+
 def _boundary_section(
     conn: sqlite3.Connection,
     root: Path,
@@ -621,7 +685,7 @@ def _optional_surfaces() -> dict[str, Any]:
             "reason": surface["message"],
         }
         for name, surface in _OPTIONAL_SURFACES.items()
-        if name not in {"routes", "configs", "resources", "exceptions"}
+        if name not in {"routes", "configs", "resources", "exceptions", "test_edges"}
     }
 
 
@@ -987,6 +1051,17 @@ def _next_calls_for_sections(sections: dict[str, Any]) -> list[dict[str, Any]]:
                     "params": {"symbol": heavy_symbols[0]["source"]},
                 },
             )
+    tests = sections.get("tests")
+    coverage_edges = tests.get("coverage_edges", {}) if isinstance(tests, dict) else {}
+    if coverage_edges.get("status") == "populated":
+        calls.insert(
+            1,
+            {
+                "tool": "seam_graph_search",
+                "reason": "Review static test-to-production evidence.",
+                "params": {"edge_kind": "tests", "limit": 10},
+            },
+        )
     return calls
 
 
@@ -1162,10 +1237,13 @@ def describe_architecture(
         "resources": _resources_section(conn, root, allowed_files, safe_limit),
         "exceptions": _exceptions_section(conn, root, allowed_files, safe_limit),
         "edge_mix": _edge_mix_section(edge_rows),
-        "tests": {
-            "files": {"production": production_files, "test": test_files, "unknown": 0},
-            "coverage_edges": {"status": "unsupported"},
-        },
+        "tests": _tests_section(
+            edge_rows,
+            _symbol_meta(conn, root, allowed_files),
+            production_files=production_files,
+            test_files=test_files,
+            limit=safe_limit,
+        ),
         "optional_surfaces": _optional_surfaces(),
     }
     all_sections.update(_topology_sections(conn, root, allowed_files, safe_limit))

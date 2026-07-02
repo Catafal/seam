@@ -185,7 +185,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         Use after seam_schema when you need a bounded repo overview before
         choosing precise follow-up tools. The result is read-only and summarizes
         physical areas, clusters, topology, boundaries, edge mix, optional
-        surfaces, and recommended next calls.
+        surfaces including static test evidence, and recommended next calls.
         """
         return _finalize(
             handle_seam_architecture(
@@ -264,7 +264,8 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         """Find symbols by graph shape before you know the exact symbol name.
 
         Use this for dead-code suspects, fan-in/fan-out hotspots, field readers
-        and writers, inheritance relationships, or other typed structural filters.
+        and writers, inheritance relationships, static test evidence, or other
+        typed structural filters.
         Results are metadata-only and include UIDs for follow-up seam_snippet,
         seam_context, seam_impact, or seam_trace calls.
         """
@@ -334,10 +335,12 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
                            signature-coupling (uses) dependent, or an HTTP boundary
                            dependency (http_calls) from operational config/resource links. Always present in both
                            verbose and lean modes (core field, never stripped).
-          synthesized_by — synthesis channel name when the edge is heuristic (e.g.
-                           "interface-override", "closure-collection", "event-emitter"),
-                           null when statically extracted. Lets you weight entries that
-                           rest on over-approximated synthesized edges differently.
+          synthesized_by — post-pass provenance channel for derived edges. Call synthesis
+                           uses channels such as "interface-override",
+                           "closure-collection", or "event-emitter"; static test evidence
+                           uses channels such as "test-call", "test-instantiates",
+                           "test-import", or "test-name-proximity". null means no
+                           post-pass provenance is recorded.
                            Null is RETAINED (null = "static edge", the informative common
                            case — unlike best_candidate which is E1-omitted when null).
                            Stripped in lean mode (verbose=false), like resolved_by.
@@ -427,17 +430,18 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         (EXTRACTED | INFERRED | AMBIGUOUS).
 
         Full edge kind vocabulary:
-          call | import | extends | implements | instantiates | holds | reads | writes | uses | http_calls | reads_config | configures | raises | catches
+          call | import | extends | implements | instantiates | holds | reads | writes | uses | http_calls | reads_config | configures | raises | catches | tests
         The hop kind reflects the actual relationship traversed — e.g. a 'holds' hop
         means one class stores the other as a typed field, while a 'reads' hop means
         a field-access read edge was traversed, an 'http_calls' hop means a symbol
         calls a literal HTTP route, config/resource hops use reads_config/configures,
-        and exception-flow hops use raises/catches.
+        exception-flow hops use raises/catches, and static test-evidence hops use tests.
 
         E4 — synthesized_by on each hop (SEAM_EDGE_PROVENANCE=on, default):
-          synthesized_by — synthesis channel name when the hop is a heuristic synthesized
-                           edge (e.g. "interface-override"), null when statically extracted.
-                           Lets you see which hops in a path rest on over-approximations.
+          synthesized_by — post-pass provenance channel for derived edges. Call synthesis
+                           uses channels such as "interface-override"; static test evidence
+                           uses channels such as "test-call" or "test-import". null means
+                           no post-pass provenance is recorded.
                            In lean mode (verbose=false), synthesized_by is stripped
                            (like resolved_by) — kind is always kept.
                            AMBIGUITY (important): null on a hop does NOT prove the hop is

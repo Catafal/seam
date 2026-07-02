@@ -77,6 +77,10 @@ class ContextResult(TypedDict):
     # Always present ([] not absent) so agents can check without key-existence guards.
     field_readers: list[str]
     field_writers: list[str]
+    # P3.3: explicit static test-to-production evidence, separated from normal
+    # callers/callees so production dependency reasoning stays clear.
+    test_callers: list[str]
+    tested_symbols: list[str]
 
 
 class SearchResult(TypedDict):

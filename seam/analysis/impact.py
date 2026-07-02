@@ -68,7 +68,7 @@ _DEFAULT_DEPTH = 3
 
 # Valid direction values.
 _VALID_DIRECTIONS = {"upstream", "downstream", "both"}
-_DEFAULT_EXCLUDED_EDGE_KINDS = {"raises", "catches"}
+_DEFAULT_EXCLUDED_EDGE_KINDS = {"raises", "catches", "tests"}
 
 # ── Public types ───────────────────────────────────────────────────────────────
 
@@ -86,9 +86,9 @@ _DEFAULT_EXCLUDED_EDGE_KINDS = {"raises", "catches"}
 #                                 Impact vocabulary: call | import | extends |
 #                                 implements | instantiates | holds | reads |
 #                                 writes | uses | http_calls | reads_config |
-#                                 configures. Default impact excludes raises/catches
-#                                 because exception evidence is not a direct change
-#                                 blast-radius signal.
+#                                 configures. Default impact excludes raises/catches/tests
+#                                 because exception evidence and test evidence are not
+#                                 direct production change blast-radius signals.
 #                                 Empty string for degenerate / pre-E4 cases (never absent).
 #   synthesized_by (str | None) — E4: synthesis channel name when the final hop is
 #                                 heuristic (e.g. 'interface-override'), or None when

@@ -337,6 +337,33 @@ def test_architecture_scope_sections_boundaries_and_byte_budget(tmp_path: Path) 
     assert len(str(capped)) < len(str(whole))
 
 
+def test_architecture_tests_section_reports_static_test_edges(tmp_path: Path) -> None:
+    from seam.query.architecture import describe_architecture
+
+    conn, root = _make_architecture_repo(tmp_path)
+    test_api = root / "tests" / "test_api.py"
+    conn.execute(
+        "INSERT INTO edges (source_name, target_name, kind, file_id, line, confidence, synthesized_by) "
+        "SELECT 'test_entry', 'entry', 'tests', id, 2, 'EXTRACTED', 'test-call' "
+        "FROM files WHERE path = ?",
+        (str(test_api),),
+    )
+    conn.commit()
+
+    result = describe_architecture(conn, root=root, sections=["tests"], limit=5)
+
+    tests = result["sections"]["tests"]
+    assert tests["files"] == {"production": 2, "test": 1, "unknown": 0}
+    assert tests["coverage_edges"] == {
+        "status": "populated",
+        "count": 1,
+        "provenance": {"test-call": 1},
+    }
+    assert tests["top_tested_symbols"][0]["symbol"] == "entry"
+    assert tests["test_heavy_sources"] == [{"source": "test_entry", "test_edges": 1}]
+    assert any(call["params"].get("edge_kind") == "tests" for call in result["next_calls"])
+
+
 def test_architecture_warns_on_out_of_root_scope(tmp_path: Path) -> None:
     """Out-of-root scopes are rejected without leaking arbitrary filesystem paths."""
     from seam.query.architecture import describe_architecture

@@ -598,6 +598,20 @@ export interface components {
             coverage_edges: {
                 [key: string]: unknown;
             };
+            /** Top Tested Symbols */
+            top_tested_symbols?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Test Heavy Sources */
+            test_heavy_sources?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Untested Hotspots */
+            untested_hotspots?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Truncated */
+            truncated?: number | null;
         };
         /**
          * ChangedSymbol
@@ -1026,6 +1040,8 @@ export interface components {
             has_configures: boolean;
             /** Has Exception Edges */
             has_exception_edges: boolean;
+            /** Has Test Edges */
+            has_test_edges: boolean;
         };
         /**
          * SchemaColumnInfo

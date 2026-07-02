@@ -185,6 +185,44 @@ def collect_edges_for_names(
     return callers, callees
 
 
+def collect_test_edges_for_names(
+    conn: sqlite3.Connection,
+    match_names: list[str],
+) -> tuple[list[str], list[str]]:
+    """Return (test_callers, tested_symbols) for explicit `tests` edges.
+
+    `tests` edges are deliberately separated from ordinary callers/callees so
+    agents can use them as static test evidence without treating them as
+    production dependency edges.
+    """
+    if not match_names:
+        return [], []
+    ph = ",".join("?" * len(match_names))
+    try:
+        test_callers = sorted({
+            r["source_name"]
+            for r in conn.execute(
+                f"SELECT DISTINCT source_name FROM edges WHERE kind='tests' AND target_name IN ({ph})",
+                match_names,
+            ).fetchall()
+        })
+        tested_symbols = sorted({
+            r["target_name"]
+            for r in conn.execute(
+                f"SELECT DISTINCT target_name FROM edges WHERE kind='tests' AND source_name IN ({ph})",
+                match_names,
+            ).fetchall()
+        })
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "collect_test_edges_for_names: DB error for match_names=%r",
+            match_names,
+            exc_info=True,
+        )
+        return [], []
+    return test_callers, tested_symbols
+
+
 def build_merged_context_result(
     conn: sqlite3.Connection,
     def_rows: list[sqlite3.Row],
@@ -201,11 +239,16 @@ def build_merged_context_result(
     primary = def_rows[0]
     all_callers: set[str] = set()
     all_callees: set[str] = set()
+    all_test_callers: set[str] = set()
+    all_tested_symbols: set[str] = set()
     for row in def_rows:
         match_names = _edge_match_names(conn, row["name"])
         callers, callees = collect_edges_for_names(conn, match_names)
+        test_callers, tested_symbols = collect_test_edges_for_names(conn, match_names)
         all_callers |= callers
         all_callees |= callees
+        all_test_callers.update(test_callers)
+        all_tested_symbols.update(tested_symbols)
 
     # Cluster lookup uses the primary (lowest-id) def's name: for a bare-name resolution
     # like "parse" → "Parser.parse", the original bare name has no cluster row, whereas
@@ -241,6 +284,8 @@ def build_merged_context_result(
         qualified_name=primary["qualified_name"],
         field_readers=field_readers,
         field_writers=field_writers,
+        test_callers=sorted(all_test_callers),
+        tested_symbols=sorted(all_tested_symbols),
     )
 
 
@@ -261,6 +306,10 @@ def build_context_result(
     # edge_match_names expands to [qualified, bare] so both storage forms are matched —
     # without this, callers of a qualified method always show up as an empty list.
     callers, callees = collect_edges_for_names(conn, _edge_match_names(conn, symbol_name))
+    test_callers, tested_symbols = collect_test_edges_for_names(
+        conn,
+        _edge_match_names(conn, symbol_name),
+    )
     cluster_info = _cluster_peers(conn, symbol_name)
     c_id, c_label, c_peers = cluster_info if cluster_info is not None else (None, None, [])
     decoded_decorators, is_exported = decode_enrichment_fields_fn(row)
@@ -290,4 +339,6 @@ def build_context_result(
         qualified_name=row["qualified_name"],
         field_readers=field_readers,
         field_writers=field_writers,
+        test_callers=test_callers,
+        tested_symbols=tested_symbols,
     )

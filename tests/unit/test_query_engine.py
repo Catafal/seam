@@ -352,6 +352,24 @@ class TestContext:
         assert result["callers"] == []
         assert result["callees"] == []
 
+    def test_context_surfaces_test_edges_separately(self) -> None:
+        """P3.3 test evidence is available without replacing callers/callees."""
+        conn = seed_db(
+            [_sym("entry"), _sym("test_entry")],
+            [_edge("test_entry", "entry", kind="tests")],
+        )
+
+        production = context(conn, "entry")
+        test = context(conn, "test_entry")
+        conn.close()
+
+        assert production is not None
+        assert production["test_callers"] == ["test_entry"]
+        assert production["tested_symbols"] == []
+        assert test is not None
+        assert test["test_callers"] == []
+        assert test["tested_symbols"] == ["entry"]
+
 
 # ── decode_enrichment_fields: shared helper (Fix G) ────────────────────────────
 

@@ -235,7 +235,7 @@ The write path. Triggered by `seam init` (full) or the file watcher (incremental
 Main tables + FTS5 virtual table (schema v6):
 - `files` — indexed files with hash + mtime
 - `symbols` — functions, classes, methods; includes `cluster_id` FK (schema v4) and five Phase 4 enrichment columns: `signature`, `decorators`, `is_exported`, `visibility`, `qualified_name` (schema v5)
-- `edges` — directed relationships (import, call) with `confidence` column (schema v2)
+- `edges` — directed relationships (`call`, `import`, `tests`, and other typed edges) with `confidence` column (schema v2)
 - `comments` — semantic comments: WHY/HACK/NOTE/TODO/FIXME markers (schema v3)
 - `clusters` — community detection results: id, label, size, naming_source (schema v4)
 - `symbols_fts` — FTS5 virtual table covering `symbols.name + docstring + signature` (signature added in schema v5)
@@ -261,9 +261,10 @@ The read path. Four query families:
 - **Concept query** — FTS5 match + 1-hop graph expansion (connected symbols)
 - **Context** — Direct lookup by symbol name + join to get callers/callees
 - **Structural graph search** — typed predicates over symbol/edge metadata for dead-code
-  suspects, fan-in/fan-out hotspots, field access, inheritance, and bounded one-hop previews
+  suspects, fan-in/fan-out hotspots, field access, inheritance, static test evidence,
+  and bounded one-hop previews
 
-Since Phase 4, the classic engine functions include the five enrichment fields in their output TypedDicts (`ContextResult`, `SearchResult`, `QueryResult`). Pre-v5 rows carry `null` for those fields — callers treat `null` as "unknown". `seam_graph_search` is a separate structural discovery module and returns compact metadata plus degree summaries instead of source or broad context.
+Since Phase 4, the classic engine functions include the five enrichment fields in their output TypedDicts (`ContextResult`, `SearchResult`, `QueryResult`). Pre-v5 rows carry `null` for those fields — callers treat `null` as "unknown". `ContextResult` also separates static test evidence as `test_callers` and `tested_symbols` so agents can see test relationships without treating them as production callers/callees. `seam_graph_search` is a separate structural discovery module and returns compact metadata plus degree summaries instead of source or broad context.
 
 ### Clustering (Phase 2)
 **Files:** `seam/analysis/clustering.py`, `seam/analysis/cluster_naming.py`, `seam/indexer/cluster_index.py`, `seam/query/clusters.py`
@@ -329,7 +330,17 @@ cli / server → analysis → query → indexer / db
    — In `seam init` this always runs; in `seam sync` it is GATED on graph_changed
      (or --force-synthesis), exactly like the cluster recompute. NOT run by the watcher.
    — Master switch SEAM_EDGE_SYNTHESIS (default on); "off" skips this step entirely.
-6. seam.db committed, watcher starts
+6. Test-edge post-pass (whole-graph, after synthesis):
+   a. test_edges.index_test_edges(conn) — reads all test symbols, production symbols,
+      and direct static edges
+   b. materializes kind='tests' edges for direct call/instantiation evidence,
+      name-matched import evidence, and unique test-name proximity
+   c. writes provenance into synthesized_by ('test-call', 'test-instantiates',
+      'test-import', 'test-name-proximity') and never raises; returns -1 on failure.
+   — These edges are static evidence only, not runtime coverage. They are rebuilt by
+     `seam init`, by `seam sync` when the graph changed, and by the watcher after a
+     file update or delete.
+7. seam.db committed, watcher starts
 ```
 
 ## Data Flow: Read Path (MCP tool call)
