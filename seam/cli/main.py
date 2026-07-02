@@ -24,6 +24,7 @@ Commands (Phase 2 — graph clustering)
 clusters — List all clusters (or members of one cluster with --id N).
 """
 
+import importlib.metadata
 import logging
 import os
 import signal
@@ -96,6 +97,35 @@ app = typer.Typer(
 )
 
 console = Console()
+
+
+def _version_callback(value: bool) -> None:
+    """Print the installed seam-code version and exit — the eager `--version` handler.
+
+    Reads the version from the installed package metadata (single source of truth:
+    pyproject `version`) rather than a hardcoded constant, so it can never drift.
+    """
+    if not value:
+        return
+    try:
+        version = importlib.metadata.version("seam-code")
+    except importlib.metadata.PackageNotFoundError:  # running from an unbuilt source tree
+        version = "unknown"
+    console.print(f"seam {version}")
+    raise typer.Exit()
+
+
+@app.callback()
+def _app_main(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show the installed seam-code version and exit.",
+    ),
+) -> None:
+    """Local code intelligence MCP server for AI agents."""
 
 # Register commands defined in sibling modules (kept out of this file, which is large).
 app.command(name="install")(install_command)
