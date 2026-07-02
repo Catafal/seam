@@ -124,10 +124,11 @@ jobs:
       - name: Install built wheel into clean environment
         run: uv pip install --python /tmp/smoke-env/bin/python dist/*.whl
 
-      # seam CLI uses Typer but does not expose --version; --help exits 0 and
-      # proves the binary is installed and importable from the wheel.
-      - name: Verify seam binary is installed and exits 0
-        run: /tmp/smoke-env/bin/seam --help
+      # `seam --version` reads the installed package metadata — this proves the
+      # binary is installed, importable from the wheel, AND reports the version
+      # that was just built (a stronger post-install assertion than --help).
+      - name: Verify seam binary is installed and reports its version
+        run: /tmp/smoke-env/bin/seam --version
 
   # ── GitHub Release ───────────────────────────────────────────────────────────
   # Create a GitHub Release for the pushed tag and attach the distributions
