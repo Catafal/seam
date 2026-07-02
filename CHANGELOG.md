@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **npm shim `@catafal/seam` (P5.1, issue #229):** `npx @catafal/seam <cmd>` delegates to
+  `uvx --from seam-code==<version> seam <cmd>`, letting JS/TS projects use Seam without a
+  Python toolchain. Requires [uv](https://docs.astral.sh/uv/getting-started/installation/)
+  at runtime; the shim contains no bundled binaries and no install-time scripts. npm and
+  PyPI versions are locked in lockstep; `make gate` enforces parity via
+  `test_npm_package_version_matches_pyproject`. Publish trailing the PyPI release:
+  `cd pkg/npm && npm publish --access public`.
 - Community-health scaffolding for open-source readiness: `CONTRIBUTING.md`,
   `CODE_OF_CONDUCT.md`, `SECURITY.md`, this `CHANGELOG.md`, GitHub issue/PR templates,
   and a CI workflow (`.github/workflows/ci.yml`) that mirrors `make gate` on Python 3.12/3.13.
