@@ -321,3 +321,40 @@ API field (`degree` on the structure rows) is the only backend change.
   for "query" which appears both as hub chip and area name.
 
 **Gate status:** 387 frontend vitest tests passed, frontend typecheck clean, build green.
+
+## B4 implementation notes
+
+**Slice:** Source snippet panel (issue #234).
+**Gate status:** 405 frontend vitest tests passed (32 test files), typecheck clean, build green.
+
+### What changed
+
+- **`web/src/lib/buildSnippetSelector.ts` (new pure leaf):** `buildSnippetSelector(symbol, firstDef) → SnippetSelector | undefined`. Three-branch contract:
+  - symbol + firstDef → `{ symbol, file: firstDef.file, line: firstDef.line }` (file+line selector, homonym-safe — returns the exact definition the panel is displaying)
+  - symbol + no firstDef → `{ symbol }` (symbol-only; API resolves by name)
+  - falsy/blank symbol → `undefined` (caller should disable the hook)
+  Pure, no IO, never raises. 10 unit tests in `web/src/__tests__/buildSnippetSelector.test.ts`.
+
+- **`web/src/components/DetailPanel.tsx`:** Added a collapsible `SourceSection` sub-component and wired `useSnippet` into the main `DetailPanel`.
+  - `SourceSection` is collapsed by default (per user story 11: "does not push callers/callees off screen").
+  - Toggle button with `aria-expanded` + chevron indicator (▼/▲).
+  - On expand, renders:
+    - Amber freshness note when `snippet.freshness.index_stale` or `!snippet.freshness.file_hash_matches`.
+    - Truncation note "showing N of M lines" when `snippet.truncated` is set.
+    - Source in a `<pre className="... max-h-64 overflow-y-auto">` — bounded, scrollable, no syntax-highlight dep (mirrors the existing signature `<pre>`).
+    - Not-found states (actionable copy per the frontend-design "write from the user's side" rule):
+      - `found:false` generic → "No indexed source for this symbol. Try re-running `seam init`."
+      - `found:false + ambiguous:true` → "Several definitions match — pick one from Definitions above."
+      - `found:false + message/reason` → surface the human-readable text.
+  - `useSnippet` is enabled only when `snippetSelector !== undefined` (naturally lazy — selector is undefined until `data` from `useSymbol` resolves and `definitions[0]` is present).
+
+- **`web/src/__tests__/buildSnippetSelector.test.ts` (new):** 10 unit tests covering the three-branch contract (file+line, symbol-only, undefined).
+
+- **`web/src/__tests__/DetailPanel.test.tsx`:** 8 new tests for the Source section (B4 suites): found/expand, truncation note, stale note, not-found, ambiguous, reason/message. Updated `stubFetch` → `stubFetchWithSnippet` helper for tests that need both symbol and snippet responses. `expandSourceSection()` helper clicks the toggle before asserting expanded content.
+
+### Decisions
+
+- **Collapsed-by-default over auto-expanded:** User story 11 ("collapsed-by-default or compact") and the concern about hub symbols pushing callers/callees off screen. The toggle's `aria-expanded` attribute makes the state accessible.
+- **File+line selector (not UID):** The DetailPanel does not have a UID for the selected symbol — `useSymbol` returns `SymbolResponse` which has no `uid` field at the response level. The file+line from `firstDef` is the most precise selector available and matches what the panel is displaying for homonyms.
+- **No syntax highlighting:** Per the task spec ("NO syntax-highlight dependency — match the existing signature `<pre>`"). Adding Prism/shiki would be a separate slice.
+- **`useSnippet` enabled gate via `snippetSelector !== undefined`:** Rather than a separate boolean, passing `{}` with `enabled=false` when there is no selector keeps the hook call unconditional (React hooks rules). The `useSnippet` hook's own `hasUid || hasSymbol || hasLocation` guard provides a second layer.
