@@ -30,6 +30,15 @@ Design notes:
   the explorer's needs (visualisation, not blast-radius analysis).
 - NEVER raises. Unknown symbol returns a safe empty envelope.
 
+A1 de-noise — top_hub_symbols():
+  The Explorer landing page ranks symbols by fan-in degree as natural entry points.
+  Without filtering, test helpers (e.g. _sym, _walk, _text) dominate the list because
+  they are called from every test in the suite — high degree, low real-world value.
+  top_hub_symbols() accepts show_tests: bool (default False) that post-filters via
+  seam.analysis.testpaths.is_test_file — the same single-source-of-truth predicate used
+  by seam_affected and seam_flows. An overscan (10×) ensures the non-test slice still
+  fills the requested limit even on very test-heavy repos.
+
 LAYER: seam.server (adapter layer) — may import from seam.query.* and seam.indexer.*
        but not from seam.cli.* or seam.server.mcp.*.
 """
@@ -37,6 +46,7 @@ LAYER: seam.server (adapter layer) — may import from seam.query.* and seam.ind
 import sqlite3
 from typing import Any
 
+from seam.analysis.testpaths import is_test_file as _is_test_file
 from seam.query.names import edge_match_names as _edge_match_names
 
 
@@ -351,7 +361,11 @@ def build_constellation(conn: sqlite3.Connection) -> dict[str, Any]:
     return {"clusters": clusters, "links": links}
 
 
-def top_hub_symbols(conn: sqlite3.Connection, limit: int = 8) -> list[dict[str, Any]]:
+def top_hub_symbols(
+    conn: sqlite3.Connection,
+    limit: int = 8,
+    show_tests: bool = False,
+) -> list[dict[str, Any]]:
     """Return the most-connected (highest-degree) symbols — the repo's hubs.
 
     These are the natural entry points for a landing page: the symbols everything
@@ -362,11 +376,27 @@ def top_hub_symbols(conn: sqlite3.Connection, limit: int = 8) -> list[dict[str, 
     builtins/stdlib (e.g. `print`, `len`) that appear only as edge targets are
     excluded — they have no row in `symbols`.
 
+    WHY show_tests=False by default: test helpers like _sym, _walk, _text are
+    highly connected in their own test suite but are NOT meaningful entry points
+    for a developer exploring production code. Excluding them by default surfaces
+    real production hubs (init_db, parse_file, etc.) on the landing page.
+    Reuses seam.analysis.testpaths.is_test_file — single source of test-path truth.
+
     Returns [{name, kind, degree, path}] sorted by degree desc, then name. `path`
     is a representative declaring file (lowest-id row for the name — homonym-safe);
     the explorer uses it to bucket hubs into functional areas. Empty list on any
     DB error or empty index. NEVER raises.
+
+    Args:
+        conn:       Open SQLite connection.
+        limit:      Maximum number of hubs to return.
+        show_tests: When False (default), exclude symbols whose representative
+                    declaring path is a test file (per is_test_file). When True,
+                    include them — useful for developers exploring the test graph.
     """
+    # Fetch a generous overscan so post-filter still yields `limit` hubs even if
+    # many are test paths. A 10× overscan is sufficient for any real codebase.
+    overscan = limit * 10
     try:
         rows = conn.execute(
             """
@@ -389,15 +419,23 @@ def top_hub_symbols(conn: sqlite3.Connection, limit: int = 8) -> list[dict[str, 
             ORDER BY d.degree DESC, d.name
             LIMIT ?
             """,
-            (limit,),
+            (overscan,),
         ).fetchall()
     except sqlite3.Error:
         return []
 
-    return [
-        {"name": r["name"], "kind": r["kind"], "degree": r["degree"], "path": r["path"]}
-        for r in rows
-    ]
+    result: list[dict[str, Any]] = []
+    for r in rows:
+        # Filter out test-path symbols unless the caller explicitly wants them.
+        if not show_tests and _is_test_file(r["path"]):
+            continue
+        result.append(
+            {"name": r["name"], "kind": r["kind"], "degree": r["degree"], "path": r["path"]}
+        )
+        if len(result) >= limit:
+            break
+
+    return result
 
 
 def list_structure(conn: sqlite3.Connection) -> list[dict[str, Any]]:

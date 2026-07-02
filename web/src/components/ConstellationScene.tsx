@@ -29,9 +29,8 @@ import { NodeCloud } from "./NodeCloud";
 import { EdgeLines } from "./EdgeLines";
 import { NodeLabels } from "./NodeLabels";
 import { NodeTooltip } from "./NodeTooltip";
-import { ClusterHalos } from "./ClusterHalos";
 import { CANVAS_BG } from "../lib/constellationColors";
-import type { LayoutNode, LayoutEdge, ClusterSummary } from "../lib/layoutTypes";
+import type { LayoutNode, LayoutEdge } from "../lib/layoutTypes";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -172,7 +171,6 @@ function AutoRotateController({ controlsRef }: AutoRotateControllerProps) {
 interface ConstellationSceneProps {
   nodes: LayoutNode[];
   edges: LayoutEdge[];
-  clusters: ClusterSummary[];
   highlightedIds: Set<number>;
   cameraTarget: CameraTarget | null;
   /** Currently hovered node (passed from ConstellationTab) for the tooltip. */
@@ -192,11 +190,13 @@ interface ConstellationSceneProps {
  *   OrbitControls — mouse/touch orbit with damping + idle auto-rotate
  *   EffectComposer + Bloom — post-processing glow corona
  *   CameraAnimator — smooth fly-to on node select
+ *
+ * Note: ClusterHalos removed in Phase A (A5) — the 556 translucent spheres
+ * composited into an opaque blob and ignored node/edge kind filters.
  */
 export function ConstellationScene({
   nodes,
   edges,
-  clusters,
   highlightedIds,
   cameraTarget,
   hoveredNode,
@@ -216,9 +216,6 @@ export function ConstellationScene({
       <ambientLight intensity={0.5} />
       <pointLight position={[500, 500, 500]} intensity={0.6} />
       <pointLight position={[-300, -200, -300]} intensity={0.4} color="#6040ff" />
-
-      {/* Cluster halos — faint translucent spheres marking functional areas (S6) */}
-      <ClusterHalos clusters={clusters} />
 
       {/* Node cloud — all nodes in one draw call */}
       <NodeCloud

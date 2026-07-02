@@ -22,6 +22,16 @@
  * Overlay-decoration logic (decorateNodes, buildOffCanvasNodes, decorateEdges,
  * visibleClusters, tierMap, traceHL) lives in useGraphOverlays to keep this file
  * under the 1000-line limit as HUD/filter/fly-to-fit slices are added.
+ *
+ * A3 de-noise (issue #216):
+ *   A symbol can be indexed with no edges (leaf function never called, new file,
+ *   synthesis not yet run). Rendering the full ReactFlow cockpit around a single
+ *   orphan node looks like a broken UI. The empty-state guard (isEmptyNeighborhood)
+ *   detects this case (nodeCount=1, edgeCount=0) and renders EmptyNeighborhoodState
+ *   instead — a lightweight panel that names the symbol and tells the user to run
+ *   `seam init` / `seam sync` to capture connections. Zero-node cases (loading /
+ *   API error) are deliberately excluded from the guard so they follow the normal
+ *   loading path.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -42,7 +52,8 @@ import {
 } from "@xyflow/react";
 import dagre from "dagre";
 import "@xyflow/react/dist/style.css";
-import { Zap, X } from "lucide-react";
+import { Zap, X, GitBranch } from "lucide-react";
+import { isEmptyNeighborhood } from "../lib/emptyNeighborhood";
 
 import { useNeighborhood, useImpact, useTrace } from "../api/hooks";
 import type { GraphNode, GraphEdge, NeighborhoodResponse } from "../api/schema-types";
@@ -355,6 +366,22 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
     );
   }
 
+  // ── Empty-state guard (A3) ────────────────────────────────────────────────
+  // When the API returns exactly 1 node and 0 edges, the symbol exists in the
+  // index but has no connections. Rendering the full ReactFlow cockpit around
+  // a single orphan node is misleading — show a lean informational panel instead
+  // so the user understands why the graph appears empty (not a UI bug).
+  if (centerData && isEmptyNeighborhood(centerData.nodes.length, centerData.edges.length)) {
+    const sym = centerData.nodes[0];
+    return (
+      <EmptyNeighborhoodState
+        name={sym.name}
+        kind={sym.kind}
+        signature={sym.signature ?? null}
+      />
+    );
+  }
+
   return (
     <div className="w-full h-full">
       <ReactFlow<SymbolRFNode, Edge>
@@ -435,6 +462,62 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
           traceNodeNames={traceNodeNames}
         />
       </ReactFlow>
+    </div>
+  );
+}
+
+// ── Empty-neighborhood panel (A3) ──────────────────────────────────────────
+
+/**
+ * Shown instead of the full ReactFlow cockpit when a symbol exists in the index
+ * but has zero connections — exactly 1 node, 0 edges.
+ *
+ * Communicates: "this symbol is indexed, but no callers/callees have been
+ * captured yet" so users don't confuse the state with a missing symbol or a
+ * broken graph.  Source-snippet display is intentionally out of scope (later
+ * phase — seam_snippet would be the right call there).
+ */
+interface EmptyNeighborhoodProps {
+  name: string;
+  kind: string | null;
+  signature: string | null;
+}
+
+function EmptyNeighborhoodState({ name, kind, signature }: EmptyNeighborhoodProps) {
+  return (
+    <div
+      data-testid="empty-neighborhood"
+      className="flex flex-col items-center justify-center w-full h-full gap-4 text-center px-8"
+    >
+      {/* Icon */}
+      <div className="p-3 rounded-full bg-zinc-800 border border-zinc-700">
+        <GitBranch className="w-6 h-6 text-zinc-500" />
+      </div>
+
+      {/* Symbol identity */}
+      <div className="flex flex-col items-center gap-1">
+        <h2 className="text-base font-semibold text-zinc-200 font-mono break-all">
+          {name}
+        </h2>
+        {kind && (
+          <span className="text-xs text-zinc-500 uppercase tracking-wide">{kind}</span>
+        )}
+        {signature && (
+          <p className="text-xs text-zinc-400 font-mono mt-1 max-w-sm truncate" title={signature}>
+            {signature}
+          </p>
+        )}
+      </div>
+
+      {/* Guidance */}
+      <p className="text-sm text-zinc-500 max-w-xs leading-relaxed">
+        No indexed connections found for this symbol.
+        <br />
+        <span className="text-zinc-600 text-xs">
+          Run <code className="font-mono">seam init</code> or <code className="font-mono">seam sync</code> to
+          refresh the index, or the symbol may have no callers or callees in this codebase.
+        </span>
+      </p>
     </div>
   );
 }

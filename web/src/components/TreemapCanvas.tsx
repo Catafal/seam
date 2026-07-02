@@ -12,11 +12,20 @@
  *
  * Layout is the pure squarify() helper; this component only measures the
  * container, renders rectangles, and manages drill/breadcrumb state.
+ *
+ * A2 de-noise (issue #215):
+ *   When drilling into a scoped area, the tree used to re-nest files under the
+ *   shared parent dirs they came from, producing empty intermediate levels like
+ *   "server > seam > server > tools.py". On drill, this component now calls
+ *   commonDirPrefix() on the scoped paths and passes the result as stripPrefix to
+ *   buildTree(), which strips it and collapses any residual single-child dir
+ *   chains via flattenSingleChild(). Files become immediately reachable in one
+ *   click instead of requiring n clicks to clear the redundant prefix levels.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStructure } from "../api/hooks";
-import { buildTree, type TreeNode } from "../lib/buildTree";
+import { buildTree, commonDirPrefix, type TreeNode } from "../lib/buildTree";
 import { squarify } from "../lib/treemapLayout";
 import { getClusterPalette } from "../lib/clusterColor";
 import { ChevronRight, Folder, FileCode2, Box, FunctionSquare } from "lucide-react";
@@ -64,9 +73,19 @@ export function TreemapCanvas({
     const allow = new Set(scopePaths);
     return (symbols ?? []).filter((s) => allow.has(s.path));
   }, [symbols, scopePaths]);
+
+  // When scoped to an area, strip the common dir prefix from all paths so the
+  // treemap does not re-nest files under their own parent dirs. For example, if
+  // all paths start with "seam/server/", the tree shows files directly instead
+  // of requiring the user to click through two empty intermediate dir nodes.
+  const stripPrefix = useMemo(
+    () => (scopePaths ? commonDirPrefix(scoped.map((s) => s.path)) : ""),
+    [scoped, scopePaths],
+  );
+
   const root = useMemo(
-    () => buildTree(scoped, scopeName ?? "repo"),
-    [scoped, scopeName],
+    () => buildTree(scoped, scopeName ?? "repo", stripPrefix),
+    [scoped, scopeName, stripPrefix],
   );
 
   // Drill trail: nodes from root to the current view. Empty = at root.

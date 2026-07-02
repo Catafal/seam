@@ -463,6 +463,120 @@ def test_top_hub_symbols_empty_db_safe(tmp_db: tuple[sqlite3.Connection, Path]) 
     assert top_hub_symbols(conn) == []
 
 
+# ── top_hub_symbols — test-exclusion (A1) ────────────────────────────────────────
+
+
+def test_top_hub_symbols_excludes_test_paths_by_default(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """A1: default show_tests=False excludes symbols whose declaring file is in a test path.
+
+    WHY: the landing 'Key symbols' should show real hubs (e.g. init_db, parse_file),
+    not test helpers (_sym, _walk, _text) that are highly connected only because the
+    test suite itself calls them in many tests.
+    """
+    from seam.server.graph_api import top_hub_symbols
+
+    conn, tmp = tmp_db
+    src_file = str(tmp / "a.py")
+    test_file = str(tmp / "tests" / "conftest.py")
+    # Create the test directory + file so upsert_file can stat them.
+    (tmp / "tests").mkdir(exist_ok=True)
+    (tmp / "tests" / "conftest.py").write_text("# stub\n")
+
+    # source hub: degree 4 (called by 4 others).
+    upsert_file(conn, Path(src_file), "python", "h1", [
+        _sym("src_hub", src_file),
+        _sym("a", src_file),
+        _sym("b", src_file),
+        _sym("c", src_file),
+        _sym("d", src_file),
+    ], [
+        _edge("a", "src_hub", src_file),
+        _edge("b", "src_hub", src_file),
+        _edge("c", "src_hub", src_file),
+        _edge("d", "src_hub", src_file),
+    ])
+
+    # test hub: degree 5 (higher than src_hub but lives in tests/).
+    upsert_file(conn, Path(test_file), "python", "h2", [
+        _sym("test_hub", test_file),
+        _sym("t1", test_file),
+        _sym("t2", test_file),
+        _sym("t3", test_file),
+        _sym("t4", test_file),
+        _sym("t5", test_file),
+    ], [
+        _edge("t1", "test_hub", test_file),
+        _edge("t2", "test_hub", test_file),
+        _edge("t3", "test_hub", test_file),
+        _edge("t4", "test_hub", test_file),
+        _edge("t5", "test_hub", test_file),
+    ])
+
+    # Default: show_tests=False — test_hub must be absent even though it has higher degree.
+    names = [h["name"] for h in top_hub_symbols(conn, limit=10)]
+    assert "src_hub" in names, "source hub should appear by default"
+    assert "test_hub" not in names, "test hub must be excluded by default (show_tests=False)"
+
+
+def test_top_hub_symbols_show_tests_includes_test_path(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """A1: show_tests=True re-includes symbols from test paths.
+
+    WHY: a developer may want to see which test helpers are hottest. The toggle
+    makes the exclusion opt-out, not permanent.
+    """
+    from seam.server.graph_api import top_hub_symbols
+
+    conn, tmp = tmp_db
+    test_file = str(tmp / "tests" / "conftest.py")
+    (tmp / "tests").mkdir(exist_ok=True)
+    (tmp / "tests" / "conftest.py").write_text("# stub\n")
+
+    upsert_file(conn, Path(test_file), "python", "h1", [
+        _sym("test_helper", test_file),
+        _sym("x", test_file),
+    ], [
+        _edge("x", "test_helper", test_file),
+    ])
+
+    # With show_tests=True the helper must be included.
+    names_with = [h["name"] for h in top_hub_symbols(conn, limit=10, show_tests=True)]
+    assert "test_helper" in names_with, "show_tests=True should include test-path hubs"
+
+    # Without it (default) it must be absent.
+    names_without = [h["name"] for h in top_hub_symbols(conn, limit=10)]
+    assert "test_helper" not in names_without, "show_tests=False (default) should exclude test-path hubs"
+
+
+def test_top_hub_symbols_source_hub_ranked_before_test_hub_with_show_tests(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """A1: when show_tests=True, ordering is still degree DESC (source or test, best hub first)."""
+    from seam.server.graph_api import top_hub_symbols
+
+    conn, tmp = tmp_db
+    src_file = str(tmp / "a.py")
+    test_file = str(tmp / "tests" / "helpers.py")
+    (tmp / "tests").mkdir(exist_ok=True)
+    (tmp / "tests" / "helpers.py").write_text("# stub\n")
+
+    # src_hub degree 3, test_hub degree 2 — src_hub must come first.
+    upsert_file(conn, Path(src_file), "python", "h1", [
+        _sym("src_hub", src_file), _sym("a", src_file), _sym("b", src_file), _sym("c", src_file),
+    ], [
+        _edge("a", "src_hub", src_file),
+        _edge("b", "src_hub", src_file),
+        _edge("c", "src_hub", src_file),
+    ])
+    upsert_file(conn, Path(test_file), "python", "h2", [
+        _sym("test_hub", test_file), _sym("t1", test_file), _sym("t2", test_file),
+    ], [
+        _edge("t1", "test_hub", test_file),
+        _edge("t2", "test_hub", test_file),
+    ])
+
+    hubs = top_hub_symbols(conn, limit=10, show_tests=True)
+    names = [h["name"] for h in hubs]
+    assert names.index("src_hub") < names.index("test_hub"), "src_hub (degree 3) must rank above test_hub (degree 2)"
+
+
 # ── list_structure (treemap source) ─────────────────────────────────────────────
 
 

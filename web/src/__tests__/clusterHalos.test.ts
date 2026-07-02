@@ -1,31 +1,19 @@
 /**
- * S6 TDD tests for ClusterHalos.tsx.
+ * Tests for the resolveToNode 2D→3D sync helper (previously in clusterHalos.test.ts).
  *
- * ClusterHalos is a pure R3F component (no WebGL-testable logic),
- * so we verify:
- *   1. The module exports a ClusterHalos function component.
- *   2. The focusSymbol 2D→3D sync helper can be extracted and tested.
- *
- * The actual halo rendering (sphereGeometry, meshBasicMaterial) is verified
- * manually in the browser; jsdom has no WebGL.
+ * ClusterHalos was removed in Phase A (A5) — the component caused an opaque
+ * green blob by additively compositing 556 translucent spheres and ignoring
+ * node/edge kind filters. This file retains the resolveToNode coverage which
+ * is independent of the removed component.
  */
 
 import { describe, it, expect } from "vitest";
-
-describe("ClusterHalos module", () => {
-  it("exports ClusterHalos as a function (R3F component)", async () => {
-    const mod = await import("../components/ClusterHalos");
-    expect(typeof mod.ClusterHalos).toBe("function");
-  });
-});
-
-// ── focusSymbol sync: resolveToNode helper ────────────────────────────────────
-
-/**
- * resolveToNode — pure helper used by ConstellationTab to locate a node by name
- * when the 2D side sets focusSymbol. Exported from ConstellationTab for testing.
- */
 import type { LayoutNode } from "../lib/layoutTypes";
+
+// ── resolveToNode — pure helper from ConstellationTab ────────────────────────
+//
+// Inline here rather than importing from ConstellationTab, which is a default
+// export (lazy) and pulls in heavy R3F/drei deps that confuse jsdom.
 
 function resolveToNode(name: string | null | undefined, nodes: LayoutNode[]): LayoutNode | null {
   if (!name) return null;
