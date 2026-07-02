@@ -35,3 +35,16 @@ Seam is designed to be **local-first and offline**:
 The most relevant threat surfaces are therefore: parsing untrusted source files
 (tree-sitter), the optional web UI, and the install/config writers (`seam install`).
 Reports in these areas are especially welcome.
+
+## Release integrity
+
+PyPI releases are built and published exclusively via CI on a `v*` tag push
+(`release.yml`). Supply-chain controls in place:
+
+- Every GitHub Actions `uses:` ref is pinned to a full 40-hex commit SHA
+  (enforced by `tests/unit/test_actions_pin_audit.py` in `make gate`).
+- The publish job requires `gate` (ruff + mypy + pytest) and a `smoke` matrix
+  (3.12, 3.13) to pass first — a red build cannot reach PyPI.
+- `checksums.txt` (SHA-256 of sdist + wheel) is attached to each GitHub Release.
+- PEP 740 build attestations (`attestations: true`) are enabled on the PyPI
+  Trusted Publishing (OIDC) publish step.
