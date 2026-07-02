@@ -18,9 +18,18 @@ Design decisions:
 - Never raises: any error in the real path is logged as a warning and the function
   returns the safe default ([] or b'').
 
+WS1-A additions:
+- extract_body_slice(source_lines, start_line, end_line) → str: pure helper that
+  extracts a 1-based inclusive line range from already-read source lines. Guards all
+  edge cases (empty, out-of-range, start > end) without raising. No disk IO.
+- symbol_text() accepts optional keyword-only args `body` and `max_chars`. With both
+  unset, output is byte-identical to the original 3-arg call. The header (name +
+  signature + docstring) is NEVER truncated; body fills any remaining max_chars budget.
+
 Public API:
     is_available() -> bool
-    symbol_text(name, signature, docstring) -> str
+    extract_body_slice(source_lines, start_line, end_line) -> str
+    symbol_text(name, signature, docstring, *, body=None, max_chars=None) -> str
     embed_texts(texts, model) -> list[bytes]
     embed_query(text, model) -> bytes
     _get_model(model)   <- internal, exposed for monkeypatching in tests
@@ -81,10 +90,57 @@ def _get_model(model: str) -> Any:
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
+def extract_body_slice(source_lines: list[str], start_line: int, end_line: int) -> str:
+    """Extract a contiguous body slice from already-read source lines.
+
+    Takes a list of file lines (0-indexed in the list, but accessed via 1-based
+    line numbers) and returns the inclusive range [start_line, end_line] joined
+    with newlines. Guards all edge cases without raising.
+
+    WHY no disk IO here: callers (index_embeddings) handle file reads with a per-file
+    cache. This function stays pure and is cleanly unit-testable in isolation.
+
+    Guards:
+    - Empty source_lines → ""
+    - start_line < 1 (0 or negative) → ""
+    - start_line > end_line → ""
+    - start_line > len(source_lines) → ""
+    - end_line > len(source_lines) → clamped to len(source_lines) (graceful)
+
+    Args:
+        source_lines: Lines of the source file as a list (from file.splitlines()).
+        start_line:   1-based start line (inclusive).
+        end_line:     1-based end line (inclusive).
+
+    Returns:
+        Joined text of the requested lines, or "" on any out-of-range condition.
+        Never raises.
+    """
+    # Guard: trivial / degenerate cases
+    if not source_lines:
+        return ""
+    if start_line < 1:
+        return ""
+    if start_line > end_line:
+        return ""
+    if start_line > len(source_lines):
+        return ""
+
+    # Clamp end_line to the last valid line (1-based → 0-based: end_line-1)
+    clamped_end = min(end_line, len(source_lines))
+
+    # Convert to 0-based slice: [start_line-1, clamped_end) (exclusive upper bound)
+    selected = source_lines[start_line - 1 : clamped_end]
+    return "\n".join(selected)
+
+
 def symbol_text(
     name: str,
     signature: str | None,
     docstring: str | None,
+    *,
+    body: str | None = None,
+    max_chars: int | None = None,
 ) -> str:
     """Build the canonical text string to embed for a symbol.
 
@@ -95,20 +151,50 @@ def symbol_text(
     parameter types and return type (shape of the function); docstring provides
     intent and usage context. Together they cover both syntactic and semantic search.
 
+    WS1-A: optional keyword-only args `body` and `max_chars` extend the output with
+    a leading slice of the symbol's implementation body. The header is NEVER truncated.
+    When body and max_chars are both unset (the default), output is byte-identical to
+    the original 3-arg call — no behaviour change.
+
     Args:
         name:       Symbol name (always included).
         signature:  Function/class signature, or None.
         docstring:  Docstring / documentation text, or None.
+        body:       Implementation body text (pre-sliced). Appended after the header
+                    when max_chars allows it. None or '' → no body appended.
+        max_chars:  Character budget for the combined output (header + body). The
+                    header is assembled first and is NEVER truncated. If budget
+                    remains after the header, body is appended up to the remaining
+                    chars. None → body is ignored (byte-identical to 3-arg output).
 
     Returns:
         A single str suitable for embedding. Never raises.
     """
+    # ── Header (identical to pre-WS1-A, always assembled in full) ────────────
     parts: list[str] = [name]
     if signature:
         parts.append(signature)
     if docstring:
         parts.append(docstring)
-    return "\n".join(parts)
+    header = "\n".join(parts)
+
+    # ── No body path: byte-identical to pre-WS1-A default ────────────────────
+    # Body is only appended when BOTH body text AND max_chars are provided.
+    if not body or max_chars is None:
+        return header
+
+    # ── Body path: fill remaining budget after header ─────────────────────────
+    # header_len + 1 separator newline; if the header already fills the budget,
+    # there is nothing left for the body — return header as-is (never truncate).
+    separator = "\n"
+    used = len(header) + len(separator)
+    remaining = max_chars - used
+    if remaining <= 0:
+        return header
+
+    # Truncate body to remaining budget (leading slice)
+    body_slice = body[:remaining]
+    return header + separator + body_slice
 
 
 def embed_texts(texts: list[str], model: str) -> list[bytes]:
