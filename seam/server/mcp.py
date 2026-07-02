@@ -35,7 +35,6 @@ Design:
 
 import functools
 import inspect
-import json
 import sqlite3
 import time
 from collections.abc import Callable
@@ -47,7 +46,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 import seam.config as config
 from seam.analysis.changes import DEFAULT_BASE_REF
-from seam.analysis.diagnostics import DiagnosticsRecorder, make_recorder
+from seam.analysis.diagnostics import DiagnosticsRecorder, make_recorder, result_chars
 from seam.server.tools import (
     handle_seam_affected,
     handle_seam_architecture,
@@ -106,21 +105,6 @@ def _finalize(result: Any) -> Any:
     return result
 
 
-def _result_chars(result: Any) -> int:
-    """Character count of the serialized tool result — a size proxy, never content.
-
-    Used only for the diagnostics slow-query record. The serialized string is
-    measured and discarded; it is NEVER stored, so no source text leaks. Returns 0
-    for None (error/not-found) and degrades to 0 on any serialization failure.
-    """
-    if result is None:
-        return 0
-    try:
-        return len(json.dumps(result, ensure_ascii=False, default=str))
-    except Exception:  # noqa: BLE001 — size proxy must never break a tool call
-        return 0
-
-
 def _make_instrument(recorder: DiagnosticsRecorder) -> Callable[[str], Callable[..., Any]]:
     """Build a per-tool timing decorator bound to a process diagnostics recorder.
 
@@ -146,7 +130,7 @@ def _make_instrument(recorder: DiagnosticsRecorder) -> Callable[[str], Callable[
                     return result
                 finally:
                     duration_ms = (time.perf_counter() - start) * 1000.0
-                    recorder.record_query(tool_name, duration_ms, _result_chars(result))
+                    recorder.record_query(tool_name, duration_ms, result_chars(result))
 
             # Preserve the original signature so FastMCP builds the correct input
             # schema from the wrapper (functools.wraps sets __wrapped__, but pinning

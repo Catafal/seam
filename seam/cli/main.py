@@ -49,6 +49,7 @@ from seam.analysis.changes import (
     NotAGitRepoError,
     detect_changes,
 )
+from seam.analysis.diagnostics import run_query
 from seam.analysis.flows import callees as flows_callees
 from seam.analysis.flows import callers as flows_callers
 from seam.analysis.flows import trace as flows_trace
@@ -882,16 +883,19 @@ def impact_cmd(
             #   Passing limit=0 + max_bytes=0 + verbose=True overrides --lean/--limit/--max-bytes
             #   so the file always contains the full blast radius regardless of what the user
             #   passed for display purposes.
-            result = handle_seam_impact(
-                conn,
-                target=symbol,
-                root=project_root,
-                direction=direction,
-                max_depth=depth,
-                include_tests=include_tests,
-                verbose=True,
-                limit=0,
-                max_bytes=0,
+            result = run_query(
+                "seam_impact",
+                lambda: handle_seam_impact(
+                    conn,
+                    target=symbol,
+                    root=project_root,
+                    direction=direction,
+                    max_depth=depth,
+                    include_tests=include_tests,
+                    verbose=True,
+                    limit=0,
+                    max_bytes=0,
+                ),
             )
         else:
             # WHY: ALL three modes (--json, --quiet, Rich) route through handle_seam_impact
@@ -899,16 +903,19 @@ def impact_cmd(
             # uniformly. The Rich path previously called impact() directly and so silently
             # ignored --limit and --lean (a confirmed parity bug). One handler = one source
             # of truth; Rich now renders the same capped result --json returns.
-            result = handle_seam_impact(
-                conn,
-                target=symbol,
-                root=project_root,
-                direction=direction,
-                max_depth=depth,
-                include_tests=include_tests,
-                verbose=verbose,
-                limit=limit,
-                max_bytes=max_bytes,
+            result = run_query(
+                "seam_impact",
+                lambda: handle_seam_impact(
+                    conn,
+                    target=symbol,
+                    root=project_root,
+                    direction=direction,
+                    max_depth=depth,
+                    include_tests=include_tests,
+                    verbose=verbose,
+                    limit=limit,
+                    max_bytes=max_bytes,
+                ),
             )
     finally:
         conn.close()
@@ -1213,13 +1220,16 @@ def trace_cmd(
     try:
         # WHY: reuse handle_seam_trace for --json/--quiet/--to-file to ensure MCP/CLI parity.
         if json_ or quiet or (to_file or to_file_path):
-            result = handle_seam_trace(
-                conn,
-                source=source,
-                target=target,
-                root=project_root,
-                max_depth=safe_depth,
-                verbose=verbose,
+            result = run_query(
+                "seam_trace",
+                lambda: handle_seam_trace(
+                    conn,
+                    source=source,
+                    target=target,
+                    root=project_root,
+                    max_depth=safe_depth,
+                    verbose=verbose,
+                ),
             )
         else:
             # Thread project_root as repo_root for Phase 5 import-promotion so

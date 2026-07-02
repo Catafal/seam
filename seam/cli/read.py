@@ -18,6 +18,7 @@ from rich.console import Console
 from rich.table import Table
 
 import seam.config as config
+from seam.analysis.diagnostics import run_query
 from seam.cli.file_sink import write_output_file
 from seam.cli.output import (
     check_mutual_exclusion,
@@ -182,7 +183,12 @@ def search_command(
         # --no-semantic: pass semantic=False to bypass the hybrid path without mutating
         # global config. This is safe for both single-threaded CLI use and any future
         # concurrent context. (DRIFT-1 fix: no more module-attribute patching.)
-        result = handle_seam_search(conn, text, project_root, limit=limit, semantic=not no_semantic)
+        result = run_query(
+            "seam_search",
+            lambda: handle_seam_search(
+                conn, text, project_root, limit=limit, semantic=not no_semantic
+            ),
+        )
     finally:
         conn.close()
 
@@ -222,8 +228,11 @@ def query_command(
 
     conn, project_root = _open_index(path, db_dir, json_)
     try:
-        result = handle_seam_query(
-            conn, concept, project_root, limit=limit, semantic=not no_semantic
+        result = run_query(
+            "seam_query",
+            lambda: handle_seam_query(
+                conn, concept, project_root, limit=limit, semantic=not no_semantic
+            ),
         )
     finally:
         conn.close()
@@ -281,7 +290,10 @@ def context_command(
     db_path = config.get_db_path(Path(db_dir).resolve() if db_dir else project_root)
     try:
         # --lean maps to verbose=False — byte-identical to the MCP tool with verbose=False.
-        result = handle_seam_context(conn, symbol, project_root, verbose=not lean)
+        result = run_query(
+            "seam_context",
+            lambda: handle_seam_context(conn, symbol, project_root, verbose=not lean),
+        )
     finally:
         conn.close()
 

@@ -333,3 +333,58 @@ def make_recorder() -> DiagnosticsRecorder:
         path=config.SEAM_DIAGNOSTICS_PATH,
         slow_ms=config.SEAM_DIAGNOSTICS_SLOW_MS,
     )
+
+
+# ── Process-level singleton + query helpers (shared by MCP + CLI + watcher) ────
+
+_process_recorder: DiagnosticsRecorder | None = None
+
+
+def get_recorder() -> DiagnosticsRecorder:
+    """Return the ONE diagnostics recorder for this process, creating it on first use.
+
+    A single recorder per process means a single atexit snapshot flush and a single
+    accumulating query counter — the correct model for both the long-lived MCP server
+    and a short-lived CLI invocation (which reconstructs cross-invocation trends from
+    the append-only NDJSON file, not from this per-process counter).
+    """
+    global _process_recorder
+    if _process_recorder is None:
+        _process_recorder = make_recorder()
+    return _process_recorder
+
+
+def result_chars(result: Any) -> int:
+    """Character count of a serialized tool result — a SIZE PROXY, never content.
+
+    The serialized string is measured and immediately discarded; it is NEVER stored,
+    so no source text can leak into diagnostics. Returns 0 for None (error/not-found)
+    and degrades to 0 on any serialization failure. Shared by the MCP and CLI paths.
+    """
+    if result is None:
+        return 0
+    try:
+        return len(json.dumps(result, ensure_ascii=False, default=str))
+    except Exception:  # noqa: BLE001 — size proxy must never break a caller
+        return 0
+
+
+def run_query(tool: str, thunk: Any) -> Any:
+    """Time and record a read-query call, returning the thunk's result unchanged.
+
+    Used by the CLI read commands (seam query/search/context/impact/trace). When
+    diagnostics is off this is a transparent passthrough (one attribute check). When
+    on, it times the thunk and records (tool, duration_ms, result_chars) — a slow_query
+    line is written only when the call exceeds SEAM_DIAGNOSTICS_SLOW_MS; the query count
+    (surfaced in the atexit snapshot) is always incremented. Never alters the result.
+    """
+    rec = get_recorder()
+    if not rec.enabled:
+        return thunk()
+    start = time.perf_counter()
+    result: Any = None
+    try:
+        result = thunk()
+        return result
+    finally:
+        rec.record_query(tool, (time.perf_counter() - start) * 1000.0, result_chars(result))
