@@ -24,7 +24,7 @@
  * under the 1000-line limit as HUD/filter/fly-to-fit slices are added.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ReactFlow,
   MiniMap,
@@ -59,6 +59,11 @@ import {
 } from "../lib/edgeFilter";
 import { useGraphOverlays } from "../hooks/useGraphOverlays";
 import { computeHudCounts } from "../lib/hudCounts";
+import {
+  countVisibleEdgesByKind,
+  countVisibleEdgesByConfidence,
+} from "../lib/filterBarCounts";
+import { ALL_EDGE_KINDS, ALL_CONFIDENCES } from "../lib/edgeFilter";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -255,6 +260,17 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
     filter,
   });
 
+  // ── Filter counts from post-overlay edges (updates after impact/trace) ──────
+  // useMemo so counts only recompute when displayEdges actually changes.
+  const kindCounts = useMemo(
+    () => countVisibleEdgesByKind(displayEdges),
+    [displayEdges],
+  );
+  const confidenceCounts = useMemo(
+    () => countVisibleEdgesByConfidence(displayEdges),
+    [displayEdges],
+  );
+
   // ── Handlers ──────────────────────────────────────────────────────────────
   const handleNodeClick: NodeMouseHandler<SymbolRFNode> = useCallback(
     (_evt, node) => {
@@ -270,6 +286,24 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
   const handleToggleFilter = useCallback(
     (field: "kinds" | "confidences", value: string) =>
       setFilter((f) => toggleFilterValue(f, field, value)),
+    [],
+  );
+  // Select-all: enable every kind / confidence tier.
+  const handleAllKinds = useCallback(
+    () => setFilter((f) => ({ ...f, kinds: new Set(ALL_EDGE_KINDS) })),
+    [],
+  );
+  // Clear-all: disable every kind (no edges visible until re-enabled).
+  const handleNoneKinds = useCallback(
+    () => setFilter((f) => ({ ...f, kinds: new Set<string>() })),
+    [],
+  );
+  const handleAllConfidences = useCallback(
+    () => setFilter((f) => ({ ...f, confidences: new Set(ALL_CONFIDENCES) })),
+    [],
+  );
+  const handleNoneConfidences = useCallback(
+    () => setFilter((f) => ({ ...f, confidences: new Set<string>() })),
     [],
   );
 
@@ -323,7 +357,16 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
             {impactActive && impactData && (
               <ImpactSummary summary={impactData.risk_summary} />
             )}
-            <FilterBar filter={filter} onToggle={handleToggleFilter} />
+            <FilterBar
+              filter={filter}
+              onToggle={handleToggleFilter}
+              onAllKinds={handleAllKinds}
+              onNoneKinds={handleNoneKinds}
+              onAllConfidences={handleAllConfidences}
+              onNoneConfidences={handleNoneConfidences}
+              kindCounts={kindCounts}
+              confidenceCounts={confidenceCounts}
+            />
           </div>
         </Panel>
 
