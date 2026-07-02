@@ -33,6 +33,9 @@ coverage.xml
 # Shipped inside the wheel via hatch artifacts config; not committed to git.
 seam/_web/
 
+# npm shim dev dependencies — never committed (install with: cd pkg/npm && npm install)
+pkg/npm/node_modules/
+
 # Competitor index artifacts (benchmark only — never committed)
 .codegraph/
 graphify-out/
