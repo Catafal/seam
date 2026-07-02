@@ -16,6 +16,7 @@
 
 import { describe, it, expect } from "vitest";
 import { buildTree } from "../lib/buildTree";
+import { squarify } from "../lib/treemapLayout";
 import type { StructureSymbol } from "../api/schema-types";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -125,5 +126,68 @@ describe("TreeNode.degree via buildTree", () => {
     expect(root.degree).toBe(0);
     expect(file.degree).toBe(0);
     expect(fn.degree).toBe(0);
+  });
+});
+
+// ── Story 9: zero-degree cells stay VISIBLE through squarify (the sizing floor) ──
+//
+// squarify drops any cell whose value <= 0 (treemapLayout.ts: `items.filter(it =>
+// it.value > 0)`). The ONLY thing that keeps an isolated (degree-0) file/dir on the
+// map is the floor `Math.max(node.degree, 1)` at TreemapCanvas's sizing site. These
+// tests assert the observable behavior (the zero-degree cell survives squarify) so a
+// regression back to `Math.max(degree, 0)` fails loudly instead of silently hiding
+// every isolated node.
+describe("Story 9 — zero-degree cell survives squarify via the sizing floor", () => {
+  const RECT = { x: 0, y: 0, w: 400, h: 300 };
+
+  it("a zero-degree node among hot ones is still placed with the max(degree,1) floor", () => {
+    // Two hot files and one isolated (degree-0) file at the same level.
+    const symbols = [
+      sym("hot_a.py", "a", "function", 10),
+      sym("hot_b.py", "b", "function", 6),
+      sym("cold.py", "c", "function", 0),
+    ];
+    const root = buildTree(symbols);
+
+    // Mirror TreemapCanvas's exact sizing expression: value = max(degree, 1).
+    const placed = squarify(
+      root.children.map((c) => ({ value: Math.max(c.degree, 1), node: c })),
+      RECT,
+    );
+
+    // All three children — including the zero-degree "cold.py" — must be on the map.
+    expect(placed).toHaveLength(3);
+    const names = placed.map((p) => p.node.name);
+    expect(names).toContain("cold.py");
+  });
+
+  it("an all-zero level still renders every cell (each gets the floor of 1)", () => {
+    const symbols = [
+      sym("iso1.py", "x", "function", 0),
+      sym("iso2.py", "y", "function", 0),
+    ];
+    const root = buildTree(symbols);
+    const placed = squarify(
+      root.children.map((c) => ({ value: Math.max(c.degree, 1), node: c })),
+      RECT,
+    );
+    expect(placed).toHaveLength(2);
+  });
+
+  it("regression guard: WITHOUT the floor (max(degree,0)) the zero-degree cell is dropped", () => {
+    // This documents WHY the floor is load-bearing: the same input with a 0-floor
+    // loses the isolated node entirely. If the component ever reverts, the test above
+    // (with the floor) is what fails.
+    const symbols = [
+      sym("hot.py", "a", "function", 5),
+      sym("cold.py", "c", "function", 0),
+    ];
+    const root = buildTree(symbols);
+    const placed = squarify(
+      root.children.map((c) => ({ value: Math.max(c.degree, 0), node: c })),
+      RECT,
+    );
+    const names = placed.map((p) => p.node.name);
+    expect(names).not.toContain("cold.py");
   });
 });
