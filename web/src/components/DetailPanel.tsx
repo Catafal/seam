@@ -94,26 +94,42 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 
 // ── Main component ─────────────────────────────────────────────────────────────
 
+// Default panel width in pixels — matches the former fixed Tailwind w-72 (18rem = 288px)
+// so the panel looks identical before the user drags the handle for the first time.
+const DEFAULT_PANEL_WIDTH = 288;
+
 export interface DetailPanelProps {
   /** The symbol name to show detail for, or null when nothing is selected */
   selectedSymbol: string | null;
+  /**
+   * Explicit panel width in pixels (set by the ResizeHandle in App.tsx).
+   * Applies to ALL render branches so width never snaps when loading/error states change.
+   * Defaults to DEFAULT_PANEL_WIDTH (288px = w-72) when omitted.
+   */
+  width?: number;
 }
 
 /**
  * Right-side detail panel driven by a selected symbol name.
  * Delegates data fetching to useSymbol() (TanStack Query hook).
  */
-export function DetailPanel({ selectedSymbol }: DetailPanelProps) {
+export function DetailPanel({ selectedSymbol, width }: DetailPanelProps) {
   const { data, isLoading } = useSymbol(selectedSymbol);
   // useClusters is always-enabled (TanStack Query caches it from the landing page call)
   // so this does not cause a duplicate network request when the user navigates to a symbol
   const { data: clusters } = useClusters();
 
+  // Pixel width applied to all branches so the panel never snaps between states.
+  // When the caller controls width (ResizeHandle), we use their value; otherwise the
+  // CSS default (DEFAULT_PANEL_WIDTH) keeps the layout identical to before.
+  const panelStyle: React.CSSProperties = { width: width ?? DEFAULT_PANEL_WIDTH };
+
   // ── Null state ─────────────────────────────────────────────────────────────
   if (selectedSymbol === null) {
     return (
       <aside
-        className="w-72 shrink-0 border-l border-zinc-800 bg-zinc-950 flex flex-col items-center justify-center text-center p-6"
+        className="shrink-0 border-l border-zinc-800 bg-zinc-950 flex flex-col items-center justify-center text-center p-6"
+        style={panelStyle}
         aria-label="Symbol detail panel"
       >
         <p className="text-xs text-zinc-600">
@@ -127,7 +143,8 @@ export function DetailPanel({ selectedSymbol }: DetailPanelProps) {
   if (isLoading) {
     return (
       <aside
-        className="w-72 shrink-0 border-l border-zinc-800 bg-zinc-950 flex flex-col items-center justify-center"
+        className="shrink-0 border-l border-zinc-800 bg-zinc-950 flex flex-col items-center justify-center"
+        style={panelStyle}
         aria-label="Symbol detail panel"
       >
         <p className="text-xs text-zinc-500 animate-pulse">Loading…</p>
@@ -139,7 +156,8 @@ export function DetailPanel({ selectedSymbol }: DetailPanelProps) {
   if (!data) {
     return (
       <aside
-        className="w-72 shrink-0 border-l border-zinc-800 bg-zinc-950 flex flex-col items-center justify-center p-6"
+        className="shrink-0 border-l border-zinc-800 bg-zinc-950 flex flex-col items-center justify-center p-6"
+        style={panelStyle}
         aria-label="Symbol detail panel"
       >
         <p className="text-xs text-zinc-500">
@@ -158,7 +176,8 @@ export function DetailPanel({ selectedSymbol }: DetailPanelProps) {
 
   return (
     <aside
-      className="w-72 shrink-0 border-l border-zinc-800 bg-zinc-950 overflow-y-auto flex flex-col"
+      className="shrink-0 border-l border-zinc-800 bg-zinc-950 overflow-y-auto flex flex-col"
+      style={panelStyle}
       aria-label="Symbol detail panel"
     >
       {/* ── Name + cluster stripe ───────────────────────────────────────── */}

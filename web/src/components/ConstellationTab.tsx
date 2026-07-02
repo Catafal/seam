@@ -27,7 +27,7 @@ import { ConstellationScene, computeCameraTarget } from "./ConstellationScene";
 import { NodeDetailPanel } from "./NodeDetailPanel";
 import { FilterPanel } from "./FilterPanel";
 import { ConstellationHUD } from "./ConstellationHUD";
-import { ResizeHandle, clampPanelWidth } from "./ResizeHandle";
+import { ResizeHandle, clampPanelWidth, readPanelWidth } from "./ResizeHandle";
 import { useLayoutData, GRAPH_RENDER_NODE_LIMIT } from "../hooks/useLayoutData";
 import type { CameraTarget } from "./ConstellationScene";
 import type { LayoutNode, LayoutEdge } from "../lib/layoutTypes";
@@ -41,15 +41,6 @@ const DEFAULT_LEFT_W = 200;
 const DEFAULT_RIGHT_W = 280;
 const LS_LEFT_KEY = "seam-left-w";
 const LS_RIGHT_KEY = "seam-right-w";
-
-function readWidth(key: string, fallback: number): number {
-  try {
-    const v = localStorage.getItem(key);
-    return v ? clampPanelWidth(Number(v)) : fallback;
-  } catch {
-    return fallback;
-  }
-}
 
 // ── Pure helper ───────────────────────────────────────────────────────────────
 
@@ -99,8 +90,8 @@ export default function ConstellationTab({
   const [enabledEdges, setEnabledEdges] = useState<Set<string>>(new Set(EDGE_KINDS));
 
   // ── Panel widths (persisted to localStorage) ───────────────────────────────
-  const [leftW, setLeftW] = useState(() => readWidth(LS_LEFT_KEY, DEFAULT_LEFT_W));
-  const [rightW, setRightW] = useState(() => readWidth(LS_RIGHT_KEY, DEFAULT_RIGHT_W));
+  const [leftW, setLeftW] = useState(() => readPanelWidth(LS_LEFT_KEY, DEFAULT_LEFT_W));
+  const [rightW, setRightW] = useState(() => readPanelWidth(LS_RIGHT_KEY, DEFAULT_RIGHT_W));
 
   // Persist widths on change
   useEffect(() => {

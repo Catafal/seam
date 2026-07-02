@@ -22,10 +22,29 @@ import { GraphCanvas } from "./components/GraphCanvas";
 import { DetailPanel } from "./components/DetailPanel";
 import { ChangesDrawer } from "./components/ChangesDrawer";
 import { StructureOverview } from "./components/StructureOverview";
+import { ResizeHandle, clampPanelWidth, readPanelWidth } from "./components/ResizeHandle";
 import { useStatus, useSearch, useClusters, useHubs } from "./api/hooks";
 import type { ClusterItem, SearchResultItem, HubSymbol } from "./api/schema-types";
 import { clusterColor } from "./lib/clusterColor";
 import { GitBranch, Orbit, Network, Route } from "lucide-react";
+
+// ── 2D detail-panel resize constants ─────────────────────────────────────────
+
+/**
+ * localStorage key for the 2D detail-panel width.
+ * Uses a 2D-specific key so it does not collide with the 3D panel keys
+ * ("seam-left-w", "seam-right-w") stored by ConstellationTab.
+ */
+const LS_2D_DETAIL_KEY = "seam-2d-detail-w";
+
+/** Default detail-panel width — matches the former fixed Tailwind w-72 (288px). */
+const DEFAULT_2D_DETAIL_W = 288;
+
+/**
+ * Minimum canvas width so dragging the handle all the way cannot collapse the graph.
+ * Keeps at least this many pixels available for the GraphCanvas at all times.
+ */
+const CANVAS_MIN_W = 300;
 
 // Lazy-load the 3D constellation tab to keep the main bundle small.
 // three.js + R3F are not loaded until the user clicks "Constellation".
@@ -422,6 +441,25 @@ function App() {
   // focusSymbol: shared between 2D and 3D views for cross-tab navigation
   const [focusSymbol, setFocusSymbol] = useState<string | null>(null);
 
+  // detailW: 2D detail-panel width in px, persisted to localStorage.
+  // Initialized from localStorage so the user's last drag position survives reloads.
+  const [detailW, setDetailW] = useState(() =>
+    readPanelWidth(LS_2D_DETAIL_KEY, DEFAULT_2D_DETAIL_W),
+  );
+
+  // Persist detail panel width whenever it changes
+  useEffect(() => {
+    try { localStorage.setItem(LS_2D_DETAIL_KEY, String(detailW)); } catch { /* ignore */ }
+  }, [detailW]);
+
+  // Resize handler for the 2D detail panel.
+  // The handle sits to the LEFT of the detail panel (side="right"):
+  //   dragging right → positive delta → panel shrinks (w - delta)
+  //   dragging left  → negative delta → panel grows (w - delta)
+  const handleDetailResize = useCallback((delta: number) => {
+    setDetailW((w) => clampPanelWidth(w - delta));
+  }, []);
+
   // Centering on a new symbol invalidates any in-flight trace (the old target
   // is meaningless relative to the new center) — reset it alongside the center.
   // Also propagate to focusSymbol so the 3D tab flies to the same symbol when
@@ -579,8 +617,13 @@ function App() {
           </Suspense>
         ) : (
           <>
-            {/* Left: overview / graph canvas / landing page */}
-            <div className="flex-1 overflow-hidden relative">
+            {/* Left: overview / graph canvas / landing page.
+                min-width guards the canvas so dragging the detail handle
+                cannot collapse the graph to zero width. */}
+            <div
+              className="flex-1 overflow-hidden relative"
+              style={{ minWidth: CANVAS_MIN_W }}
+            >
               {mode === "overview" ? (
                 <StructureOverview onSelectSymbol={handleOpenFromOverview} />
               ) : showGraph ? (
@@ -597,8 +640,16 @@ function App() {
               )}
             </div>
 
-            {/* Right: detail panel — shown in neighborhood mode with an active center */}
-            {showGraph && <DetailPanel selectedSymbol={selectedSymbol} />}
+            {/* Right: resize handle + detail panel.
+                The handle and panel are always mounted together in neighbourhood
+                mode with an active center so the width prop is consistent across
+                all DetailPanel render branches (null / loading / not-found / full). */}
+            {showGraph && (
+              <>
+                <ResizeHandle side="right" onResize={handleDetailResize} />
+                <DetailPanel selectedSymbol={selectedSymbol} width={detailW} />
+              </>
+            )}
           </>
         )}
 
