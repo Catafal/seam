@@ -22,6 +22,7 @@ import { GraphCanvas } from "./components/GraphCanvas";
 import { DetailPanel } from "./components/DetailPanel";
 import { ChangesDrawer } from "./components/ChangesDrawer";
 import { StructureOverview } from "./components/StructureOverview";
+import { FileSidebar } from "./components/FileSidebar";
 import { ResizeHandle, clampPanelWidth, readPanelWidth } from "./components/ResizeHandle";
 import { useStatus, useSearch, useClusters, useHubs } from "./api/hooks";
 import type { ClusterItem, SearchResultItem, HubSymbol } from "./api/schema-types";
@@ -483,6 +484,17 @@ function App() {
     [setCenterSymbol],
   );
 
+  // Opening a symbol from the file sidebar centers the neighborhood graph.
+  // Mode is already "neighborhood" when the sidebar is visible, but set it
+  // explicitly so the sidebar also works as a navigation shortcut from landing.
+  const handleOpenFromSidebar = useCallback(
+    (name: string) => {
+      setCenterSymbol(name);
+      setMode("neighborhood");
+    },
+    [setCenterSymbol],
+  );
+
   // Clicking the "Seam Explorer" brand returns to the landing page: reset the
   // view to the default neighborhood mode with no centered/selected symbol, and
   // close any open drawer. This is the app's "home" action.
@@ -617,7 +629,15 @@ function App() {
           </Suspense>
         ) : (
           <>
-            {/* Left: overview / graph canvas / landing page.
+            {/* File sidebar: visible in neighborhood mode only (not overview).
+                Manages its own open/closed and width state via localStorage.
+                Renders as a collapsed strip when closed so the canvas always
+                has at least CANVAS_MIN_W pixels available. */}
+            {mode === "neighborhood" && (
+              <FileSidebar onOpen={handleOpenFromSidebar} />
+            )}
+
+            {/* Center: overview / graph canvas / landing page.
                 min-width guards the canvas so dragging the detail handle
                 cannot collapse the graph to zero width. */}
             <div
@@ -641,13 +661,12 @@ function App() {
             </div>
 
             {/* Right: resize handle + detail panel.
-                The handle and panel are always mounted together in neighbourhood
-                mode with an active center so the width prop is consistent across
-                all DetailPanel render branches (null / loading / not-found / full). */}
+                Mounted only when the graph is active so the width prop is
+                consistent across all DetailPanel render branches. */}
             {showGraph && (
               <>
                 <ResizeHandle side="right" onResize={handleDetailResize} />
-                {/* onNavigate updates SELECTED only — the graph view / centerSymbol is preserved */}
+                {/* onNavigate updates SELECTED only — centerSymbol is preserved */}
                 <DetailPanel
                   selectedSymbol={selectedSymbol}
                   width={detailW}
