@@ -61,7 +61,12 @@ from seam.server.tools import (
 from seam.server.web_architecture import register_architecture_routes
 from seam.server.web_graph_search import register_graph_search_routes
 from seam.server.web_layout import register_layout_routes
-from seam.server.web_schema import SchemaResponse, SnippetResponse
+from seam.server.web_schema import (
+    SchemaResponse,
+    SnippetResponse,
+    StructureResponse,
+    StructureSymbol,
+)
 
 # Keep field names snake_case — the TS codegen will use them verbatim.
 
@@ -327,22 +332,6 @@ class HubsResponse(BaseModel):
     """Response for GET /api/hubs."""
 
     symbols: list[HubSymbol]
-
-
-class StructureSymbol(BaseModel):
-    """One symbol row for the structure map (flat — the SPA builds the tree)."""
-
-    path: str
-    name: str
-    kind: str
-    line: int
-    qualified_name: str | None
-
-
-class StructureResponse(BaseModel):
-    """Response for GET /api/structure."""
-
-    symbols: list[StructureSymbol]
 
 
 class ErrorResponse(BaseModel):
@@ -978,6 +967,7 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
                 kind=r["kind"],
                 line=r["line"],
                 qualified_name=r["qualified_name"],
+                degree=r["degree"],
             )
             for r in rows
         ]

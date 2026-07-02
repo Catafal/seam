@@ -1365,6 +1365,11 @@ export interface components {
             line: number;
             /** Qualified Name */
             qualified_name: string | null;
+            /**
+             * Degree
+             * @description Fan-in (incoming edge) count for this symbol (B2).
+             */
+            degree: number;
         };
         /**
          * SymbolDefinition

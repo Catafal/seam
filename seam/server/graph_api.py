@@ -444,21 +444,33 @@ def list_structure(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     Flat by design: the frontend builds the folder → file → class → method tree and
     the treemap from this list (one cheap query here; all hierarchy logic client-side).
 
-    Returns [{path, name, kind, line, qualified_name}] (absolute path — the web route
-    relativizes it). Ordered by path then symbol id for stable tree construction.
-    Empty list on any DB error. NEVER raises.
+    B2: `degree` = fan-in / incoming edge count (edges pointing TO the symbol).
+    Computed via a LEFT JOIN against a pre-aggregated degree subquery — one scan of
+    the edges table, not a correlated sub-select per row. Uses the same string-name
+    matching as the rest of the edge graph (edges.target_name keyed on symbol name).
+    Symbols with no incoming edges get degree=0 (COALESCE from the LEFT JOIN NULL).
+
+    Returns [{path, name, kind, line, qualified_name, degree}] (absolute path —
+    the web route relativizes it). Ordered by path then symbol id for stable tree
+    construction. Empty list on any DB error. NEVER raises.
     """
     try:
         rows = conn.execute(
             """
             SELECT
-                f.path          AS path,
-                s.name          AS name,
-                s.kind          AS kind,
-                s.start_line    AS line,
-                s.qualified_name AS qualified_name
+                f.path           AS path,
+                s.name           AS name,
+                s.kind           AS kind,
+                s.start_line     AS line,
+                s.qualified_name AS qualified_name,
+                COALESCE(d.degree, 0) AS degree
             FROM symbols s
             JOIN files f ON f.id = s.file_id
+            LEFT JOIN (
+                SELECT target_name, COUNT(*) AS degree
+                FROM edges
+                GROUP BY target_name
+            ) d ON d.target_name = s.name
             ORDER BY f.path, s.id
             """
         ).fetchall()
@@ -472,6 +484,7 @@ def list_structure(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "kind": r["kind"],
             "line": r["line"],
             "qualified_name": r["qualified_name"],
+            "degree": r["degree"],
         }
         for r in rows
     ]

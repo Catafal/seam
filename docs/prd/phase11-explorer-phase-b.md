@@ -222,3 +222,50 @@ API field (`degree` on the structure rows) is the only backend change.
 - **Bundle gotcha (standing):** `seam/_web` is gitignored but force-committed; after the frontend build
   the new hashed assets must be `git add -f`'d or a merged `main` serves an index.html that 404s its
   assets. Verify independently before opening the PR.
+
+## B2 implementation notes
+
+**What changed:**
+
+- `seam/server/graph_api.py` — `list_structure()` gains a `degree` field per symbol row.
+  Computed by a LEFT JOIN against a pre-aggregated `(target_name, COUNT(*))` subquery over
+  the `edges` table — one scan of edges, no correlated sub-select per row. `COALESCE(d.degree, 0)`
+  ensures isolated symbols (no incoming edges) return `degree=0`. The dict returned per row
+  now includes `"degree": r["degree"]`. No schema change; no re-index required.
+
+- `seam/server/web_schema.py` — `StructureSymbol` and `StructureResponse` Pydantic models moved
+  here from `web.py` (to keep `web.py` under 1000 lines; it was at 999). `StructureSymbol` gains
+  `degree: int` with a docstring explaining the B2 semantics.
+
+- `seam/server/web.py` — removed the old `StructureSymbol`/`StructureResponse` class definitions
+  (~15 lines freed). Updated `from seam.server.web_schema import ...` to include the two moved
+  models. The `/api/structure` route mapping now passes `degree=r["degree"]` to `StructureSymbol`.
+  Final line count: **984** (under 1000).
+
+- `web/src/api/types.ts` — `StructureSymbol` schema extended with `degree: number` (plus JSDoc).
+  This is the hand-maintained types file (codegen output); the `degree` field is additive and
+  non-optional, so existing consumers that construct literal `StructureSymbol` objects needed
+  `degree: 0` added to their fixtures.
+
+- `web/src/__tests__/buildTree.test.ts`, `FileSidebar.test.tsx`, `lib.test.ts` — all
+  `StructureSymbol` fixture objects updated with `degree: 0` so TypeScript typecheck passes.
+
+**Decisions:**
+
+- **Fan-in only (not total degree):** the PRD is explicit — degree = incoming edges (how many
+  things depend on this symbol). Total degree was rejected because a high-fan-out orchestrator
+  would masquerade as load-bearing.
+- **LEFT JOIN aggregate, not correlated subquery:** a single pre-aggregated subquery over edges
+  followed by a LEFT JOIN is O(edges + symbols) rather than O(edges × symbols). The existing
+  `top_hub_symbols` query uses `UNION ALL / GROUP BY` for total degree; `list_structure` uses
+  only the `target_name` side for fan-in, keeping semantics distinct.
+- **`StructureSymbol`/`StructureResponse` moved to `web_schema.py`:** the 1000-line constraint
+  on `web.py` is load-bearing. Moving those two classes (saves ~15 lines) absorbs the +2 lines
+  added by the `degree` field + route mapping update, leaving 984 lines total.
+- **TDD:** two new tests (`test_list_structure_degree_incoming`, `test_list_structure_degree_field_present`)
+  written and confirmed failing before implementation. The existing key-set assertion in
+  `test_list_structure_returns_path_and_nesting` was updated to include `"degree"` as part of the
+  same red-green cycle.
+
+**Gate status:** ruff clean, mypy clean (120 files), 2533 Python tests passed (4 skipped),
+378 frontend vitest tests passed, frontend typecheck clean.

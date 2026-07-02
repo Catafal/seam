@@ -15,7 +15,7 @@ import type { StructureSymbol } from "../api/schema-types";
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 function sym(path: string, name: string, kind = "function"): StructureSymbol {
-  return { path, name, kind, line: 1, qualified_name: name };
+  return { path, name, kind, line: 1, qualified_name: name, degree: 0 };
 }
 
 /** Collect direct child names of a node (for compact assertions). */
@@ -215,6 +215,7 @@ describe("buildTree with stripPrefix", () => {
         kind: "function",
         line: 42,
         qualified_name: "Handler.handle",
+        degree: 0,
       },
     ];
     const root = buildTree(symbols, "server", "seam/server");
