@@ -28,6 +28,28 @@ export function clampPanelWidth(w: number): number {
   return Math.max(PANEL_MIN_W, Math.min(PANEL_MAX_W, w));
 }
 
+/**
+ * Read a persisted panel width from localStorage, clamp it, and return it.
+ * Falls back to `fallback` when the key is absent, unparseable, or storage throws.
+ *
+ * WHY shared here (not inlined per tab): 2D (App.tsx) and 3D (ConstellationTab.tsx)
+ * both persist panel widths; one implementation prevents the two from drifting
+ * in their clamp bounds or NaN handling.
+ *
+ * NaN guard: Number("bad-string") = NaN; Math.max/min propagate NaN so we
+ * must catch it explicitly and fall back rather than store NaN in state.
+ */
+export function readPanelWidth(key: string, fallback: number): number {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    const n = Number(raw);
+    return isNaN(n) ? fallback : clampPanelWidth(n);
+  } catch {
+    return fallback;
+  }
+}
+
 interface ResizeHandleProps {
   /** Which panel this handle controls. */
   side: "left" | "right";

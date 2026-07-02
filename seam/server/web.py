@@ -44,6 +44,9 @@ from seam.server.graph_api import (
     list_structure,
     top_hub_symbols,
 )
+from seam.server.graph_api import (
+    fetch_edge_refs as _fetch_edge_refs,
+)
 from seam.server.tools import (
     handle_seam_changes,
     handle_seam_clusters,
@@ -123,6 +126,18 @@ class NeighborhoodResponse(BaseModel):
     edges: list[GraphEdge]
 
 
+class CallerRef(BaseModel):
+    """S2 enriched caller/callee: edge metadata added at the web layer.
+
+    The context handler returns bare name strings; fetch_edge_refs enriches them
+    with kind + confidence from a direct edges query (no handler change).
+    """
+
+    name: str
+    kind: str
+    confidence: str
+
+
 class SymbolDefinition(BaseModel):
     """One definition (file-level occurrence) of a symbol."""
 
@@ -157,8 +172,8 @@ class SymbolResponse(BaseModel):
 
     name: str
     definitions: list[SymbolDefinition]
-    callers: list[str]
-    callees: list[str]
+    callers: list[CallerRef]  # S2: enriched {name, kind, confidence} objects
+    callees: list[CallerRef]  # S2: enriched {name, kind, confidence} objects
     cluster: ClusterInfo | None
     peers: list[str]
     why: list[WhyComment]
@@ -168,9 +183,8 @@ class ClusterItem(BaseModel):
     """One cluster in the cluster list.
 
     `representative` is a member symbol NAME the UI can center the graph on when
-    the cluster is clicked as an entry point — clusters themselves are not symbols,
-    so the landing page needs a real symbol to open. None only if the cluster has
-    no clustered symbols (shouldn't happen, but degrades safely to label fallback).
+    the cluster is clicked — clusters aren't symbols, so the landing page needs a
+    real symbol to open. None only if the cluster has no members (degrades safely).
     """
 
     cluster_id: int
@@ -188,9 +202,11 @@ class ClustersResponse(BaseModel):
 class ImpactEntry(BaseModel):
     """One affected symbol in an impact (blast-radius) result.
 
-    Lean field set: the overlay only needs identity + tier + location. Heavy
-    provenance fields (resolved_by/best_candidate) are stripped by passing
-    verbose=False to handle_seam_impact, keeping the payload small.
+    Lean field set: identity + tier + location. Heavy provenance fields
+    (resolved_by/best_candidate) are stripped via verbose=False.
+    S2: 'kind' added — edge kind of the final hop; present when SEAM_EDGE_PROVENANCE=on.
+    'kind' is a core handler field (NOT in _HEAVY_FIELDS) that survived verbose=False
+    but was discarded by Pydantic until this model declared it.
     """
 
     name: str
@@ -199,15 +215,14 @@ class ImpactEntry(BaseModel):
     tier: str
     file: str | None
     is_test: bool
+    kind: str | None = None  # S2: edge kind; None when SEAM_EDGE_PROVENANCE=off
 
 
 class ImpactResponse(BaseModel):
     """Response for GET /api/impact.
 
-    risk_summary is the honest full-count per tier (computed before any cap), so
-    the UI can show true totals even when entry lists are capped by `limit`.
-    upstream/downstream are present only for the requested direction(s).
-    truncated is present only when a tier was capped.
+    risk_summary reflects honest full-count per tier (pre-cap). upstream/downstream
+    present only for the requested direction(s). truncated present only when capped.
     """
 
     found: bool
@@ -230,10 +245,9 @@ class TraceHop(BaseModel):
 class TraceResponse(BaseModel):
     """Response for GET /api/trace.
 
-    Only `paths` is surfaced (the path overlay's input). The handler's
-    callers/callees-of-source/target lists are intentionally dropped — the
-    neighborhood endpoint already covers immediate neighbors. paths[0] is the
-    shortest path; empty list when source and target are not connected.
+    Only `paths` is surfaced (the path overlay's input). The handler's neighbor lists
+    are dropped — the neighborhood endpoint covers those. paths[0] is the shortest path;
+    empty list when source and target are not connected.
     """
 
     found: bool
@@ -354,17 +368,11 @@ _BUILD_HINT_HTML = """<!DOCTYPE html>
 
 
 def _get_conn(db_path: Path) -> sqlite3.Connection:
-    """Open a fresh SQLite connection for this request.
+    """Open a fresh SQLite connection per request (construction must not touch the DB).
 
-    WHY per-request: app construction must not touch the DB (OpenAPI schema dump
-    must work with no DB file present). Opening here ensures each request gets an
-    isolated connection that is closed after the request completes.
-
-    Raises HTTPException 503 when no index exists (db_path absent).
-    Raises HTTPException 503 on DB open failure.
+    Raises HTTPException 503 when no index exists or on DB open failure.
     """
     if not db_path.exists():
-        # The index has not been created yet — tell the caller to run seam init.
         raise HTTPException(
             status_code=503,
             detail={"code": "NO_INDEX", "message": "No index found. Run 'seam init' first."},
@@ -395,15 +403,10 @@ def _get_readonly_conn(db_path: Path) -> sqlite3.Connection:
 
 
 def _check_handler_error(result: Any) -> None:
-    """Raise HTTPException if the handler returned an error dict.
+    """Raise HTTPException 400 if the handler returned an error dict.
 
     Handlers return {"error": "CODE", "message": "..."} on invalid input.
-    Map these to HTTP 4xx responses rather than 200s with error payloads.
-
-    Error code → HTTP status:
-        INVALID_INPUT  → 400
-        INVALID_QUERY  → 400
-        *              → 400 (safe default for handler errors)
+    All handler error codes map to 400 (safe default).
     """
     if isinstance(result, dict) and "error" in result:
         code = result.get("error", "UNKNOWN")
@@ -633,22 +636,19 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
         # Handler returns error dict on invalid input
         _check_handler_error(result)
 
-        # Build response: handle_seam_search returns SearchResult dicts.
-        # SearchResult has: symbol, file, line, snippet, score.
-        # We need to enrich with kind, signature, cluster_id, cluster_label.
-        # Rather than re-query, accept that search results carry only the core FTS fields;
-        # the frontend can call /api/symbol/{name} for full detail on selection.
-        # Cast: _check_handler_error confirmed this is not an error dict, so it's a list.
+        # handle_seam_search returns {symbol, file, line, snippet, score} dicts.
+        # kind/signature/cluster are NOT included — the frontend calls /api/symbol/{name}
+        # for full detail on selection. Cast safe after _check_handler_error.
         search_rows = cast(list[dict[str, Any]], result)
         items: list[SearchResultItem] = []
         for r in search_rows:
             items.append(SearchResultItem(
                 name=str(r["symbol"]),
-                kind="",           # SearchResult doesn't include kind — caller uses symbol endpoint
+                kind="",
                 file=str(r["file"]),
                 line=int(r["line"]),
-                signature=None,    # SearchResult doesn't include signature
-                cluster_id=None,   # SearchResult doesn't include cluster
+                signature=None,
+                cluster_id=None,
                 cluster_label=None,
             ))
         return SearchResponse(results=items)
@@ -721,6 +721,10 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
             # WHY comments for this symbol
             why_raw = handle_seam_why(conn, root, symbol=name)
             _check_handler_error(why_raw)
+
+            # S2: enrich callers/callees with kind+confidence (web-layer, no handler change).
+            caller_refs = _fetch_edge_refs(conn, name, direction="callers")
+            callee_refs = _fetch_edge_refs(conn, name, direction="callees")
         finally:
             conn.close()
 
@@ -746,8 +750,8 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
         return SymbolResponse(
             name=name,
             definitions=[SymbolDefinition(**d) for d in definitions],
-            callers=ctx.get("callers", []),
-            callees=ctx.get("callees", []),
+            callers=[CallerRef(**r) for r in caller_refs],
+            callees=[CallerRef(**r) for r in callee_refs],
             cluster=cluster,
             peers=ctx.get("cluster_peers", []),
             why=why_comments,
@@ -979,18 +983,13 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
         return StructureResponse(symbols=symbols)
 
     # ── Static SPA mount ─────────────────────────────────────────────────────
-    # Mount the built SPA at '/'. This must come AFTER all /api/* routes so FastAPI
-    # resolves API routes before falling through to static files.
-    # html=True enables index.html serving for client-side routing (SPA fallback).
+    # Must come AFTER all /api/* routes. html=True enables SPA fallback routing.
 
     web_dir = Path(__file__).parent.parent / "_web"
     if web_dir.exists() and web_dir.is_dir():
-        # Built SPA present — serve it.
         app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="static")
     else:
-        # Frontend not built yet — serve a helpful hint page at '/'.
-        # WHY a separate route instead of StaticFiles: StaticFiles requires the
-        # directory to exist; a plain GET route is the fallback that always works.
+        # StaticFiles requires the dir to exist; fall back to a plain route.
         @app.get("/", response_class=HTMLResponse, include_in_schema=False)
         def spa_root() -> HTMLResponse:
             """Fallback landing page when seam/_web/ is absent."""

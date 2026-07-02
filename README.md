@@ -280,7 +280,7 @@ seam serve         # opens http://127.0.0.1:7420
 seam serve --no-open --port 8000
 ```
 
-A React + TypeScript SPA (React Flow) served by FastAPI. Nothing leaves the machine. Features: command-palette search, a depth-1 caller/callee card-canvas with confidence-styled edges including HTTP calls and static test edges, lazy expand, a detail panel, an impact overlay that paints blast radius by risk tier, a trace-path highlighter, a git-changes drawer, a schema/architecture read API, a whole-repo cluster constellation, and a **3D Constellation Explorer** tab. Explorer routes reuse the **same handlers** that power the CLI/MCP tools — a third transport, no query logic duplicated.
+A React + TypeScript SPA (React Flow) served by FastAPI. Nothing leaves the machine. Features: command-palette search, a depth-1 caller/callee card-canvas with confidence-styled edges, lazy expand, a **resizable detail panel** with **grouped clickable caller/callee rows** (edge kind + confidence badges), a **GraphHUD** (live node/edge/filtered counts + freshness dot), a **FilterBar** (node kinds + edge kinds + confidence tiers with All/None controls and live counts), a **file-tree sidebar** with debounced search, an impact overlay that paints blast radius by risk tier, a **fly-to-fit viewport** on overlay activation, a trace-path highlighter, a git-changes drawer, a schema/architecture read API, a whole-repo cluster constellation, and a **3D Constellation Explorer** tab. Explorer routes reuse the **same handlers** that power the CLI/MCP tools — a third transport, no query logic duplicated. Filter preferences (node kinds, edge kinds, confidence) persist across page reloads via `localStorage` and survive symbol navigation within a session.
 
 ### 3D Constellation Explorer tab
 

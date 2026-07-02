@@ -29,6 +29,12 @@ export interface TreeNode {
   /** Original symbol kind (function/class/method/…) for class/symbol nodes. */
   symbolKind?: string;
   line?: number;
+  /**
+   * Fully-qualified symbol name (e.g. "Db.connect") when available.
+   * Preferred over bare `name` when opening a neighborhood so the correct
+   * homonym is resolved rather than an arbitrary match.
+   */
+  qualifiedName?: string | null;
   /** Total symbols beneath (sizes the treemap rectangle). */
   count: number;
   children: TreeNode[];
@@ -55,6 +61,7 @@ function buildFileSymbols(symbols: StructureSymbol[]): TreeNode[] {
         path: s.path,
         symbolKind: s.kind,
         line: s.line,
+        qualifiedName: s.qualified_name,
         count: 1,
         children: [],
       };
@@ -72,6 +79,7 @@ function buildFileSymbols(symbols: StructureSymbol[]): TreeNode[] {
       path: s.path,
       symbolKind: s.kind,
       line: s.line,
+      qualifiedName: s.qualified_name,
       count: 1,
       children: [],
     };

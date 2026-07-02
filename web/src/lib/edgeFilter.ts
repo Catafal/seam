@@ -17,7 +17,14 @@ export interface EdgeFilterState {
   confidences: Set<string>;
 }
 
-/** All edge kinds and confidence tiers Seam can emit (the default "all on" set). */
+/**
+ * All REAL edge kinds Seam emits (the 9-kind schema vocabulary).
+ *
+ * WHY this list: the API only emits these 9 kinds. Six phantom kinds
+ * (http_calls, reads_config, configures, raises, catches, tests) were never
+ * part of the schema and have been removed so the filter shows only valid options.
+ * See docs/database/schema.sql and CLAUDE.md "Edge kind vocabulary".
+ */
 export const ALL_EDGE_KINDS = [
   "call",
   "import",
@@ -28,12 +35,6 @@ export const ALL_EDGE_KINDS = [
   "reads",
   "writes",
   "uses",
-  "http_calls",
-  "reads_config",
-  "configures",
-  "raises",
-  "catches",
-  "tests",
 ] as const;
 export const ALL_CONFIDENCES = ["EXTRACTED", "AMBIGUOUS", "INFERRED"] as const;
 

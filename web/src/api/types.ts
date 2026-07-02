@@ -891,12 +891,35 @@ export interface components {
             symbols: components["schemas"]["HubSymbol"][];
         };
         /**
+         * CallerRef
+         * @description An enriched caller or callee reference carrying edge metadata.
+         *
+         *     S2 web-layer enrichment: the context handler returns caller/callee names as
+         *     bare strings; this model adds 'kind' and 'confidence' sourced from a direct
+         *     edge query in the web route — no change to the underlying handler.
+         *
+         *     When multiple edges exist for the same source→target pair (e.g. both a 'call'
+         *     and a 'reads' edge), one representative row is picked (MIN edge id) for a clean
+         *     1-entry-per-name contract that matches the handler's deduplicated list.
+         */
+        CallerRef: {
+            /** Name */
+            name: string;
+            /** Kind */
+            kind: string;
+            /** Confidence */
+            confidence: string;
+        };
+        /**
          * ImpactEntry
          * @description One affected symbol in an impact (blast-radius) result.
          *
          *     Lean field set: the overlay only needs identity + tier + location. Heavy
          *     provenance fields (resolved_by/best_candidate) are stripped by passing
          *     verbose=False to handle_seam_impact, keeping the payload small.
+         *
+         *     S2: 'kind' is the edge kind of the final hop (e.g. 'call', 'reads').
+         *     Present when SEAM_EDGE_PROVENANCE=on (default); null when off or pre-E4 index.
          */
         ImpactEntry: {
             /** Name */
@@ -911,6 +934,11 @@ export interface components {
             file: string | null;
             /** Is Test */
             is_test: boolean;
+            /**
+             * Kind
+             * @description Edge kind of the final hop (S2). Present when SEAM_EDGE_PROVENANCE=on.
+             */
+            kind?: string | null;
         };
         /**
          * ImpactResponse
@@ -1369,10 +1397,16 @@ export interface components {
             name: string;
             /** Definitions */
             definitions: components["schemas"]["SymbolDefinition"][];
-            /** Callers */
-            callers: string[];
-            /** Callees */
-            callees: string[];
+            /**
+             * Callers
+             * @description S2: enriched {name, kind, confidence} objects instead of bare name strings.
+             */
+            callers: components["schemas"]["CallerRef"][];
+            /**
+             * Callees
+             * @description S2: enriched {name, kind, confidence} objects instead of bare name strings.
+             */
+            callees: components["schemas"]["CallerRef"][];
             cluster: components["schemas"]["ClusterInfo"] | null;
             /** Peers */
             peers: string[];
