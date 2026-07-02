@@ -49,7 +49,7 @@ from seam.analysis.changes import (
     NotAGitRepoError,
     detect_changes,
 )
-from seam.analysis.diagnostics import run_query
+from seam.analysis.diagnostics import get_recorder, run_query
 from seam.analysis.flows import callees as flows_callees
 from seam.analysis.flows import callers as flows_callers
 from seam.analysis.flows import trace as flows_trace
@@ -869,6 +869,10 @@ def impact_cmd(
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
+    # Resolved DB path → diagnostics atexit snapshot measures the right file
+    # (no-op when SEAM_DIAGNOSTICS is off).
+    get_recorder().set_db_path(str(db_path))
+
     # include_tests comes straight from the --include-tests/--no-include-tests flag
     # (default off = production-only blast radius), matching the MCP tool default.
 
@@ -1209,6 +1213,10 @@ def trace_cmd(
             emit_json_error("DB_ERROR", f"Failed to open database: {exc}")
         console.print(f"[red]Failed to open database:[/red] {exc}")
         raise typer.Exit(code=1) from exc
+
+    # Resolved DB path → diagnostics atexit snapshot measures the right file
+    # (no-op when SEAM_DIAGNOSTICS is off).
+    get_recorder().set_db_path(str(db_path))
 
     # Clamp depth to [1, 10]
     safe_depth = max(1, min(10, depth))

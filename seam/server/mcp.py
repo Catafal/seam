@@ -173,6 +173,14 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
     # A null recorder when SEAM_DIAGNOSTICS != "1" → _instrument is a passthrough and
     # the server runs byte-identical to pre-P5.5. When on, each tool call is timed.
     recorder = get_recorder()
+    # Tell diagnostics the DB file backing this connection so the atexit snapshot
+    # measures the right file (PRAGMA database_list row = (seq, name, file)).
+    try:
+        _dbrow = conn.execute("PRAGMA database_list").fetchone()
+        if _dbrow and _dbrow[2]:
+            recorder.set_db_path(_dbrow[2])
+    except sqlite3.Error:
+        pass
     _instrument = _make_instrument(recorder)
 
     @mcp.tool()

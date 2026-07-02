@@ -42,6 +42,13 @@ from typing import Any
 
 import seam.config as config
 
+# `resource` is stdlib but does not exist on Windows — guard the import at module
+# level (imports-at-top rule) and degrade RSS sampling to None when it is absent.
+try:
+    import resource as _resource
+except ImportError:  # pragma: no cover — Windows only
+    _resource = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 # ── Public type aliases ───────────────────────────────────────────────────────
@@ -85,6 +92,11 @@ class DiagnosticsRecorder:
         self._watcher_reindexed: int = 0
         self._watcher_errors: int = 0
         self._seq: int = 0  # monotonic sequence number for slow_query lines
+        # Resolved DB path for the atexit snapshot's db_size measurement. Callers
+        # that know the real path (which may differ from config.SEAM_DB_PATH under
+        # --db-dir or a non-root CWD) set it via set_db_path(); until then the
+        # atexit flush falls back to the CWD-relative config default.
+        self._db_path: str | None = None
 
         if enabled:
             # Ensure the parent directory exists before we need to write.
@@ -101,6 +113,17 @@ class DiagnosticsRecorder:
             atexit.register(self._atexit_snapshot)
 
     # ── Public interface ──────────────────────────────────────────────────────
+
+    def set_db_path(self, db_path: str | None) -> None:
+        """Record the resolved DB path so the atexit snapshot measures the right file.
+
+        The atexit flush otherwise falls back to config.SEAM_DB_PATH, which is
+        relative to the process CWD — wrong when the caller used --db-dir or ran from
+        a directory other than the project root. Consumers that resolve the real path
+        (CLI _open_index, MCP create_server, the watcher) call this once. No-op-safe
+        on a null recorder; never raises.
+        """
+        self._db_path = db_path
 
     @property
     def enabled(self) -> bool:
@@ -223,6 +246,14 @@ class DiagnosticsRecorder:
                 "ts": time.time(),
                 **metrics,
             }
+            # Defense-in-depth redaction guard (mirrors record_query): a snapshot line
+            # must contain ONLY the known numeric/None metric keys — no unexpected key
+            # (e.g. a future string field) may leak in. Subset check tolerates the
+            # degenerate {event, ts} line if sample_resources ever returns empty.
+            assert set(line.keys()) <= _SNAPSHOT_REQUIRED_KEYS, (
+                f"BUG: snapshot line has unexpected keys: "
+                f"{set(line.keys()) - _SNAPSHOT_REQUIRED_KEYS}"
+            )
             self._write_line(line)
         except Exception:  # noqa: BLE001
             logger.warning("diagnostics: snapshot failed", exc_info=True)
@@ -265,10 +296,9 @@ class DiagnosticsRecorder:
         Never raises — atexit handlers must not propagate exceptions to the runtime.
         """
         try:
-            # The db_path stored at construction time may no longer be valid at exit;
-            # read the current configured DB path. Callers that need a specific
-            # db_path should call snapshot() explicitly before exit.
-            self.snapshot(config.SEAM_DB_PATH)
+            # Prefer the resolved DB path a caller set via set_db_path(); fall back to
+            # the CWD-relative config default (correct when CWD == project root).
+            self.snapshot(self._db_path or config.SEAM_DB_PATH)
         except Exception:  # noqa: BLE001
             pass  # atexit handlers must be silent
 
@@ -286,10 +316,10 @@ class DiagnosticsRecorder:
         Note: ru_maxrss is PEAK RSS (high-water mark), not the current resident set.
         Current RSS is not available from stdlib without /proc or psutil.
         """
+        if _resource is None:
+            return None  # Windows — no resource module
         try:
-            import resource  # noqa: PLC0415 — stdlib, but not available on Windows
-
-            usage = resource.getrusage(resource.RUSAGE_SELF)
+            usage = _resource.getrusage(_resource.RUSAGE_SELF)
             raw = usage.ru_maxrss
             if sys.platform == "linux":
                 # Linux: value is in KiB.

@@ -222,6 +222,21 @@ class TestGracefulDegradation:
         assert len(snaps) == 1
         assert snaps[0]["db_size_bytes"] is None
 
+    def test_atexit_snapshot_uses_resolved_db_path(self, tmp_path: Path) -> None:
+        """set_db_path() makes the atexit snapshot measure the resolved DB file."""
+        rec = _make_recorder(tmp_path, enabled=True)
+        real_db = tmp_path / "real.db"
+        real_db.write_bytes(b"x" * 4096)  # a file with a known, non-null size
+        rec.set_db_path(str(real_db))
+
+        rec._atexit_snapshot()  # simulate process-exit flush
+
+        snaps = [ln for ln in _read_lines(tmp_path / "diagnostics.ndjson")
+                 if ln.get("event") == "snapshot"]
+        assert len(snaps) == 1
+        assert snaps[0]["db_size_bytes"] == 4096  # measured the resolved path, not the CWD default
+        rec.close()  # unregister the atexit handler this test registered
+
 
 # ── D5: Never raises ──────────────────────────────────────────────────────────
 

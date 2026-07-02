@@ -83,6 +83,9 @@ class SeamWatcher(FileSystemEventHandler):
         # Process diagnostics recorder (P5.5). Null recorder (no-op) unless
         # SEAM_DIAGNOSTICS=1 — record_watcher_event is a no-op when disabled.
         self._recorder = get_recorder()
+        # The watcher knows the resolved DB path — tell diagnostics so the atexit
+        # snapshot measures the right file (no-op when disabled).
+        self._recorder.set_db_path(str(db_path))
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
