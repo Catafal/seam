@@ -33,7 +33,11 @@ Design:
   results in a Pydantic model we don't need.
 """
 
+import functools
+import inspect
 import sqlite3
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +46,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 import seam.config as config
 from seam.analysis.changes import DEFAULT_BASE_REF
+from seam.analysis.diagnostics import DiagnosticsRecorder, get_recorder, result_chars
 from seam.server.tools import (
     handle_seam_affected,
     handle_seam_architecture,
@@ -100,6 +105,47 @@ def _finalize(result: Any) -> Any:
     return result
 
 
+def _make_instrument(recorder: DiagnosticsRecorder) -> Callable[[str], Callable[..., Any]]:
+    """Build a per-tool timing decorator bound to a process diagnostics recorder.
+
+    WHY a factory returning a decorator: the decision to wrap is made ONCE at
+    decoration time. When diagnostics is off (recorder.enabled is False) the
+    decorator returns the tool function UNCHANGED — so the running server has zero
+    per-call overhead and the tool schema FastMCP sees is byte-identical to pre-P5.5.
+    When on, the wrapper times the handler call and records (tool, duration_ms,
+    result_chars) in a finally block so a ToolError raise is still counted as a query.
+    """
+
+    def instrument(tool_name: str) -> Callable[..., Any]:
+        def deco(fn: Callable[..., Any]) -> Callable[..., Any]:
+            if not recorder.enabled:
+                return fn  # zero-overhead passthrough — wrapper never installed
+
+            @functools.wraps(fn)
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                start = time.perf_counter()
+                result: Any = None
+                try:
+                    result = fn(*args, **kwargs)
+                    return result
+                finally:
+                    duration_ms = (time.perf_counter() - start) * 1000.0
+                    recorder.record_query(tool_name, duration_ms, result_chars(result))
+
+            # Preserve the original signature so FastMCP builds the correct input
+            # schema from the wrapper (functools.wraps sets __wrapped__, but pinning
+            # __signature__ is explicit and robust across FastMCP versions).
+            try:
+                wrapper.__signature__ = inspect.signature(fn)  # type: ignore[attr-defined]
+            except (ValueError, TypeError):
+                pass
+            return wrapper
+
+        return deco
+
+    return instrument
+
+
 def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
     """Configure and return a FastMCP server with all sixteen Seam tools registered.
 
@@ -123,7 +169,22 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
     """
     mcp: FastMCP = FastMCP(name="seam")
 
+    # Process-level diagnostics recorder (P5.5) — the shared per-process singleton.
+    # A null recorder when SEAM_DIAGNOSTICS != "1" → _instrument is a passthrough and
+    # the server runs byte-identical to pre-P5.5. When on, each tool call is timed.
+    recorder = get_recorder()
+    # Tell diagnostics the DB file backing this connection so the atexit snapshot
+    # measures the right file (PRAGMA database_list row = (seq, name, file)).
+    try:
+        _dbrow = conn.execute("PRAGMA database_list").fetchone()
+        if _dbrow and _dbrow[2]:
+            recorder.set_db_path(_dbrow[2])
+    except sqlite3.Error:
+        pass
+    _instrument = _make_instrument(recorder)
+
     @mcp.tool()
+    @_instrument("seam_query")
     def seam_query(concept: str, limit: int = _QUERY_LIMIT_DEFAULT) -> Any:
         """Find all code related to a concept using hybrid search (FTS5 + 1-hop graph expansion).
 
@@ -135,6 +196,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         return _finalize(handle_seam_query(conn, concept, root, limit=limit))
 
     @mcp.tool()
+    @_instrument("seam_context")
     def seam_context(symbol: str = "", verbose: bool = True, uid: str | None = None) -> Any:
         """Get a 360-degree view of a symbol: its callers, callees, file location, and docstring.
 
@@ -154,6 +216,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         return _finalize(handle_seam_context(conn, symbol, root, verbose=verbose, uid=uid))
 
     @mcp.tool()
+    @_instrument("seam_search")
     def seam_search(text: str, limit: int = _SEARCH_LIMIT_DEFAULT) -> Any:
         """Full-text search across all indexed symbol names and docstrings (FTS5 BM25).
 
@@ -163,6 +226,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         return _finalize(handle_seam_search(conn, text, root, limit=limit))
 
     @mcp.tool()
+    @_instrument("seam_schema")
     def seam_schema(verbose: bool = False) -> Any:
         """Describe the current Seam index capabilities before choosing deeper tools.
 
@@ -174,6 +238,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         return _finalize(handle_seam_schema(conn, root, verbose=verbose))
 
     @mcp.tool()
+    @_instrument("seam_architecture")
     def seam_architecture(
         scope: str | None = None,
         sections: list[str] | None = None,
@@ -199,6 +264,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         )
 
     @mcp.tool()
+    @_instrument("seam_snippet")
     def seam_snippet(
         uid: str | None = None,
         symbol: str | None = None,
@@ -233,6 +299,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         )
 
     @mcp.tool()
+    @_instrument("seam_graph_search")
     def seam_graph_search(
         kind: str | None = None,
         name_pattern: str | None = None,
@@ -303,6 +370,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         )
 
     @mcp.tool()
+    @_instrument("seam_impact")
     def seam_impact(
         target: str = "",
         direction: str = _IMPACT_DIRECTION_DEFAULT,
@@ -415,6 +483,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         )
 
     @mcp.tool()
+    @_instrument("seam_trace")
     def seam_trace(
         source: str = "",
         target: str = "",
@@ -485,6 +554,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         )
 
     @mcp.tool()
+    @_instrument("seam_changes")
     def seam_changes(
         scope: str = _CHANGES_SCOPE_DEFAULT,
         base_ref: str = _CHANGES_BASE_REF_DEFAULT,
@@ -510,6 +580,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         return _finalize(handle_seam_changes(conn, root, base_ref=base_ref, scope=scope))
 
     @mcp.tool()
+    @_instrument("seam_why")
     def seam_why(
         file: str | None = None,
         line: int | None = None,
@@ -534,6 +605,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         return _finalize(handle_seam_why(conn, root, file=file, line=line, symbol=symbol))
 
     @mcp.tool()
+    @_instrument("seam_clusters")
     def seam_clusters(cluster_id: int | None = None) -> Any:
         """List all code clusters (functional areas) or the members of one cluster.
 
@@ -556,6 +628,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         return _finalize(handle_seam_clusters(conn, root, cluster_id=cluster_id))
 
     @mcp.tool()
+    @_instrument("seam_affected")
     def seam_affected(
         changed_files: list[str],
         depth: int = _AFFECTED_DEPTH_DEFAULT,
@@ -584,6 +657,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         return _finalize(handle_seam_affected(conn, changed_files, root, depth=depth))
 
     @mcp.tool()
+    @_instrument("seam_context_pack")
     def seam_context_pack(symbol: str, verbose: bool = True) -> Any:
         """Get a ready-to-paste context bundle for a symbol.
 
@@ -616,6 +690,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         return _finalize(handle_seam_context_pack(conn, symbol, root, verbose=verbose))
 
     @mcp.tool()
+    @_instrument("seam_flows")
     def seam_flows(entry: str | None = None) -> Any:
         """Discover execution flows — how the program actually runs, end to end.
 
@@ -643,6 +718,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         return _finalize(handle_seam_flows(conn, root, entry=entry))
 
     @mcp.tool()
+    @_instrument("seam_structure")
     def seam_structure(
         path: str | None = None,
         depth: int | None = None,

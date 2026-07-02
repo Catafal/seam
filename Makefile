@@ -1,4 +1,4 @@
-.PHONY: gate lint typecheck test install install-dev build-web bench-semantic eval eval-generate clean
+.PHONY: gate lint typecheck test install install-dev build-web bench-semantic eval eval-generate soak clean
 
 # Gate — must pass before every commit (no exceptions)
 gate: lint typecheck test
@@ -63,6 +63,13 @@ test-npm:
 	# node_modules is gitignored, so `npm test` alone fails with "vitest: not found".
 	# `npm ci` uses the committed package-lock.json (reproducible, no lockfile drift).
 	cd pkg/npm && npm ci --silent && npm test
+
+# Sustained mixed read-load soak against the current index (P5.5).
+# Surfaces leaks / slow-query paths locally. Run with diagnostics on to also
+# capture an NDJSON trace: `SEAM_DIAGNOSTICS=1 make soak`.
+# Requires an existing index (`seam init` first). NOT part of `make gate`.
+soak:
+	uv run python benchmarks/soak.py --iterations 200
 
 # Remove build artifacts
 clean:

@@ -628,6 +628,29 @@ SEAM_LAYOUT_MAX_SAFE_NODES: int = int(os.getenv("SEAM_LAYOUT_MAX_SAFE_NODES", "3
 # See: SEAM_STALENESS_TTL_SECONDS (defined above, default 5 s).
 
 
+# ── P5.5: Opt-in diagnostics facility ────────────────────────────────────────
+
+# Master switch for local diagnostics recording. "0" by default — true no-op.
+# Set to "1" to enable the DiagnosticsRecorder, which appends lightweight operational
+# metrics (RSS, FD count, DB size, query count, slow-query summaries, watcher counters)
+# to a local NDJSON file inside .seam/. When "0": no file is created, no sampling runs,
+# no atexit handler is registered, and the read path is byte-identical to pre-P5.5.
+# WHY opt-in: diagnostics output is local-file-only (never network/telemetry) but still
+# writes a file and consumes CPU for sampling; operators who don't need it pay zero cost.
+SEAM_DIAGNOSTICS: str = os.getenv("SEAM_DIAGNOSTICS", "0")
+
+# Path for the NDJSON diagnostics file. Default is inside .seam/ (already gitignored
+# via `seam init`'s .seam/.gitignore) so diagnostics output is never committed.
+# Configurable so operators can redirect to a scratch location (e.g. /tmp) if needed.
+SEAM_DIAGNOSTICS_PATH: str = os.getenv("SEAM_DIAGNOSTICS_PATH", ".seam/diagnostics.ndjson")
+
+# Slow-query threshold in milliseconds. A record_query() call with duration_ms >= this
+# value appends a slow_query NDJSON line. Below this threshold: the query counter is
+# still incremented but no line is written (zero IO). Default 100 ms — covers most
+# real-world fast queries on small/mid codebases while surfacing O(100ms) outliers.
+SEAM_DIAGNOSTICS_SLOW_MS: int = int(os.getenv("SEAM_DIAGNOSTICS_SLOW_MS", "100"))
+
+
 def get_db_path(project_root: Path) -> Path:
     """Resolve the database path relative to the project root."""
     return project_root / SEAM_DB_PATH

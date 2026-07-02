@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Opt-in local diagnostics + soak testing (P5.5, issues #237–#242):** set
+  `SEAM_DIAGNOSTICS=1` to append lightweight operational metrics — RSS, open-FD count, DB
+  size, query count, slow-query summaries, and watcher counters — to a local append-only
+  NDJSON file inside `.seam/` (already gitignored). Records ONLY tool names + numeric metrics;
+  never source text, query arguments, or secret-like values (structural redaction, gate-tested).
+  Disabled by default = byte-identical no-op (no file, no sampling, no atexit handler, unchanged
+  MCP tool schema; tool count stays 16). Instruments the 16 MCP tools, the `seam
+  search/query/context/impact/trace` CLI commands, and the file watcher. Local-file-only — no
+  network, no telemetry, no new runtime dependency. New `benchmarks/soak.py` + `make soak` drive
+  sustained mixed read load against an indexed repo and print a resource/latency summary (run
+  `SEAM_DIAGNOSTICS=1 make soak` to also capture the NDJSON trace). Two knobs tune it:
+  `SEAM_DIAGNOSTICS_PATH` (default `.seam/diagnostics.ndjson`) and `SEAM_DIAGNOSTICS_SLOW_MS`
+  (default 100). `open_fds` is Linux-only (`null` elsewhere); `rss_bytes` is peak RSS.
 - **npm shim `@catafal/seam` (P5.1, issue #229):** `npx @catafal/seam <cmd>` delegates to
   `uvx --from seam-code==<version> seam <cmd>`, letting JS/TS projects use Seam without a
   Python toolchain. Requires [uv](https://docs.astral.sh/uv/getting-started/installation/)
