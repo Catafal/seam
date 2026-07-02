@@ -374,11 +374,16 @@ SEAM_EMBED_MODEL: str = os.getenv("SEAM_EMBED_MODEL", "BAAI/bge-small-en-v1.5")
 # default at the scale of a typical codebase (1k–20k symbols).
 SEAM_SEMANTIC_LIMIT: int = int(os.getenv("SEAM_SEMANTIC_LIMIT", "20"))
 
-# Maximum number of stored embedding rows loaded per semantic scan.
-# Bounds the brute-force cosine scan: rows beyond this cap are never loaded.
-# Protects against unbounded memory use on very large indexes.
-# Default 20000: covers ~20k symbols; adjust up if your codebase is larger.
-SEAM_SEMANTIC_SCAN_CAP: int = int(os.getenv("SEAM_SEMANTIC_SCAN_CAP", "20000"))
+# Maximum number of stored embedding rows considered per semantic scan.
+# 0 = unlimited (default): all stored vectors are scanned — the mmap path reads the
+#   full prebuilt artifact and the SQL fallback uses no LIMIT, so no symbol is silently
+#   excluded from semantic search due to rowid ordering. With the WS2a mmap store
+#   bounding memory via the OS page cache, unlimited scanning is the correct default.
+# Positive N = optional safety ceiling for memory-constrained operators: at most N rows
+#   are loaded in the SQL fallback path (LIMIT N), and at most N rows are considered
+#   in the mmap path (matrix[:N] slice). Rows beyond the cap are invisible to semantic
+#   search — intentional when the operator needs a hard memory bound, not the default.
+SEAM_SEMANTIC_SCAN_CAP: int = int(os.getenv("SEAM_SEMANTIC_SCAN_CAP", "0"))
 
 # RRF smoothing constant k (used in Reciprocal Rank Fusion).
 # k=60 is the standard value from Cormack, Clarke & Buettcher (SIGIR 2009).

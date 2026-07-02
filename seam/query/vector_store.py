@@ -440,6 +440,8 @@ def top_k(
     store: VectorStore,
     query_vec_bytes: bytes,
     k: int,
+    *,
+    scan_cap: int = 0,
 ) -> list[tuple[int, float]]:
     """Return the k most-similar symbol ids from the mmap store.
 
@@ -452,6 +454,10 @@ def top_k(
         store:           A loaded VectorStore (from load_store).
         query_vec_bytes: Float32 bytes of the query embedding (len == dim * 4).
         k:               Maximum number of results to return.
+        scan_cap:        Row ceiling for the matrix scan. 0 (default) = unlimited
+                         (consider all rows in the artifact). A positive value slices
+                         store.matrix[:scan_cap], mirroring SEAM_SEMANTIC_SCAN_CAP in
+                         the SQL fallback path. Use 0 unless memory is constrained.
 
     Returns:
         list[tuple[int, float]] — at most k entries, sorted by cosine score
@@ -468,7 +474,7 @@ def top_k(
         return []
 
     try:
-        return _top_k_impl(store, query_vec_bytes, k)
+        return _top_k_impl(store, query_vec_bytes, k, scan_cap=scan_cap)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "top_k: unexpected error (%s: %s) — returning []",
@@ -482,6 +488,8 @@ def _top_k_impl(
     store: VectorStore,
     query_vec_bytes: bytes,
     k: int,
+    *,
+    scan_cap: int = 0,
 ) -> list[tuple[int, float]]:
     """Inner top_k implementation — may raise; outer function catches everything."""
     if not query_vec_bytes:
@@ -503,12 +511,14 @@ def _top_k_impl(
     if norm_q == 0.0:
         return []
 
-    mat = store.matrix  # shape (count, dim), float32 memmap
-    sym_ids = store.symbol_ids  # shape (count,), int64
+    # Apply optional row ceiling: scan_cap > 0 slices the matrix to at most scan_cap
+    # rows, mirroring the SQL LIMIT in the brute-force path. scan_cap = 0 = unlimited.
+    mat = store.matrix[:scan_cap] if scan_cap > 0 else store.matrix  # float32 memmap
+    sym_ids = store.symbol_ids[:scan_cap] if scan_cap > 0 else store.symbol_ids  # int64
 
     # Cosine similarity: (mat @ q) / (||mat_row|| * ||q||) — same formula as SQL path
-    dots = mat @ q_arr  # shape (count,)
-    norms_mat = np.linalg.norm(mat, axis=1)  # shape (count,)
+    dots = mat @ q_arr  # shape (nrows,)
+    norms_mat = np.linalg.norm(mat, axis=1)  # shape (nrows,)
 
     with np.errstate(invalid="ignore", divide="ignore"):
         cosines = np.where(norms_mat == 0.0, 0.0, dots / (norms_mat * norm_q))

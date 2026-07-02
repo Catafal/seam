@@ -38,9 +38,11 @@ Design decisions:
   any vector load or cosine computation.
 - Brute-force cosine: O(n * dim). For 1k–20k symbols × 384 dim this is
   ~1–5ms with numpy — no ANN index needed at this scale. sqlite-vec is deferred.
-- SEAM_SEMANTIC_SCAN_CAP bounds the SQL LIMIT so we never load more rows than
-  the configured cap (protects against unbounded memory use on very large indexes).
-  Logs at DEBUG when cap truncates the scan so operators can tune the knob.
+- SEAM_SEMANTIC_SCAN_CAP = 0 (default, unlimited): no cap applied — all stored
+  rows are loaded in the SQL fallback path and all matrix rows are considered in
+  the mmap path. A positive cap is an optional memory-safety ceiling for operators
+  who need a hard bound; rows beyond the cap are invisible to semantic search.
+  Logs at DEBUG when a positive cap is active and the scan is actually bounded.
 """
 
 import logging
@@ -284,29 +286,42 @@ def _semantic_candidates_impl(
         # mmap_result is None → store unavailable/stale/corrupt → fall through to SQL
 
     # Step 5: SQL brute-force fallback.
-    # Load stored vectors for this model, bounded by SEAM_SEMANTIC_SCAN_CAP.
-    # The LIMIT prevents loading an unbounded number of rows on very large indexes.
+    # Load stored vectors for this model.
+    # SEAM_SEMANTIC_SCAN_CAP = 0 (default) means unlimited: no LIMIT is applied and
+    # all rows for the model are loaded. A positive cap applies a LIMIT so at most
+    # cap rows are fetched — an optional safety ceiling for memory-constrained operators.
+    # SQLite treats LIMIT -1 as no limit, but we branch explicitly for clarity.
     scan_cap = config.SEAM_SEMANTIC_SCAN_CAP
-    rows = conn.execute(
-        "SELECT symbol_id, vector FROM embeddings WHERE model = ? LIMIT ?",
-        (model, scan_cap),
-    ).fetchall()
+    if scan_cap > 0:
+        rows = conn.execute(
+            "SELECT symbol_id, vector FROM embeddings WHERE model = ? LIMIT ?",
+            (model, scan_cap),
+        ).fetchall()
+    else:
+        # Unlimited: fetch all rows for this model (no LIMIT clause).
+        rows = conn.execute(
+            "SELECT symbol_id, vector FROM embeddings WHERE model = ?",
+            (model,),
+        ).fetchall()
 
     if not rows:
         return []
 
-    # Log at DEBUG when the scan was capped (user might have more symbols than the cap).
-    actual_count = conn.execute(
-        "SELECT COUNT(*) FROM embeddings WHERE model = ?", (model,)
-    ).fetchone()[0]
-    if actual_count > scan_cap:
-        logger.debug(
-            "semantic_candidates: scan capped at %d rows (index has %d for model=%r); "
-            "raise SEAM_SEMANTIC_SCAN_CAP to scan all vectors.",
-            scan_cap,
-            actual_count,
-            model,
-        )
+    # Log at DEBUG when a positive cap is set and the scan was actually bounded.
+    # With scan_cap=0 (unlimited), no log — all rows were considered and there is
+    # no cap-induced recall loss to warn about.
+    if scan_cap > 0:
+        actual_count = conn.execute(
+            "SELECT COUNT(*) FROM embeddings WHERE model = ?", (model,)
+        ).fetchone()[0]
+        if actual_count > scan_cap:
+            logger.debug(
+                "semantic_candidates: scan capped at %d rows (index has %d for model=%r); "
+                "set SEAM_SEMANTIC_SCAN_CAP=0 to scan all vectors (unlimited).",
+                scan_cap,
+                actual_count,
+                model,
+            )
 
     # Step 6: Compute cosine similarity — numpy fast path when available.
     # numpy is a fastembed transitive dep: if is_available() is True, numpy is importable.
@@ -404,7 +419,11 @@ def _try_mmap_path(
         )
         return None
 
-    result = vector_store_top_k(store, query_vec, limit)
+    # Pass scan_cap so a positive cap slices the matrix rows considered in the mmap
+    # path too. With the default cap=0 (unlimited), all rows in the artifact are
+    # considered — no recall loss. A positive cap slices store.matrix[:scan_cap].
+    scan_cap = config.SEAM_SEMANTIC_SCAN_CAP
+    result = vector_store_top_k(store, query_vec, limit, scan_cap=scan_cap)
     logger.debug(
         "_try_mmap_path: mmap path returned %d result(s) for model=%r",
         len(result),
