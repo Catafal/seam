@@ -647,7 +647,12 @@ function App() {
             {showGraph && (
               <>
                 <ResizeHandle side="right" onResize={handleDetailResize} />
-                <DetailPanel selectedSymbol={selectedSymbol} width={detailW} />
+                {/* onNavigate updates SELECTED only — the graph view / centerSymbol is preserved */}
+                <DetailPanel
+                  selectedSymbol={selectedSymbol}
+                  width={detailW}
+                  onNavigate={setSelectedSymbol}
+                />
               </>
             )}
           </>
