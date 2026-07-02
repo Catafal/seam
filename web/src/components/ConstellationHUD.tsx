@@ -14,6 +14,7 @@
  */
 
 import { useStatus } from "../api/hooks";
+import { freshnessColor } from "../lib/freshnessColor";
 
 /** Supported node-count options for the selector. */
 const NODE_COUNT_OPTIONS = [500, 1000, 2000, 3000] as const;
@@ -31,24 +32,6 @@ interface ConstellationHUDProps {
   maxNodes: number;
   /** Called when the user changes the max_nodes cap. */
   onChangeMaxNodes: (n: number) => void;
-}
-
-/**
- * Determine freshness dot color from the last_indexed timestamp.
- *
- * Green  = indexed within the last 10 minutes (likely fresh).
- * Amber  = indexed earlier or unknown.
- */
-function freshnessColor(lastIndexed: string | null | undefined): string {
-  if (!lastIndexed) return "#f59e0b"; // amber — unknown
-  try {
-    const d = new Date(lastIndexed);
-    if (isNaN(d.getTime())) return "#f59e0b";
-    const ageMs = Date.now() - d.getTime();
-    return ageMs < 10 * 60 * 1000 ? "#22c55e" : "#f59e0b"; // green or amber
-  } catch {
-    return "#f59e0b";
-  }
 }
 
 /**

@@ -18,6 +18,10 @@
  * WHY dagre (not elkjs): proven, synchronous, stable TS types — fine for depth-1
  * neighborhoods (< 50 nodes). WHY merge-expand (not replace): double-click adds
  * context incrementally without losing already-expanded nodes.
+ *
+ * Overlay-decoration logic (decorateNodes, buildOffCanvasNodes, decorateEdges,
+ * visibleClusters, tierMap, traceHL) lives in useGraphOverlays to keep this file
+ * under the 1000-line limit as HUD/filter/fly-to-fit slices are added.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -45,16 +49,28 @@ import type { GraphNode, GraphEdge, NeighborhoodResponse } from "../api/schema-t
 import { SymbolNode } from "./SymbolNode";
 import type { SymbolNodeData } from "./SymbolNode";
 import { getEdgeStyle } from "../lib/edgeStyle";
-import { Legend, type LegendCluster } from "./Legend";
+import { Legend } from "./Legend";
 import { FilterBar } from "./FilterBar";
+import { GraphHUD } from "./GraphHUD";
 import {
-  defaultEdgeFilter,
-  isEdgeVisible,
   toggleFilterValue,
-  type EdgeFilterState,
 } from "../lib/edgeFilter";
-import { impactTierMap } from "../lib/impactOverlay";
-import { tracePathHighlight, edgeKey } from "../lib/tracePath";
+import {
+  loadGraphFilter,
+  saveGraphFilter,
+  toggleNodeKind,
+  allNodeKinds,
+  noneNodeKinds,
+  type GraphFilterState,
+} from "../lib/graphFilterState";
+import { useGraphOverlays } from "../hooks/useGraphOverlays";
+import { computeHudCounts } from "../lib/hudCounts";
+import { ViewportController } from "./ViewportController";
+import {
+  countVisibleEdgesByKind,
+  countVisibleEdgesByConfidence,
+} from "../lib/filterBarCounts";
+import { ALL_EDGE_KINDS, ALL_CONFIDENCES } from "../lib/edgeFilter";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -188,100 +204,6 @@ function mergeNeighborhood(
   };
 }
 
-// ── Overlay decoration (pure; derive display arrays from base + overlay state) ──
-
-/** Apply impact tier + dim flags to base nodes (does not add off-canvas nodes). */
-function decorateNodes(
-  nodes: SymbolRFNode[],
-  tierMap: Map<string, string>,
-  impactActive: boolean,
-  impactTarget: string,
-  traceActive: boolean,
-  tracePathNames: Set<string>,
-): SymbolRFNode[] {
-  return nodes.map((n) => {
-    const tier = tierMap.get(n.id) ?? null;
-    let dimmed = false;
-    if (traceActive) {
-      dimmed = !tracePathNames.has(n.id);
-    } else if (impactActive && tierMap.size > 0) {
-      // Never dim the impact subject itself (it's the question, not an answer).
-      dimmed = !tierMap.has(n.id) && n.id !== impactTarget;
-    }
-    return { ...n, data: { ...n.data, impactTier: tier, dimmed } };
-  });
-}
-
-/** Build faint cards for impacted symbols that are NOT on the current canvas. */
-function buildOffCanvasNodes(
-  names: string[],
-  tierMap: Map<string, string>,
-  baseNodes: SymbolRFNode[],
-): SymbolRFNode[] {
-  if (names.length === 0) return [];
-  // Place them in a column grid to the right of the existing graph's right edge.
-  const maxX = baseNodes.reduce((m, n) => Math.max(m, n.position.x + NODE_WIDTH), 0);
-  const startX = maxX + 80;
-  const ROWS = 6;
-  return names.map((name, i) => ({
-    id: name,
-    type: "symbolNode",
-    draggable: false, // derived node, not in base state → don't let drags desync
-    position: {
-      x: startX + Math.floor(i / ROWS) * (NODE_WIDTH + 24),
-      y: (i % ROWS) * (NODE_HEIGHT + 16),
-    },
-    data: {
-      name,
-      kind: "",
-      signature: null,
-      cluster_id: null,
-      cluster_label: null,
-      definition_count: 1,
-      isCenter: false,
-      impactTier: tierMap.get(name) ?? null,
-      offCanvas: true,
-    },
-  }));
-}
-
-/** Apply filter (hidden) + trace highlight (bold path / dim rest) to base edges. */
-function decorateEdges(
-  edges: Edge[],
-  filter: EdgeFilterState,
-  traceActive: boolean,
-  tracePathEdges: Set<string>,
-): Edge[] {
-  return edges.map((e) => {
-    const data = (e.data ?? { kind: "", confidence: "" }) as EdgeData;
-    const hidden = !isEdgeVisible(data, filter);
-    if (traceActive) {
-      const onPath = tracePathEdges.has(edgeKey(e.source, e.target));
-      return {
-        ...e,
-        hidden,
-        animated: onPath,
-        style: onPath
-          ? { stroke: "#38bdf8", strokeWidth: 3 }
-          : { ...e.style, opacity: 0.15 },
-      };
-    }
-    return { ...e, hidden };
-  });
-}
-
-/** Distinct clusters present on the canvas (for the Legend colour key). */
-function visibleClusters(nodes: SymbolRFNode[]): LegendCluster[] {
-  const seen = new Map<number, LegendCluster>();
-  for (const n of nodes) {
-    const id = n.data.cluster_id;
-    if (id !== null && id !== undefined && !seen.has(id)) {
-      seen.set(id, { cluster_id: id, cluster_label: n.data.cluster_label ?? null });
-    }
-  }
-  return [...seen.values()];
-}
-
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export interface GraphCanvasProps {
@@ -295,7 +217,9 @@ export interface GraphCanvasProps {
 
 export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvasProps) {
   const [expandTarget, setExpandTarget] = useState<string | null>(null);
-  const [filter, setFilter] = useState<EdgeFilterState>(defaultEdgeFilter());
+  // Filter state is initialized from localStorage so preferences persist across
+  // page reloads. It is NOT reset on center change (session-global by design).
+  const [filter, setFilter] = useState<GraphFilterState>(() => loadGraphFilter());
   const [impactActive, setImpactActive] = useState(false);
   // The node the user last clicked — impact analyses THIS (falls back to center),
   // so "click a node → Impact" shows that node's blast radius, not the center's.
@@ -311,6 +235,9 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
 
   const [nodes, setNodes, onNodesChange] = useNodesState<SymbolRFNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+
+  // Persist filter to localStorage whenever it changes.
+  useEffect(() => { saveGraphFilter(filter); }, [filter]);
 
   // Rebuild canvas + reset overlays when the center changes.
   useEffect(() => {
@@ -333,37 +260,40 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expandData]);
 
-  // ── Derived overlay state ────────────────────────────────────────────────
-  const tierMap = useMemo(
-    () => impactTierMap(impactActive ? impactData : undefined),
-    [impactActive, impactData],
-  );
-  const traceHL = useMemo(
-    () => tracePathHighlight(traceTarget ? traceData : undefined),
-    [traceTarget, traceData],
-  );
+  // ── Derived overlay state (delegated to useGraphOverlays) ───────────────────
+  const { displayNodes, displayEdges, clusters, tierMap, traceActive, traceNodeNames } = useGraphOverlays({
+    nodes,
+    edges,
+    impactActive,
+    impactData,
+    impactTarget,
+    traceTarget,
+    traceData,
+    filter,
+    enabledNodeKinds: filter.nodeKinds,
+  });
 
-  const displayNodes = useMemo(() => {
-    const decorated = decorateNodes(
-      nodes,
-      tierMap,
-      impactActive,
-      impactTarget,
-      traceHL.active,
-      traceHL.nodeNames,
-    );
-    // Off-canvas impacted symbols (not depth-1 neighbors) → faint appended cards.
-    const baseIds = new Set(nodes.map((n) => n.id));
-    const offCanvasNames = [...tierMap.keys()].filter((name) => !baseIds.has(name));
-    return [...decorated, ...buildOffCanvasNodes(offCanvasNames, tierMap, nodes)];
-  }, [nodes, tierMap, impactActive, impactTarget, traceHL]);
-
-  const displayEdges = useMemo(
-    () => decorateEdges(edges, filter, traceHL.active, traceHL.edgeKeys),
-    [edges, filter, traceHL],
+  // ── Filter counts from post-overlay edges (updates after impact/trace) ──────
+  // useMemo so counts only recompute when displayEdges actually changes.
+  const kindCounts = useMemo(
+    () => countVisibleEdgesByKind(displayEdges),
+    [displayEdges],
+  );
+  const confidenceCounts = useMemo(
+    () => countVisibleEdgesByConfidence(displayEdges),
+    [displayEdges],
   );
 
-  const clusters = useMemo(() => visibleClusters(nodes), [nodes]);
+  // ── Node-kind counts (from base nodes before filtering) ───────────────────
+  // Count each kind in the raw neighborhood (pre-filter) so chips show corpus size.
+  const nodeCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const n of nodes) {
+      const k = n.data.kind ?? "";
+      if (k) counts[k] = (counts[k] ?? 0) + 1;
+    }
+    return counts;
+  }, [nodes]);
 
   // ── Handlers ──────────────────────────────────────────────────────────────
   const handleNodeClick: NodeMouseHandler<SymbolRFNode> = useCallback(
@@ -379,7 +309,41 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
   );
   const handleToggleFilter = useCallback(
     (field: "kinds" | "confidences", value: string) =>
-      setFilter((f) => toggleFilterValue(f, field, value)),
+      // toggleFilterValue returns EdgeFilterState; cast is safe because the
+      // spread preserves nodeKinds from the GraphFilterState input.
+      setFilter((f) => toggleFilterValue(f, field, value) as GraphFilterState),
+    [],
+  );
+  // Select-all: enable every kind / confidence tier.
+  const handleAllKinds = useCallback(
+    () => setFilter((f) => ({ ...f, kinds: new Set(ALL_EDGE_KINDS) })),
+    [],
+  );
+  // Clear-all: disable every kind (no edges visible until re-enabled).
+  const handleNoneKinds = useCallback(
+    () => setFilter((f) => ({ ...f, kinds: new Set<string>() })),
+    [],
+  );
+  const handleAllConfidences = useCallback(
+    () => setFilter((f) => ({ ...f, confidences: new Set(ALL_CONFIDENCES) })),
+    [],
+  );
+  const handleNoneConfidences = useCallback(
+    () => setFilter((f) => ({ ...f, confidences: new Set<string>() })),
+    [],
+  );
+
+  // ── Node-kind filter handlers ─────────────────────────────────────────────
+  const handleToggleNodeKind = useCallback(
+    (kind: string) => setFilter((f) => toggleNodeKind(f, kind)),
+    [],
+  );
+  const handleAllNodeKinds = useCallback(
+    () => setFilter((f) => allNodeKinds(f)),
+    [],
+  );
+  const handleNoneNodeKinds = useCallback(
+    () => setFilter((f) => noneNodeKinds(f)),
     [],
   );
 
@@ -433,12 +397,43 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
             {impactActive && impactData && (
               <ImpactSummary summary={impactData.risk_summary} />
             )}
-            <FilterBar filter={filter} onToggle={handleToggleFilter} />
+            <FilterBar
+              filter={filter}
+              onToggle={handleToggleFilter}
+              onAllKinds={handleAllKinds}
+              onNoneKinds={handleNoneKinds}
+              onAllConfidences={handleAllConfidences}
+              onNoneConfidences={handleNoneConfidences}
+              kindCounts={kindCounts}
+              confidenceCounts={confidenceCounts}
+              nodeKindFilter={filter.nodeKinds}
+              onToggleNodeKind={handleToggleNodeKind}
+              onAllNodeKinds={handleAllNodeKinds}
+              onNoneNodeKinds={handleNoneNodeKinds}
+              nodeCounts={nodeCounts}
+            />
           </div>
         </Panel>
 
         <MiniMap maskColor="rgba(24,24,27,0.8)" style={{ background: "#18181b" }} />
         <Controls style={{ background: "#27272a", border: "1px solid #3f3f46" }} />
+
+        {/* Bottom-left: HUD overlay — below the legend to avoid overlap */}
+        <Panel position="bottom-left">
+          <GraphHUD
+            counts={computeHudCounts(displayNodes, displayEdges, selectedNode)}
+            impactActive={impactActive}
+          />
+        </Panel>
+
+        {/* Viewport fly-to-fit controller: must live inside <ReactFlow> to access
+            useReactFlow(). Renders the "fit all" escape-hatch button (bottom-right). */}
+        <ViewportController
+          impactActive={impactActive}
+          traceActive={traceActive}
+          tierMap={tierMap}
+          traceNodeNames={traceNodeNames}
+        />
       </ReactFlow>
     </div>
   );

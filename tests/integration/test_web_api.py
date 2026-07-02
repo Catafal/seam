@@ -398,7 +398,10 @@ def test_neighborhood_invalid_direction_returns_422(client: TestClient) -> None:
 
 
 def test_symbol_happy_path(client: TestClient) -> None:
-    """Symbol detail endpoint returns expected structure."""
+    """Symbol detail endpoint returns expected structure.
+
+    S2: callers/callees are now enriched {name, kind, confidence} objects, not bare strings.
+    """
     resp = client.get("/api/symbol/authenticate_user")
     assert resp.status_code == 200
     data = resp.json()
@@ -409,8 +412,51 @@ def test_symbol_happy_path(client: TestClient) -> None:
     assert isinstance(data["callees"], list)
     assert isinstance(data["peers"], list)
     assert isinstance(data["why"], list)
-    # check has no callees in our fixture (it's the leaf) but authenticate_user calls check
-    assert "check" in data["callees"]
+    # S2: callees are now objects; check by extracting names
+    callee_names = [c["name"] for c in data["callees"]]
+    assert "check" in callee_names
+
+
+def test_symbol_callers_enriched_with_kind_confidence(client: TestClient) -> None:
+    """Callers and callees carry {name, kind, confidence} objects (S2 enrichment).
+
+    authenticate_user calls check, so check.callers should contain authenticate_user
+    with kind and confidence populated from the edges table.
+    """
+    resp = client.get("/api/symbol/check")
+    assert resp.status_code == 200
+    data = resp.json()
+    callers = data["callers"]
+    assert isinstance(callers, list)
+    assert len(callers) > 0, "check must have at least one caller (authenticate_user)"
+    # Each entry must be an object with name, kind, confidence — not a bare string.
+    caller = callers[0]
+    assert isinstance(caller, dict), "caller must be an object, not a bare string"
+    assert "name" in caller
+    assert "kind" in caller
+    assert "confidence" in caller
+    caller_names = [c["name"] for c in callers]
+    assert "authenticate_user" in caller_names
+    # kind must be a non-empty string (e.g. 'call')
+    assert caller["kind"] != ""
+
+
+def test_symbol_callees_enriched_with_kind_confidence(client: TestClient) -> None:
+    """Callees carry {name, kind, confidence} objects (S2 enrichment).
+
+    authenticate_user calls check, so authenticate_user.callees contains check.
+    """
+    resp = client.get("/api/symbol/authenticate_user")
+    assert resp.status_code == 200
+    data = resp.json()
+    callees = data["callees"]
+    assert isinstance(callees, list)
+    callee_names = [c["name"] for c in callees]
+    assert "check" in callee_names
+    # Each callee must carry kind + confidence
+    for callee in callees:
+        assert "kind" in callee
+        assert "confidence" in callee
 
 
 def test_symbol_unknown_returns_404(client: TestClient) -> None:
@@ -446,9 +492,27 @@ def test_impact_happy_path(client: TestClient) -> None:
     assert data["upstream"] is not None
     will_break = [e["name"] for e in data["upstream"]["WILL_BREAK"]]
     assert "authenticate_user" in will_break
-    # Each entry carries the lean field set (no resolved_by/best_candidate).
+    # Each entry carries the lean field set (no resolved_by/best_candidate) plus optional kind.
     entry = data["upstream"]["WILL_BREAK"][0]
-    assert set(entry.keys()) == {"name", "distance", "confidence", "tier", "file", "is_test"}
+    required_keys = {"name", "distance", "confidence", "tier", "file", "is_test"}
+    assert required_keys.issubset(set(entry.keys()))
+
+
+def test_impact_entry_includes_kind(client: TestClient) -> None:
+    """Impact entries include an optional 'kind' field (edge kind of the final hop).
+
+    When SEAM_EDGE_PROVENANCE=on (default), the handler emits 'kind' on every entry.
+    The web layer must surface it rather than silently dropping it.
+    """
+    resp = client.get("/api/impact", params={"symbol": "check", "direction": "upstream"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["upstream"] is not None
+    entry = data["upstream"]["WILL_BREAK"][0]
+    # 'kind' must be present and non-null (call edge from authenticate_user → check)
+    assert "kind" in entry
+    assert entry["kind"] is not None
+    assert isinstance(entry["kind"], str)
 
 
 def test_impact_both_directions(client: TestClient) -> None:

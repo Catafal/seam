@@ -24,6 +24,10 @@ export type SymbolResponse = components["schemas"]["SymbolResponse"];
 export type ClusterItem = components["schemas"]["ClusterItem"];
 export type ClustersResponse = components["schemas"]["ClustersResponse"];
 
+// ── S2 enriched types ─────────────────────────────────────────────────────────
+/** Enriched caller/callee ref with edge metadata (S2). */
+export type CallerRef = components["schemas"]["CallerRef"];
+
 // ── Phase 2 additions ──────────────────────────────────────────────────────────
 export type ImpactEntry = components["schemas"]["ImpactEntry"];
 export type ImpactResponse = components["schemas"]["ImpactResponse"];

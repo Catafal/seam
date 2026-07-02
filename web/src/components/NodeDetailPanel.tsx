@@ -140,9 +140,9 @@ export function NodeDetailPanel({ node, onNavigate, onClose }: NodeDetailPanelPr
                   Callers ({data.callers.length})
                 </h3>
                 <ul className="space-y-0.5">
-                  {data.callers.map((name) => (
-                    <li key={name}>
-                      <NavRow name={name} onNavigate={onNavigate} />
+                  {data.callers.map((ref) => (
+                    <li key={ref.name}>
+                      <NavRow name={ref.name} onNavigate={onNavigate} />
                     </li>
                   ))}
                 </ul>
@@ -156,9 +156,9 @@ export function NodeDetailPanel({ node, onNavigate, onClose }: NodeDetailPanelPr
                   Callees ({data.callees.length})
                 </h3>
                 <ul className="space-y-0.5">
-                  {data.callees.map((name) => (
-                    <li key={name}>
-                      <NavRow name={name} onNavigate={onNavigate} />
+                  {data.callees.map((ref) => (
+                    <li key={ref.name}>
+                      <NavRow name={ref.name} onNavigate={onNavigate} />
                     </li>
                   ))}
                 </ul>
