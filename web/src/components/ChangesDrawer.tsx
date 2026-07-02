@@ -12,7 +12,7 @@
 
 import { useChanges } from "../api/hooks";
 import type { ChangedSymbol } from "../api/schema-types";
-import { filterCodeFiles } from "../lib/codeFileFilter";
+import { filterCodeFiles, isCodeFile } from "../lib/codeFileFilter";
 import { X, GitBranch } from "lucide-react";
 
 /** Risk level → badge classes. Covers the engine's rollup vocabulary. */
@@ -112,6 +112,9 @@ export function ChangesDrawer({ open, onClose, onSelectSymbol }: ChangesDrawerPr
         // Filter to code files only — non-indexed files (docs, configs, logs) have no
         // symbols in the graph and produce misleading entries in the drawer.
         const codeSymbols = filterCodeFiles(data.changed_symbols);
+        // Same rationale for new (untracked) files: git surfaces docs/logs/configs
+        // that Seam never indexes — filter them out so the drawer stays actionable.
+        const codeNewFiles = data.new_files.filter(isCodeFile);
         return (
         <div className="flex-1">
           {data.ambiguous_warning && (
@@ -120,7 +123,7 @@ export function ChangesDrawer({ open, onClose, onSelectSymbol }: ChangesDrawerPr
             </p>
           )}
 
-          {codeSymbols.length === 0 && data.new_files.length === 0 ? (
+          {codeSymbols.length === 0 && codeNewFiles.length === 0 ? (
             <p className="text-xs text-zinc-500 p-4">No changes in the working tree.</p>
           ) : (
             <>
@@ -137,13 +140,13 @@ export function ChangesDrawer({ open, onClose, onSelectSymbol }: ChangesDrawerPr
                 </section>
               )}
 
-              {data.new_files.length > 0 && (
+              {codeNewFiles.length > 0 && (
                 <section className="border-t border-zinc-800/60 mt-1">
                   <h3 className="text-[10px] font-semibold uppercase tracking-widest text-zinc-600 px-3 pt-3 pb-1">
-                    New files ({data.new_files.length})
+                    New files ({codeNewFiles.length})
                   </h3>
                   <ul className="px-3 pb-3 space-y-1">
-                    {data.new_files.map((f) => (
+                    {codeNewFiles.map((f) => (
                       <li key={f} className="text-[10px] text-zinc-500 font-mono truncate" title={f}>
                         {f}
                       </li>
