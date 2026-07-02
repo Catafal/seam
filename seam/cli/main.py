@@ -34,7 +34,7 @@ import sys
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import typer
 from rich.console import Console
@@ -59,6 +59,7 @@ from seam.analysis.impact import (
 )
 from seam.analysis.staleness import _watcher_is_alive, check_staleness
 from seam.cli.architecture import architecture_command
+from seam.cli.file_sink import write_output_file
 from seam.cli.graph_search import graph_search_command
 from seam.cli.install import install_command, uninstall_command
 from seam.cli.output import check_mutual_exclusion, emit_json, emit_json_error, print_quiet
@@ -127,6 +128,7 @@ def _app_main(
 ) -> None:
     """Local code intelligence MCP server for AI agents."""
 
+
 # Register commands defined in sibling modules (kept out of this file, which is large).
 app.command(name="install")(install_command)
 app.command(name="uninstall")(uninstall_command)
@@ -163,6 +165,99 @@ _IMPACT_META_KEYS: frozenset[str] = frozenset(
         "index_status",
     }
 )
+
+
+def _get_seam_out_dir(db_path: Path) -> Path:
+    """Derive the default .seam/out/ output directory from the resolved DB path.
+
+    WHY derive from db_path (not project_root + ".seam/out"):
+      db_path.parent IS the .seam/ dir (from config.get_db_path → root/.seam/seam.db).
+      Deriving from db_path guarantees we land in the same .seam/ dir even when the
+      caller overrides --db-dir. The .seam/ dir is already git-ignored by the
+      `.seam/.gitignore` written by `seam init` so files under it never appear in
+      `seam changes`.
+    """
+    return db_path.parent / "out"
+
+
+def _emit_to_file_error(exc: Exception, json_: bool) -> NoReturn:
+    """Emit an error envelope for a filesystem write failure and exit 1.
+
+    WHY separate helper:
+      All four commands share the same "write failed" error path. Extracting it
+      avoids duplicating the json_/console branch in every command body.
+
+    WHY NoReturn:
+      The function always exits — emit_json_error raises typer.Exit in JSON mode;
+      the final raise exits in non-JSON mode. Typing this as NoReturn lets mypy
+      prove that any variable assigned in the try block is always bound after
+      the try/except (i.e. the except handler is exhaustive).
+    """
+    if json_:
+        emit_json_error("DB_ERROR", f"Failed to write output file: {exc}")
+    console.print(f"[red]Failed to write output file:[/red] {exc}")
+    raise typer.Exit(code=1)
+
+
+def _handle_to_file_output(
+    result: dict[str, Any],
+    *,
+    command: str,
+    label: str,
+    db_path: Path,
+    to_file: str,
+    json_: bool,
+    quiet: bool,
+) -> None:
+    """Write result to a file and emit the appropriate stdout for --to-file mode.
+
+    WHY a shared helper:
+      All four commands (impact/context/trace/flows) have identical output-mode
+      composition logic once the file is written. A single helper avoids drift.
+
+    Args:
+        result:   The full (untrimmed) command result dict to serialize.
+        command:  The command name for the auto filename and summary.
+        label:    The symbol/label for the auto filename.
+        db_path:  Resolved DB path (used to derive .seam/out/).
+        to_file:  The --to-file value: "" = auto location, else explicit path.
+        json_:    Whether --json mode is active.
+        quiet:    Whether --quiet mode is active.
+    """
+    out_dir = _get_seam_out_dir(db_path)
+    path_override = Path(to_file) if to_file else None
+    try:
+        tf = write_output_file(
+            result,
+            command=command,
+            label=label,
+            out_dir=out_dir,
+            path_override=path_override,
+        )
+    except OSError as exc:
+        _emit_to_file_error(exc, json_)
+
+    if json_:
+        emit_json(
+            {
+                "command": command,
+                "label": label,
+                "to_file": str(tf["path"]),
+                "bytes": tf["bytes"],
+                "summary": tf["summary"],
+            }
+        )
+    elif quiet:
+        sys.stdout.write(str(tf["path"]) + "\n")
+    else:
+        # Rich default: summary line + the path, NOT the full payload.
+        # WHY sys.stdout.write for the path (not console.print):
+        #   Rich wraps long lines at the terminal width. An absolute path to a
+        #   deep temp dir would wrap across two lines, making it unparseable by
+        #   downstream tools (agents, tests, pipelines). sys.stdout.write is
+        #   always unwrapped and machine-readable.
+        console.print(tf["summary"])
+        sys.stdout.write(str(tf["path"]) + "\n")
 
 
 def _render_next_actions(result: dict[str, Any]) -> None:
@@ -707,6 +802,23 @@ def impact_cmd(
     ),
     json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
     quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
+    to_file: bool = typer.Option(
+        False,
+        "--to-file",
+        help=(
+            "Write the full result to .seam/out/<cmd>-<label>.json and print a summary + the "
+            "path instead of the payload. Use --to-file-path for an explicit destination. "
+            "Overrides --lean/--limit/--max-bytes for the file content (always full, verbose)."
+        ),
+    ),
+    to_file_path: str = typer.Option(
+        "",
+        "--to-file-path",
+        help=(
+            "Explicit destination for --to-file: a file path, or a directory path (trailing /) "
+            "to place an auto-named file inside. Implies --to-file."
+        ),
+    ),
 ) -> None:
     """Show the blast radius of a symbol — what breaks if you change it.
 
@@ -764,24 +876,55 @@ def impact_cmd(
     verbose = not lean
 
     try:
-        # WHY: ALL three modes (--json, --quiet, Rich) route through handle_seam_impact
-        # so the --limit cap, --lean strip, risk_summary, and truncated counts apply
-        # uniformly. The Rich path previously called impact() directly and so silently
-        # ignored --limit and --lean (a confirmed parity bug). One handler = one source
-        # of truth; Rich now renders the same capped result --json returns.
-        result = handle_seam_impact(
-            conn,
-            target=symbol,
-            root=project_root,
-            direction=direction,
-            max_depth=depth,
-            include_tests=include_tests,
-            verbose=verbose,
-            limit=limit,
-            max_bytes=max_bytes,
-        )
+        if (to_file or to_file_path):
+            # WHY full result for --to-file:
+            #   The file is the complete artifact; trim flags affect stdout presentation only.
+            #   Passing limit=0 + max_bytes=0 + verbose=True overrides --lean/--limit/--max-bytes
+            #   so the file always contains the full blast radius regardless of what the user
+            #   passed for display purposes.
+            result = handle_seam_impact(
+                conn,
+                target=symbol,
+                root=project_root,
+                direction=direction,
+                max_depth=depth,
+                include_tests=include_tests,
+                verbose=True,
+                limit=0,
+                max_bytes=0,
+            )
+        else:
+            # WHY: ALL three modes (--json, --quiet, Rich) route through handle_seam_impact
+            # so the --limit cap, --lean strip, risk_summary, and truncated counts apply
+            # uniformly. The Rich path previously called impact() directly and so silently
+            # ignored --limit and --lean (a confirmed parity bug). One handler = one source
+            # of truth; Rich now renders the same capped result --json returns.
+            result = handle_seam_impact(
+                conn,
+                target=symbol,
+                root=project_root,
+                direction=direction,
+                max_depth=depth,
+                include_tests=include_tests,
+                verbose=verbose,
+                limit=limit,
+                max_bytes=max_bytes,
+            )
     finally:
         conn.close()
+
+    # ── --to-file mode: write full result to disk, emit summary + path ────────
+    if (to_file or to_file_path):
+        _handle_to_file_output(
+            result,
+            command="impact",
+            label=symbol,
+            db_path=db_path,
+            to_file=to_file_path,
+            json_=json_,
+            quiet=quiet,
+        )
+        return
 
     # ── JSON mode ─────────────────────────────────────────────────────────────
     if json_:
@@ -1002,6 +1145,23 @@ def trace_cmd(
     ),
     json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
     quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
+    to_file: bool = typer.Option(
+        False,
+        "--to-file",
+        help=(
+            "Write the full result to .seam/out/<cmd>-<label>.json and print a summary + the "
+            "path instead of the payload. Use --to-file-path for an explicit destination. "
+            "Always writes the full, verbose result."
+        ),
+    ),
+    to_file_path: str = typer.Option(
+        "",
+        "--to-file-path",
+        help=(
+            "Explicit destination for --to-file: a file path, or a directory path (trailing /) "
+            "to place an auto-named file inside. Implies --to-file."
+        ),
+    ),
 ) -> None:
     """Trace the call/dependency path from one symbol to another.
 
@@ -1051,8 +1211,8 @@ def trace_cmd(
     verbose = not lean
 
     try:
-        # WHY: reuse handle_seam_trace for --json/--quiet to ensure MCP/CLI parity.
-        if json_ or quiet:
+        # WHY: reuse handle_seam_trace for --json/--quiet/--to-file to ensure MCP/CLI parity.
+        if json_ or quiet or (to_file or to_file_path):
             result = handle_seam_trace(
                 conn,
                 source=source,
@@ -1071,6 +1231,21 @@ def trace_cmd(
             callees_tgt = flows_callees(conn, target, repo_root=project_root)
     finally:
         conn.close()
+
+    # ── --to-file mode: write full result to disk, emit summary + path ────────
+    if (to_file or to_file_path):
+        # Use "source_to_target" as the label for trace (both symbol names)
+        trace_label = f"{source}_to_{target}"
+        _handle_to_file_output(
+            result,
+            command="trace",
+            label=trace_label,
+            db_path=db_path,
+            to_file=to_file_path,
+            json_=json_,
+            quiet=quiet,
+        )
+        return
 
     # ── JSON mode ─────────────────────────────────────────────────────────────
     if json_:
@@ -1752,6 +1927,23 @@ def flows_cmd(
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
     json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
     quiet: bool = typer.Option(False, "--quiet", help="Print bare values only (one per line)."),
+    to_file: bool = typer.Option(
+        False,
+        "--to-file",
+        help=(
+            "Write the full result to .seam/out/<cmd>-<label>.json and print a summary + the "
+            "path instead of the payload. Use --to-file-path for an explicit destination. "
+            "Always writes the full, verbose result."
+        ),
+    ),
+    to_file_path: str = typer.Option(
+        "",
+        "--to-file-path",
+        help=(
+            "Explicit destination for --to-file: a file path, or a directory path (trailing /) "
+            "to place an auto-named file inside. Implies --to-file."
+        ),
+    ),
 ) -> None:
     """List execution entry points, or expand one entry point's flow.
 
@@ -1788,6 +1980,25 @@ def flows_cmd(
         result = handle_seam_flows(conn, root=project_root, entry=entry_arg)
     finally:
         conn.close()
+
+    # ── --to-file mode: write full result to disk, emit summary + path ────────
+    if (to_file or to_file_path):
+        # Normalize: None result (not-found entry) becomes {"found": False}.
+        # WHY the cast: result is Flow | dict[str, Any] | None; Flow is a TypedDict
+        # (subtype of dict) but mypy requires explicit help for dict[str, Any] assignment.
+        file_data: dict[str, Any] = dict(result) if result is not None else {"found": False}
+        # Label: list mode uses "entry-points"; drill mode uses the entry name
+        flows_label = entry_arg if entry_arg else "entry-points"
+        _handle_to_file_output(
+            file_data,
+            command="flows",
+            label=flows_label,
+            db_path=db_path,
+            to_file=to_file_path,
+            json_=json_,
+            quiet=quiet,
+        )
+        return
 
     # ── JSON mode — structured envelope; unknown entry mirrors not-found contract.
     if json_:
