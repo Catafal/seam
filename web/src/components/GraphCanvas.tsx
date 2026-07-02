@@ -18,9 +18,13 @@
  * WHY dagre (not elkjs): proven, synchronous, stable TS types — fine for depth-1
  * neighborhoods (< 50 nodes). WHY merge-expand (not replace): double-click adds
  * context incrementally without losing already-expanded nodes.
+ *
+ * Overlay-decoration logic (decorateNodes, buildOffCanvasNodes, decorateEdges,
+ * visibleClusters, tierMap, traceHL) lives in useGraphOverlays to keep this file
+ * under the 1000-line limit as HUD/filter/fly-to-fit slices are added.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ReactFlow,
   MiniMap,
@@ -45,16 +49,14 @@ import type { GraphNode, GraphEdge, NeighborhoodResponse } from "../api/schema-t
 import { SymbolNode } from "./SymbolNode";
 import type { SymbolNodeData } from "./SymbolNode";
 import { getEdgeStyle } from "../lib/edgeStyle";
-import { Legend, type LegendCluster } from "./Legend";
+import { Legend } from "./Legend";
 import { FilterBar } from "./FilterBar";
 import {
   defaultEdgeFilter,
-  isEdgeVisible,
   toggleFilterValue,
   type EdgeFilterState,
 } from "../lib/edgeFilter";
-import { impactTierMap } from "../lib/impactOverlay";
-import { tracePathHighlight, edgeKey } from "../lib/tracePath";
+import { useGraphOverlays } from "../hooks/useGraphOverlays";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -188,100 +190,6 @@ function mergeNeighborhood(
   };
 }
 
-// ── Overlay decoration (pure; derive display arrays from base + overlay state) ──
-
-/** Apply impact tier + dim flags to base nodes (does not add off-canvas nodes). */
-function decorateNodes(
-  nodes: SymbolRFNode[],
-  tierMap: Map<string, string>,
-  impactActive: boolean,
-  impactTarget: string,
-  traceActive: boolean,
-  tracePathNames: Set<string>,
-): SymbolRFNode[] {
-  return nodes.map((n) => {
-    const tier = tierMap.get(n.id) ?? null;
-    let dimmed = false;
-    if (traceActive) {
-      dimmed = !tracePathNames.has(n.id);
-    } else if (impactActive && tierMap.size > 0) {
-      // Never dim the impact subject itself (it's the question, not an answer).
-      dimmed = !tierMap.has(n.id) && n.id !== impactTarget;
-    }
-    return { ...n, data: { ...n.data, impactTier: tier, dimmed } };
-  });
-}
-
-/** Build faint cards for impacted symbols that are NOT on the current canvas. */
-function buildOffCanvasNodes(
-  names: string[],
-  tierMap: Map<string, string>,
-  baseNodes: SymbolRFNode[],
-): SymbolRFNode[] {
-  if (names.length === 0) return [];
-  // Place them in a column grid to the right of the existing graph's right edge.
-  const maxX = baseNodes.reduce((m, n) => Math.max(m, n.position.x + NODE_WIDTH), 0);
-  const startX = maxX + 80;
-  const ROWS = 6;
-  return names.map((name, i) => ({
-    id: name,
-    type: "symbolNode",
-    draggable: false, // derived node, not in base state → don't let drags desync
-    position: {
-      x: startX + Math.floor(i / ROWS) * (NODE_WIDTH + 24),
-      y: (i % ROWS) * (NODE_HEIGHT + 16),
-    },
-    data: {
-      name,
-      kind: "",
-      signature: null,
-      cluster_id: null,
-      cluster_label: null,
-      definition_count: 1,
-      isCenter: false,
-      impactTier: tierMap.get(name) ?? null,
-      offCanvas: true,
-    },
-  }));
-}
-
-/** Apply filter (hidden) + trace highlight (bold path / dim rest) to base edges. */
-function decorateEdges(
-  edges: Edge[],
-  filter: EdgeFilterState,
-  traceActive: boolean,
-  tracePathEdges: Set<string>,
-): Edge[] {
-  return edges.map((e) => {
-    const data = (e.data ?? { kind: "", confidence: "" }) as EdgeData;
-    const hidden = !isEdgeVisible(data, filter);
-    if (traceActive) {
-      const onPath = tracePathEdges.has(edgeKey(e.source, e.target));
-      return {
-        ...e,
-        hidden,
-        animated: onPath,
-        style: onPath
-          ? { stroke: "#38bdf8", strokeWidth: 3 }
-          : { ...e.style, opacity: 0.15 },
-      };
-    }
-    return { ...e, hidden };
-  });
-}
-
-/** Distinct clusters present on the canvas (for the Legend colour key). */
-function visibleClusters(nodes: SymbolRFNode[]): LegendCluster[] {
-  const seen = new Map<number, LegendCluster>();
-  for (const n of nodes) {
-    const id = n.data.cluster_id;
-    if (id !== null && id !== undefined && !seen.has(id)) {
-      seen.set(id, { cluster_id: id, cluster_label: n.data.cluster_label ?? null });
-    }
-  }
-  return [...seen.values()];
-}
-
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export interface GraphCanvasProps {
@@ -333,37 +241,17 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expandData]);
 
-  // ── Derived overlay state ────────────────────────────────────────────────
-  const tierMap = useMemo(
-    () => impactTierMap(impactActive ? impactData : undefined),
-    [impactActive, impactData],
-  );
-  const traceHL = useMemo(
-    () => tracePathHighlight(traceTarget ? traceData : undefined),
-    [traceTarget, traceData],
-  );
-
-  const displayNodes = useMemo(() => {
-    const decorated = decorateNodes(
-      nodes,
-      tierMap,
-      impactActive,
-      impactTarget,
-      traceHL.active,
-      traceHL.nodeNames,
-    );
-    // Off-canvas impacted symbols (not depth-1 neighbors) → faint appended cards.
-    const baseIds = new Set(nodes.map((n) => n.id));
-    const offCanvasNames = [...tierMap.keys()].filter((name) => !baseIds.has(name));
-    return [...decorated, ...buildOffCanvasNodes(offCanvasNames, tierMap, nodes)];
-  }, [nodes, tierMap, impactActive, impactTarget, traceHL]);
-
-  const displayEdges = useMemo(
-    () => decorateEdges(edges, filter, traceHL.active, traceHL.edgeKeys),
-    [edges, filter, traceHL],
-  );
-
-  const clusters = useMemo(() => visibleClusters(nodes), [nodes]);
+  // ── Derived overlay state (delegated to useGraphOverlays) ───────────────────
+  const { displayNodes, displayEdges, clusters, tierMap } = useGraphOverlays({
+    nodes,
+    edges,
+    impactActive,
+    impactData,
+    impactTarget,
+    traceTarget,
+    traceData,
+    filter,
+  });
 
   // ── Handlers ──────────────────────────────────────────────────────────────
   const handleNodeClick: NodeMouseHandler<SymbolRFNode> = useCallback(
