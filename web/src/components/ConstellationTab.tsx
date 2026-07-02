@@ -108,20 +108,10 @@ export default function ConstellationTab({
           clusters={data.clusters}
           highlightedIds={highlightedIds}
           cameraTarget={cameraTarget}
+          hoveredNode={hoveredNode}
           onHover={handleHover}
           onSelect={handleSelect}
         />
-
-        {/* Hover tooltip — minimal for S2; NodeTooltip component added in S3 */}
-        {hoveredNode && (
-          <div
-            className="absolute top-4 left-1/2 -translate-x-1/2 pointer-events-none
-                        bg-zinc-900/80 backdrop-blur-sm border border-zinc-700
-                        rounded-md px-3 py-1.5 text-xs text-zinc-200 font-mono"
-          >
-            {hoveredNode.name}
-          </div>
-        )}
       </div>
 
       {/* Future: NodeDetailPanel slides in here when selectedNode is set */}

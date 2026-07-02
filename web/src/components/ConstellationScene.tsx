@@ -10,6 +10,9 @@
  *   OrbitControls  — dampingFactor 0.08, auto-rotate after 60s idle
  *   EffectComposer — Bloom (threshold .3, intensity 1.2, radius .6, mipmapBlur)
  *   CameraAnimator — ease-out cubic fly-to with 0.08 lerp factor
+ *   EdgeLines      — additive-blended LineSegments (S3)
+ *   NodeLabels     — canvas-sprite labels for top-80 nodes (S3)
+ *   NodeTooltip    — drei Html glass-card on hover (S3)
  *
  * Pure helpers exported for unit testing (no WebGL dependency):
  *   computeCameraTarget(nodes, ids) → CameraTarget | null
@@ -23,6 +26,9 @@ import { EffectComposer, Bloom } from "@react-three/postprocessing";
 import * as THREE from "three";
 
 import { NodeCloud } from "./NodeCloud";
+import { EdgeLines } from "./EdgeLines";
+import { NodeLabels } from "./NodeLabels";
+import { NodeTooltip } from "./NodeTooltip";
 import { CANVAS_BG } from "../lib/constellationColors";
 import type { LayoutNode, LayoutEdge, ClusterSummary } from "../lib/layoutTypes";
 
@@ -156,125 +162,6 @@ function AutoRotateController({ controlsRef }: AutoRotateControllerProps) {
   return null;
 }
 
-// ── EdgeLines ─────────────────────────────────────────────────────────────────
-
-import { EDGE_TYPE_COLORS, DEFAULT_EDGE_COLOR } from "../lib/constellationColors";
-import { useMemo } from "react";
-
-/**
- * Compute Float32Array positions and colors for all visible edges.
- *
- * Intensity rules (reference §2 "Edge Lines" intensity table):
- *   Both highlighted:               0.50
- *   One highlighted:                0.04
- *   Same cluster, no highlight:     0.25
- *   Cross-cluster, no highlight:    0.06
- *   Both dimmed (no highlight set): skipped (zero intensity)
- *
- * Cluster key = first 2 slash components of file_path.
- */
-export function buildEdgeGeometry(
-  nodeMap: Map<number, LayoutNode>,
-  edges: LayoutEdge[],
-  highlightedIds: Set<number>,
-): { positions: Float32Array; colors: Float32Array } {
-  const hasHighlight = highlightedIds.size > 0;
-  const clusterKey = (n: LayoutNode) =>
-    (n.file_path ?? "").split("/").slice(0, 2).join("/");
-
-  const filteredEdges = edges.filter((e) => {
-    const s = nodeMap.get(e.source);
-    const t = nodeMap.get(e.target);
-    return s && t;
-  });
-
-  const positions = new Float32Array(filteredEdges.length * 6);
-  const colors = new Float32Array(filteredEdges.length * 6);
-
-  let idx = 0;
-  for (const e of filteredEdges) {
-    const s = nodeMap.get(e.source)!;
-    const t = nodeMap.get(e.target)!;
-    const sH = highlightedIds.has(e.source);
-    const tH = highlightedIds.has(e.target);
-
-    let intensity: number;
-    if (hasHighlight) {
-      if (sH && tH) intensity = 0.5;
-      else if (sH || tH) intensity = 0.04;
-      else intensity = 0; // dimmed — skip
-    } else {
-      const sameCluster = clusterKey(s) === clusterKey(t);
-      intensity = sameCluster ? 0.25 : 0.06;
-    }
-
-    // Parse edge kind color
-    const hex = EDGE_TYPE_COLORS[e.type] ?? DEFAULT_EDGE_COLOR;
-    const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
-    const [cr, cg, cb] = m
-      ? [parseInt(m[1], 16) / 255, parseInt(m[2], 16) / 255, parseInt(m[3], 16) / 255]
-      : [0.11, 0.63, 0.49];
-
-    const r = cr * intensity;
-    const g = cg * intensity;
-    const b = cb * intensity;
-
-    positions[idx * 6] = s.x;
-    positions[idx * 6 + 1] = s.y;
-    positions[idx * 6 + 2] = s.z;
-    positions[idx * 6 + 3] = t.x;
-    positions[idx * 6 + 4] = t.y;
-    positions[idx * 6 + 5] = t.z;
-    colors[idx * 6] = r; colors[idx * 6 + 1] = g; colors[idx * 6 + 2] = b;
-    colors[idx * 6 + 3] = r; colors[idx * 6 + 4] = g; colors[idx * 6 + 5] = b;
-    idx++;
-  }
-
-  // Slice to the actually-written portion (some edges may be skipped when dimmed)
-  return {
-    positions: positions.slice(0, idx * 6),
-    colors: colors.slice(0, idx * 6),
-  };
-}
-
-interface EdgeLinesProps {
-  nodes: LayoutNode[];
-  edges: LayoutEdge[];
-  highlightedIds: Set<number>;
-}
-
-/** Renders all edges as additive-blended LineSegments. */
-function EdgeLines({ nodes, edges, highlightedIds }: EdgeLinesProps) {
-  const nodeMap = useMemo(
-    () => new Map(nodes.map((n) => [n.id, n])),
-    [nodes],
-  );
-
-  const { positions, colors } = useMemo(
-    () => buildEdgeGeometry(nodeMap, edges, highlightedIds),
-    [nodeMap, edges, highlightedIds],
-  );
-
-  const geo = useMemo(() => {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    g.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-    return g;
-  }, [positions, colors]);
-
-  return (
-    <lineSegments geometry={geo}>
-      <lineBasicMaterial
-        vertexColors
-        transparent
-        blending={THREE.AdditiveBlending}
-        depthWrite={false}
-        toneMapped={false}
-      />
-    </lineSegments>
-  );
-}
-
 // ── ConstellationScene ────────────────────────────────────────────────────────
 
 interface ConstellationSceneProps {
@@ -283,6 +170,8 @@ interface ConstellationSceneProps {
   clusters: ClusterSummary[];
   highlightedIds: Set<number>;
   cameraTarget: CameraTarget | null;
+  /** Currently hovered node (passed from ConstellationTab) for the tooltip. */
+  hoveredNode?: LayoutNode | null;
   onHover: (node: LayoutNode | null) => void;
   onSelect: (node: LayoutNode) => void;
 }
@@ -292,7 +181,9 @@ interface ConstellationSceneProps {
  *
  * Composes:
  *   NodeCloud     — instanced mesh for all nodes
- *   EdgeLines     — additive-blended line segments
+ *   EdgeLines     — additive-blended line segments (S3)
+ *   NodeLabels    — canvas-sprite labels for top-80 nodes (S3)
+ *   NodeTooltip   — drei Html glass-card on hover (S3)
  *   OrbitControls — mouse/touch orbit with damping + idle auto-rotate
  *   EffectComposer + Bloom — post-processing glow corona
  *   CameraAnimator — smooth fly-to on node select
@@ -303,6 +194,7 @@ export function ConstellationScene({
   clusters: _clusters, // reserved for ClusterHalos (future slice)
   highlightedIds,
   cameraTarget,
+  hoveredNode,
   onHover,
   onSelect,
 }: ConstellationSceneProps) {
@@ -328,8 +220,14 @@ export function ConstellationScene({
         onSelect={onSelect}
       />
 
-      {/* Edges — additive blended line segments */}
+      {/* Edges — additive-blended line segments (S3: from standalone EdgeLines.tsx) */}
       <EdgeLines nodes={nodes} edges={edges} highlightedIds={highlightedIds} />
+
+      {/* Sprite labels for the top-80 nodes by size (S3) */}
+      <NodeLabels nodes={nodes} highlightedIds={highlightedIds} />
+
+      {/* Glass-card tooltip anchored to the hovered node (S3) */}
+      {hoveredNode && <NodeTooltip node={hoveredNode} />}
 
       {/* Orbit controls with damping + idle auto-rotate */}
       <OrbitControls
