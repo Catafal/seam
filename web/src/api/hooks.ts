@@ -15,8 +15,10 @@
  *   callers need multiple fields (nodes + edges, definitions + callers + etc.).
  */
 
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "./client";
+import { deriveAreas, type Area } from "../lib/deriveAreas";
 import type {
   StatusResponse,
   SearchResultItem,
@@ -428,4 +430,45 @@ export function useGraphSearch(filters: GraphSearchFilters = {}, enabled: boolea
       }),
     enabled,
   });
+}
+
+// ── useAreas ─────────────────────────────────────────────────────────────────
+
+/** Result shape returned by useAreas. */
+export interface UseAreasResult {
+  /** Derived functional areas (folder-based, sorted by symbol count desc). */
+  areas: Area[];
+  /** True while either /api/structure or /api/hubs is still fetching. */
+  isLoading: boolean;
+}
+
+/**
+ * Shared hook that composes useStructure + useHubs + deriveAreas into one
+ * fetch-and-derive result so the landing and the Overview both derive areas
+ * from exactly one place.
+ *
+ * WHY a shared hook (not inline derivation in each consumer): this guarantees
+ * landing and Overview cannot drift apart — the "area" concept is defined once.
+ * deriveAreas is unchanged (pure, unit-tested); this hook is the single wiring
+ * point. See Phase B PRD §"One areas concept".
+ *
+ * @param opts.includeTests  when false (default), test directories are excluded.
+ */
+export function useAreas(opts: { includeTests: boolean }): UseAreasResult {
+  // Fetch structure always enabled — the Overview and landing both need it.
+  const { data: symbols, isLoading: structureLoading } = useStructure(true);
+  // 60 hubs gives good coverage for keySymbol hints across all areas.
+  // We do NOT filter hubs by showTests here: deriveAreas skips hub entries
+  // that fall in filtered-out (test) areas automatically.
+  const { data: hubs, isLoading: hubsLoading } = useHubs(60);
+
+  const areas = useMemo(
+    () => deriveAreas(symbols ?? [], hubs ?? [], { includeTests: opts.includeTests }),
+    [symbols, hubs, opts.includeTests],
+  );
+
+  return {
+    areas,
+    isLoading: structureLoading || hubsLoading,
+  };
 }
