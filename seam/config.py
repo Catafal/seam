@@ -374,16 +374,58 @@ SEAM_EMBED_MODEL: str = os.getenv("SEAM_EMBED_MODEL", "BAAI/bge-small-en-v1.5")
 # default at the scale of a typical codebase (1k–20k symbols).
 SEAM_SEMANTIC_LIMIT: int = int(os.getenv("SEAM_SEMANTIC_LIMIT", "20"))
 
-# Maximum number of stored embedding rows loaded per semantic scan.
-# Bounds the brute-force cosine scan: rows beyond this cap are never loaded.
-# Protects against unbounded memory use on very large indexes.
-# Default 20000: covers ~20k symbols; adjust up if your codebase is larger.
-SEAM_SEMANTIC_SCAN_CAP: int = int(os.getenv("SEAM_SEMANTIC_SCAN_CAP", "20000"))
+# Maximum number of stored embedding rows considered per semantic scan.
+# 0 = unlimited (default): all stored vectors are scanned — the mmap path reads the
+#   full prebuilt artifact and the SQL fallback uses no LIMIT, so no symbol is silently
+#   excluded from semantic search due to rowid ordering. With the WS2a mmap store
+#   bounding memory via the OS page cache, unlimited scanning is the correct default.
+# Positive N = optional safety ceiling for memory-constrained operators: at most N rows
+#   are loaded in the SQL fallback path (LIMIT N), and at most N rows are considered
+#   in the mmap path (matrix[:N] slice). Rows beyond the cap are invisible to semantic
+#   search — intentional when the operator needs a hard memory bound, not the default.
+SEAM_SEMANTIC_SCAN_CAP: int = int(os.getenv("SEAM_SEMANTIC_SCAN_CAP", "0"))
 
 # RRF smoothing constant k (used in Reciprocal Rank Fusion).
 # k=60 is the standard value from Cormack, Clarke & Buettcher (SIGIR 2009).
 # Higher k flattens rank differences; lower k amplifies them.
 SEAM_RRF_K: int = int(os.getenv("SEAM_RRF_K", "60"))
+
+# ── WS2a: Persisted mmap vector store ────────────────────────────────────────
+
+# Master switch for the persisted mmap vector store.
+# When "on" (default), two things happen automatically:
+#   1. WRITE: after a successful `seam init --semantic` / `seam sync --semantic` embed
+#      pass, the embedding indexer writes a compact 3-file artifact beside the SQLite DB
+#      in the .seam/ directory:
+#        vectors.f32       — raw C-order float32 matrix (count × dim)
+#        vectors.ids.i64   — int64 symbol-id sidecar, row-aligned with the matrix
+#        vectors.meta.json — model, dim, count, index_version, dtype, byteorder
+#      The write is ATOMIC (temp file + os.replace). A write failure is logged and never
+#      fails the embed run (the SQLite path remains the source of truth).
+#   2. READ: the semantic read path (seam_search / seam_query) prefers the mmap store:
+#      it mmap-loads the artifact zero-copy, validates the metadata (model, dtype, size,
+#      index-version token), and computes cosine via one numpy matmul. If the artifact
+#      is absent, corrupt/truncated, model-mismatched, or stale (index-version mismatch),
+#      it falls through to the existing SQLite brute-force path byte-identically.
+#
+# When "off": no artifact is written and no artifact is read. The behavior is byte-identical
+#   to the current SQLite-only path (pre-WS2a), honoring Seam's E-series opt-out discipline.
+#
+# WHY mmap (vs SQL brute-force):
+#   The SQL path rebuilds an (N, dim) float32 matrix from per-row blob decodes on EVERY
+#   query. A long-lived MCP server reusing the mmap reuses the OS page cache across calls —
+#   no per-query decode. A CLI one-shot reads the prebuilt file instead of re-decoding.
+#   Critically, the SQL path is bounded by SEAM_SEMANTIC_SCAN_CAP (default 20,000 rows),
+#   which silently drops symbols beyond the cap from all semantic results on large codebases.
+#   The mmap path reads the full artifact written at embed time — no cap-induced recall loss.
+#
+# Staleness detection: the metadata stores an index-version token (COUNT + MAX(symbol_id)
+#   for the model). At read time, the token is recomputed from the DB; a mismatch means
+#   the artifact is stale → SQL fallback. This is the same cheap-derived-key pattern used
+#   by the layout cache (SEAM_STALENESS_TTL_SECONDS).
+#
+# No schema change, no migration. The artifact lives in .seam/ which is already gitignored.
+SEAM_VECTOR_STORE: str = os.getenv("SEAM_VECTOR_STORE", "on")
 
 # ── WS1-A: Richer embedding input — body-slice enrichment ────────────────────
 

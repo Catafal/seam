@@ -168,8 +168,26 @@ seam/config.py               ← all settings (env vars with defaults)
                                 SEAM_SEMANTIC: "off" | "on" — master switch for hybrid semantic search (default: off)
                                 SEAM_EMBED_MODEL: fastembed model name (default: "BAAI/bge-small-en-v1.5")
                                 SEAM_SEMANTIC_LIMIT: top-k semantic candidates fetched before RRF merge (default: 20)
-                                SEAM_SEMANTIC_SCAN_CAP: max embedding rows loaded per scan (default: 20000)
+                                SEAM_SEMANTIC_SCAN_CAP: max embedding rows loaded per scan (default: 0 =
+                                  unlimited; WS2a). 0 = all stored vectors scanned in both the SQL fallback
+                                  path (no LIMIT clause) and the mmap path (all artifact rows considered) —
+                                  no cap-induced recall loss. A positive N is an optional memory-safety ceiling
+                                  for operators who need a hard bound; rows beyond N are invisible to semantic
+                                  search in both paths. "off"/pre-WS2a default was 20000.
                                 SEAM_RRF_K: RRF smoothing constant k, Cormack et al. SIGIR 2009 (default: 60)
+                                SEAM_VECTOR_STORE: "on" | "off" — master switch for the persisted mmap vector
+                                  store (WS2a; default: "on"). When "on":
+                                    WRITE: after a successful `seam init --semantic` / `seam sync --semantic`
+                                      embed pass, three sibling files are written atomically beside the SQLite DB
+                                      in .seam/: vectors.f32 (float32 matrix), vectors.ids.i64 (int64 id sidecar),
+                                      vectors.meta.json (model, dim, count, index_version). Write failure is
+                                      logged and NEVER fails the embed run (SQL path remains authoritative).
+                                    READ: semantic_candidates prefers the mmap store (zero-copy matmul) and
+                                      falls through to the SQL brute-force path on any issue (absent artifact,
+                                      model mismatch, size mismatch, stale index_version token).
+                                  "off" = no artifact written, no artifact read — byte-identical to pre-WS2a
+                                    SQL-only path. Honors Seam's E-series opt-out discipline.
+                                  No schema change, no migration. Artifact lives in .seam/ (gitignored).
                                 SEAM_EMBED_BODY: "off" | "on" — gate for including a leading body slice + DB
                                   comments in each symbol's embedding input (WS1-A + WS1-B; default: off).
                                   When "on": index_embeddings reads each source file at most once and appends
@@ -250,11 +268,29 @@ seam/indexer/embedding_index.py ← index orchestration bridge for embeddings (S
                                 index_embeddings(conn, *, model, batch) → int: -1=error, 0=skipped, ≥1=count
                                 single-transaction batch upsert (INSERT OR REPLACE) for clean-retry on failure
                                 called by `seam init --semantic` after clustering; NOT called by the watcher
+                                WS2a: after embed+commit succeeds, calls _write_artifact() to write the mmap
+                                  store artifact (SEAM_VECTOR_STORE=on). Failure is swallowed — embed run
+                                  return value is unaffected; SQL path remains authoritative.
+seam/query/vector_store.py   ← LEAF: persisted mmap vector store (WS2a)
+                                get_artifact_dir(conn) → Path | None (derives .seam/ dir from PRAGMA database_list)
+                                write_store(store_dir, symbol_ids, matrix_or_blobs, model, dim, index_version) → None
+                                  atomic write: temp file + os.replace per file; meta written LAST so load_store
+                                  never sees a meta without a valid matrix; try/finally cleans up temp files
+                                load_store(store_dir, model) → VectorStore | None
+                                  validates model, dtype/byteorder, file sizes; mmap-loads matrix zero-copy
+                                top_k(store, query_vec_bytes, k, *, scan_cap=0) → list[tuple[int, float]]
+                                  same cosine formula as SQL fallback for byte-identical results; scan_cap
+                                  mirrors SEAM_SEMANTIC_SCAN_CAP (0 = all rows)
+                                compute_index_version(conn, model) → str "count:max_symbol_id" staleness token
+                                numpy imported at module scope (gated by try/except ImportError → degrade to None/[])
 seam/query/semantic.py       ← LEAF: semantic search read path (Semantic phase)
                                 rrf_merge(fts_ranked, semantic_ranked, k=60) → list[int] (pure RRF, no model)
                                 cosine_sim(a_bytes, b_bytes) → float (pure-Python struct.unpack; no numpy dep)
                                 semantic_candidates(conn, query, *, model, limit) → list[tuple[int, float]]
                                   model-mismatch guard → [] (never silently mixes embedding spaces)
+                                  WS2a: prefers mmap path (_try_mmap_path) when SEAM_VECTOR_STORE=on;
+                                    falls through to SQL on None (absent/stale/corrupt artifact)
+                                  SQL brute-force fallback: SEAM_SEMANTIC_SCAN_CAP=0 (default) = no LIMIT
                                   numpy fast path inside _semantic_candidates_impl (matmul, ~1–5ms/10k)
                                   pure-Python cosine_sim fallback when numpy absent (defensive)
 seam/analysis/processes.py   ← LEAF: execution flows (Flows) — list_entry_points (call-graph roots
@@ -514,6 +550,17 @@ tests/eval/                  ← P1 recall harness (edge-synthesis phase): fixtu
 - **Edges use string names** (not symbol IDs) — required for independent re-indexing
 
 ## Current Phase
+WS2a — Persisted mmap vector store for semantic search (issues #197/#198). Read-path + indexing-time; no schema change, no new MCP tool.
+- **Why (the semantic performance and recall gap this closes):** The original semantic read path rebuilt an `(N, dim)` float32 matrix from SQLite blobs on EVERY query — slow (per-query blob decode) and capped by `SEAM_SEMANTIC_SCAN_CAP` (old default 20,000 rows), which silently dropped symbols beyond the cap from all semantic results on large codebases. A persisted mmap artifact fixes both: the OS page cache backs the matrix (zero-copy, no per-query decode) and the artifact is written from ALL rows at embed time (no cap-induced recall loss).
+- **New leaf `seam/query/vector_store.py`:** `get_artifact_dir(conn)` derives the `.seam/` directory from PRAGMA database_list. `write_store(...)` writes three sibling files atomically (temp+os.replace per file; meta last so `load_store` never sees a meta without a valid matrix; try/finally cleans up temp files on failure to prevent disk leaks). `load_store(dir, model)` validates model, dtype/byteorder, and file sizes before mmap-loading the matrix zero-copy. `top_k(store, query_vec, k, *, scan_cap=0)` uses the same `(mat @ q) / (norms_mat * norm_q)` cosine formula as the SQL fallback for byte-identical results. `compute_index_version(conn, model)` returns a `"{count}:{max_symbol_id}"` staleness token (cheap, deterministic, sufficient to detect row additions/removals). Never raises — all public functions catch exceptions and log warnings, returning None/[].
+- **Write hook in `seam/indexer/embedding_index.py`:** `_write_artifact(conn, model, dim)` re-reads the persisted rows from DB in symbol-id order (authoritative source, not in-memory batch state) and calls `write_store`. Failure is swallowed (logged at WARNING) — the `index_embeddings` return value is unaffected; the SQL path remains the fallback. Gated by `SEAM_VECTOR_STORE=on`.
+- **Read path in `seam/query/semantic.py`:** `_try_mmap_path(conn, query_vec, model, limit)` loads the artifact, recomputes the index-version token from the DB, and compares against the stored token. A mismatch (stale artifact) or any other issue returns `None` — the caller falls through to the SQL brute-force path transparently. `None` (no artifact/stale) is distinct from `[]` (valid semantic result, nothing matched).
+- **`SEAM_SEMANTIC_SCAN_CAP` default changed 20000 → 0 (unlimited, Slice 2 / #198):** Both paths honor 0=unlimited: the SQL fallback omits the LIMIT clause and the mmap `top_k` considers all artifact rows. A positive cap is still honoured (SQL LIMIT, mmap `matrix[:scan_cap]` slice) for memory-constrained operators.
+- **2 new config knobs:** `SEAM_VECTOR_STORE` (`"on"`/`"off"`, default `"on"`; `"off"` = byte-identical pre-WS2a SQL-only path — no artifact IO). No schema change, no migration. MCP tool count stays 16.
+- **Tests:** `tests/unit/test_vector_store.py` (write/load/top_k/staleness/degrade), `tests/integration/test_vector_store_fallback.py` (end-to-end mmap path + fallback via fake DB), `tests/integration/test_scan_cap_unlimited.py` (cap=0 includes beyond-old-cap symbol; positive cap excludes it, for both paths), `tests/unit/test_semantic_review_fixes.py` (cap default == 0). Gate: ruff + mypy clean, 3268 tests passed, 6 skipped (existing fastembed skips), 0 failed.
+See `progress.txt`.
+
+### Prior phase
 Phase 11 P5.3 — installer write-scope audit (issues #199/#200/#201/#202). Test-only slice; no installer source change.
 - **Why (the safety gap this closes):** `seam install` / `seam uninstall` write to the agent's config files and the project root. There was no systematic proof they ONLY touch expected paths and never leak outside the declared scope. P5.3 adds an audit harness and 28 parametrized test cells that snapshot the filesystem before and after every install/uninstall call and diff the result.
 - **New test-support helper `tests/support/fs_audit.py`** (stdlib-only): `snapshot(roots) → dict[str, sha256_hex]` + `diff(before, after) → FsChanges`. sha256 digest avoids mtime-resolution false-negatives; unreadable files surface as `modified` via a sentinel digest rather than silently disappearing. Never raises.
@@ -833,6 +880,11 @@ There are **sixteen MCP tools** (`seam_architecture` is the newest — Phase 11 
 `seam_context_pack` returns `truncated: {callers, callees, comments}` counts of entries dropped by caps. When a neighbor name has no indexed declaration it is silently skipped (not an error). Use `seam_impact` for the full blast radius when the pack is truncated.
 
 ## Known Gotchas
+- **Mmap artifact goes stale after watcher edits — rebuild with `seam init --semantic` or `seam sync --semantic` (WS2a)**: the mmap artifact (`vectors.f32` / `.ids.i64` / `.meta.json`) is written only by `seam init --semantic` / `seam sync --semantic`, NOT by the per-file watcher. After live edits that add/remove symbols, the staleness token (COUNT + MAX symbol_id) will mismatch and `_try_mmap_path` falls back to the SQL path automatically — no wrong results, but the mmap performance and recall-completeness benefits are lost until you run `seam init --semantic` or `seam sync --semantic`. The fallback is transparent and correct; the only consequence is the per-query blob-decode cost.
+- **Mmap artifact is a cache; it lives in `.seam/` which is already gitignored (WS2a)**: `seam init` writes `.seam/.gitignore` (`*`) so the artifact files are never committed. On a fresh clone with no artifact, `load_store` returns `None` and the semantic read path degrades to SQL automatically. Re-run `seam init --semantic` to rebuild.
+- **`SEAM_SEMANTIC_SCAN_CAP` default changed from 20000 to 0 (unlimited) in WS2a**: existing operators who relied on the 20000-row default as a memory ceiling should explicitly set `SEAM_SEMANTIC_SCAN_CAP=20000` (or any positive value) in their environment. The mmap path bounds memory via the OS page cache (file-backed, not heap-allocated), so the 0=unlimited default is safe for most deployments. A positive cap slices the matrix (`matrix[:N]`) in the mmap path as well as applying a SQL LIMIT in the fallback — set it when you have a hard memory constraint, not as a recall filter.
+- **`SEAM_VECTOR_STORE=off` is byte-identical to pre-WS2a**: when `"off"`, no artifact is written (`_write_artifact` is not called) and no artifact is read (`_try_mmap_path` is not called) — the semantic read path uses only the SQL brute-force path. Use `"off"` to revert to the pre-WS2a SQL-only behavior for debugging, CI isolation, or operators who prefer not to create the three artifact files. The SQL path is always correct; `"off"` is purely a performance/recall trade-off choice.
+- **Staleness token detects row ADD/REMOVE, not in-place vector update (WS2a)**: the token `"{count}:{max_symbol_id}"` catches `seam sync --semantic` or `seam init --semantic` running again (new rows inserted, old rows replaced → max_id or count changes). It does NOT detect an in-place vector replacement where count and max_id happen to be identical to the prior run. This scenario cannot occur in Seam's write path (`INSERT OR REPLACE` with the same symbol_id replaces the row but does NOT change count or max_id) — a full re-embed produces the same count/max_id. The token is sufficient for the actual write patterns.
 - **`seam uninstall` leaves benign empty container files — expected, audited, and safe (P5.3)**: the installer removes its own content (guidance block from `CLAUDE.md`/`AGENTS.md`, its entry from `.mcp.json`/`.claude.json`/`config.toml`) but does NOT prune the now-empty parent file/structure — doing so would risk silently deleting foreign content. Residue per target/location: `CLAUDE.md` → empty file; `.mcp.json` → `{"mcpServers": {}}`; `~/.claude.json` → `{"projects": {"<root>": {"mcpServers": {}}}}`; `AGENTS.md` → empty file; `~/.codex/config.toml` → empty string. Cursor's `seam.mdc` is the only zero-residue target (owned file, fully removed by uninstall). Foreign content in all shared files always survives. The P5.3 test suite (`tests/integration/test_installer_write_scope.py`) encodes the exact expected residue and will fail loudly if it changes.
 - **2D Explorer localStorage keys (P2.2) — no collision with 3D; set and semantics are fixed**: The 2D graph tab writes four `localStorage` keys: `seam-detail-panel-w` (detail panel pixel width), `seam-graph-filter` (persisted disabled kind sets — see below), `seam-sidebar-open` ("true"/"false"), `seam-sidebar-w` (sidebar pixel width). The 3D Constellation tab writes `seam-constellation-panel-w`. None of these overlap. Do NOT reuse a 2D key for a future 3D feature or vice versa — mismatched width semantics (2D panel vs 3D panel) would silently initialize one panel to the other's size.
 - **`seam-graph-filter` stores DISABLED kinds, not enabled kinds (P2.2)**: The persistence strategy stores the set of explicitly-disabled kind names, not the enabled set. This means a newly-added edge kind or node kind is ENABLED by default on all existing installations (it won't appear in the disabled set). Stale disabled entries (kinds removed from the vocabulary) are silently ignored during load. No migration is needed when the vocabulary grows. Consequence: if you add a kind to `ALL_EDGE_KINDS` or `ALL_NODE_KINDS` and want it disabled by default for existing users, you cannot achieve this via localStorage — ship it enabled and let the user toggle it off.

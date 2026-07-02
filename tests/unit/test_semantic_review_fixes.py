@@ -73,11 +73,13 @@ class TestStop1NumpyFastPath:
     """STOP-1 — numpy vectorised cosine path and SEAM_SEMANTIC_SCAN_CAP."""
 
     def test_scan_cap_config_knob_exists(self) -> None:
-        """SEAM_SEMANTIC_SCAN_CAP config knob exists with a positive default."""
+        """SEAM_SEMANTIC_SCAN_CAP config knob exists; default is 0 (unlimited)."""
         import seam.config as cfg
 
         assert hasattr(cfg, "SEAM_SEMANTIC_SCAN_CAP")
-        assert cfg.SEAM_SEMANTIC_SCAN_CAP > 0
+        # Default changed from 20000 to 0 (unlimited) in WS2a Slice 2 (#198).
+        # 0 means no cap: all stored rows are considered in both mmap and SQL paths.
+        assert cfg.SEAM_SEMANTIC_SCAN_CAP == 0
 
     def test_rrf_k_config_knob_exists(self) -> None:
         """SEAM_RRF_K config knob exists with default 60."""

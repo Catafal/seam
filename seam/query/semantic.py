@@ -38,9 +38,11 @@ Design decisions:
   any vector load or cosine computation.
 - Brute-force cosine: O(n * dim). For 1k–20k symbols × 384 dim this is
   ~1–5ms with numpy — no ANN index needed at this scale. sqlite-vec is deferred.
-- SEAM_SEMANTIC_SCAN_CAP bounds the SQL LIMIT so we never load more rows than
-  the configured cap (protects against unbounded memory use on very large indexes).
-  Logs at DEBUG when cap truncates the scan so operators can tune the knob.
+- SEAM_SEMANTIC_SCAN_CAP = 0 (default, unlimited): no cap applied — all stored
+  rows are loaded in the SQL fallback path and all matrix rows are considered in
+  the mmap path. A positive cap is an optional memory-safety ceiling for operators
+  who need a hard bound; rows beyond the cap are invisible to semantic search.
+  Logs at DEBUG when a positive cap is active and the scan is actually bounded.
 """
 
 import logging
@@ -49,6 +51,14 @@ import struct
 
 import seam.config as config
 from seam.analysis.embeddings import embed_query, is_available
+from seam.query.vector_store import (
+    compute_index_version,
+    get_artifact_dir,
+    load_store,
+)
+from seam.query.vector_store import (
+    top_k as vector_store_top_k,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -265,31 +275,55 @@ def _semantic_candidates_impl(
             )
         return []
 
-    # Step 4: Load stored vectors for this model, bounded by SEAM_SEMANTIC_SCAN_CAP.
-    # The LIMIT prevents loading an unbounded number of rows on very large indexes.
+    # Step 4: WS2a — prefer the mmap vector store when SEAM_VECTOR_STORE=on.
+    # The mmap path is faster (no per-query blob decode) and recall-complete (no
+    # SEAM_SEMANTIC_SCAN_CAP truncation — the artifact was written from ALL rows at
+    # embed time). Falls back transparently to the SQL path on any issue.
+    if config.SEAM_VECTOR_STORE == "on":
+        mmap_result = _try_mmap_path(conn, query_vec, model=model, limit=limit)
+        if mmap_result is not None:
+            return mmap_result
+        # mmap_result is None → store unavailable/stale/corrupt → fall through to SQL
+
+    # Step 5: SQL brute-force fallback.
+    # Load stored vectors for this model.
+    # SEAM_SEMANTIC_SCAN_CAP = 0 (default) means unlimited: no LIMIT is applied and
+    # all rows for the model are loaded. A positive cap applies a LIMIT so at most
+    # cap rows are fetched — an optional safety ceiling for memory-constrained operators.
+    # SQLite treats LIMIT -1 as no limit, but we branch explicitly for clarity.
     scan_cap = config.SEAM_SEMANTIC_SCAN_CAP
-    rows = conn.execute(
-        "SELECT symbol_id, vector FROM embeddings WHERE model = ? LIMIT ?",
-        (model, scan_cap),
-    ).fetchall()
+    if scan_cap > 0:
+        rows = conn.execute(
+            "SELECT symbol_id, vector FROM embeddings WHERE model = ? LIMIT ?",
+            (model, scan_cap),
+        ).fetchall()
+    else:
+        # Unlimited: fetch all rows for this model (no LIMIT clause).
+        rows = conn.execute(
+            "SELECT symbol_id, vector FROM embeddings WHERE model = ?",
+            (model,),
+        ).fetchall()
 
     if not rows:
         return []
 
-    # Log at DEBUG when the scan was capped (user might have more symbols than the cap).
-    actual_count = conn.execute(
-        "SELECT COUNT(*) FROM embeddings WHERE model = ?", (model,)
-    ).fetchone()[0]
-    if actual_count > scan_cap:
-        logger.debug(
-            "semantic_candidates: scan capped at %d rows (index has %d for model=%r); "
-            "raise SEAM_SEMANTIC_SCAN_CAP to scan all vectors.",
-            scan_cap,
-            actual_count,
-            model,
-        )
+    # Log at DEBUG when a positive cap is set and the scan was actually bounded.
+    # With scan_cap=0 (unlimited), no log — all rows were considered and there is
+    # no cap-induced recall loss to warn about.
+    if scan_cap > 0:
+        actual_count = conn.execute(
+            "SELECT COUNT(*) FROM embeddings WHERE model = ?", (model,)
+        ).fetchone()[0]
+        if actual_count > scan_cap:
+            logger.debug(
+                "semantic_candidates: scan capped at %d rows (index has %d for model=%r); "
+                "set SEAM_SEMANTIC_SCAN_CAP=0 to scan all vectors (unlimited).",
+                scan_cap,
+                actual_count,
+                model,
+            )
 
-    # Step 5: Compute cosine similarity — numpy fast path when available.
+    # Step 6: Compute cosine similarity — numpy fast path when available.
     # numpy is a fastembed transitive dep: if is_available() is True, numpy is importable.
     # The try/except ImportError is a defensive fallback for pathological environments.
     try:
@@ -334,6 +368,65 @@ def _semantic_candidates_impl(
         score = cosine_sim(query_vec, bytes(row["vector"]))
         scored.append((row["symbol_id"], score))
 
-    # Step 6: Sort by score descending, return top-k
+    # Step 7: Sort by score descending, return top-k
     scored.sort(key=lambda t: t[1], reverse=True)
     return scored[:limit]
+
+
+def _try_mmap_path(
+    conn: sqlite3.Connection,
+    query_vec: bytes,
+    *,
+    model: str,
+    limit: int,
+) -> list[tuple[int, float]] | None:
+    """Attempt to serve semantic candidates from the mmap vector store.
+
+    Returns:
+        A list of (symbol_id, score) tuples on success.
+        None when the store is unavailable, stale, or any issue occurs —
+        the caller then falls back to the SQL brute-force path.
+
+    WHY return None vs []:
+        None = "no artifact, please use SQL fallback".
+        [] = "we searched but found nothing" (a valid semantic result).
+        The distinction is critical for the fallback logic.
+
+    Staleness check:
+        Computes the current index-version token from the DB and compares it
+        to the token stored in the artifact's metadata. A mismatch means the
+        artifact was built from a different DB state → treat as absent.
+    """
+    artifact_dir = get_artifact_dir(conn)
+    if artifact_dir is None:
+        return None  # In-memory DB or no file path → SQL fallback
+
+    store = load_store(artifact_dir, model)
+    if store is None:
+        logger.debug("_try_mmap_path: artifact unavailable for model=%r — using SQL", model)
+        return None
+
+    # Staleness check: recompute the index-version token from the current DB state.
+    # If it differs from the stored token, the artifact is stale → SQL fallback.
+    current_version = compute_index_version(conn, model)
+    if current_version != store.index_version:
+        logger.debug(
+            "_try_mmap_path: stale artifact for model=%r "
+            "(stored version=%r, current=%r) — using SQL fallback",
+            model,
+            store.index_version,
+            current_version,
+        )
+        return None
+
+    # Pass scan_cap so a positive cap slices the matrix rows considered in the mmap
+    # path too. With the default cap=0 (unlimited), all rows in the artifact are
+    # considered — no recall loss. A positive cap slices store.matrix[:scan_cap].
+    scan_cap = config.SEAM_SEMANTIC_SCAN_CAP
+    result = vector_store_top_k(store, query_vec, limit, scan_cap=scan_cap)
+    logger.debug(
+        "_try_mmap_path: mmap path returned %d result(s) for model=%r",
+        len(result),
+        model,
+    )
+    return result
