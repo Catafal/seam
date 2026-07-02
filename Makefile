@@ -53,6 +53,14 @@ eval:
 eval-generate:
 	uv run python tests/eval/gen_golden.py
 
+# Run the vitest unit suite for the npm shim (pkg/npm/lib/invocation.test.js).
+# Node-gated: silently skipped if node is not on PATH.
+# NOT part of `make gate` (like no-egress / bench-semantic — Node is not guaranteed
+# in the Python CI environment).
+test-npm:
+	@command -v node >/dev/null 2>&1 || { echo "test-npm: node not found, skipping"; exit 0; }
+	cd pkg/npm && npm test
+
 # Remove build artifacts
 clean:
 	rm -rf dist/ build/ .pytest_cache/ .mypy_cache/ .ruff_cache/

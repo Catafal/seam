@@ -1,0 +1,31 @@
+{
+  "name": "@catafal/seam",
+  "version": "0.4.0",
+  "description": "Run seam (local code-intelligence CLI) via npx — wraps uvx to install seam-code from PyPI on demand",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Catafal/seam.git"
+  },
+  "homepage": "https://github.com/Catafal/seam#readme",
+  "bugs": {
+    "url": "https://github.com/Catafal/seam/issues"
+  },
+  "bin": {
+    "seam": "./bin.js"
+  },
+  "files": [
+    "bin.js",
+    "lib/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.2"
+  }
+}

@@ -68,6 +68,18 @@ pip install 'seam-code[semantic]'  # + semantic search (fastembed, ONNX/CPU, ~67
 pip install 'seam-code[web]'       # + the Seam Explorer web UI (FastAPI)
 ```
 
+Or with **npx** (JS/TS projects, no Python toolchain required):
+
+> **Prerequisite:** install [uv](https://docs.astral.sh/uv/getting-started/installation/) first — the shim delegates to `uvx` (bundled with uv) to download and run `seam-code` from PyPI. No Python install needed; uv manages it.
+
+```bash
+npx @catafal/seam init                    # index the project
+npx @catafal/seam search "auth token"    # full-text search
+npx @catafal/seam impact init_db --json  # blast radius
+```
+
+The npm package version mirrors the PyPI version exactly — `@catafal/seam@0.4.0` always installs `seam-code==0.4.0`. No drift, no silent upgrades.
+
 Or from source with uv:
 
 ```bash
@@ -338,7 +350,23 @@ make gate          # lint (ruff) + typecheck (mypy) + tests — must be green be
 make fmt           # format + autofix (not part of the gate)
 make build-web     # build the Explorer SPA into seam/_web/ (requires Node.js — build-time only)
 make eval          # run the recall-regression harness
+make test-npm      # run the npm shim vitest suite (requires Node.js ≥18)
 ```
+
+### Publishing the npm shim
+
+The npm shim (`pkg/npm/`) is published manually from that directory, trailing the matching PyPI release:
+
+```bash
+# Step 1: ensure seam-code==<version> is live on PyPI
+# Step 2: bump pkg/npm/package.json version to match pyproject.toml version
+make gate          # the version-parity test fails if they differ
+# Step 3: publish
+cd pkg/npm
+npm publish --access public
+```
+
+The gate test `test_npm_package_version_matches_pyproject` (in `tests/unit/test_smoke.py`) fails if `pkg/npm/package.json` `version` diverges from `pyproject.toml` `version`, preventing accidental drift.
 
 **Conventions:** max 200 lines/function, 1000 lines/file · all imports at top · config only from `seam/config.py` · type hints required (`X | None`, not `Optional[X]`) · tests in `tests/` mirroring the package.
 

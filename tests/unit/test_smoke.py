@@ -4,6 +4,7 @@ These tests pass from Day 0 with no implementation.
 They verify imports work and the version is set.
 """
 
+import json
 import re
 import tomllib
 from pathlib import Path
@@ -32,6 +33,25 @@ def test_config_imports() -> None:
     assert SEAM_DB_PATH == ".seam/seam.db"
     assert ".py" in SEAM_LANGUAGE_MAP
     assert ".ts" in SEAM_LANGUAGE_MAP
+
+
+def test_npm_package_version_matches_pyproject() -> None:
+    """pkg/npm/package.json version must equal pyproject.toml version.
+
+    WHY this runs in make gate (not make test-npm): version drift between the npm
+    shim and the PyPI distribution makes `@catafal/seam@X.Y.Z` install a different
+    seam-code version — breaking the reproducibility guarantee. The Python gate
+    catches it without requiring Node, using only stdlib json + tomllib.
+    """
+    root = Path(__file__).resolve().parents[2]
+    pyproject_version = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
+    npm_pkg = root / "pkg" / "npm" / "package.json"
+    npm_version = json.loads(npm_pkg.read_text())["version"]
+    assert npm_version == pyproject_version, (
+        f"pkg/npm/package.json version ({npm_version!r}) does not match "
+        f"pyproject.toml version ({pyproject_version!r}). "
+        "Bump them in lockstep when releasing."
+    )
 
 
 def test_fts5_available() -> None:
