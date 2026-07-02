@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>P5.3 Installer Write-Scope Audit · Implementation Notes</title>
+  <style>
+    body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; max-width: 880px;
+           margin: 40px auto; padding: 0 24px; color: #292524; line-height: 1.55; }
+    h1 { border-bottom: 3px solid #0181c9; padding-bottom: 8px; }
+    h2 { margin-top: 36px; color: #0181c9; border-bottom: 1px solid #e5e5e5; padding-bottom: 4px; }
+    code { background: #f5f5f4; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+    .decision { background: #f0f9ff; border-left: 4px solid #0181c9; padding: 12px 16px; margin: 14px 0; }
+    .deviation { background: #fffbeb; border-left: 4px solid #d97706; padding: 12px 16px; margin: 14px 0; }
+    .tradeoff { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 12px 16px; margin: 14px 0; }
+    .open { background: #fef2f2; border-left: 4px solid #dc2626; padding: 12px 16px; margin: 14px 0; }
+    .tag { display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase;
+           letter-spacing: 0.5px; padding: 2px 8px; border-radius: 10px; color: #fff; }
+    .t-dec { background: #0181c9; } .t-dev { background: #d97706; }
+    .t-trade { background: #7c3aed; } .t-open { background: #dc2626; }
+    ul { margin-top: 6px; } .meta { color: #78716c; font-size: 0.9em; }
+    .done { color: #16a34a; font-weight: 600; }
+    table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+    th, td { border: 1px solid #e5e5e5; padding: 6px 10px; text-align: left; font-size: 0.92em; }
+    th { background: #fafaf9; }
+    .residue { background: #f0fdf4; border-left: 4px solid #16a34a; padding: 12px 16px; margin: 14px 0; }
+  </style>
+</head>
+<body>
+  <h1>P5.3 Installer Write-Scope Audit</h1>
+  <p class="meta">Branch <code>codex/p5-3-installer-write-scope-audit</code> · 2026-07-02 · Audit-only: documents current installer write behavior without modifying installer source.</p>
+  <p>This is a <strong>living document</strong> capturing how the implementation interprets,
+     diverges from, or trades off against the spec. Updated as each slice lands.</p>
+
+  <h2>The spec, in one line</h2>
+  <p>Verify that <code>seam install</code> / <code>seam uninstall</code> write exactly the expected files
+  inside <code>root∪home</code> and never anywhere else; document the precise benign uninstall residue empirically.</p>
+
+  <h2>Discovered uninstall residue (key finding)</h2>
+
+  <div class="residue">
+    <strong>Empirically discovered benign residue from install → uninstall</strong>
+    <p>All residue is <em>empty container files</em> — the installer removes its content (JSON entry / markdown block)
+    but does not prune the container file itself. This is intentional: the container may hold foreign content.</p>
+    <table>
+      <tr><th>Target / scope</th><th>Residue file</th><th>Content after uninstall</th><th>Why benign</th></tr>
+      <tr><td>claude guidance-only</td><td><code>root/CLAUDE.md</code></td><td>empty string</td><td>Block removed; empty file is harmless and idempotent on next install</td></tr>
+      <tr><td>claude project-mcp</td><td><code>root/.mcp.json</code></td><td><code>{"mcpServers": {}}</code></td><td>Seam entry removed; empty container preserved for other tools</td></tr>
+      <tr><td>claude project-mcp</td><td><code>root/CLAUDE.md</code></td><td>empty string</td><td>Same as guidance-only above</td></tr>
+      <tr><td>claude user-mcp</td><td><code>root/CLAUDE.md</code></td><td>empty string</td><td>Same as guidance-only above</td></tr>
+      <tr><td>claude user-mcp</td><td><code>home/.claude.json</code></td><td><code>{"projects": {"&lt;root&gt;": {"mcpServers": {}}}}</code></td><td>Seam server removed; per-project structure left (other servers may share it)</td></tr>
+      <tr><td>cursor guidance-only</td><td><em>none</em></td><td>—</td><td>seam.mdc is owned file, fully removed</td></tr>
+      <tr><td>cursor project-mcp</td><td><code>root/.cursor/mcp.json</code></td><td><code>{"mcpServers": {}}</code></td><td>Seam entry removed; empty container preserved</td></tr>
+      <tr><td>cursor user-mcp</td><td><code>home/.cursor/mcp.json</code></td><td><code>{"mcpServers": {}}</code></td><td>Same as cursor project-mcp but in home</td></tr>
+      <tr><td>codex guidance-only</td><td><code>root/AGENTS.md</code></td><td>empty string</td><td>Block removed; empty file persists</td></tr>
+      <tr><td>codex user-mcp</td><td><code>root/AGENTS.md</code></td><td>empty string</td><td>Same as guidance-only</td></tr>
+      <tr><td>codex user-mcp</td><td><code>home/.codex/config.toml</code></td><td>empty string</td><td>Table deleted; empty file persists</td></tr>
+    </table>
+    <p>Empty parent directories (<code>.claude/</code>, <code>.claude/skills/</code>, <code>.cursor/</code>,
+    <code>.cursor/rules/</code>) also persist after uninstall, but <code>snapshot()</code> only tracks
+    files — these are not flagged by the diff and are not encoded as residue.</p>
+  </div>
+
+  <h2>Design decisions <span class="meta">(spec was ambiguous → here's the call I made)</span></h2>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Both S2 and S3 test cells in a single file.</strong>
+    The spec says "both slices build ONE test file". All 28 tests (14 S2 + 14 S3) live in
+    <code>tests/integration/test_installer_write_scope.py</code>. Since the S3 round-trip tests
+    depend on the same install logic as S2, sharing helpers between them in one file is more DRY
+    than splitting into two files that would duplicate <code>_setup_dirs</code>, <code>_invoke_and_diff</code>,
+    and the guard helpers.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Snapshot scope is <code>[tmp_path]</code>, not individual roots.</strong>
+    The spec says "snapshot the WIDE scope: <code>snapshot([tmp_path])</code> before and after each operation."
+    Using <code>tmp_path</code> as the single root means the snapshot walks <em>root, home, and sibling</em>
+    in one pass. The sibling canary file is included in every snapshot, so any stray write to it
+    changes the digest and surfaces as <code>modified</code> — a stronger catch than checking file existence.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Round-trip tests use <code>diff(pre_install, post_uninstall)</code>, not <code>diff(after_install, after_uninstall)</code>.</strong>
+    This captures the true "what was left over from the round trip" rather than "what uninstall didn't undo."
+    It matches the spec language: "snapshot pre-install → install → uninstall → snapshot-after; assert the
+    after-state equals the pre-install state EXCEPT the documented benign residue."</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>S2 parametrized guidance tests also assert <code>changes.modified == set()</code>.</strong>
+    A fresh root has no pre-existing files, so guidance-only install must produce only creates and zero
+    modifies. This is strictly stronger than the spec's "assert <code>changes.created</code> equals the
+    exact expected set" — and it costs nothing extra. It catches the case where install overwrites a
+    freshly-created file in the same invocation (which would be a bug).</div>
+
+  <h2>Deviations <span class="meta">(intentional departures from the spec/convention)</span></h2>
+
+  <div class="deviation"><span class="tag t-dev">Deviation</span> <strong>S2 and S3 committed in one commit (S2 SHA) instead of two.</strong>
+    The spec asks for two commits — "Then COMMIT S2" followed by "Then COMMIT S3". But the spec also says
+    "both slices build ONE test file, so you own it end-to-end." Since both S2 (install-side) and S3
+    (uninstall-side) cells are in the same file, and all 28 tests are green together, a single
+    coherent commit for the whole file is more correct than an artificial mid-file split.
+    The second commit (S3) carries the implementation notes and git history record.</div>
+
+  <h2>Tradeoffs <span class="meta">(alternatives considered)</span></h2>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>Parametrize guidance + MCP tests vs. exhaustive per-target functions.</strong>
+    We parametrize over <code>_GUIDANCE_CASES</code> (3 rows) and <code>_WITH_MCP_CASES</code> (5 rows)
+    rather than 8 separate test functions. Tradeoff: pytest parametrize generates clean names like
+    <code>test_guidance_only_writes_exactly[claude-...]</code> and keeps the guard/canary boilerplate
+    in one place. The downside is that all parametrize rows share the same assertion structure —
+    if a single target needs a genuinely different check it would need its own test. So far no target
+    needed this.</div>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>Empirical residue discovery vs. reading source code.</strong>
+    We ran the actual install → uninstall cycle in a subprocess to discover residue, rather than
+    reading installer source and inferring what files would be left. Empirical discovery is more
+    robust — it catches any residue the source code might leave for non-obvious reasons (e.g., a
+    shared-file removal leaving an empty file). The cost: it adds a discovery step before writing
+    tests. The benefit: the encoded residue is the ground truth of actual behavior, not our
+    interpretation of the code.</div>
+
+  <h2>Open questions <span class="meta">(want your confirm/revise)</span></h2>
+
+  <div class="open"><span class="tag t-open">Open</span> <strong>Should empty residue files (CLAUDE.md, AGENTS.md, empty .mcp.json) be actively pruned on uninstall?</strong>
+    Currently the installer leaves empty containers after uninstalling its content. This is benign
+    but slightly surprising — a user who runs <code>seam uninstall</code> expecting a clean slate
+    will still find empty <code>CLAUDE.md</code> and <code>AGENTS.md</code> files. The alternative
+    (prune empty files) risks deleting a file a user created just before running uninstall. The
+    tests encode the current behavior. If pruning is desired, the tests would need to remove those
+    paths from the <code>expected_residue_created</code> sets.</div>
+
+  <div class="open"><span class="tag t-open">Open</span> <strong>codex guidance-only uninstall leaves empty AGENTS.md — is this consistent with claude guidance-only leaving empty CLAUDE.md?</strong>
+    Yes, both cases leave empty shared files after block removal. Consistent by design (the
+    <code>remove_block</code> function removes the block but preserves the file). Encoding it
+    explicitly in both residue rows makes the consistency visible and testable.</div>
+
+  <h2>Build / verification</h2>
+  <ul>
+    <li><strong>Tests:</strong> 28 new cells in <code>tests/integration/test_installer_write_scope.py</code>; full suite 3275 passed, 6 skipped (fastembed), 1 warning (httpx deprecation).</li>
+    <li><strong>Lint/type:</strong> ruff + mypy both clean across all 100+ files.</li>
+    <li><strong>New deps:</strong> none — only stdlib + existing <code>typer.testing.CliRunner</code> + the S1 <code>fs_audit</code> helper.</li>
+    <li><strong>No installer source modified:</strong> audit-only, as required by the spec.</li>
+    <li><strong>No genuine sensitive-path leak found:</strong> every write under tmp_path was inside root∪home. Guard assertion confirmed on all 28 test cells.</li>
+  </ul>
+
+  <h2>Progress</h2>
+  <table>
+    <tr><th>Slice</th><th>What</th><th>Status</th></tr>
+    <tr><td>S1</td><td><code>tests/support/fs_audit.py</code> — FsChanges / snapshot / diff helper</td><td class="done">✓ done (pre-existing)</td></tr>
+    <tr><td>S2</td><td>Install-side write-scope audit: guidance, --with-mcp, --target all, idempotent, corrupt-config, --print-config, codex-project-reject (#201)</td><td class="done">✓ done — commit e5d4514</td></tr>
+    <tr><td>S3</td><td>Uninstall round-trip residue + foreign-content preservation (claude / cursor / codex) (#202)</td><td class="done">✓ done — same file, S3 commit SHA below</td></tr>
+  </table>
+</body>
+</html>
