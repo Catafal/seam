@@ -535,8 +535,9 @@ class TestWatch3InstallHint:
         (tmp_path / "main.py").write_text(
             "def hello():\n    pass\n", encoding="utf-8"
         )
-        # Monkeypatch index_embeddings to return 0 (fastembed absent / skip path)
-        with patch("seam.cli.main.index_embeddings", return_value=0):
+        # Monkeypatch index_embeddings (called via run_init → init_index) to return 0.
+        # WS3: init --semantic goes through init_index.py, not main.py directly.
+        with patch("seam.indexer.init_index.index_embeddings", return_value=0):
             result = runner.invoke(
                 app, ["init", "--semantic", str(tmp_path)]
             )
