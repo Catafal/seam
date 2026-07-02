@@ -281,7 +281,11 @@ interface LandingPageProps {
  * send the full map to the Overview tab: graph/search first, not a giant list.
  */
 function LandingPage({ onSelect, onOpenOverview }: LandingPageProps) {
-  const { data: hubs, isLoading: hubsLoading } = useHubs(LANDING_HUBS);
+  // WHY local state for showTests: toggling triggers a re-fetch (cache key changes
+  // in useHubs) without any global state change — the toggle is scoped to the landing.
+  const [showTests, setShowTests] = useState(false);
+
+  const { data: hubs, isLoading: hubsLoading } = useHubs(LANDING_HUBS, showTests);
   const { data: clusters, isError } = useClusters();
 
   // Largest functional areas: sort clusters by size desc, take the top N.
@@ -314,9 +318,25 @@ function LandingPage({ onSelect, onOpenOverview }: LandingPageProps) {
         {/* Key symbols — highest-degree hubs (the things everything touches) */}
         {(hubs?.length ?? 0) > 0 && (
           <section className="w-full">
-            <h3 className="text-[10px] font-semibold uppercase tracking-widest text-zinc-600 mb-2">
-              Key symbols
-            </h3>
+            <div className="flex items-baseline justify-between mb-2">
+              <h3 className="text-[10px] font-semibold uppercase tracking-widest text-zinc-600">
+                Key symbols
+              </h3>
+              {/* A1: toggle to re-include test-path symbols. Default is off because
+                  test helpers pollute the hub list with non-production entry points. */}
+              <button
+                onClick={() => setShowTests((prev) => !prev)}
+                aria-pressed={showTests}
+                className={`text-[10px] transition-colors ${
+                  showTests
+                    ? "text-sky-400 hover:text-sky-300"
+                    : "text-zinc-600 hover:text-zinc-400"
+                }`}
+                title={showTests ? "Hiding test symbols — click to show" : "Showing production symbols — click to include tests"}
+              >
+                {showTests ? "hide tests" : "show tests"}
+              </button>
+            </div>
             <div className="flex flex-wrap gap-2">
               {hubs!.map((h: HubSymbol) => (
                 <button

@@ -270,13 +270,22 @@ export function useChanges(scope: ChangesScope = "working", enabled: boolean = t
 /**
  * Fetch the most-connected 'hub' symbols from GET /api/hubs — landing entry points.
  *
+ * WHY showTests defaults to false: test helpers accumulate high degree within the
+ * test suite but are not meaningful production entry points for most developers.
+ * The toggle lets the user opt-in to the full picture (including test graph hubs).
+ *
+ * @param limit      How many hub symbols to request (default 60).
+ * @param showTests  When true, include test-path symbols (default false).
  * @returns data — the flat symbols array (not the wrapper object)
  */
-export function useHubs(limit: number = 60) {
+export function useHubs(limit: number = 60, showTests: boolean = false) {
   return useQuery<HubSymbol[]>({
-    queryKey: ["hubs", limit],
+    // Include showTests in the cache key so toggling it triggers a fresh fetch.
+    queryKey: ["hubs", limit, showTests],
     queryFn: async () => {
-      const resp = await apiFetch<HubsResponse>("/api/hubs", { params: { limit } });
+      const resp = await apiFetch<HubsResponse>("/api/hubs", {
+        params: { limit, show_tests: showTests },
+      });
       return resp.symbols;
     },
   });
