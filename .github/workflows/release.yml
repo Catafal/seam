@@ -8,32 +8,173 @@ on:
     tags:
       - "v*"
 
+# Least-privilege default for all jobs.  Individual jobs override only what
+# they specifically need (id-token:write for OIDC, contents:write for Release).
+permissions:
+  contents: read
+
 jobs:
-  # Gate the release on the same checks as CI — never publish a red build.
-  build:
-    name: build distribution
+  # ── Gate ────────────────────────────────────────────────────────────────────
+  # Mirror of `make gate` (ruff + mypy + pytest) on the minimum supported
+  # Python version.  Every downstream job depends on this — a red build can
+  # never reach PyPI or the GitHub Release.
+  #
+  # WHY single Python (3.12): the smoke job already exercises 3.12 and 3.13
+  # against the built artifact; duplicating the matrix here doubles tag-push
+  # CI time for no additional signal.
+  gate:
+    name: gate
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies (dev group)
+        run: uv sync --dev --python 3.12
+
+      # Three gate steps split so a failure points at the exact stage.
+      - name: Lint (ruff)
+        run: uv run ruff check seam/ tests/
+
+      - name: Typecheck (mypy)
+        run: uv run mypy seam/ --ignore-missing-imports
+
+      - name: Test (pytest)
+        run: uv run pytest tests/ -q
+
+  # ── Build ────────────────────────────────────────────────────────────────────
+  # Build the sdist + wheel; generate SHA-256 checksums OUTSIDE dist/ so the
+  # pypi-publish action only sees the wheel + sdist in its packages-dir.
+  # Two artifacts are uploaded:
+  #   dist       — wheel + sdist (consumed by smoke + publish)
+  #   checksums  — checksums.txt only (consumed by github-release)
+  build:
+    name: build distribution
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
 
       - name: Build sdist + wheel
         run: uv build
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v7
+      # Write checksums to the repo root, NOT inside dist/.
+      # The pypi-publish action uploads everything under dist/ — a stray
+      # checksums.txt there would cause a publish error.
+      - name: Generate SHA-256 checksums (outside dist/)
+        run: cd dist && sha256sum *.whl *.tar.gz > ../checksums.txt
+
+      - name: Upload dist artifacts (wheel + sdist)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: dist
           path: dist/
 
+      - name: Upload checksums artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: checksums
+          path: checksums.txt
+
+  # ── Smoke ────────────────────────────────────────────────────────────────────
+  # Install the built wheel into a CLEAN virtual environment on each supported
+  # Python version and verify `seam --help` exits 0.
+  #
+  # WHY /tmp/smoke-env: outside the workspace, so no accidental source-tree
+  # reads.  uv manages the exact CPython version requested.
+  smoke:
+    name: smoke (py${{ matrix.python-version }})
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - name: Download built distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          name: dist
+          path: dist/
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: false  # clean environment — no cached state
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Create clean virtual environment
+        run: uv venv /tmp/smoke-env --python ${{ matrix.python-version }}
+
+      - name: Install built wheel into clean environment
+        run: uv pip install --python /tmp/smoke-env/bin/python dist/*.whl
+
+      # seam CLI uses Typer but does not expose --version; --help exits 0 and
+      # proves the binary is installed and importable from the wheel.
+      - name: Verify seam binary is installed and exits 0
+        run: /tmp/smoke-env/bin/seam --help
+
+  # ── GitHub Release ───────────────────────────────────────────────────────────
+  # Create a GitHub Release for the pushed tag and attach the distributions
+  # plus checksums.txt.  Uses the pre-installed `gh` CLI — no third-party
+  # action is needed, so the S1 SHA-pin audit gate is not widened.
+  #
+  # WHY contents:write scoped here only: the spec requires least-privilege on
+  # all other jobs.  This is the only job that writes to the repo (releases).
+  github-release:
+    name: GitHub Release
+    needs: [gate, smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # required to create and upload assets to a GitHub Release
+    steps:
+      - name: Download built distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          name: dist
+          path: dist/
+
+      - name: Download checksums
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          name: checksums
+          path: ./  # land checksums.txt in the working directory
+
+      - name: Create GitHub Release and attach artifacts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Strip the leading 'v' from the tag for the PyPI URL (v0.3.1 → 0.3.1).
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            dist/* \
+            checksums.txt \
+            --title "seam-code $GITHUB_REF_NAME" \
+            --notes "PyPI: https://pypi.org/project/seam-code/${VERSION}/" \
+            --repo "$GITHUB_REPOSITORY"
+
+  # ── Publish ──────────────────────────────────────────────────────────────────
+  # Publish to PyPI via Trusted Publishing (OIDC — no API token anywhere).
+  # Runs only after the gate AND the smoke matrix both pass.
+  # PEP 740 attestations are enabled so consumers can verify provenance.
   publish:
     name: publish to PyPI
-    needs: build
+    needs: [gate, smoke]
     runs-on: ubuntu-latest
     # The OIDC environment PyPI Trusted Publishing is configured against.
     environment:
@@ -44,10 +185,12 @@ jobs:
       id-token: write
     steps:
       - name: Download built distributions
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
         with:
           name: dist
           path: dist/
 
-      - name: Publish to PyPI (Trusted Publishing)
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Publish to PyPI (Trusted Publishing + PEP 740 attestations)
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1
+        with:
+          attestations: true
