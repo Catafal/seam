@@ -546,6 +546,26 @@ SEAM_SYNTHESIS_MAX_SOURCE_BYTES: int = int(
 SEAM_FIELD_ACCESS_EDGES: str = os.getenv("SEAM_FIELD_ACCESS_EDGES", "on")
 
 
+# ── Phase 11 P2.1: 3D Constellation Explorer layout endpoint ─────────────────
+
+# Default node cap for GET /api/graph/layout. The layout kernel is O(n^2) in numpy;
+# at 2000 nodes the (n,n,3) float64 repulsion matrix is ~96 MB — well within
+# a laptop's budget. Raise via env var for larger codebases if memory is not a concern.
+SEAM_LAYOUT_MAX_NODES: int = int(os.getenv("SEAM_LAYOUT_MAX_NODES", "2000"))
+
+# Hard OOM ceiling. The endpoint clamps max_nodes to this value before any computation
+# so an untrusted caller cannot trigger a malloc of (n,n,3) * 8 bytes beyond this cap.
+# Default 3000: (3000,3000,3) * 8 ≈ 216 MB — acceptable for a local dev server.
+# This value also sets the Query(le=...) upper bound on the max_nodes param.
+SEAM_LAYOUT_MAX_SAFE_NODES: int = int(os.getenv("SEAM_LAYOUT_MAX_SAFE_NODES", "3000"))
+
+# Cache TTL (seconds) for the layout result. Reuses the existing staleness TTL so
+# operators have one knob for "how stale is my read cache?" across all paths.
+# The layout cache key is (MAX(files.indexed_at), max_nodes) — a change to the index
+# produces a new key and forces a recompute on the next request.
+# See: SEAM_STALENESS_TTL_SECONDS (defined above, default 5 s).
+
+
 def get_db_path(project_root: Path) -> Path:
     """Resolve the database path relative to the project root."""
     return project_root / SEAM_DB_PATH

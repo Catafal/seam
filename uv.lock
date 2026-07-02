@@ -1542,6 +1542,7 @@ server = [
 ]
 web = [
     { name = "fastapi" },
+    { name = "numpy" },
     { name = "uvicorn" },
 ]
 
@@ -1561,6 +1562,7 @@ requires-dist = [
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.110" },
     { name = "fastembed", marker = "extra == 'semantic'", specifier = ">=0.4" },
     { name = "mcp", marker = "extra == 'server'", specifier = ">=1.0.0" },
+    { name = "numpy", marker = "extra == 'web'", specifier = ">=1.26" },
     { name = "tomlkit", specifier = ">=0.15.0" },
     { name = "tree-sitter", specifier = ">=0.22.0" },
     { name = "tree-sitter-c", specifier = ">=0.24.2" },
