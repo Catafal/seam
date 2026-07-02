@@ -22,6 +22,16 @@
  * Overlay-decoration logic (decorateNodes, buildOffCanvasNodes, decorateEdges,
  * visibleClusters, tierMap, traceHL) lives in useGraphOverlays to keep this file
  * under the 1000-line limit as HUD/filter/fly-to-fit slices are added.
+ *
+ * A3 de-noise (issue #216):
+ *   A symbol can be indexed with no edges (leaf function never called, new file,
+ *   synthesis not yet run). Rendering the full ReactFlow cockpit around a single
+ *   orphan node looks like a broken UI. The empty-state guard (isEmptyNeighborhood)
+ *   detects this case (nodeCount=1, edgeCount=0) and renders EmptyNeighborhoodState
+ *   instead — a lightweight panel that names the symbol and tells the user to run
+ *   `seam init` / `seam sync` to capture connections. Zero-node cases (loading /
+ *   API error) are deliberately excluded from the guard so they follow the normal
+ *   loading path.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";

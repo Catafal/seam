@@ -8,6 +8,15 @@
  * Reuses useChanges (GET /api/changes). Non-git repos return 400 → the hook
  * surfaces an error and the drawer shows a "not a git repo" notice instead of
  * crashing. The hook is enabled only while the drawer is open (no git call on load).
+ *
+ * A4 de-noise (issue #217):
+ *   `git diff` surfaces every modified file — docs, configs, lock files, logs.
+ *   Seam only indexes code files, so non-indexed entries produce misleading rows:
+ *   their names don't resolve to any graph node and clicking them does nothing.
+ *   Both `changed_symbols` and `new_files` are filtered through `codeFileFilter`
+ *   (which mirrors SEAM_LANGUAGE_MAP exactly) before rendering. The risk badge
+ *   and empty-state check reflect the filtered counts so no phantom "1 changed"
+ *   badge appears for a lone README edit.
  */
 
 import { useChanges } from "../api/hooks";

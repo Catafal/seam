@@ -30,6 +30,15 @@ Design notes:
   the explorer's needs (visualisation, not blast-radius analysis).
 - NEVER raises. Unknown symbol returns a safe empty envelope.
 
+A1 de-noise — top_hub_symbols():
+  The Explorer landing page ranks symbols by fan-in degree as natural entry points.
+  Without filtering, test helpers (e.g. _sym, _walk, _text) dominate the list because
+  they are called from every test in the suite — high degree, low real-world value.
+  top_hub_symbols() accepts show_tests: bool (default False) that post-filters via
+  seam.analysis.testpaths.is_test_file — the same single-source-of-truth predicate used
+  by seam_affected and seam_flows. An overscan (10×) ensures the non-test slice still
+  fills the requested limit even on very test-heavy repos.
+
 LAYER: seam.server (adapter layer) — may import from seam.query.* and seam.indexer.*
        but not from seam.cli.* or seam.server.mcp.*.
 """

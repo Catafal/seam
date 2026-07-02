@@ -12,6 +12,15 @@
  *
  * Layout is the pure squarify() helper; this component only measures the
  * container, renders rectangles, and manages drill/breadcrumb state.
+ *
+ * A2 de-noise (issue #215):
+ *   When drilling into a scoped area, the tree used to re-nest files under the
+ *   shared parent dirs they came from, producing empty intermediate levels like
+ *   "server > seam > server > tools.py". On drill, this component now calls
+ *   commonDirPrefix() on the scoped paths and passes the result as stripPrefix to
+ *   buildTree(), which strips it and collapses any residual single-child dir
+ *   chains via flattenSingleChild(). Files become immediately reachable in one
+ *   click instead of requiring n clicks to clear the redundant prefix levels.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
