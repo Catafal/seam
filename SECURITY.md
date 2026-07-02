@@ -31,6 +31,12 @@ Seam is designed to be **local-first and offline**:
 - It stores its index in a local SQLite database under `.seam/`.
 - The MCP server (`seam start`) and the Explorer web server (`seam serve`, bound to
   `127.0.0.1`) are intended for local use only — do not expose them to untrusted networks.
+- The npm shim (`@catafal/seam`, P5.1) introduces no new network path in Seam itself — it
+  delegates to `uvx` (bundled with uv), which downloads `seam-code` from PyPI over TLS. The
+  npm package executes no install-time code (`no postinstall` script); it only runs when
+  explicitly invoked via `npx`. The supply-chain trust model is: npm registry → shim sources
+  (auditable, no binary blobs); PyPI → seam-code wheel (covered by Trusted Publishing + PEP 740
+  attestations on the PyPI release).
 
 The most relevant threat surfaces are therefore: parsing untrusted source files
 (tree-sitter), the optional web UI, and the install/config writers (`seam install`).
