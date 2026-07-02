@@ -102,6 +102,16 @@ class DiagnosticsRecorder:
 
     # ── Public interface ──────────────────────────────────────────────────────
 
+    @property
+    def enabled(self) -> bool:
+        """True when SEAM_DIAGNOSTICS=1 and this recorder writes records.
+
+        Consumers (mcp.py / cli/read.py) read this ONCE to decide whether to install
+        their timing wrapper at all — so when diagnostics is off there is zero
+        per-call overhead (the wrapper is never installed), not merely a no-op call.
+        """
+        return self._enabled
+
     def record_query(
         self,
         tool: str,
