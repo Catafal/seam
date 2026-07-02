@@ -65,13 +65,10 @@ from seam.cli.read import context_command, query_command, search_command
 from seam.cli.schema import schema_command
 from seam.cli.serve import serve_command
 from seam.cli.snippet import snippet_command
-from seam.indexer.cluster_index import get_llm_naming_summary, index_clusters
-from seam.indexer.db import connect, init_db
+from seam.indexer.db import connect
 from seam.indexer.embedding_index import index_embeddings
-from seam.indexer.pipeline import index_one_file, walk_project
+from seam.indexer.init_index import InitResult, run_init
 from seam.indexer.sync import sync as sync_project
-from seam.indexer.synthesis_index import index_synthesis
-from seam.indexer.test_edges import index_test_edges
 from seam.query.clusters import cluster_members as query_cluster_members
 from seam.query.clusters import list_clusters as query_list_clusters
 from seam.query.comments import why as comments_why
@@ -195,33 +192,11 @@ def init(
         raise typer.Exit(code=1)
 
     # Determine DB root: --db-dir overrides for test isolation
-    db_root = Path(db_dir).resolve() if db_dir else project_root
-    db_path = config.get_db_path(db_root)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_root_path = Path(db_dir).resolve() if db_dir else None
 
-    # Keep the index out of git: a self-scoped .gitignore (containing "*") INSIDE
-    # .seam/ makes git ignore the whole dir (db/-shm/-wal), so `seam_changes` never
-    # reports our own artifacts as changed files — without writing anything OUTSIDE
-    # .seam/ (preserves the "Seam touches nothing beyond .seam/" guarantee).
-    seam_gitignore = db_path.parent / ".gitignore"
-    if not seam_gitignore.exists():
-        seam_gitignore.write_text("*\n", encoding="utf-8")
-
-    # Collect files to index
-    files = walk_project(project_root)
-
-    total_symbols = 0
-    total_edges = 0
-    indexed_files = 0
-    skipped_files = 0
-    total_clusters = 0
-    total_synthesis: int | None = None  # None = not yet run; -1 = failed; >=0 = count
-    total_test_edges: int | None = None
-    total_embeddings: int | None = (
-        None  # None = not requested; 0 = skipped; >0 = count; -1 = failed
-    )
-    llm_naming_summary: str | None = None
-
+    # Run the shared pipeline via run_init. The progress_cb drives the Rich
+    # spinner so terminal rendering stays in this command (not in init_index.py).
+    init_result: InitResult
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -230,68 +205,30 @@ def init(
     ) as progress:
         task = progress.add_task("Initialising database...", total=None)
 
-        conn = init_db(db_path)
-        try:
-            progress.update(task, description=f"Indexing {len(files)} files...")
-            for file_path in files:
-                progress.update(task, description=f"Indexing {file_path.name}...")
-                # None = skipped (unsupported/binary/error); (s, e) = indexed,
-                # even if (0, 0) for a valid-but-empty file.
-                result = index_one_file(conn, file_path)
-                if result is None:
-                    skipped_files += 1
-                    continue
-                indexed_files += 1
-                total_symbols += result[0]
-                total_edges += result[1]
+        def _progress(msg: str) -> None:
+            progress.update(task, description=msg)
 
-            # Phase 2: Clustering post-pass (whole-graph, runs after all files indexed).
-            # WHY: Clustering must see the complete graph (all files), not per-file fragments.
-            # This is intentionally AFTER the indexing loop — not inside index_one_file.
-            progress.update(task, description="Computing graph clusters...")
-            total_clusters = index_clusters(
-                conn,
-                naming_mode=config.SEAM_CLUSTER_NAMING,
-                llm_api_key=config.SEAM_LLM_API_KEY,
-                llm_model=config.SEAM_LLM_MODEL,
-                min_size=config.SEAM_CLUSTER_MIN_SIZE,
-            )
+        init_result = run_init(
+            project_root,
+            db_dir=db_root_path,
+            semantic=semantic,
+            progress_cb=_progress,
+        )
 
-            # Issue #8: LLM naming summary — read after clustering completes.
-            # Only relevant when LLM naming was requested.
-            if config.SEAM_CLUSTER_NAMING == "llm" and total_clusters > 0:
-                llm_naming_summary = get_llm_naming_summary(conn)
-
-            # Edge-synthesis post-pass (PRD #83): synthesize dynamic-dispatch edges
-            # that a parser cannot see (interface overrides, etc.). Runs after clustering
-            # because it reads the already-extracted call graph (not cluster assignments).
-            # Returns -1 on failure (never raises), 0 when SEAM_EDGE_SYNTHESIS=off.
-            # WHY after clustering: synthesis is whole-graph and needs the complete edge
-            # set (including all inheritance edges) — runs last in the post-pass chain.
-            progress.update(task, description="Synthesizing dispatch edges...")
-            total_synthesis = index_synthesis(
-                conn,
-                enabled=config.SEAM_EDGE_SYNTHESIS == "on",
-                fanout_cap=config.SEAM_SYNTHESIS_FANOUT_CAP,
-            )
-
-            progress.update(task, description="Materializing test edges...")
-            total_test_edges = index_test_edges(conn)
-
-            # --semantic: embed all symbols with the local fastembed model.
-            # Returns 0 when fastembed absent (skip cleanly), -1 on error, >=0 on success.
-            # WHY after clustering: embeddings are independent of cluster assignments
-            # but clustering is the slower of the two post-passes; running embeddings
-            # last keeps the flow: index → cluster → embed.
-            if semantic:
-                progress.update(task, description="Computing symbol embeddings...")
-                total_embeddings = index_embeddings(
-                    conn,
-                    model=config.SEAM_EMBED_MODEL,
-                    batch=32,
-                )
-        finally:
-            conn.close()
+    # Unpack counters from the structured result for the summary table below.
+    db_path = init_result.db_path
+    indexed_files = init_result.indexed_files
+    skipped_files = init_result.skipped_files
+    total_symbols = init_result.total_symbols
+    total_edges = init_result.total_edges
+    total_clusters = init_result.total_clusters
+    total_synthesis: int | None = init_result.total_synthesis
+    total_test_edges: int | None = init_result.total_test_edges
+    total_embeddings: int | None = init_result.total_embeddings
+    llm_naming_summary = init_result.llm_naming_summary
+    # Reconstruct the "files found" count from indexed + skipped (walk_project
+    # result was inside run_init; the total is always indexed+skipped).
+    total_files_found = indexed_files + skipped_files
 
     # Issue #7: index_clusters returns -1 on error (not 0) to distinguish failure
     # from "genuinely zero clusters." Display a visible yellow warning in that case.
@@ -335,7 +272,7 @@ def init(
     table.add_column("value")
     table.add_row("root", str(project_root))
     table.add_row("db", str(db_path))
-    table.add_row("files found", str(len(files)))
+    table.add_row("files found", str(total_files_found))
     table.add_row("files indexed", str(indexed_files))
     table.add_row("files skipped", str(skipped_files))
     table.add_row("symbols", str(total_symbols))

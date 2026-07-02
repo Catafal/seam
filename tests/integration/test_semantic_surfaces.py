@@ -364,7 +364,9 @@ class TestInitSemanticWithEmbedder:
             embed_call_count += 1
             return 1  # Pretend 1 symbol was embedded
 
-        with patch("seam.cli.main.index_embeddings", _mock_index_embeddings):
+        # Patch the call site: index_embeddings is now called from init_index.py
+        # (the shared init pipeline), not directly from seam.cli.main.
+        with patch("seam.indexer.init_index.index_embeddings", _mock_index_embeddings):
             with patch("seam.analysis.embeddings.is_available", return_value=True):
                 result = runner.invoke(
                     app,
