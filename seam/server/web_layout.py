@@ -3,6 +3,25 @@
 Read-only. Mirrors the register_*_routes pattern used by web_graph_search.py and
 web_architecture.py. Delegates all layout computation to seam.query.layout.
 
+WHY a separate module (not inline in web.py)?
+    web.py already has multiple route families (search, graph/neighborhood,
+    symbol, clusters, impact, trace, changes, constellation). Keeping each
+    family in its own register_*_routes module keeps every file under 1000
+    lines and makes it easy to audit "what does the layout endpoint do" without
+    reading the full FastAPI app factory.
+
+WHY Layout* Pydantic model names?
+    The existing web.py already defines GraphNode (2D neighborhood graph nodes).
+    Using LayoutNode / LayoutEdge / LayoutCluster avoids a name collision in the
+    OpenAPI schema that would confuse the gen:types TypeScript codegen step.
+
+WHY open a fresh connection per request (not a shared connection)?
+    SQLite connections are not thread-safe across threads. FastAPI / uvicorn
+    dispatches requests across a thread pool. A module-level shared connection
+    would cause "database is locked" / "recursive use of cursor" errors under
+    concurrent requests. The cost is one open() call per request (~0.1 ms); the
+    layout engine itself is cached so the expensive query work is not repeated.
+
 Endpoint: GET /api/graph/layout?max_nodes=N
 Response: LayoutResponse (Pydantic) → OpenAPI → TypeScript types via gen:types
 """

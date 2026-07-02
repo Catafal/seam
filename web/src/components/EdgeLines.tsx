@@ -131,9 +131,16 @@ interface EdgeLinesProps {
 /**
  * Renders all graph edges as additive-blended LineSegments.
  *
- * Uses THREE.AdditiveBlending + depthWrite=false so bright edges glow over
- * the dark background without occluding nodes. toneMapped=false preserves
- * HDR-adjacent values that the Bloom post-processing pass needs to fire.
+ * Uses THREE.AdditiveBlending + depthWrite=false so bright edges accumulate
+ * light on the dark background (each edge adds its color, never subtracts)
+ * without writing into the depth buffer (so nodes always render on top).
+ * toneMapped=false tells Three.js to skip its built-in tone-mapping step for
+ * this material, so the (very low) intensity values reach the linear render
+ * target intact; the Bloom post-processing pass fires on luminance values
+ * above 0.3 — the most intense "both-highlighted" edge at 0.5 × base-color
+ * reaches those levels on the teal/amber palette, producing the Bloom corona.
+ * At normal intensities (0.04–0.25) the same pipeline simply draws dim lines
+ * without Bloom, keeping the background field legible.
  *
  * The geometry is rebuilt whenever `highlightedIds` changes (memoised).
  * Position updates due to camera movement are handled by Three.js — the

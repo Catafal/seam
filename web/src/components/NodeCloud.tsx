@@ -6,7 +6,13 @@
  * - Per-instance position/scale matrix written in useFrame (dirty-flag optimised)
  * - Per-instance color Float32Array uploaded via instanceColor attribute
  * - Color boost > 1.0 for highlighted nodes so the Bloom post-processing pass
- *   picks them up as coronas (reference §2: "values exceed 1.0, Bloom fires")
+ *   picks them up as coronas (reference §2: "values exceed 1.0, Bloom fires").
+ *   THREE.js with toneMapped=false writes HDR values into the render target;
+ *   the Bloom pass fires on any pixel whose luminance exceeds luminanceThreshold
+ *   (0.3). Raw stellar colors are ≤1.0 and only barely trigger Bloom on the
+ *   whitest/bluest classes. Multiplying highlighted nodes by boost=1.65–2.0
+ *   pushes them firmly into HDR territory, producing a visible corona glow
+ *   regardless of their spectral class.
  *
  * Pure helpers exported at module level for unit testing:
  *   computeInstanceColor(node, isHighlighted, isDimmed) → [r, g, b]

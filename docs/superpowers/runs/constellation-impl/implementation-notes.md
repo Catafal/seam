@@ -426,3 +426,56 @@ limits. Endpoint closes its read-only connection in a `finally`.
 **Post-fix gate status:** `npm run typecheck` clean, `npm test` 159 pass, `npm run build` green
 (three.js isolated in the lazy `ConstellationTab` chunk, absent from the main bundle). Backend
 untouched → `make gate` remains green.
+
+---
+
+## 2026-07-02 — Documentation + Code Comments (post-review)
+
+### What was built
+
+This slice adds intent-first documentation and non-obvious WHY comments. No behavior changed.
+
+**seam/query/layout.py** — module docstring expanded with five WHY sections:
+- WHY server-side layout (d3-force stalls on main thread; raw edge list is MB of JSON)
+- WHY numpy not a C extension (already a dep via fastembed; single C broadcast call)
+- WHY FNV-1a ring seeding (hash() randomized by PYTHONHASHSEED; FNV-1a is stable)
+- WHY the module-level cache key includes file_count (indexed_at=0 collision in tests)
+- WHY name-keyed node collapse (edges stored as source_name/target_name strings)
+- Added inline comment on the qualified-before-plain iteration (CR1 ordering fix)
+- Expanded _fnv1a docstring to explain PYTHONHASHSEED problem and bit-splitting trick
+- Expanded FA2 repulsion comment to explain O(n²) memory cost and epsilon rationale
+- Added anchor-spring comment explaining why FA2 needs it (no gravity term)
+
+**seam/server/web_layout.py** — module docstring expanded with three WHY sections:
+- WHY a separate module (file-length discipline; separation of concerns)
+- WHY Layout* Pydantic model names (avoids GraphNode OpenAPI collision in gen:types)
+- WHY fresh connection per request (SQLite connections not thread-safe across threads)
+
+**web/src/components/NodeCloud.tsx** — expanded file-level comment:
+- Added toneMapped=false / HDR / Bloom luminance threshold explanation for the boost trick
+
+**web/src/components/EdgeLines.tsx** — expanded EdgeLines component comment:
+- Added additive-blending physics: why AdditiveBlending + depthWrite=false + toneMapped=false
+
+**web/src/hooks/useLayoutData.ts** — expanded module docstring:
+- WHY 60 s stale time (large payload; react-query refetchOnWindowFocus)
+- WHY lazy import boundary (R3F adds ~800 kB; ConstellationTab is in a separate chunk)
+
+**README.md** — Explorer section:
+- Expanded description to mention the 3D Constellation Explorer tab
+- Added a dedicated "3D Constellation Explorer tab" subsection with node/edge/halo/filter
+  description and quickstart (seam serve → click Constellation tab)
+
+**CLAUDE.md** — two additions:
+- New "Current Phase" entry for P2.1 (3D Constellation Explorer) before the prior CLI-first phase
+- Three new Known Gotchas: `[web]` extra requires numpy; layout degree-capped at SEAM_LAYOUT_MAX_NODES; layout cache does not attach `index_status` staleness banner
+
+### Key decisions
+
+**Comments only on non-obvious logic:** Obvious code (for loops, simple assignments, standard React hooks) is left uncommentless. Comments added only where the WHY is not recoverable from the WHAT (FNV-1a vs hash(), qualified-before-plain ordering, bloom > 1.0 trick, aditive blending chain, lazy chunk boundary).
+
+**No new tests required:** Documentation changes + comment-only edits have zero runtime effect. Verified with `uv run ruff check` (Python) and `npm run typecheck` (TypeScript): both clean.
+
+### Deviations from plan
+
+None. Followed the doc/code-comments task description exactly.
