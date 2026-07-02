@@ -18,10 +18,19 @@ from pathlib import Path
 
 import pytest
 
+import seam.analysis.diagnostics as diagnostics
 import seam.config as config
 from seam.indexer.db import init_db, upsert_file
 from seam.indexer.graph import Edge, Symbol
 from seam.server.mcp import create_server
+
+
+@pytest.fixture(autouse=True)
+def _reset_diag() -> Iterator[None]:
+    """Close + clear the diagnostics singleton around each test (no leaked atexit)."""
+    diagnostics.reset_recorder()
+    yield
+    diagnostics.reset_recorder()
 
 # A recognizable secret-like / source-like string baked into the fixture docstring.
 # The redaction contract requires it NEVER appears in the diagnostics NDJSON.

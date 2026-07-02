@@ -227,6 +227,23 @@ class DiagnosticsRecorder:
         except Exception:  # noqa: BLE001
             logger.warning("diagnostics: snapshot failed", exc_info=True)
 
+    def close(self) -> None:
+        """Unregister the atexit snapshot handler and stop recording.
+
+        Primarily for tests: enabling a recorder registers a process-lifetime atexit
+        handler, so a test that points it at a temp directory would otherwise leave a
+        dangling handler that fires (and harmlessly logs a failure) at interpreter exit
+        once the temp dir is gone. Calling close() in teardown prevents that. Harmless
+        in production — the process is exiting anyway. Idempotent; never raises.
+        """
+        if not self._enabled:
+            return
+        try:
+            atexit.unregister(self._atexit_snapshot)
+        except Exception:  # noqa: BLE001
+            pass
+        self._enabled = False
+
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _write_line(self, obj: dict[str, Any]) -> None:
@@ -352,6 +369,19 @@ def get_recorder() -> DiagnosticsRecorder:
     if _process_recorder is None:
         _process_recorder = make_recorder()
     return _process_recorder
+
+
+def reset_recorder() -> None:
+    """Close and discard the process recorder singleton (test hygiene helper).
+
+    Closes the current recorder (unregistering its atexit handler) and clears the
+    singleton so the next get_recorder() rebuilds from current config. Intended for
+    test teardown; a no-op in normal single-shot process use. Never raises.
+    """
+    global _process_recorder
+    if _process_recorder is not None:
+        _process_recorder.close()
+        _process_recorder = None
 
 
 def result_chars(result: Any) -> int:

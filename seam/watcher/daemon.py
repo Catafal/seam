@@ -31,6 +31,7 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 import seam.config as config
+from seam.analysis.diagnostics import get_recorder
 from seam.indexer.config_resources import is_config_resource_file
 from seam.indexer.db import connect, delete_file
 from seam.indexer.pipeline import index_one_file
@@ -78,6 +79,10 @@ class SeamWatcher(FileSystemEventHandler):
 
         # PID file path sits next to the DB
         self._pid_file: Path = db_path.parent / "watcher.pid"
+
+        # Process diagnostics recorder (P5.5). Null recorder (no-op) unless
+        # SEAM_DIAGNOSTICS=1 — record_watcher_event is a no-op when disabled.
+        self._recorder = get_recorder()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -218,8 +223,11 @@ class SeamWatcher(FileSystemEventHandler):
             else:
                 index_test_edges(conn)
                 logger.info("Indexed %s — %d symbols, %d edges", path.name, result[0], result[1])
+                # Count a successful re-index (skips/no-ops are not counted).
+                self._recorder.record_watcher_event("reindexed")
         except Exception:  # noqa: BLE001 — never let a re-index failure crash the daemon silently
             logger.exception("re-index failed for %s — index may be stale", path)
+            self._recorder.record_watcher_event("reindex_errors")
 
     def _do_delete(self, path: Path) -> None:
         """Remove a file's index entries from the DB.

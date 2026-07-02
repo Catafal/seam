@@ -46,7 +46,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 import seam.config as config
 from seam.analysis.changes import DEFAULT_BASE_REF
-from seam.analysis.diagnostics import DiagnosticsRecorder, make_recorder, result_chars
+from seam.analysis.diagnostics import DiagnosticsRecorder, get_recorder, result_chars
 from seam.server.tools import (
     handle_seam_affected,
     handle_seam_architecture,
@@ -169,10 +169,10 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
     """
     mcp: FastMCP = FastMCP(name="seam")
 
-    # Process-level diagnostics recorder (P5.5). A null recorder when
-    # SEAM_DIAGNOSTICS != "1" → _instrument is a passthrough and the server runs
-    # byte-identical to pre-P5.5. When on, each tool call is timed + counted.
-    recorder = make_recorder()
+    # Process-level diagnostics recorder (P5.5) — the shared per-process singleton.
+    # A null recorder when SEAM_DIAGNOSTICS != "1" → _instrument is a passthrough and
+    # the server runs byte-identical to pre-P5.5. When on, each tool call is timed.
+    recorder = get_recorder()
     _instrument = _make_instrument(recorder)
 
     @mcp.tool()
