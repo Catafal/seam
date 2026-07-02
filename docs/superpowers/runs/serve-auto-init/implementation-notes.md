@@ -164,3 +164,62 @@ Modified `seam/cli/serve.py` to auto-init on a missing index and added a
 None. Slice B exactly matches the PRD §"seam serve auto-inits on a missing index"
 and §"Testing Decisions". Final gate: 3179 passed, 6 skipped (real-model tests),
 ruff clean, mypy clean.
+
+---
+
+## Verify — 2026-07-02
+
+### Gate result
+
+`make gate` ran clean: **3179 passed, 6 skipped, 0 failures**. ruff + mypy clean
+on all changed files.
+
+### Code-review findings (diff inspection)
+
+| Check | Result |
+|---|---|
+| DRY — init + serve share `run_init`, no duplicated pipeline | PASS — `main.py` calls `run_init` from `seam/indexer/init_index.py`; `serve.py` calls the same import |
+| `[web]` checked before `_ensure_index` (ordering guarantee) | PASS — `create_web_app = _load_web_app_factory()` is line 185; `_ensure_index(...)` is line 188 |
+| `--no-init` preserves old error behavior byte-stably | PASS — `_ensure_index` branches on `no_init=True` and prints the same "No index found" + `seam init` message |
+| `run_init` never leaves a half-built state | PASS — `conn = init_db(db_path)` inside a `try/finally: conn.close()`; `.parent.mkdir(parents=True, exist_ok=True)` before any IO |
+| Config only via `seam.config` | PASS — both `init_index.py` and `serve.py` import `seam.config as config`; no `os.getenv()` in new code |
+| Function size ≤ 200 lines | PASS — `run_init` = 83 lines; `_ensure_index` = 65 lines; `serve_command` = 88 lines |
+| File size ≤ 1000 lines | PASS for new files (`init_index.py` = 225 lines, `serve.py` = 223 lines). `main.py` at 2600 lines is pre-existing debt (was larger before Slice A removed the inlined pipeline) |
+| `seam init` summary output unchanged | PASS — counters are unpacked from `InitResult` and rendered by the same Rich table code |
+
+### 5-behavior confirmation
+
+All confirmed via the 7 tests in `test_serve_cli.py` plus the functional smoke
+run below:
+
+1. **Missing index → auto-init** (T4): `seam serve` on a dir with no `.seam/seam.db`
+   calls `run_init`, creates the DB, then starts the server. Confirmed.
+2. **Existing index → no re-init** (T5): `run_init` is NOT called when the DB is
+   already present. Confirmed.
+3. **`--no-init` + missing index → exit 1** (T2): the old "No index found. Run seam init
+   first." error is preserved for CI/scripting callers. Confirmed.
+4. **Missing `[web]` → error reported BEFORE any indexing** (T6): `_load_web_app_factory`
+   fires before `_ensure_index`; no DB is created. Confirmed.
+5. **`run_init` failure → clean error, server NOT started** (T7): exception from `run_init`
+   is caught, a clear message is printed, uvicorn.run is never called. Confirmed.
+
+### Functional smoke (real pipeline)
+
+Ran a real `seam serve` call (uvicorn mocked to no-op, `[web]` stubbed) against a fresh
+`tmp_path` containing two `.py` files. Observed output:
+
+```
+No index found — indexing /tmp/... first (one-time)…
+Indexing 2 file(s)...
+Indexing baz.py...
+Indexing foo.py...
+Computing graph clusters...
+Synthesizing dispatch edges...
+Materializing test edges...
+Indexed 2 file(s), 2 symbol(s) — starting server.
+Seam Explorer running at http://127.0.0.1:7420
+Press Ctrl+C to stop.
+```
+
+`.seam/seam.db` existed after the call; `uvicorn.run` was invoked once; exit code 0.
+No server left running (uvicorn was mocked). SMOKE PASS.
