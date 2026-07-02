@@ -324,3 +324,50 @@ lives in the tab (which drives the react-query key).
 
 - None blocking. S6 (Task 8: regenerate types, production build, manual visual verification)
   is the final slice.
+
+---
+
+## 2026-07-02 — Slice S6: Cluster Halos, 2D↔3D Sync, Build (issue #174)
+
+### What was built
+
+**web/src/components/ClusterHalos.tsx** (NEW):
+- `ClusterHalos({ clusters })` — one `<mesh>` per cluster at the cluster's pre-computed centroid
+- `<sphereGeometry args={[radius, 16, 16]}/>` — sphere sized to cluster spatial spread × 1.2
+- `<meshBasicMaterial color transparent opacity={0.04} depthWrite={false} toneMapped={false}/>` — very faint, never masks nodes or edges
+- No pure helpers — centroid and radius arrive pre-computed from `/api/graph/layout`
+
+**web/src/components/ConstellationScene.tsx** (MODIFIED):
+- Imported `ClusterHalos`
+- Renamed `clusters: _clusters` (reserved) → `clusters` (active)
+- Mounted `<ClusterHalos clusters={clusters} />` inside the Canvas, before NodeCloud (depth-write=false ensures halos render behind stars)
+
+**web/src/components/ConstellationTab.tsx** (MODIFIED):
+- Added `useRef<string | null>(null)` (`lastFocused`) to track processed focusSymbol and prevent round-trip loops
+- Renamed `_focusSymbol` → `focusSymbol` (was unused, now wired to `useEffect`)
+- Added `useEffect` watching `focusSymbol`: when it changes and differs from `selectedNode.name` (3D→2D round-trip guard), calls `handleNavigate(focusSymbol)` to fly the camera to the 2D-selected symbol in 3D
+- Added `useRef` import
+
+**web/src/App.tsx** (MODIFIED):
+- In `setCenterSymbol` callback (called on every 2D symbol selection — search, landing hub chips, area chips, trace): added `if (name) setFocusSymbol(name)` to propagate 2D selections to the 3D tab
+
+### Key decisions
+
+**Why `lastFocused` ref for the sync guard?** When the user selects in 3D, `handleSelect` calls `onFocusSymbol(name)` → App sets `focusSymbol = name` AND `centerSymbol = name`. The updated `focusSymbol` flows back to ConstellationTab. Without the guard, ConstellationTab would call `handleNavigate(name)` again, redundantly re-flying the camera. The guard tracks the last value processed by the `useEffect` and skips if it's the same as `selectedNode.name` (the 3D-originated selection), making the sync direction-aware.
+
+**Why mount ClusterHalos before NodeCloud?** R3F renders scene children in declaration order. Since halos have `depthWrite={false}`, they don't write to the depth buffer — but rendering them first ensures the GPU processes them before the opaque nodes, avoiding any transparency sorting issue.
+
+**Build verification:** Vite produced two JS chunks:
+- `index-DusM2sJT.js` (563 kB / 180 kB gzip) — main bundle (NO three.js)
+- `ConstellationTab-DMnnxXJB.js` (993 kB / 266 kB gzip) — lazy chunk (three.js + R3F + postprocessing)
+
+The R3F code is correctly isolated in the lazy chunk. The 993 kB raw size is expected for three.js + R3F + @react-three/postprocessing.
+
+### Deviations from plan
+
+- Types not regenerated from a live server (`npm run gen:types` in Task 8 Step 1) because running `seam serve` would require the full backend stack; the existing `web/src/api/types.ts` already includes the `/api/graph/layout` path from S1 (the types were generated when the endpoint was created). No drift detected.
+
+### Open questions
+
+- None. S6 is the final slice; all planned tasks are complete.
+

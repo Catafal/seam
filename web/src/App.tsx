@@ -424,9 +424,12 @@ function App() {
 
   // Centering on a new symbol invalidates any in-flight trace (the old target
   // is meaningless relative to the new center) — reset it alongside the center.
+  // Also propagate to focusSymbol so the 3D tab flies to the same symbol when
+  // the user switches to Constellation after a 2D selection (2D→3D sync).
   const setCenterSymbol = useCallback((name: string | null) => {
     setCenterSymbolRaw(name);
     setTraceTarget(null);
+    if (name) setFocusSymbol(name);   // 2D→3D: propagate to constellation tab
   }, []);
 
   const handleSelectSymbol = useCallback((name: string) => {

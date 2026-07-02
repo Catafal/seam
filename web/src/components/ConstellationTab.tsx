@@ -21,7 +21,7 @@
  *   seam-right-w  — right NodeDetailPanel width (pixels, clamped [150, 500])
  */
 
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 
 import { ConstellationScene, computeCameraTarget } from "./ConstellationScene";
 import { NodeDetailPanel } from "./NodeDetailPanel";
@@ -82,7 +82,7 @@ interface ConstellationTabProps {
  * Main 3D tab component. Manages filter state, panel widths, and selection.
  */
 export default function ConstellationTab({
-  focusSymbol: _focusSymbol,
+  focusSymbol,
   onFocusSymbol,
 }: ConstellationTabProps) {
   // ── Node cap (drives the react-query key) ─────────────────────────────────
@@ -163,6 +163,28 @@ export default function ConstellationTab({
   const handleHover = useCallback((node: LayoutNode | null) => {
     setHoveredNode(node);
   }, []);
+
+  // ── 2D → 3D sync: fly to focusSymbol when set from the 2D side ────────────
+  //
+  // We track the last processed focusSymbol so we don't re-trigger when the
+  // 3D side itself caused the change (handleSelect already set the camera).
+  // Only navigate when the name actually changes AND differs from the current
+  // selectedNode (which was the source of the 3D→2D sync direction).
+
+  const lastFocused = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!focusSymbol || !data) return;
+    if (focusSymbol === lastFocused.current) return;        // already processed
+    if (focusSymbol === selectedNode?.name) {
+      // 3D→2D round-trip: we sent this name, skip to avoid re-flying
+      lastFocused.current = focusSymbol;
+      return;
+    }
+    lastFocused.current = focusSymbol;
+    const target = (data.nodes as LayoutNode[]).find((n) => n.name === focusSymbol);
+    if (target) handleNavigate(focusSymbol);
+  }, [focusSymbol, data, selectedNode, handleNavigate]);
 
   // ── Filter handlers ────────────────────────────────────────────────────────
 
