@@ -385,6 +385,43 @@ SEAM_SEMANTIC_SCAN_CAP: int = int(os.getenv("SEAM_SEMANTIC_SCAN_CAP", "20000"))
 # Higher k flattens rank differences; lower k amplifies them.
 SEAM_RRF_K: int = int(os.getenv("SEAM_RRF_K", "60"))
 
+# ── WS2a: Persisted mmap vector store ────────────────────────────────────────
+
+# Master switch for the persisted mmap vector store.
+# When "on" (default), two things happen automatically:
+#   1. WRITE: after a successful `seam init --semantic` / `seam sync --semantic` embed
+#      pass, the embedding indexer writes a compact 3-file artifact beside the SQLite DB
+#      in the .seam/ directory:
+#        vectors.f32       — raw C-order float32 matrix (count × dim)
+#        vectors.ids.i64   — int64 symbol-id sidecar, row-aligned with the matrix
+#        vectors.meta.json — model, dim, count, index_version, dtype, byteorder
+#      The write is ATOMIC (temp file + os.replace). A write failure is logged and never
+#      fails the embed run (the SQLite path remains the source of truth).
+#   2. READ: the semantic read path (seam_search / seam_query) prefers the mmap store:
+#      it mmap-loads the artifact zero-copy, validates the metadata (model, dtype, size,
+#      index-version token), and computes cosine via one numpy matmul. If the artifact
+#      is absent, corrupt/truncated, model-mismatched, or stale (index-version mismatch),
+#      it falls through to the existing SQLite brute-force path byte-identically.
+#
+# When "off": no artifact is written and no artifact is read. The behavior is byte-identical
+#   to the current SQLite-only path (pre-WS2a), honoring Seam's E-series opt-out discipline.
+#
+# WHY mmap (vs SQL brute-force):
+#   The SQL path rebuilds an (N, dim) float32 matrix from per-row blob decodes on EVERY
+#   query. A long-lived MCP server reusing the mmap reuses the OS page cache across calls —
+#   no per-query decode. A CLI one-shot reads the prebuilt file instead of re-decoding.
+#   Critically, the SQL path is bounded by SEAM_SEMANTIC_SCAN_CAP (default 20,000 rows),
+#   which silently drops symbols beyond the cap from all semantic results on large codebases.
+#   The mmap path reads the full artifact written at embed time — no cap-induced recall loss.
+#
+# Staleness detection: the metadata stores an index-version token (COUNT + MAX(symbol_id)
+#   for the model). At read time, the token is recomputed from the DB; a mismatch means
+#   the artifact is stale → SQL fallback. This is the same cheap-derived-key pattern used
+#   by the layout cache (SEAM_STALENESS_TTL_SECONDS).
+#
+# No schema change, no migration. The artifact lives in .seam/ which is already gitignored.
+SEAM_VECTOR_STORE: str = os.getenv("SEAM_VECTOR_STORE", "on")
+
 # ── WS1-A: Richer embedding input — body-slice enrichment ────────────────────
 
 # Gate for including a leading slice of each symbol's implementation body in its

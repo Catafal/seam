@@ -37,8 +37,14 @@ WS1-B: SEAM_EMBED_BODY=on also associates DB comments to each symbol by line-ran
 import logging
 import sqlite3
 
+import seam.config as config
 from seam.analysis.embeddings import embed_texts, extract_body_slice, is_available, symbol_text
 from seam.config import SEAM_EMBED_BODY, SEAM_EMBED_INPUT_MAX_CHARS
+from seam.query.vector_store import (
+    compute_index_version,
+    get_artifact_dir,
+    write_store,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -302,4 +308,78 @@ def _index_embeddings_impl(
         model,
         inferred_dim,
     )
+
+    # ── WS2a: Write / refresh the mmap artifact ───────────────────────────
+    # After the embed+commit succeeds, write the vector store artifact from the
+    # PERSISTED rows in symbol-id order. Re-reading from DB (not from the in-memory
+    # blobs) ensures the artifact is authoritative: it matches what is stored.
+    # Artifact-write failure is caught, logged, and MUST NOT fail the embed run.
+    if config.SEAM_VECTOR_STORE == "on" and inferred_dim is not None and total > 0:
+        _write_artifact(conn, model=model, dim=inferred_dim)
+
     return total
+
+
+def _write_artifact(
+    conn: sqlite3.Connection,
+    *,
+    model: str,
+    dim: int,
+) -> None:
+    """Write the mmap vector store artifact after a successful embed pass.
+
+    Re-reads persisted embeddings from the DB in symbol-id order so the artifact
+    is provably consistent with what is stored in SQLite (not the in-memory batch
+    state from the embed loop, which could differ on partial reruns).
+
+    Failure is silently swallowed (logged at WARNING) — the embed run's return value
+    is unaffected. The SQL path remains the authoritative fallback.
+    """
+    artifact_dir = get_artifact_dir(conn)
+    if artifact_dir is None:
+        logger.debug(
+            "_write_artifact: no artifact directory (in-memory DB?) — skipping"
+        )
+        return
+
+    try:
+        # Read the persisted rows in symbol-id order: authoritative source of truth.
+        # WHY re-read from DB: guarantees the artifact matches what is persisted.
+        # The in-memory batch blobs from the embed loop could diverge on retries.
+        rows = conn.execute(
+            "SELECT symbol_id, vector FROM embeddings WHERE model = ? ORDER BY symbol_id",
+            (model,),
+        ).fetchall()
+
+        if not rows:
+            logger.debug("_write_artifact: no embeddings rows for model=%r — skipping", model)
+            return
+
+        sym_ids = [row["symbol_id"] for row in rows]
+        blobs = [bytes(row["vector"]) for row in rows]
+
+        # Compute a cheap staleness token so load_store can detect stale artifacts.
+        # Token = f"{count}:{max_symbol_id}" — sufficient to detect any add/remove.
+        index_version = compute_index_version(conn, model)
+
+        write_store(
+            artifact_dir,
+            sym_ids,
+            blobs,
+            model=model,
+            dim=dim,
+            index_version=index_version,
+        )
+        logger.info(
+            "_write_artifact: wrote mmap artifact for %d vector(s) (model=%r, dim=%d)",
+            len(sym_ids),
+            model,
+            dim,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "_write_artifact: failed to write vector artifact (%s: %s) — "
+            "semantic search will use the SQLite fallback path.",
+            type(exc).__name__,
+            exc,
+        )

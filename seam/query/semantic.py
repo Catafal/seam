@@ -49,6 +49,14 @@ import struct
 
 import seam.config as config
 from seam.analysis.embeddings import embed_query, is_available
+from seam.query.vector_store import (
+    compute_index_version,
+    get_artifact_dir,
+    load_store,
+)
+from seam.query.vector_store import (
+    top_k as vector_store_top_k,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -265,7 +273,18 @@ def _semantic_candidates_impl(
             )
         return []
 
-    # Step 4: Load stored vectors for this model, bounded by SEAM_SEMANTIC_SCAN_CAP.
+    # Step 4: WS2a — prefer the mmap vector store when SEAM_VECTOR_STORE=on.
+    # The mmap path is faster (no per-query blob decode) and recall-complete (no
+    # SEAM_SEMANTIC_SCAN_CAP truncation — the artifact was written from ALL rows at
+    # embed time). Falls back transparently to the SQL path on any issue.
+    if config.SEAM_VECTOR_STORE == "on":
+        mmap_result = _try_mmap_path(conn, query_vec, model=model, limit=limit)
+        if mmap_result is not None:
+            return mmap_result
+        # mmap_result is None → store unavailable/stale/corrupt → fall through to SQL
+
+    # Step 5: SQL brute-force fallback.
+    # Load stored vectors for this model, bounded by SEAM_SEMANTIC_SCAN_CAP.
     # The LIMIT prevents loading an unbounded number of rows on very large indexes.
     scan_cap = config.SEAM_SEMANTIC_SCAN_CAP
     rows = conn.execute(
@@ -289,7 +308,7 @@ def _semantic_candidates_impl(
             model,
         )
 
-    # Step 5: Compute cosine similarity — numpy fast path when available.
+    # Step 6: Compute cosine similarity — numpy fast path when available.
     # numpy is a fastembed transitive dep: if is_available() is True, numpy is importable.
     # The try/except ImportError is a defensive fallback for pathological environments.
     try:
@@ -334,6 +353,61 @@ def _semantic_candidates_impl(
         score = cosine_sim(query_vec, bytes(row["vector"]))
         scored.append((row["symbol_id"], score))
 
-    # Step 6: Sort by score descending, return top-k
+    # Step 7: Sort by score descending, return top-k
     scored.sort(key=lambda t: t[1], reverse=True)
     return scored[:limit]
+
+
+def _try_mmap_path(
+    conn: sqlite3.Connection,
+    query_vec: bytes,
+    *,
+    model: str,
+    limit: int,
+) -> list[tuple[int, float]] | None:
+    """Attempt to serve semantic candidates from the mmap vector store.
+
+    Returns:
+        A list of (symbol_id, score) tuples on success.
+        None when the store is unavailable, stale, or any issue occurs —
+        the caller then falls back to the SQL brute-force path.
+
+    WHY return None vs []:
+        None = "no artifact, please use SQL fallback".
+        [] = "we searched but found nothing" (a valid semantic result).
+        The distinction is critical for the fallback logic.
+
+    Staleness check:
+        Computes the current index-version token from the DB and compares it
+        to the token stored in the artifact's metadata. A mismatch means the
+        artifact was built from a different DB state → treat as absent.
+    """
+    artifact_dir = get_artifact_dir(conn)
+    if artifact_dir is None:
+        return None  # In-memory DB or no file path → SQL fallback
+
+    store = load_store(artifact_dir, model)
+    if store is None:
+        logger.debug("_try_mmap_path: artifact unavailable for model=%r — using SQL", model)
+        return None
+
+    # Staleness check: recompute the index-version token from the current DB state.
+    # If it differs from the stored token, the artifact is stale → SQL fallback.
+    current_version = compute_index_version(conn, model)
+    if current_version != store.index_version:
+        logger.debug(
+            "_try_mmap_path: stale artifact for model=%r "
+            "(stored version=%r, current=%r) — using SQL fallback",
+            model,
+            store.index_version,
+            current_version,
+        )
+        return None
+
+    result = vector_store_top_k(store, query_vec, limit)
+    logger.debug(
+        "_try_mmap_path: mmap path returned %d result(s) for model=%r",
+        len(result),
+        model,
+    )
+    return result
