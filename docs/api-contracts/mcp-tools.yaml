@@ -96,7 +96,7 @@ tools:
           has_synthesized_by_column, has_routes_table, has_route_nodes,
           has_http_calls, has_config_keys_table, has_resources_table,
           has_config_nodes, has_resource_nodes, has_reads_config, has_configures,
-          has_exception_edges.
+          has_exception_edges, has_test_edges.
         tools:
           (list) — read-only tool guide entries with transports, dependencies, and use_when.
         recommended_next_calls:
@@ -181,6 +181,8 @@ tools:
           value_category, and provenance; resources items expose name,
           normalized_name, category, and provenance. exceptions exposes status,
           raised_types, caught_types, broad_catches, heavy_symbols, and truncated.
+          tests exposes files, coverage_edges {status,count,provenance},
+          top_tested_symbols, test_heavy_sources, untested_hotspots, and truncated.
         warnings:
           structured {code, message, hint}; includes stale, empty index, unsupported
           config/resource/test-edge surfaces, scope issues, and byte-budget trimming.
@@ -322,7 +324,7 @@ tools:
         type: string
         required: false
         nullable: true
-        description: Edge kind or comma-separated edge kinds; includes http_calls, reads_config, configures, raises, and catches; degree counts respect this filter.
+        description: Edge kind or comma-separated edge kinds; includes http_calls, reads_config, configures, raises, catches, and tests; degree counts respect this filter.
       direction:
         type: string
         default: both
@@ -425,6 +427,8 @@ tools:
           Present per item only when include_preview=true. One-hop metadata only:
           connected symbol, uid when resolvable, file/line, edge_kind, confidence,
           receiver, synthesized_by.
+          Static test-evidence edges use edge_kind=tests and put their derivation
+          channel in synthesized_by (for example test-call or test-import).
       found_false_ok: false
     errors:
       - INVALID_INPUT
@@ -674,6 +678,20 @@ tools:
             A3. Symbol names that have a 'writes' edge pointing to this symbol —
             i.e., symbols that write or delete this field/property. Empty list when
             no writes edges exist. Same distinction from 'callers' as field_readers.
+        test_callers:
+          type: array
+          items: string
+          description: |
+            P3.3. Test symbols that have a 'tests' edge pointing to this symbol.
+            Static evidence only; absence means "not statically observed", not
+            "untested".
+        tested_symbols:
+          type: array
+          items: string
+          description: |
+            P3.3. Production symbols this test symbol points to via 'tests' edges.
+            Kept separate from callers/callees so test evidence does not read as
+            production dependency flow.
         index_status:
           type: object
           nullable: true
@@ -944,17 +962,20 @@ tools:
 	                          Impact vocabulary:
 	                            call | import | extends | implements | instantiates | holds |
 	                            reads | writes | uses | http_calls | reads_config | configures
-	                          Exception-flow edges (raises | catches) are indexed and available
-	                          to graph/search/trace surfaces, but default impact excludes them
-	                          so exception evidence does not inflate blast-radius risk.
+	                          Exception-flow edges (raises | catches) and static test edges
+	                          (tests) are indexed and available to graph/search/trace/context
+	                          surfaces, but default impact excludes them so failure-path and
+	                          test evidence do not inflate blast-radius risk.
 	                          Always present (empty string "" for degenerate/pre-E4 entries as
                           a defensive fallback). Kept in lean mode (verbose=false) — it is a
                           core field like 'confidence'. ABSENT entirely when
                           SEAM_EDGE_PROVENANCE=off (byte-identical pre-E4 output).
-          synthesized_by: E4. Synthesis channel name when the final hop is a heuristic
-                          synthesized edge (e.g. 'interface-override', 'closure-collection',
-                          'event-emitter'), or null when the hop is statically extracted.
-                          Null-contract: null = static (same pattern as resolved_by/best_candidate).
+          synthesized_by: E4. Post-pass provenance channel for derived edges. For call
+                          synthesis this may be 'interface-override',
+                          'closure-collection', or 'event-emitter'; for static test
+                          evidence this may be 'test-call', 'test-instantiates',
+                          'test-import', or 'test-name-proximity'. null means no
+                          post-pass provenance is recorded.
                           IMPORTANT: null is RETAINED in verbose mode (unlike null best_candidate
                           which is E1-omitted) — for synthesized_by, null is the common,
                           informative "static edge" value. Stripped in lean mode (verbose=false)
@@ -1033,9 +1054,11 @@ tools:
       that hop.
 
       E4 edge provenance: when SEAM_EDGE_PROVENANCE=on (default), each hop carries
-      'synthesized_by' (synthesis channel name for heuristic edges, null for statically
-      extracted edges). This lets callers tell a hard static call edge from a heuristic
-      synthesized one on any hop in the path. Stripped in lean mode (verbose=false).
+      'synthesized_by' (post-pass provenance channel for derived edges, null when no
+      post-pass provenance is recorded). For call synthesis this may be
+      interface-override/closure-collection/event-emitter; for static test evidence
+      this may be test-call/test-instantiates/test-import/test-name-proximity.
+      Stripped in lean mode (verbose=false).
       SEAM_EDGE_PROVENANCE=off = byte-identical pre-E4 hop shape.
 
       Also returns one-hop callers and callees for both symbols so the agent can
@@ -1117,10 +1140,12 @@ tools:
           best_candidate (str|null) — Phase 5. For AMBIGUOUS hops (resolved_by: name-collision),
                                       the most file-path-proximate declaring file (relative path).
                                       null when resolved_by != name-collision or no proximity data.
-          synthesized_by (str|null) — E4. Synthesis channel name when this hop is a heuristic
-                                      synthesized edge (e.g. 'interface-override',
-                                      'closure-collection', 'event-emitter'). null when the hop
-                                      is statically extracted. Same null-contract as resolved_by.
+          synthesized_by (str|null) — E4. Post-pass provenance channel for derived edges.
+                                      Call synthesis may use 'interface-override',
+                                      'closure-collection', or 'event-emitter'; static test
+                                      evidence may use 'test-call', 'test-instantiates',
+                                      'test-import', or 'test-name-proximity'. null means no
+                                      post-pass provenance is recorded.
                                       Stripped in lean mode (verbose=false). ABSENT when
                                       SEAM_EDGE_PROVENANCE=off.
 

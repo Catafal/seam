@@ -66,6 +66,7 @@ class SchemaCapabilities(BaseModel):
     has_reads_config: bool
     has_configures: bool
     has_exception_edges: bool
+    has_test_edges: bool
 
 
 class SchemaToolGuide(BaseModel):
@@ -326,6 +327,10 @@ class ArchitectureTestsSection(BaseModel):
 
     files: dict[str, int]
     coverage_edges: dict[str, Any]
+    top_tested_symbols: list[dict[str, Any]] | None = None
+    test_heavy_sources: list[dict[str, Any]] | None = None
+    untested_hotspots: list[dict[str, Any]] | None = None
+    truncated: int | None = None
 
 
 class ArchitectureOptionalSurface(BaseModel):

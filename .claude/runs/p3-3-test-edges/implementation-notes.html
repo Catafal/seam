@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>P3.3 Test Edges · Implementation Notes</title>
+  <style>
+    body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; max-width: 880px;
+           margin: 40px auto; padding: 0 24px; color: #292524; line-height: 1.55; }
+    h1 { border-bottom: 3px solid #0181c9; padding-bottom: 8px; }
+    h2 { margin-top: 36px; color: #0181c9; border-bottom: 1px solid #e5e5e5; padding-bottom: 4px; }
+    code { background: #f5f5f4; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+    .decision { background: #f0f9ff; border-left: 4px solid #0181c9; padding: 12px 16px; margin: 14px 0; }
+    .deviation { background: #fffbeb; border-left: 4px solid #d97706; padding: 12px 16px; margin: 14px 0; }
+    .tradeoff { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 12px 16px; margin: 14px 0; }
+    .open { background: #fef2f2; border-left: 4px solid #dc2626; padding: 12px 16px; margin: 14px 0; }
+    .tag { display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase;
+           letter-spacing: 0.5px; padding: 2px 8px; border-radius: 10px; color: #fff; }
+    .t-dec { background: #0181c9; } .t-dev { background: #d97706; }
+    .t-trade { background: #7c3aed; } .t-open { background: #dc2626; }
+    ul { margin-top: 6px; } .meta { color: #78716c; font-size: 0.9em; }
+    .done { color: #16a34a; font-weight: 600; }
+    table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+    th, td { border: 1px solid #e5e5e5; padding: 6px 10px; text-align: left; font-size: 0.92em; }
+    th { background: #fafaf9; }
+  </style>
+</head>
+<body>
+  <h1>P3.3 Test Edges</h1>
+  <p class="meta">Branch <code>codex/p3-3-test-edges</code> · started 2026-07-02 · implements PRD #163.</p>
+  <p>This is a <strong>living document</strong> capturing how the implementation interprets,
+     diverges from, or trades off against the spec. Updated as each slice lands.</p>
+
+  <h2>The spec, in one line</h2>
+  <p>Materialize conservative <code>tests</code> edges from test symbols to production symbols
+     using static evidence, then expose those edges through schema, graph search, context,
+     architecture, Explorer, and docs without changing <code>seam_affected</code> output shape
+     or default production impact semantics.</p>
+
+  <!-- ============================================================= -->
+  <!-- Add a callout block per item. Delete the example, keep the shape. -->
+  <!-- ============================================================= -->
+
+  <h2>Design decisions <span class="meta">(spec was ambiguous → here's the call I made)</span></h2>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Use ordinary graph edges, not a new test metadata table.</strong>
+    The PRD allowed a metadata table if richer evidence required it. The first pass can encode
+    source, target, kind, confidence, and provenance through the existing edge model, so avoiding a
+    table keeps P3.3 additive and old-index friendly.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Exact evidence before proximity.</strong>
+    The build starts with call, instantiation, and import evidence because those relationships already
+    exist in the graph. Name-matched import evidence is intentionally narrower than file-level imports,
+    and proximity heuristics stay lower confidence.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Materialize as a whole-index post-pass.</strong>
+    Test edges need to know whether an edge target exists in production code, which is not knowable
+    from one file's AST alone. The implementation therefore runs after file indexing and derives
+    <code>tests</code> edges from the complete symbol/edge tables.</div>
+
+  <h2>Deviations <span class="meta">(intentional departures from the spec/convention)</span></h2>
+
+  <div class="deviation"><span class="tag t-dev">Deviation</span> <strong>No runtime coverage integration.</strong>
+    This follows the PRD's static-evidence boundary. Indexing will not run tests or parse coverage
+    reports, so <code>tests</code> means "static relationship evidence" rather than coverage proof.</div>
+
+  <div class="deviation"><span class="tag t-dev">Deviation</span> <strong>Use <code>synthesized_by</code> for test-edge provenance.</strong>
+    The generic edge table has no separate provenance column. Because P3.3 edges are derived by a
+    post-pass, <code>synthesized_by</code> carries channels such as <code>test-call</code> and keeps
+    these edges out of clustering and default impact paths.</div>
+
+  <h2>Tradeoffs <span class="meta">(alternatives considered)</span></h2>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>Materialize during indexing vs. infer at read time.</strong>
+    Read-time inference would avoid writing more edges but would duplicate work across tools and make
+    Explorer/architecture harder to keep consistent. Materialization follows the route/config/exception
+    pattern and gives every read surface the same evidence.</div>
+
+  <h2>Open questions <span class="meta">(want your confirm/revise)</span></h2>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Ship proximity, but only for unique targets.</strong>
+    A proximity edge is useful when <code>test_parse_config</code> has exactly one production
+    <code>parse_config</code> target. Ambiguous or absent targets are skipped, so the signal remains
+    discovery-grade rather than pretending to be coverage.</div>
+
+  <h2>Build / verification</h2>
+  <ul>
+    <li>Initial index: <code>uv run seam init</code> completed on the worktree.</li>
+    <li>Index refresh: <code>uv run seam sync</code> reports populated <code>tests</code> edges.</li>
+    <li>Python gate: <code>make gate</code> passed.</li>
+    <li>Focused tests: <code>uv run pytest tests/integration/test_sync_cli.py tests/unit/test_test_edges.py tests/unit/test_architecture_tool.py tests/unit/test_query_engine.py -q</code> passed.</li>
+    <li>Frontend checks: <code>npm --prefix web run typecheck</code> and <code>npm --prefix web test</code> passed after <code>npm --prefix web ci</code>.</li>
+    <li>Pre-commit risk: <code>uv run seam changes --json</code> completed with <code>partial: true</code> because this broad graph-surface change exceeds the changed-symbol cap.</li>
+    <li>Full-repo <code>uv run ruff check .</code> still hits an existing benchmark import-order issue outside this branch; scoped <code>uv run ruff check seam tests</code> is clean.</li>
+    <li>Review agents: one blocker fixed by staging new files; docs contract findings patched in MCP YAML, schema SQL, and MCP tool docs.</li>
+  </ul>
+
+  <h2>Progress</h2>
+  <table>
+    <tr><th>Slice</th><th>What</th><th>Status</th></tr>
+    <tr><td>1</td><td>Exact call/instantiation tracer bullet (#164)</td><td class="done">complete</td></tr>
+    <tr><td>2</td><td>Import evidence and context (#167)</td><td class="done">complete</td></tr>
+    <tr><td>3</td><td>Conservative proximity heuristics (#165)</td><td class="done">complete</td></tr>
+    <tr><td>4</td><td>Architecture, Web API, and Explorer (#168)</td><td class="done">complete</td></tr>
+    <tr><td>5</td><td>Impact guardrails, docs, old-index hardening (#166)</td><td class="done">complete</td></tr>
+  </table>
+</body>
+</html>

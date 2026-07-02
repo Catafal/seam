@@ -214,6 +214,9 @@ def handle_seam_context(
         # A3: field-access split — always [] for non-field/non-class seeds.
         "field_readers": result["field_readers"],
         "field_writers": result["field_writers"],
+        # P3.3: static test evidence, separated from production callers/callees.
+        "test_callers": result["test_callers"],
+        "tested_symbols": result["tested_symbols"],
     }
     context_result = _apply_verbosity(record, verbose)
     # P2: attach staleness banner LAST — purely additive, byte-identical when fresh.

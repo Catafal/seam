@@ -33,6 +33,7 @@ export const ALL_EDGE_KINDS = [
   "configures",
   "raises",
   "catches",
+  "tests",
 ] as const;
 export const ALL_CONFIDENCES = ["EXTRACTED", "AMBIGUOUS", "INFERRED"] as const;
 

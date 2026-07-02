@@ -71,6 +71,7 @@ from seam.indexer.embedding_index import index_embeddings
 from seam.indexer.pipeline import index_one_file, walk_project
 from seam.indexer.sync import sync as sync_project
 from seam.indexer.synthesis_index import index_synthesis
+from seam.indexer.test_edges import index_test_edges
 from seam.query.clusters import cluster_members as query_cluster_members
 from seam.query.clusters import list_clusters as query_list_clusters
 from seam.query.comments import why as comments_why
@@ -215,6 +216,7 @@ def init(
     skipped_files = 0
     total_clusters = 0
     total_synthesis: int | None = None  # None = not yet run; -1 = failed; >=0 = count
+    total_test_edges: int | None = None
     total_embeddings: int | None = (
         None  # None = not requested; 0 = skipped; >0 = count; -1 = failed
     )
@@ -273,6 +275,9 @@ def init(
                 fanout_cap=config.SEAM_SYNTHESIS_FANOUT_CAP,
             )
 
+            progress.update(task, description="Materializing test edges...")
+            total_test_edges = index_test_edges(conn)
+
             # --semantic: embed all symbols with the local fastembed model.
             # Returns 0 when fastembed absent (skip cleanly), -1 on error, >=0 on success.
             # WHY after clustering: embeddings are independent of cluster assignments
@@ -302,6 +307,14 @@ def init(
     else:
         display_synthesis = str(total_synthesis)
 
+    test_edges_failed = total_test_edges is not None and total_test_edges < 0
+    if total_test_edges is None or total_test_edges == 0:
+        display_test_edges: str | None = None
+    elif test_edges_failed:
+        display_test_edges = "failed"
+    else:
+        display_test_edges = str(total_test_edges)
+
     # Embedding display: None = not requested; 0 = skipped (fastembed absent);
     # -1 = embedding failed; >=1 = count of symbols embedded.
     embedding_failed = total_embeddings is not None and total_embeddings < 0
@@ -330,6 +343,8 @@ def init(
     table.add_row("clusters", display_clusters)
     if display_synthesis is not None:
         table.add_row("synth edges", display_synthesis)
+    if display_test_edges is not None:
+        table.add_row("test edges", display_test_edges)
     if display_embeddings is not None:
         table.add_row("embeddings", display_embeddings)
     table.add_row("elapsed", f"{elapsed:.2f}s")
@@ -347,6 +362,13 @@ def init(
     if synthesis_failed and total_symbols > 0:
         console.print(
             "[yellow]synth edges: failed[/yellow] "
+            "[dim](run with SEAM_LOG_LEVEL=DEBUG to see the error; "
+            "run 'seam init' again to retry)[/dim]"
+        )
+
+    if test_edges_failed and total_symbols > 0:
+        console.print(
+            "[yellow]test edges: failed[/yellow] "
             "[dim](run with SEAM_LOG_LEVEL=DEBUG to see the error; "
             "run 'seam init' again to retry)[/dim]"
         )
@@ -2559,6 +2581,8 @@ def sync_cmd(
         sys.stdout.write(f"cluster_count: {result['cluster_count']}\n")
         sys.stdout.write(f"synthesis_recomputed: {result['synthesis_recomputed']}\n")
         sys.stdout.write(f"synthesis_count: {result['synthesis_count']}\n")
+        sys.stdout.write(f"test_edges_recomputed: {result['test_edges_recomputed']}\n")
+        sys.stdout.write(f"test_edge_count: {result['test_edge_count']}\n")
         return
 
     # ── Rich (default) mode — summary table ───────────────────────────────────
@@ -2584,6 +2608,15 @@ def sync_cmd(
     else:
         synthesis_display = str(sync_synthesis_count)
 
+    sync_test_edge_count = result.get("test_edge_count")
+    test_edges_failed_sync = sync_test_edge_count is not None and sync_test_edge_count < 0
+    if sync_test_edge_count is None:
+        test_edges_display = "skipped"
+    elif test_edges_failed_sync:
+        test_edges_display = "failed"
+    else:
+        test_edges_display = str(sync_test_edge_count)
+
     table = Table(title="seam sync — complete", show_header=False, box=None)
     table.add_column("key", style="bold cyan", width=20)
     table.add_column("value")
@@ -2595,6 +2628,7 @@ def sync_cmd(
     table.add_row("skipped", str(result["skipped"]))
     table.add_row("clusters", cluster_display)
     table.add_row("synth edges", synthesis_display)
+    table.add_row("test edges", test_edges_display)
     console.print(table)
 
     # Visible failure warning when the gated cluster recompute failed — without
@@ -2612,6 +2646,13 @@ def sync_cmd(
         console.print(
             "[yellow]synth edges: recompute failed[/yellow] "
             "[dim](synthesized edges may be stale — run 'seam init' to rebuild; "
+            "set SEAM_LOG_LEVEL=DEBUG to see the error)[/dim]"
+        )
+
+    if test_edges_failed_sync:
+        console.print(
+            "[yellow]test edges: recompute failed[/yellow] "
+            "[dim](test edges may be stale — run 'seam init' to rebuild; "
             "set SEAM_LOG_LEVEL=DEBUG to see the error)[/dim]"
         )
 

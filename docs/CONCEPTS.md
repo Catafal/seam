@@ -48,14 +48,16 @@ caller pin one exact homonym when it matters.
 
 ---
 
-## 2. The fourteen edge kinds
+## 2. The fifteen edge kinds
 
 The traversal layer is **kind-agnostic** — it can walk every edge regardless of kind — so
 adding a new edge kind makes graph surfaces (`seam_graph_search`, `seam_context`,
 `seam_trace`, `seam_flows`, …) aware of the new relationship with little per-tool code.
 `seam_impact` is the deliberate exception: default blast-radius reports filter
-`raises`/`catches` so explicit exception syntax does not inflate change-risk tiers. Use
-`seam_graph_search --edge-kind raises,catches` for failure-path review.
+`raises`/`catches` and `tests` so explicit exception syntax and static test evidence do
+not inflate production change-risk tiers. Use `seam_graph_search --edge-kind
+raises,catches` for failure-path review and `seam_graph_search --edge-kind tests` for
+test-evidence review.
 
 | Kind | Captures | Example | Confidence |
 |------|----------|---------|------------|
@@ -73,6 +75,7 @@ adding a new edge kind makes graph surfaces (`seam_graph_search`, `seam_context`
 | `configures` | A config key describes a runtime resource | `CONFIG DATABASE_URL` → `RESOURCE database DATABASE` | INFERRED |
 | `raises` | A symbol explicitly raises or throws an exception | `raise ConfigError(...)` → `raises ConfigError` | EXTRACTED / INFERRED |
 | `catches` | A symbol explicitly handles a typed exception | `except ConfigError` → `catches ConfigError` | EXTRACTED / INFERRED |
+| `tests` | A test symbol statically exercises or names a production symbol | `test_parse_config` → `tests parse_config` | EXTRACTED / INFERRED |
 
 `call` and `import` are the structural backbone. `extends`/`implements`/`instantiates`
 capture object-oriented structure. `holds`/`uses` capture composition and dependency
@@ -88,10 +91,17 @@ shape only.
 guess runtime propagation through callees or infer thrown variable types; use
 `seam_graph_search --edge-kind raises,catches` when you need the static failure-path
 surface before changing an error contract.
+`tests` edges are static evidence, not runtime coverage. A whole-index post-pass links
+test symbols to production symbols when an indexed test directly calls or instantiates a
+production symbol, imports one whose name appears in the test name, or has a unique proximity name such as
+`test_parse_config` → `parse_config`. Each derived edge stores provenance in
+`edges.synthesized_by` (`test-call`, `test-instantiates`, `test-import`,
+`test-name-proximity`) and is rebuilt by `seam init`, `seam sync`, and the watcher after
+file updates. Absence of a `tests` edge means "not statically observed", not "untested".
 
 `seam_context` exposes the precise `reads`/`writes` split as `field_readers` /
-`field_writers`, complementing the inclusive `callers` view (which contains *all* edge
-kinds because the BFS is kind-agnostic).
+`field_writers` and static test evidence as `test_callers` / `tested_symbols`,
+complementing the inclusive `callers` view.
 
 ### Why composition and field edges are conservative
 

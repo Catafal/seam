@@ -94,6 +94,7 @@ class Edge(TypedDict):
     #   'configures'   — a config key describes a runtime resource [P3.2]
     #   'raises'       — a named function/method explicitly raises or throws an exception [P3.4]
     #   'catches'      — a named function/method explicitly handles a typed exception [P3.4]
+    #   'tests'        — a test symbol has static evidence pointing at production code [P3.3]
     kind: str
     file: str
     line: int

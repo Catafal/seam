@@ -30,6 +30,7 @@ from seam.indexer.cluster_index import index_clusters
 from seam.indexer.db import delete_file
 from seam.indexer.pipeline import index_one_file, sha1, walk_project
 from seam.indexer.synthesis_index import index_synthesis
+from seam.indexer.test_edges import index_test_edges
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,8 @@ class SyncResult(TypedDict):
     cluster_count: int | None  # result of index_clusters when it ran, else None
     synthesis_recomputed: bool  # whether index_synthesis ran this sync
     synthesis_count: int | None  # result of index_synthesis when it ran, else None
+    test_edges_recomputed: bool  # whether test-edge materialization ran this sync
+    test_edge_count: int | None  # result of index_test_edges when it ran, else None
 
 
 def _load_tracked(conn: sqlite3.Connection) -> dict[str, tuple[float, str]]:
@@ -257,10 +260,18 @@ def sync(
         # synthesis_recomputed=True only when the pass actually succeeded (>=0).
         synthesis_recomputed = synthesis_count >= 0
 
+    test_edges_recomputed = False
+    test_edge_count: int | None = None
+    if graph_changed:
+        logger.debug("sync: running index_test_edges (graph_changed=%s)", graph_changed)
+        test_edge_count = index_test_edges(conn)
+        test_edges_recomputed = test_edge_count >= 0
+
     logger.info(
         "sync: added=%d modified=%d removed=%d unchanged=%d skipped=%d "
         "graph_changed=%s clusters_recomputed=%s cluster_count=%s "
-        "synthesis_recomputed=%s synthesis_count=%s",
+        "synthesis_recomputed=%s synthesis_count=%s "
+        "test_edges_recomputed=%s test_edge_count=%s",
         added,
         modified,
         removed,
@@ -271,6 +282,8 @@ def sync(
         cluster_count,
         synthesis_recomputed,
         synthesis_count,
+        test_edges_recomputed,
+        test_edge_count,
     )
 
     return SyncResult(
@@ -284,4 +297,6 @@ def sync(
         cluster_count=cluster_count,
         synthesis_recomputed=synthesis_recomputed,
         synthesis_count=synthesis_count,
+        test_edges_recomputed=test_edges_recomputed,
+        test_edge_count=test_edge_count,
     )

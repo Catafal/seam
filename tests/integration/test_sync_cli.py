@@ -12,6 +12,7 @@ Test groups:
     SC9 — seam sync on a non-existent directory → exits 1 with error
     SC10 — seam sync --json data keys are the exact SyncResult shape
     SC11 — cluster recompute failure (index_clusters -1) surfaced, not hidden
+    SC12 — seam sync materializes static test edges after test files are added
 """
 
 import json
@@ -233,6 +234,42 @@ class TestJsonAfterEdit:
         conn.close()
 
         assert row is not None, "New symbol 'goodbye' should be in DB after sync"
+
+    def test_sync_materializes_static_test_edges(self, tmp_path: Path) -> None:
+        """Adding a test file makes sync rebuild the derived test-edge surface."""
+        project_root, db_path = _make_indexed_project(tmp_path)
+        test_file = project_root / "tests" / "test_module.py"
+        test_file.parent.mkdir()
+        test_file.write_text(
+            "from module import hello\n"
+            "\n"
+            "def test_hello():\n"
+            "    hello()\n",
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(app, ["sync", str(project_root), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)["data"]
+
+        assert data["test_edges_recomputed"] is True
+        assert data["test_edge_count"] == 1
+
+        conn = connect(db_path)
+        row = conn.execute(
+            """
+            SELECT source_name, target_name, kind, synthesized_by
+            FROM edges
+            WHERE kind = 'tests'
+            """
+        ).fetchone()
+        conn.close()
+        assert dict(row) == {
+            "source_name": "test_hello",
+            "target_name": "hello",
+            "kind": "tests",
+            "synthesized_by": "test-call",
+        }
 
 
 # ── SC7: --force-clusters flag ────────────────────────────────────────────────

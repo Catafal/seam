@@ -34,6 +34,7 @@ import seam.config as config
 from seam.indexer.config_resources import is_config_resource_file
 from seam.indexer.db import connect, delete_file
 from seam.indexer.pipeline import index_one_file
+from seam.indexer.test_edges import index_test_edges
 
 logger = logging.getLogger(__name__)
 
@@ -215,6 +216,7 @@ class SeamWatcher(FileSystemEventHandler):
             if result is None:
                 logger.debug("Skipped %s (unsupported/binary/error)", path)
             else:
+                index_test_edges(conn)
                 logger.info("Indexed %s — %d symbols, %d edges", path.name, result[0], result[1])
         except Exception:  # noqa: BLE001 — never let a re-index failure crash the daemon silently
             logger.exception("re-index failed for %s — index may be stale", path)
@@ -233,6 +235,7 @@ class SeamWatcher(FileSystemEventHandler):
         # logged rather than killing the event dispatch thread silently.
         try:
             delete_file(conn, path)
+            index_test_edges(conn)
             logger.info("Removed %s from index", path.name)
         except Exception:  # noqa: BLE001
             logger.exception("delete failed for %s", path)
