@@ -191,3 +191,52 @@
 
 - ClusterHalos component is still `_clusters` (unused) in ConstellationScene — reserved for a future slice
 - S4 (FilterPanel, HUD, NodeDetailPanel, ResizeHandle) is the next slice
+
+---
+
+## 2026-07-02 — Slice S4: Selection, Detail Panel, Camera Fly-To (issue #172)
+
+### What was built
+
+**web/src/components/ConstellationTab.tsx** — updated with full selection state machine:
+- Extracted `computeHighlightedIds(selectedId, edges) → Set<number>` as a pure exported helper (unit-testable without React/WebGL)
+- `handleSelect(node)`: sets selectedNode, computes neighbor set via `computeHighlightedIds`, calls `computeCameraTarget`, notifies 2D side via `onFocusSymbol`
+- `handleNavigate(name)`: finds node by name in layout data, re-runs `handleSelect` — drives navigation from the detail panel
+- `handleClose()`: clears selectedNode + cameraTarget
+- Renders `<NodeDetailPanel>` in a right sidebar column when a node is selected
+
+**web/src/components/NodeDetailPanel.tsx** — new 3D-specific detail panel (does NOT modify 2D DetailPanel.tsx):
+- Fetches `useSymbol(node.name)` from the existing hook in `api/hooks.ts`
+- Shows callers / callees / cluster peers as `<NavRow>` buttons
+- Each `<NavRow>` calls `onNavigate(name)` on click → re-runs selection in ConstellationTab
+- Loading / error / empty states handled
+- Cluster label shown at the bottom (`data.cluster.id` not `cluster_id` — ClusterInfo shape)
+- Fixed: `ClusterInfo.id` (not `cluster_id`) — required reading the actual TS types
+
+**web/src/__tests__/selectionHelpers.test.ts** — 6 pure vitest tests for `computeHighlightedIds`:
+- Includes selected node id itself
+- Includes direct callees (source === selectedId)
+- Includes direct callers (target === selectedId)
+- Excludes unrelated edges
+- Handles self-edges gracefully (no double-counting)
+- Returns a `Set<number>` (not array)
+
+### Key decisions
+
+**CameraAnimator already present from S2:** The plan's "CameraAnimator uses easeOutCubic" was already implemented in `ConstellationScene.tsx` (S2 slice). The S4 task is about wiring the selection → camera state, which is done via `setCameraTarget` in `handleSelect`.
+
+**computeHighlightedIds extracted as a named export:** The useMemo and handleSelect callback both computed the neighbor set inline in the S2/S3 version. Extracting it as a pure named export satisfies the plan's TDD requirement (unit-test the pure helper) and removes duplication — both the useMemo and handleSelect now call the same function.
+
+**NodeDetailPanel is self-contained:** It doesn't depend on the 2D DetailPanel internals. It uses the same `useSymbol` hook and the same `KIND_COLORS` / `DEFAULT_KIND_COLOR` from the constellation palette.
+
+**NavRow display name:** Shows the bare suffix after the last dot for qualified names (e.g. `Client.send` → `send`) for readability. Full name shown in the `title` attribute for hover. Not using `bareName` from NodeLabels (would create a component→component import; kept it inline as a local rule).
+
+### Tests added (6 new, 149 total — all green, typecheck clean)
+
+All in `selectionHelpers.test.ts`:
+- `computeHighlightedIds` — 6 tests covering all branches
+
+### Deviations from plan
+
+- Plan's Task 6 also included FilterPanel, ConstellationHUD, and ResizeHandle. S4 (issue #172) is scoped to selection + detail panel + camera only; those other components are out of scope for this slice per the task description.
+- `computeHighlightedIds` takes `(selectedId: number, edges: LayoutEdge[])` instead of `(node: LayoutNode, edges: LayoutEdge[])` — using the id directly is cleaner and avoids pulling in the full node shape for the pure helper.
