@@ -23,6 +23,15 @@ WS1-A: SEAM_EMBED_BODY=on gated body path:
 - A file that cannot be read degrades that file's symbols to header-only (logs warning).
 - Passes body slice + SEAM_EMBED_INPUT_MAX_CHARS to symbol_text() for enrichment.
 - When SEAM_EMBED_BODY=off (default): no disk reads, no body, byte-identical vectors.
+
+WS1-B: SEAM_EMBED_BODY=on also associates DB comments to each symbol by line-range:
+- For each symbol, fetches comments WHERE file_id = symbol.file_id AND
+  line BETWEEN symbol.start_line AND symbol.end_line.
+- WHY/HACK/NOTE comment texts are joined (space-separated) and passed as the
+  `comments` kwarg to symbol_text().
+- Gated by the same SEAM_EMBED_BODY knob — no new config knob.
+- When SEAM_EMBED_BODY=off: no comment join, byte-identical to pre-WS1-B.
+- Fetched in a single SQL pass via GROUP_CONCAT per symbol before the text-build loop.
 """
 
 import logging
@@ -157,6 +166,30 @@ def _index_embeddings_impl(
             if path not in file_line_cache:
                 file_line_cache[path] = _read_file_lines(path)
 
+    # ── Step 1c (body path only): fetch per-symbol comment texts from DB ──────
+    # WS1-B: associate comments to symbols by line-range using a single SQL pass.
+    # GROUP_CONCAT aggregates all matched comment texts per symbol in one query.
+    # Key: symbol_id → joined comment string (or None if no comments).
+    # WHY a dict keyed by symbol_id: the rows list is already our authoritative
+    # iteration order; we look up comments per row to keep the loop below simple.
+    symbol_comments: dict[int, str | None] = {}
+    if embed_body:
+        comment_rows = conn.execute(
+            """
+            SELECT s.id AS symbol_id,
+                   GROUP_CONCAT(c.text, ' ') AS joined_comments
+            FROM symbols s
+            LEFT JOIN comments c
+              ON c.file_id = s.file_id
+             AND c.line BETWEEN s.start_line AND s.end_line
+            GROUP BY s.id
+            ORDER BY s.id
+            """
+        ).fetchall()
+        # Build lookup dict; GROUP_CONCAT returns None when no comments match.
+        for crow in comment_rows:
+            symbol_comments[crow["symbol_id"]] = crow["joined_comments"]
+
     # ── Step 2: Build canonical texts ─────────────────────────────────────────
     # Precompute (symbol_id, text) pairs; keep IDs aligned with text list.
     symbol_ids: list[int] = []
@@ -171,6 +204,9 @@ def _index_embeddings_impl(
             if src_lines is not None:
                 body = extract_body_slice(src_lines, row["start_line"], row["end_line"])
 
+            # WS1-B: retrieve pre-joined comment text for this symbol (may be None)
+            comments = symbol_comments.get(row["id"])
+
             texts.append(
                 symbol_text(
                     row["name"],
@@ -178,6 +214,7 @@ def _index_embeddings_impl(
                     row["docstring"],  # may be None
                     body=body,
                     max_chars=SEAM_EMBED_INPUT_MAX_CHARS,
+                    comments=comments,
                 )
             )
         else:

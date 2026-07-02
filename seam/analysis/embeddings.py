@@ -26,10 +26,17 @@ WS1-A additions:
   unset, output is byte-identical to the original 3-arg call. The header (name +
   signature + docstring) is NEVER truncated; body fills any remaining max_chars budget.
 
+WS1-B additions:
+- symbol_text() now also accepts optional keyword-only `comments` str. Fill order:
+  header → body → comments. Comments are appended only when budget remains after the
+  body, and only when the comments string is non-empty. Empty/None/whitespace-only
+  comments contribute NOTHING — no dangling separator. A symbol with no comments embeds
+  EXACTLY as body-only (byte-identical). Pure, never raises.
+
 Public API:
     is_available() -> bool
     extract_body_slice(source_lines, start_line, end_line) -> str
-    symbol_text(name, signature, docstring, *, body=None, max_chars=None) -> str
+    symbol_text(name, signature, docstring, *, body=None, max_chars=None, comments=None) -> str
     embed_texts(texts, model) -> list[bytes]
     embed_query(text, model) -> bytes
     _get_model(model)   <- internal, exposed for monkeypatching in tests
@@ -141,6 +148,7 @@ def symbol_text(
     *,
     body: str | None = None,
     max_chars: int | None = None,
+    comments: str | None = None,
 ) -> str:
     """Build the canonical text string to embed for a symbol.
 
@@ -156,16 +164,24 @@ def symbol_text(
     When body and max_chars are both unset (the default), output is byte-identical to
     the original 3-arg call — no behaviour change.
 
+    WS1-B: optional keyword-only `comments` appends WHY/HACK/NOTE comment text AFTER
+    the body, when budget remains. Fill order: header → body → comments.
+    Empty/None/whitespace-only comments contribute NOTHING (no dangling separator).
+    A symbol with no comments embeds EXACTLY as body-only (byte-identical).
+
     Args:
         name:       Symbol name (always included).
         signature:  Function/class signature, or None.
         docstring:  Docstring / documentation text, or None.
         body:       Implementation body text (pre-sliced). Appended after the header
                     when max_chars allows it. None or '' → no body appended.
-        max_chars:  Character budget for the combined output (header + body). The
-                    header is assembled first and is NEVER truncated. If budget
-                    remains after the header, body is appended up to the remaining
-                    chars. None → body is ignored (byte-identical to 3-arg output).
+        max_chars:  Character budget for the combined output (header + body + comments).
+                    The header is assembled first and is NEVER truncated. If budget
+                    remains after the header, body fills first, then comments.
+                    None → body and comments are ignored (byte-identical to 3-arg output).
+        comments:   Pre-joined WHY/HACK/NOTE comment texts for this symbol. Appended
+                    after the body when max_chars budget permits. None/''/whitespace →
+                    nothing appended (no separator). Never truncates the header or body.
 
     Returns:
         A single str suitable for embedding. Never raises.
@@ -178,23 +194,35 @@ def symbol_text(
         parts.append(docstring)
     header = "\n".join(parts)
 
-    # ── No body path: byte-identical to pre-WS1-A default ────────────────────
-    # Body is only appended when BOTH body text AND max_chars are provided.
-    if not body or max_chars is None:
+    # ── No body/comments path: byte-identical to pre-WS1-A default ───────────
+    # Body and comments are only appended when max_chars is provided.
+    if max_chars is None:
         return header
 
     # ── Body path: fill remaining budget after header ─────────────────────────
     # header_len + 1 separator newline; if the header already fills the budget,
-    # there is nothing left for the body — return header as-is (never truncate).
+    # there is nothing left for body/comments — return header as-is (never truncate).
     separator = "\n"
-    used = len(header) + len(separator)
-    remaining = max_chars - used
-    if remaining <= 0:
-        return header
+    result = header
 
-    # Truncate body to remaining budget (leading slice)
-    body_slice = body[:remaining]
-    return header + separator + body_slice
+    if body:
+        used = len(result) + len(separator)
+        remaining = max_chars - used
+        if remaining > 0:
+            result = result + separator + body[:remaining]
+
+    # ── Comments path: fill remaining budget after body ────────────────────────
+    # Strip whitespace; only append when non-empty AND budget remains.
+    # WHY strip: a whitespace-only comments string is semantically absent —
+    # we must not emit a trailing newline+space for it.
+    clean_comments = (comments or "").strip()
+    if clean_comments:
+        used = len(result) + len(separator)
+        remaining = max_chars - used
+        if remaining > 0:
+            result = result + separator + clean_comments[:remaining]
+
+    return result
 
 
 def embed_texts(texts: list[str], model: str) -> list[bytes]:
