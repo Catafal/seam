@@ -371,3 +371,58 @@ The R3F code is correctly isolated in the lazy chunk. The 993 kB raw size is exp
 
 - None. S6 is the final slice; all planned tasks are complete.
 
+
+---
+
+## 2026-07-02 — Full code-quality review + fixes (post-S1–S6)
+
+Reviewer pass across all 6 committed slices (diff base `e327fc6`) through three lenses:
+/review (correctness), backend-taste (Python layer), and functional QA (full gate + endpoint smoke).
+
+**Baseline:** `make gate` green (3151 pass, 6 skipped), `npm run typecheck`/`npm test` (159) /
+`npm run build` all green before any change.
+
+**Bugs found & fixed (frontend rendering — all silent, WebGL-only, invisible to the test suite):**
+
+1. **[HIGH] NodeCloud stellar colors never uploaded.** `THREE.InstancedMesh.instanceColor`
+   starts `null` and is only allocated by `setColorAt()`, which the component never calls. The
+   upload was guarded by `if (mesh.instanceColor)` — always false — so every node rendered with
+   the material's default white and the entire stellar color scale (the feature's core visual)
+   was dead. Fixed by lazily allocating `instanceColor` in `useFrame` (re-alloc when node count
+   changes). `NodeCloud.tsx`.
+2. **[MED] EdgeLines GPU buffer leak.** A fresh `THREE.BufferGeometry` is built in `useMemo` on
+   every highlight change with no disposal — each rebuild leaked its VBOs. Added
+   `useEffect(() => () => geometry.dispose(), [geometry])`. `EdgeLines.tsx`.
+3. **[MED] AutoRotateController listener leak + side-effect-in-render.** Pointer/wheel listeners
+   were attached in the render body via a `registered` ref and never removed. Moved to a
+   `useEffect` with a cleanup that `removeEventListener`s on unmount. `ConstellationScene.tsx`.
+
+**Backend review — no code changes required.** `layout.py` honors the contracts:
+never-raises (narrow `(sqlite3.Error, ValueError, KeyError)` per IM3), deterministic
+(FNV-1a/LCG seeding, no `random`/time in position math), name-keyed via `edge_match_names`
+with the qualified-before-plain ordering (CR1), config only via `seam/config.py`, module-level
+bounded cache (≤8, TTL = `SEAM_STALENESS_TTL_SECONDS`), and the `SEAM_LAYOUT_MAX_SAFE_NODES`
+clamp inside `_compute_layout_impl` (CR5). File 530 lines, largest function ~160 lines — within
+limits. Endpoint closes its read-only connection in a `finally`.
+
+**Functional QA (endpoint smoke, this repo's own index — 6739 symbols / 33576 edges):**
+- `GET /api/graph/layout?max_nodes=50` → HTTP 200, valid JSON with `nodes/edges/clusters/total_nodes`;
+  50 nodes, 110 edges, 34 clusters, `total_nodes=6265` (honest pre-cap count); node shape complete.
+- Determinism: two consecutive fetches byte-identical.
+- `max_nodes=99999` → HTTP 422 (clamped by the `Query(le=SAFE_NODES)` bound).
+- Safe ceiling `max_nodes=3000` → HTTP 200 in ~6.5 s (O(n²)·40 kernel), no OOM/crash — validates
+  the documented memory ceiling is survivable on a laptop.
+
+**Residual risks (not fixed — documented decisions):**
+- `compute_layout` does not catch `MemoryError`; the `max_nodes` clamp + `Query(le=3000)` bound
+  keep the numpy `(n,n,3)` allocation ≤ ~216 MB, so this is bounded rather than caught (respects
+  the plan's deliberate narrow-except / IM3).
+- `edge_match_names` is called once per unique symbol name on a cache miss (containers do 2 extra
+  DB queries each) — O(n) queries per recompute. Bounded and cached (TTL), acceptable for a
+  cosmetic web endpoint; noted for future batching if large repos regress.
+- Built `seam/_web/` bundle is force-committed (gitignored but tracked, mirroring S6) so the
+  packaged SPA stays self-consistent (`index.html` ↔ hashed chunk names) after the source fixes.
+
+**Post-fix gate status:** `npm run typecheck` clean, `npm test` 159 pass, `npm run build` green
+(three.js isolated in the lazy `ConstellationTab` chunk, absent from the main bundle). Backend
+untouched → `make gate` remains green.

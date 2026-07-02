@@ -104,11 +104,19 @@ export function NodeCloud({ nodes, highlightedIds, onHover, onSelect }: NodeClou
     });
     mesh.instanceMatrix.needsUpdate = true;
 
-    // Upload colors via instanceColor buffer
-    if (mesh.instanceColor) {
-      mesh.instanceColor.array.set(colorArray);
-      mesh.instanceColor.needsUpdate = true;
+    // Upload colors via the instanceColor buffer. THREE.InstancedMesh starts with
+    // instanceColor === null and only allocates it when setColorAt() is called — we
+    // never call that, so without this lazy init the buffer stays null and every
+    // instance renders with the material's default white (stellar colors lost).
+    // Re-allocate when the node count changes (a new InstancedMesh is mounted).
+    if (!mesh.instanceColor || mesh.instanceColor.count !== nodes.length) {
+      mesh.instanceColor = new THREE.InstancedBufferAttribute(
+        new Float32Array(nodes.length * 3),
+        3,
+      );
     }
+    mesh.instanceColor.array.set(colorArray);
+    mesh.instanceColor.needsUpdate = true;
   });
 
   const handlePointerOver = useCallback(

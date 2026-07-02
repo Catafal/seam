@@ -16,7 +16,7 @@
  * Reference: docs/prd/phase11-p2-1-3d-constellation-reference.md §2
  */
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 
 import { EDGE_TYPE_COLORS, DEFAULT_EDGE_COLOR } from "../lib/constellationColors";
@@ -159,6 +159,10 @@ export function EdgeLines({ nodes, edges, highlightedIds }: EdgeLinesProps) {
     g.setAttribute("color", new THREE.BufferAttribute(colors, 3));
     return g;
   }, [positions, colors]);
+
+  // Dispose the GPU buffers when the geometry is replaced (highlight change) or on
+  // unmount. Without this, every rebuild leaks a BufferGeometry's VBOs.
+  useEffect(() => () => geometry.dispose(), [geometry]);
 
   return (
     <lineSegments geometry={geometry}>

@@ -19,7 +19,7 @@
  *   easeOutCubic(p)                → number
  */
 
-import { useRef, useCallback } from "react";
+import { useRef, useCallback, useEffect } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { EffectComposer, Bloom } from "@react-three/postprocessing";
@@ -145,14 +145,18 @@ function AutoRotateController({ controlsRef }: AutoRotateControllerProps) {
     if (controlsRef.current) controlsRef.current.autoRotate = false;
   }, [controlsRef]);
 
-  // Register pointer + wheel events on the canvas
+  // Register pointer + wheel events on the canvas, cleaning up on unmount so the
+  // listeners don't leak (and to avoid a side-effect in the render body).
   const { gl } = useThree();
-  const registered = useRef(false);
-  if (!registered.current) {
-    registered.current = true;
-    gl.domElement.addEventListener("pointerdown", handleInteraction, { passive: true });
-    gl.domElement.addEventListener("wheel", handleInteraction, { passive: true });
-  }
+  useEffect(() => {
+    const el = gl.domElement;
+    el.addEventListener("pointerdown", handleInteraction, { passive: true });
+    el.addEventListener("wheel", handleInteraction, { passive: true });
+    return () => {
+      el.removeEventListener("pointerdown", handleInteraction);
+      el.removeEventListener("wheel", handleInteraction);
+    };
+  }, [gl, handleInteraction]);
 
   useFrame(() => {
     if (!controlsRef.current) return;
