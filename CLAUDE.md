@@ -170,6 +170,18 @@ seam/config.py               ← all settings (env vars with defaults)
                                 SEAM_SEMANTIC_LIMIT: top-k semantic candidates fetched before RRF merge (default: 20)
                                 SEAM_SEMANTIC_SCAN_CAP: max embedding rows loaded per scan (default: 20000)
                                 SEAM_RRF_K: RRF smoothing constant k, Cormack et al. SIGIR 2009 (default: 60)
+                                SEAM_EMBED_BODY: "off" | "on" — gate for including a leading body slice + DB
+                                  comments in each symbol's embedding input (WS1-A + WS1-B; default: off).
+                                  When "on": index_embeddings reads each source file at most once and appends
+                                  body text + WHY/HACK/NOTE comment text (from the DB) after the header,
+                                  bounded by SEAM_EMBED_INPUT_MAX_CHARS. Vectors change — requires a full
+                                  `seam init --semantic` re-index to repopulate. When "off": no disk reads,
+                                  no body, no comment join — vectors byte-identical to pre-WS1-A.
+                                SEAM_EMBED_INPUT_MAX_CHARS: character budget for embedding input (header +
+                                  body + comments) when SEAM_EMBED_BODY=on (WS1-A; default: 2000 ≈ 500
+                                  tokens). The header is NEVER truncated; body fills any remaining budget,
+                                  then comments. 0 = unlimited (no cap on body/comment content beyond the
+                                  header) — mirrors the SEAM_IMPACT_MAX_BYTES 0=unlimited convention.
                                 SEAM_NAME_EXPANSION_CAP: max member bare names included when a class/interface/struct
                                   is used as a context/impact/query seed (Tier A name-resolution; default: 50)
                                 SEAM_BARE_RESOLVE_CAP: max rows returned by the suffix scan inside

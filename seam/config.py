@@ -395,11 +395,14 @@ SEAM_RRF_K: int = int(os.getenv("SEAM_RRF_K", "60"))
 # When "off": no disk reads, no body text, vectors byte-identical to pre-WS1-A.
 SEAM_EMBED_BODY: str = os.getenv("SEAM_EMBED_BODY", "off")
 
-# Character budget for the combined embedding input (header + body) when
+# Character budget for the combined embedding input (header + body + comments) when
 # SEAM_EMBED_BODY=on. The header (name + signature + docstring) is NEVER truncated;
-# the body fills any remaining budget up to this limit.
+# body fills any remaining budget, then comments fill any remaining after that.
 # Default 2000: ~500 tokens — a ~4-char/token proxy (no tokenizer dependency),
-# matches the SEAM_IMPACT_MAX_BYTES discipline. 0 means no budget cap on body.
+# matches the SEAM_IMPACT_MAX_BYTES discipline.
+# 0 = unlimited (no cap on body/comment content beyond the header) — mirrors the
+# SEAM_IMPACT_MAX_BYTES convention where 0 = unlimited.  In practice, index_embeddings
+# maps 0 → a large internal sentinel so that body + comments are included in full.
 SEAM_EMBED_INPUT_MAX_CHARS: int = int(os.getenv("SEAM_EMBED_INPUT_MAX_CHARS", "2000"))
 
 

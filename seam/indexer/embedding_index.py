@@ -134,6 +134,16 @@ def _index_embeddings_impl(
     """
     embed_body = SEAM_EMBED_BODY == "on"
 
+    # ── Effective char budget ─────────────────────────────────────────────────
+    # SEAM_EMBED_INPUT_MAX_CHARS=0 = unlimited (mirrors SEAM_IMPACT_MAX_BYTES
+    # discipline: 0 = unlimited = no cap on content beyond the header).
+    # symbol_text(max_chars=None) disables the body path entirely; we use a
+    # large-but-finite sentinel so body + comments are included without truncation.
+    _unlimited_sentinel = 1_000_000  # 1 M chars — effectively no cap
+    effective_max_chars = (
+        SEAM_EMBED_INPUT_MAX_CHARS if SEAM_EMBED_INPUT_MAX_CHARS > 0 else _unlimited_sentinel
+    )
+
     # ── Step 1: Read all symbols ──────────────────────────────────────────────
     # When body enrichment is on, also fetch file_id, start_line, end_line, and
     # the files.path so we can read source files once per file.
@@ -213,7 +223,7 @@ def _index_embeddings_impl(
                     row["signature"],  # may be None
                     row["docstring"],  # may be None
                     body=body,
-                    max_chars=SEAM_EMBED_INPUT_MAX_CHARS,
+                    max_chars=effective_max_chars,
                     comments=comments,
                 )
             )

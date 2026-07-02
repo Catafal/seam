@@ -11,7 +11,7 @@ Test groups:
 
 import struct
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -154,7 +154,20 @@ class TestEmbedBodyOff:
         assert control_texts == off_texts
 
     def test_off_no_disk_reads(self, tmp_path: Path) -> None:
-        """SEAM_EMBED_BODY=off performs no disk reads (open() not called)."""
+        """SEAM_EMBED_BODY=off performs no disk reads (open() not called).
+
+        Patches `seam.indexer.embedding_index.open` (the module-level builtin
+        resolution point, targeted with create=True) rather than builtins.open so
+        SQLite's own file-open calls are not intercepted.
+        """
+        reads: list[str] = []
+        original_open = open
+
+        def tracking_open(path, *args, **kwargs):
+            if isinstance(path, (str, Path)) and str(path).endswith(".py"):
+                reads.append(str(path))
+            return original_open(path, *args, **kwargs)
+
         conn = init_db(tmp_path / "test.db")
         _seed_db_with_lines(conn, tmp_path)
 
@@ -164,43 +177,12 @@ class TestEmbedBodyOff:
                 side_effect=_fake_embed_factory(4),
             ):
                 with patch("seam.indexer.embedding_index.SEAM_EMBED_BODY", "off"):
-                    with patch("builtins.open", MagicMock(side_effect=AssertionError("open() called in off mode"))) as mock_open:
-                        from seam.indexer.embedding_index import index_embeddings
-
-                        # Should not raise — off path must not call open()
-                        # But we need to allow open() calls from SQLite itself
-                        # So we only check that our file open is not called
-                        # Actually, let's track calls differently
-                        mock_open.side_effect = None  # reset
-                        mock_open.return_value = MagicMock()
-                        # Use a targeted approach: track via side_effect on our read path
-                        pass
-
-        # Simpler: use a read-tracking mock on Path.read_text or open in embeddings module
-        reads: list[str] = []
-        original_open = open
-
-        def tracking_open(path, *args, **kwargs):
-            if isinstance(path, (str, Path)) and str(path).endswith(".py"):
-                reads.append(str(path))
-            return original_open(path, *args, **kwargs)
-
-        conn2 = init_db(tmp_path / "test3.db")
-        _seed_db_with_lines(conn2, tmp_path)
-
-        with patch("seam.indexer.embedding_index.is_available", return_value=True):
-            with patch(
-                "seam.indexer.embedding_index.embed_texts",
-                side_effect=_fake_embed_factory(4),
-            ):
-                with patch("seam.indexer.embedding_index.SEAM_EMBED_BODY", "off"):
-                    # Monkeypatch the open in the embedding_index module
                     with patch("seam.indexer.embedding_index.open", tracking_open, create=True):
                         from seam.indexer.embedding_index import index_embeddings
 
-                        index_embeddings(conn2, model="test-model", batch=32)
+                        index_embeddings(conn, model="test-model", batch=32)
 
-        conn2.close()
+        conn.close()
         # Off path must not open any .py files
         assert reads == []
 
