@@ -85,6 +85,9 @@ const STATUS_FIXTURE: StatusResponse = {
   cluster_count: 5,
   last_indexed: "2026-06-03 12:00:00",
   languages: ["python", "typescript"],
+  // D1 (#272): additive staleness fields
+  stale: false,
+  stale_reason: null,
 };
 
 const SEARCH_FIXTURE: SearchResponse = {

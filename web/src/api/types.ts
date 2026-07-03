@@ -1347,6 +1347,18 @@ export interface components {
             last_indexed: string | null;
             /** Languages */
             languages: string[];
+            /**
+             * Stale
+             * @description True when the index is detected as stale (#272 / D1).
+             * Derived from check_staleness() — same source of truth as the MCP
+             * staleness banner and `seam status` CLI. Watcher-aware.
+             */
+            stale: boolean;
+            /**
+             * Stale Reason
+             * @description Human-readable reason for staleness. null when fresh.
+             */
+            stale_reason: string | null;
         };
         /**
          * StructureResponse

@@ -3,10 +3,12 @@
  *
  * Layout:
  *   ┌─────────────────────────────────────────┐
- *   │  Header (status + search box)           │
+ *   │  Header (brand + TabBar + search box)   │
  *   ├─────────────────────────────────────────┤
  *   │  Landing (cluster list) OR              │
  *   │  GraphCanvas (when a symbol is set)     │
+ *   ├─────────────────────────────────────────┤
+ *   │  StatusStrip (index stats + stale warn) │
  *   └─────────────────────────────────────────┘
  *
  * State: `centerSymbol` drives everything.
@@ -25,9 +27,10 @@ import { StructureOverview } from "./components/StructureOverview";
 import { FileSidebar } from "./components/FileSidebar";
 import { ClusterGraph2D } from "./components/ClusterGraph2D";
 import { TabBar } from "./components/TabBar";
+import { StatusStrip } from "./components/StatusStrip";
 import type { ViewMode } from "./lib/tabs";
 import { ResizeHandle, clampPanelWidth, readPanelWidth } from "./components/ResizeHandle";
-import { useStatus, useSearch, useHubs, useAreas } from "./api/hooks";
+import { useSearch, useHubs, useAreas } from "./api/hooks";
 import { resolveClusterHandoff } from "./lib/resolveClusterHandoff";
 import type { SearchResultItem, HubSymbol, ConstellationCluster } from "./api/schema-types";
 import type { Area } from "./lib/deriveAreas";
@@ -54,64 +57,6 @@ const CANVAS_MIN_W = 300;
 // Lazy-load the 3D constellation tab to keep the main bundle small.
 // three.js + R3F are not loaded until the user clicks "Constellation".
 const ConstellationTab = lazy(() => import("./components/ConstellationTab"));
-
-// ── Utility: relative time formatter ─────────────────────────────────────────
-
-/**
- * Format a last_indexed timestamp as a human-friendly relative string.
- * Falls back to the raw string if parsing fails.
- */
-function formatRelative(ts: string | null | undefined): string {
-  if (!ts) return "never";
-  try {
-    const d = new Date(ts);
-    if (isNaN(d.getTime())) return ts;
-    const diff = Date.now() - d.getTime();
-    const secs = Math.round(diff / 1000);
-    if (secs < 60) return "just now";
-    const mins = Math.round(secs / 60);
-    if (mins < 60) return `${mins}m ago`;
-    const hrs = Math.round(mins / 60);
-    if (hrs < 24) return `${hrs}h ago`;
-    return `${Math.round(hrs / 24)}d ago`;
-  } catch {
-    return ts;
-  }
-}
-
-// ── StatusBadge ───────────────────────────────────────────────────────────────
-
-/**
- * Shows index counts and freshness in the header.
- * Renders loading skeleton / error states inline.
- */
-function StatusBadge() {
-  const { data, isLoading, isError } = useStatus();
-
-  if (isLoading) {
-    return (
-      <span className="text-xs text-zinc-600 animate-pulse">loading…</span>
-    );
-  }
-  if (isError || !data) {
-    return (
-      <span className="text-xs text-red-500" title="Could not reach seam serve">
-        no index
-      </span>
-    );
-  }
-
-  return (
-    <span className="text-xs text-zinc-400 font-mono tabular-nums" aria-label="index statistics">
-      {data.symbol_count.toLocaleString()} symbols ·{" "}
-      {data.edge_count.toLocaleString()} edges ·{" "}
-      {data.cluster_count} clusters ·{" "}
-      <span className="text-zinc-500">
-        indexed {formatRelative(data.last_indexed)}
-      </span>
-    </span>
-  );
-}
 
 // ── SearchBox ─────────────────────────────────────────────────────────────────
 
@@ -649,9 +594,6 @@ function App() {
           Changes
         </button>
 
-        {/* Index status */}
-        <StatusBadge />
-
         {/* Clear center — neighborhood mode with an active center */}
         {showGraph && (
           <button
@@ -768,6 +710,13 @@ function App() {
           }}
         />
       </main>
+
+      {/* ── Status strip ───────────────────────────────────────────────── */}
+      {/* WHY below main (not in header): operational metadata (index stats + stale
+          signal) is demoted from the header per the PRD. The header is for navigation
+          only. The strip is always a single fixed-height row so no layout shift occurs
+          when the stale flag toggles. StatusStrip owns its own useStatus() call. */}
+      <StatusStrip />
     </div>
   );
 }
