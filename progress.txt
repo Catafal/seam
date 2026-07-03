@@ -60,3 +60,55 @@
 #     No schema change, no migration, no re-index, no new config knobs.
 #
 # NEXT: Phase C — Constellation redesign (fixed legible 3D + 2D cluster-graph fallback).
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase C — Explorer redesign: Constellation, done BOTH ways
+# (issues #251/#252/#253, worktree feat/explorer-redesign-phase-c)
+# ─────────────────────────────────────────────────────────────────────────────
+#   WHY this phase exists:
+#     The 3D constellation was a dead end: impressive to look at but answering no question
+#     a developer can act on. A 2,000-node 3D cloud cannot tell you whether the architecture
+#     is a hub-and-spoke, a mesh, or a chain. Meanwhile /api/constellation already computed
+#     the exact macro-topology answer (~20–50 clusters + weighted inter-cluster links) and
+#     the frontend threw it away. Phase C closes both gaps:
+#     (1) renders build_constellation as a legible 2D cluster-graph (the default Topology view);
+#     (2) demotes the 3D constellation behind a 2D/3D toggle (2D leads);
+#     (3) clicking a cluster hands off to the 2D neighborhood centered on the cluster's hub.
+#
+#   C1 — Additive `representative` field on /api/constellation (#251):
+#     `build_constellation` in graph_api.py now calls `fetch_cluster_representatives(conn)` —
+#     a new public helper that runs the same MIN(id) rep-query /api/clusters already used.
+#     Single source of truth: both endpoints now call the same function, so the hand-off target
+#     is consistent and cannot diverge. `ConstellationCluster` Pydantic model +
+#     `web/src/api/types.ts` both gain `representative: str | None`.
+#
+#   C2 — 2D cluster-graph fallback in React Flow (#252):
+#     - `useConstellation()` hook: thin fetch of /api/constellation.
+#     - `web/src/lib/clusterGraphLayout.ts` (NEW, PURE): deterministic radial layout —
+#       clusters sorted by size DESC (cluster_id tiebreak), placed on a circle of radius ∝ count.
+#       Node size ∝ √(size); edge strokeWidth + opacity ∝ log1p(weight). Pure: no React,
+#       no DB, no physics — trivially unit-testable and stable across rerenders.
+#     - `web/src/components/ClusterGraph2D.tsx` (NEW): renders layout in @xyflow/react.
+#       Sibling of GraphCanvas (not a modification). onOpenCluster prop → hand-off callback.
+#       Empty state: "No clusters yet — run seam init to build the index."
+#
+#   C3 — Topology 2D/3D toggle + cluster-to-neighborhood hand-off (#253):
+#     - `web/src/lib/resolveClusterHandoff.ts` (NEW, PURE): maps clicked cluster to a
+#       symbol name: representative → label → null (graceful no-op). Pure + vitest-tested.
+#     - App.tsx: ViewMode "constellation" renamed to "topology"; TopologySubMode "2d"|"3d"
+#       state (default "2d"); inline 2D/3D sub-toggle in the header; handleOpenCluster calls
+#       resolveClusterHandoff → setCenterSymbol → setMode("neighborhood").
+#       Anti-pattern avoided: the Topology button label is always "Topology" (not the other mode).
+#
+#   C-review — Fixer pass:
+#     - Node type "clusterNode" → "default" (ClusterGraph2D registers no nodeTypes map;
+#       the custom type name triggered RF error 002 per node; appearance via style prop is correct).
+#     - Hand-off tests strengthened: assertions now check the center symbol text, not just
+#       that the topology surface disappears (representative vs label-fallback paths are tested).
+#
+#   Gate on completion: ruff + mypy clean (122 files), 3555 pytest passed / 6 skipped,
+#     466 frontend vitest tests passed (39 test files), tsc clean, vite build green.
+#     web.py = 991 lines (under 1000). MCP tool count = 16 (unchanged).
+#     No schema change, no migration, no re-index, no new config knobs, zero new deps.
+#
+# NEXT: Phase D — Coherent flow + tab model (explicit tab bar, breadcrumbs, status strip).

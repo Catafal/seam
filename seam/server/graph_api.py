@@ -304,6 +304,12 @@ def fetch_cluster_representatives(conn: sqlite3.Connection) -> dict[int, str]:
     change between reads of the same index. It is the same criterion /api/clusters
     already uses to pick a 'real' symbol name the frontend can open in the
     neighborhood view (clusters themselves are not symbols).
+
+    WHY single source of truth: before C1 the representative was computed inline in
+    get_clusters() only. build_constellation() had no representative, so clicking
+    a cluster in the 2D graph had no guaranteed hand-off target. By extracting the
+    query into this helper and calling it from BOTH routes, the hand-off target is
+    always consistent — the same cluster shows the same representative everywhere.
     """
     try:
         rows = conn.execute(

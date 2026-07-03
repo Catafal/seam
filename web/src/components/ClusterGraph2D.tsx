@@ -5,6 +5,14 @@
  * legible node-link diagram. One node per cluster, one edge per inter-cluster
  * link. Node size ∝ cluster symbol count; edge width ∝ link weight.
  *
+ * WHY this view is legible where the 3D cloud is not:
+ *   The 3D constellation renders 2,000 individual symbols in perspective — occlusion and
+ *   the lack of a fixed 2D plane make the macro shape (hub-and-spoke, mesh, chain) unreadable
+ *   at a glance. This view renders ~20–50 cluster nodes instead: small enough that the shape
+ *   is unambiguous and node labels are readable without zooming. The 3D cloud answers
+ *   "what is in the repo?"; this graph answers "how is the repo coupled?" — a different,
+ *   more actionable question for architecture orientation.
+ *
  * Signal: inter-cluster coupling — hub-and-spoke, mesh, or chain visible at
  * a glance. This is the default Topology view (2D leads; 3D is opt-in).
  *

@@ -133,9 +133,9 @@ pipeline, in a worktree off main)
   search-first landing with degree-ranked entry
   points (drop cluster cards); one folder-based areas concept on landing + Overview; treemap
   cell area = degree + single color signal; code-snippet panel in Symbol view.
-- **Phase C — Constellation redesign (both):** fixed legible 3D (degree-size, additive edges,
-  cluster granularity, idle rotate) + 2D cluster-graph fallback from `/api/constellation`;
-  cluster→2D hand-off.
+- **Phase C — Constellation redesign (both):** [delivered — PRs #251–#253 + review]
+  fixed legible 3D (degree-size, additive edges, cluster granularity, idle rotate) + 2D
+  cluster-graph fallback from `/api/constellation`; cluster→2D hand-off.
 - **Phase D — Coherent flow + tab model:** explicit Overview/Symbol/Topology tab bar; kill
   contextual-label anti-pattern; server admin → status strip; end-to-end breadcrumbs; polish.
 

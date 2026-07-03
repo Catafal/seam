@@ -7,8 +7,13 @@
  * Design decisions:
  *   - DETERMINISTIC: clusters are sorted by size DESC (ties broken by cluster_id ASC)
  *     before positioning, so the layout is stable across rerenders and page reloads.
- *   - NO physics simulation: a static radial layout is legible for the 20–50 cluster
- *     scale the API returns, reproducible (story-13), and trivially unit-testable (story-16).
+ *   - NO physics simulation: at the 20–50 cluster scale this API returns, a static radial
+ *     layout is already legible — the developer can read the macro shape (hub-and-spoke,
+ *     mesh, chain) at a glance. A force simulation would add jitter, non-determinism, and
+ *     test complexity without adding legibility for this cluster count. Reproducibility
+ *     (story-13) and unit-testability (story-16) are free bonuses of the static choice.
+ *     (A 2,000-node 3D cloud IS illegible because perspective + occlusion hide the shape;
+ *     a 40-node 2D circle is not, so the simpler layout is the better one here.)
  *   - Node size ∝ cluster symbol count (monotonic: larger cluster → bigger node).
  *   - Edge strokeWidth ∝ link weight (monotonic: heavier link → wider stroke).
  *   - Edge opacity ∝ link weight (monotonic: heavier link → more opaque).
