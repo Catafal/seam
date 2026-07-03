@@ -16,6 +16,7 @@ from seam.installer.claude import ClaudeTarget
 from seam.installer.codex import CodexTarget
 from seam.installer.core import install_entry, uninstall_entry
 from seam.installer.cursor import CursorTarget
+from seam.installer.gemini import GeminiTarget
 from seam.installer.jsonfile import (
     atomic_write_json,
     delete_in,
@@ -464,5 +465,128 @@ def test_vscode_guidance_previews(tmp_path: Path) -> None:
     assert len(previews) == 1
     path_str, content = previews[0]
     assert path_str == str(tmp_path / ".github" / "copilot-instructions.md")
+    assert "<!-- seam:start -->" in content
+    assert "Escalation ladder" in content
+
+
+# ── Gemini CLI target ──────────────────────────────────────────────────────────
+
+
+def test_gemini_project_config_path(tmp_path: Path) -> None:
+    t = GeminiTarget()
+    assert t.config_path(tmp_path, "project") == tmp_path / ".gemini" / "settings.json"
+
+
+def test_gemini_user_config_path(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    t = GeminiTarget()
+    assert t.config_path(tmp_path, "user") == Path.home() / ".gemini" / "settings.json"
+
+
+def test_gemini_supports_project_and_user() -> None:
+    assert GeminiTarget().supported_locations() == ["project", "user"]
+
+
+def test_gemini_install_created(tmp_path: Path) -> None:
+    t = GeminiTarget()
+    res = t.install(tmp_path, "project", "/abs/seam", ["start", str(tmp_path)])
+    assert res.action == "created"
+    cfg = tmp_path / ".gemini" / "settings.json"
+    entry = json.loads(cfg.read_text())["mcpServers"]["seam"]
+    # Gemini uses command/args only — no "type" field (same as Cursor).
+    assert "type" not in entry
+    assert entry["command"] == "/abs/seam"
+    assert entry["args"] == ["start", str(tmp_path)]
+
+
+def test_gemini_install_is_idempotent(tmp_path: Path) -> None:
+    t = GeminiTarget()
+    t.install(tmp_path, "project", "/abs/seam", ["start", "/r"])
+    res = t.install(tmp_path, "project", "/abs/seam", ["start", "/r"])
+    assert res.action == "unchanged"
+
+
+def test_gemini_install_updated_on_change(tmp_path: Path) -> None:
+    t = GeminiTarget()
+    t.install(tmp_path, "project", "/abs/seam", ["start", "/r"])
+    res = t.install(tmp_path, "project", "/abs/seam2", ["start", "/r"])
+    assert res.action == "updated"
+
+
+def test_gemini_uninstall_removed_then_not_present(tmp_path: Path) -> None:
+    t = GeminiTarget()
+    t.install(tmp_path, "project", "/abs/seam", ["start", "/r"])
+    assert t.uninstall(tmp_path, "project").action == "removed"
+    assert t.uninstall(tmp_path, "project").action == "not_present"
+    # Uninstall leaves {"mcpServers": {}} — the empty parent dict persists.
+    data = json.loads((tmp_path / ".gemini" / "settings.json").read_text())
+    assert data.get("mcpServers") == {}
+
+
+def test_gemini_corrupt_config_backup(tmp_path: Path) -> None:
+    cfg = tmp_path / ".gemini" / "settings.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("{ broken json")
+    t = GeminiTarget()
+    res = t.install(tmp_path, "project", "/abs/seam", ["start", "/r"])
+    assert res.backed_up is True
+    assert (tmp_path / ".gemini" / "settings.json.backup").read_text() == "{ broken json"
+
+
+def test_gemini_render_entry_uses_mcp_servers_key(tmp_path: Path) -> None:
+    t = GeminiTarget()
+    rendered = json.loads(t.render_entry("/abs/seam", ["start", "/r"]))
+    # Gemini uses "mcpServers" — consistent with Cursor, not VS Code's "servers".
+    assert "mcpServers" in rendered
+    assert "servers" not in rendered
+    entry = rendered["mcpServers"]["seam"]
+    assert "type" not in entry
+    assert entry["command"] == "/abs/seam"
+
+
+def test_gemini_guidance_writes_gemini_md(tmp_path: Path) -> None:
+    t = GeminiTarget()
+    res = t.install_guidance(tmp_path)
+    assert res[0].action == "created"
+    gemini_md = tmp_path / "GEMINI.md"
+    assert gemini_md.exists()
+    text = gemini_md.read_text()
+    assert "<!-- seam:start -->" in text
+    assert "Escalation ladder" in text  # guide body is included
+
+
+def test_gemini_guidance_is_idempotent(tmp_path: Path) -> None:
+    t = GeminiTarget()
+    t.install_guidance(tmp_path)
+    res = t.install_guidance(tmp_path)
+    assert res[0].action == "unchanged"
+
+
+def test_gemini_guidance_preserves_foreign_content(tmp_path: Path) -> None:
+    gemini_md = tmp_path / "GEMINI.md"
+    gemini_md.write_text("# My Gemini config\n\nCustom notes here.\n")
+    t = GeminiTarget()
+    t.install_guidance(tmp_path)
+    text = gemini_md.read_text()
+    assert "Custom notes here." in text  # foreign content preserved
+    assert "Escalation ladder" in text  # seam block appended
+
+
+def test_gemini_guidance_uninstall_removes_block(tmp_path: Path) -> None:
+    t = GeminiTarget()
+    t.install_guidance(tmp_path)
+    res = t.uninstall_guidance(tmp_path)
+    assert res[0].action == "removed"
+    # File persists (empty after block removal — shared-file residue).
+    gemini_md = tmp_path / "GEMINI.md"
+    assert gemini_md.exists()
+    assert "<!-- seam:start -->" not in gemini_md.read_text()
+
+
+def test_gemini_guidance_previews(tmp_path: Path) -> None:
+    previews = GeminiTarget().guidance_previews(tmp_path)
+    assert len(previews) == 1
+    path_str, content = previews[0]
+    assert path_str == str(tmp_path / "GEMINI.md")
     assert "<!-- seam:start -->" in content
     assert "Escalation ladder" in content

@@ -144,6 +144,7 @@ _GUIDANCE_CASES: list[tuple[str, set[str]]] = [
     ("cursor", {".cursor/rules/seam.mdc"}),
     ("codex", {"AGENTS.md"}),
     ("vscode", {".github/copilot-instructions.md"}),
+    ("gemini", {"GEMINI.md"}),
 ]
 
 
@@ -209,6 +210,18 @@ _WITH_MCP_CASES: list[tuple[str, str, set[str], set[str]]] = [
         {".github/copilot-instructions.md", ".vscode/mcp.json"},
         set(),
     ),
+    (
+        "gemini",
+        "project",
+        {"GEMINI.md", ".gemini/settings.json"},
+        set(),
+    ),
+    (
+        "gemini",
+        "user",
+        {"GEMINI.md"},
+        {".gemini/settings.json"},
+    ),
 ]
 
 
@@ -264,6 +277,7 @@ def test_target_all_guidance_writes_union(
         _abs_root(root, ".cursor/rules/seam.mdc"),
         _abs_root(root, "AGENTS.md"),
         _abs_root(root, ".github/copilot-instructions.md"),
+        _abs_root(root, "GEMINI.md"),
     }
     assert changes.created == expected
     assert changes.modified == set()
@@ -295,6 +309,9 @@ def test_target_all_with_mcp_user_writes_union(
         # vscode: project-only; user location is not supported → MCP skipped;
         # guidance still written to root.
         _abs_root(root, ".github/copilot-instructions.md"),
+        # gemini: supports user scope → MCP written to ~/.gemini/settings.json.
+        _abs_root(root, "GEMINI.md"),
+        _abs_home(home, ".gemini/settings.json"),
     }
     assert changes.created == expected
     assert changes.modified == set()
@@ -303,7 +320,7 @@ def test_target_all_with_mcp_user_writes_union(
 # ── Idempotent second run produces zero mutations ─────────────────────────────
 
 
-@pytest.mark.parametrize("target", ["claude", "cursor", "codex", "vscode"])
+@pytest.mark.parametrize("target", ["claude", "cursor", "codex", "vscode", "gemini"])
 def test_idempotent_second_install_no_writes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
 ) -> None:
@@ -468,6 +485,12 @@ _ROUND_TRIP_CASES: list[tuple[str, str, bool, set[str], set[str]]] = [
     ("vscode", "project", False, {".github/copilot-instructions.md"}, set()),
     # vscode project-mcp: copilot-instructions.md + empty .vscode/mcp.json persist
     ("vscode", "project", True, {".github/copilot-instructions.md", ".vscode/mcp.json"}, set()),
+    # gemini guidance-only: empty GEMINI.md persists (shared-file block removed)
+    ("gemini", "project", False, {"GEMINI.md"}, set()),
+    # gemini project-mcp: empty GEMINI.md + empty .gemini/settings.json persist
+    ("gemini", "project", True, {"GEMINI.md", ".gemini/settings.json"}, set()),
+    # gemini user-mcp: empty GEMINI.md in root + empty ~/.gemini/settings.json persist
+    ("gemini", "user", True, {"GEMINI.md"}, {".gemini/settings.json"}),
 ]
 
 

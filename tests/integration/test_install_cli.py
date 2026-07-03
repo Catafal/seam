@@ -75,14 +75,16 @@ def test_with_mcp_all_user_scope_writes_mcp_for_three(tmp_path: Path, monkeypatc
     )
     payload = json.loads(res.stdout)
     actions = {r["target"]: r["mcp"]["action"] for r in payload["data"]["results"]}
-    # claude/cursor/codex support user scope; vscode is project-only → skipped under "all".
+    # claude/cursor/codex/gemini support user scope; vscode is project-only → skipped.
     assert actions["claude"] == "created"
     assert actions["cursor"] == "created"
     assert actions["codex"] == "created"
     assert actions["vscode"] == "skipped"
+    assert actions["gemini"] == "created"
     assert (tmp_path / ".codex" / "config.toml").exists()
     assert (tmp_path / ".claude.json").exists()
     assert (tmp_path / ".cursor" / "mcp.json").exists()
+    assert (tmp_path / ".gemini" / "settings.json").exists()
 
 
 def test_with_mcp_all_project_skips_codex_mcp_but_writes_guidance(tmp_path: Path) -> None:
@@ -249,3 +251,85 @@ def test_vscode_uninstall_removes_guidance_and_mcp(tmp_path: Path) -> None:
     # MCP file persists with empty "servers" dict (shared-file residue).
     mcp_json = tmp_path / ".vscode" / "mcp.json"
     assert json.loads(mcp_json.read_text())["servers"] == {}
+
+
+# ── Gemini CLI target ──────────────────────────────────────────────────────────
+
+
+def test_gemini_guidance_only_writes_gemini_md(tmp_path: Path) -> None:
+    res = runner.invoke(app, ["install", str(tmp_path), "--target", "gemini"])
+    assert res.exit_code == 0
+    gemini_md = tmp_path / "GEMINI.md"
+    assert gemini_md.exists()
+    assert "Escalation ladder" in gemini_md.read_text()
+    # No MCP config without --with-mcp.
+    assert not (tmp_path / ".gemini" / "settings.json").exists()
+
+
+def test_gemini_with_mcp_project_writes_mcp_servers(tmp_path: Path) -> None:
+    res = runner.invoke(
+        app, ["install", str(tmp_path), "--target", "gemini", "--with-mcp", "--json"]
+    )
+    payload = json.loads(res.stdout)
+    gemini = next(r for r in payload["data"]["results"] if r["target"] == "gemini")
+    assert gemini["mcp"]["action"] == "created"
+
+    settings = tmp_path / ".gemini" / "settings.json"
+    assert settings.exists()
+    data = json.loads(settings.read_text())
+    # Gemini uses "mcpServers" — consistent with Cursor.
+    assert "mcpServers" in data
+    assert "servers" not in data
+    entry = data["mcpServers"]["seam"]
+    assert "type" not in entry
+    assert entry["args"] == ["start", str(tmp_path)]
+
+
+def test_gemini_with_mcp_user_scope(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    root = tmp_path / "repo"
+    root.mkdir()
+    res = runner.invoke(
+        app,
+        ["install", str(root), "--target", "gemini", "--location", "user", "--with-mcp", "--json"],
+    )
+    assert res.exit_code == 0
+    payload = json.loads(res.stdout)
+    gemini = next(r for r in payload["data"]["results"] if r["target"] == "gemini")
+    assert gemini["mcp"]["action"] == "created"
+    # User-scope MCP written to ~/.gemini/settings.json.
+    user_settings = tmp_path / ".gemini" / "settings.json"
+    assert user_settings.exists()
+    assert json.loads(user_settings.read_text())["mcpServers"]["seam"]["args"] == ["start", str(root)]
+
+
+def test_gemini_print_config_shows_mcp_servers_key(tmp_path: Path) -> None:
+    res = runner.invoke(
+        app, ["install", str(tmp_path), "--target", "gemini", "--with-mcp", "--print-config"]
+    )
+    assert res.exit_code == 0
+    assert not (tmp_path / ".gemini" / "settings.json").exists()  # nothing written
+    assert "mcpServers" in res.stdout
+
+
+def test_gemini_target_all_includes_gemini(tmp_path: Path) -> None:
+    res = runner.invoke(app, ["install", str(tmp_path), "--target", "all", "--json"])
+    payload = json.loads(res.stdout)
+    targets = {r["target"] for r in payload["data"]["results"]}
+    assert "gemini" in targets
+    # gemini guidance must have been written
+    assert (tmp_path / "GEMINI.md").exists()
+
+
+def test_gemini_uninstall_removes_guidance_and_mcp(tmp_path: Path) -> None:
+    runner.invoke(app, ["install", str(tmp_path), "--target", "gemini", "--with-mcp"])
+    res = runner.invoke(
+        app, ["uninstall", str(tmp_path), "--target", "gemini", "--location", "project", "--json"]
+    )
+    payload = json.loads(res.stdout)
+    gemini = payload["data"]["results"][0]
+    assert gemini["mcp"]["action"] == "removed"
+    assert gemini["guidance"][0]["action"] == "removed"
+    # MCP file persists with empty "mcpServers" dict (shared-file residue).
+    settings = tmp_path / ".gemini" / "settings.json"
+    assert json.loads(settings.read_text())["mcpServers"] == {}
