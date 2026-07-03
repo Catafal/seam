@@ -1,10 +1,10 @@
 /**
  * App — the main Seam Explorer shell.
  *
- * Layout (Phase D final shell):
+ * Layout (Phase D final shell, #285 3D-only):
  *   ┌─────────────────────────────────────────────────────┐
- *   │  Header (brand + TabBar + 2D/3D sub-toggle +        │
- *   │          search box(es) + Changes button)           │
+ *   │  Header (brand + TabBar + search box(es) +          │
+ *   │          Changes button)                            │
  *   ├─────────────────────────────────────────────────────┤
  *   │  Breadcrumb (repo → area → symbol → selected)      │  ← D4: cross-surface trail
  *   ├─────────────────────────────────────────────────────┤

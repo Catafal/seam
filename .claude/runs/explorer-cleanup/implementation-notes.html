@@ -312,6 +312,33 @@
   </div>
 
   <!-- ================================================================= -->
+  <h2>Documentation pass (#284 follow-up)</h2>
+  <p class="meta">Completed 2026-07-03</p>
+  <p>
+    Final pass to express intentions in comments and reference docs. No behavior changed.
+  </p>
+  <ul>
+    <li><strong>App.tsx header comment</strong>: removed stale <code>"2D/3D sub-toggle"</code>
+        from the ASCII layout diagram (the sub-toggle was deleted in #285; the diagram said it
+        was still in the header). Updated to <code>(brand + TabBar + search box(es) + Changes button)</code>
+        and tagged <code>#285 3D-only</code> on the layout line.</li>
+    <li><strong>CLAUDE.md</strong>: new "Prior phase" entry inserted above the existing Phase D entry,
+        summarising the three slices plus the review fix: Topology 3D-only, error boundary, package
+        exclusion, and the read-path-only / zero-deps / MCP-16 constraint summary.</li>
+    <li><strong>progress.txt</strong>: new dated session block prepended for the three slices and
+        documentation pass (worktree <code>seam-cleanup</code>, 2026-07-03). Follows the established
+        format of existing Phase D and Phase C entries.</li>
+    <li><strong>implementation-notes.html</strong>: this section added; progress table updated to
+        include the documentation pass row.</li>
+  </ul>
+
+  <div class="decision"><span class="tag t-dec">Decision</span>
+    <strong>No behavior change in this pass.</strong>
+    All edits are comments, docstrings, and reference-document prose. No source logic was modified,
+    no new tests added, no new API surface introduced.
+  </div>
+
+  <!-- ================================================================= -->
   <h2>Progress</h2>
   <table>
     <tr><th>Slice</th><th>What</th><th>Status</th></tr>
@@ -319,6 +346,7 @@
     <tr><td>#286</td><td>Error boundary + non-navigable node gating (blank-page fix)</td><td class="done">✓ done</td></tr>
     <tr><td>#287</td><td>Package-file exclusion from rankings + show-packages toggle</td><td class="done">✓ done</td></tr>
     <tr><td>#284</td><td>Review fix pass: cursor affordance + falsifiable test + bundle note</td><td class="done">✓ done</td></tr>
+    <tr><td>docs</td><td>Documentation pass: comments, CLAUDE.md, progress.txt, impl-notes</td><td class="done">✓ done</td></tr>
   </table>
 </body>
 </html>
