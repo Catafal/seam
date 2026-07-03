@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>{{FEATURE}} · Implementation Notes</title>
+  <style>
+    body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; max-width: 880px;
+           margin: 40px auto; padding: 0 24px; color: #292524; line-height: 1.55; }
+    h1 { border-bottom: 3px solid #0181c9; padding-bottom: 8px; }
+    h2 { margin-top: 36px; color: #0181c9; border-bottom: 1px solid #e5e5e5; padding-bottom: 4px; }
+    code { background: #f5f5f4; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+    .decision { background: #f0f9ff; border-left: 4px solid #0181c9; padding: 12px 16px; margin: 14px 0; }
+    .deviation { background: #fffbeb; border-left: 4px solid #d97706; padding: 12px 16px; margin: 14px 0; }
+    .tradeoff { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 12px 16px; margin: 14px 0; }
+    .open { background: #fef2f2; border-left: 4px solid #dc2626; padding: 12px 16px; margin: 14px 0; }
+    .tag { display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase;
+           letter-spacing: 0.5px; padding: 2px 8px; border-radius: 10px; color: #fff; }
+    .t-dec { background: #0181c9; } .t-dev { background: #d97706; }
+    .t-trade { background: #7c3aed; } .t-open { background: #dc2626; }
+    ul { margin-top: 6px; } .meta { color: #78716c; font-size: 0.9em; }
+    .done { color: #16a34a; font-weight: 600; }
+    table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+    th, td { border: 1px solid #e5e5e5; padding: 6px 10px; text-align: left; font-size: 0.92em; }
+    th { background: #fafaf9; }
+  </style>
+</head>
+<body>
+  <h1>Explorer Phase D — Implementation Notes</h1>
+  <p class="meta">Branch <code>explorer-phase-d</code> · 2026-07-03 · Closes the linear A→D Explorer redesign arc (#255, slices #272–#275).</p>
+  <p>This is a <strong>living document</strong> capturing how the implementation interprets,
+     diverges from, or trades off against the spec. Updated as each slice lands.</p>
+
+  <h2>The phase, in one paragraph</h2>
+  <p>Phase D closes three UX gaps that remained after the A→C arc:
+     (1) the tab system relabelled itself with the OTHER mode's name (anti-pattern killed in D2 by
+         an explicit <code>TabBar</code> with fixed labels and a single-source <code>lib/tabs.ts</code>);
+     (2) the header carried operational index stats, consuming space that belongs to navigation
+         (demoted to a bottom <code>StatusStrip</code> in D3, backed by the D1 additive
+         <code>stale</code>/<code>stale_reason</code> fields on <code>GET /api/status</code>);
+     (3) navigating from a landing area card into a symbol's neighborhood and then clicking a node
+         left the user with no breadcrumb back (fixed in D4 by a pure <code>deriveCrumbs()</code>
+         function and a thin <code>Breadcrumb</code> component spanning every surface).
+     One additive backend change: <code>stale: bool</code> + <code>stale_reason: str | None</code>
+     on <code>/api/status</code>, derived from the same <code>check_staleness(respect_knob=False)</code>
+     call used by the MCP graph-traversal handlers so the three staleness signals can never disagree.</p>
+
+  <!-- ============================================================= -->
+  <!-- D1 — Watcher-aware /api/status stale fields (#272) -->
+  <!-- ============================================================= -->
+
+  <h2>Design decisions <span class="meta">(spec was ambiguous → here's the call I made)</span></h2>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>StatusResponse moved to web_schema.py.</strong>
+    <code>web.py</code> was at 991 lines. Adding the two new fields + the staleness import +
+    the staleness call in the handler would have pushed it past 1000. The established pattern
+    (see <code>StructureSymbol</code>, <code>SchemaResponse</code>, <code>SnippetResponse</code>) is
+    to extract Pydantic models into <code>web_schema.py</code> when the 1000-line ceiling approaches.
+    <code>StatusResponse</code> was the most isolated model (no forward references, no other models
+    depend on it), so it was the right candidate. <code>web.py</code> ends at 993 lines; <code>web_schema.py</code>
+    at 424 — both comfortably under 1000.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>stale_reason is None when stale=False.</strong>
+    The spec says <code>stale_reason: str | None</code> but does not state what the reason field
+    should be when the index is fresh. Mirroring the existing MCP banner contract (<code>index_status</code>
+    is absent entirely when fresh, not present with empty reason), I set <code>stale_reason=None</code>
+    when <code>verdict["stale"] is False</code>. The handler-common <code>_maybe_attach_staleness</code>
+    sets reason only when stale; this is the same semantic. Fresh = no reason = None.</div>
+
+  <h2>Deviations <span class="meta">(intentional departures from the spec/convention)</span></h2>
+
+  <div class="deviation"><span class="tag t-dev">No deviation</span> <strong>Followed the spec and existing patterns exactly.</strong>
+    The staleness call mirrors <code>handler_common._maybe_attach_staleness</code> line-for-line
+    (same pid_file derivation, same <code>_watcher_is_alive</code> call, same <code>check_staleness</code>
+    call with identical args). No re-implementation.</div>
+
+  <h2>Tradeoffs <span class="meta">(alternatives considered)</span></h2>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>Call staleness inside vs. outside the try/finally block.</strong>
+    The staleness check needs the open <code>conn</code> (it queries <code>files</code> for indexed_at).
+    Placing it inside the try block keeps it inside the connection lifetime; outside would require
+    re-opening the connection or restructuring. Chose inside: one connection, one finally-close,
+    same pattern as every other route handler in the file. Consequence: if the staleness check
+    raises (it never does — it's documented to degrade gracefully), the connection is still closed
+    correctly by the finally block.</div>
+
+  <h2>Open questions</h2>
+
+  <div class="open"><span class="tag t-open">None</span> <strong>No open questions for this slice.</strong>
+    The spec was unambiguous, the source of truth (<code>check_staleness</code>) was already established,
+    and the model-extraction pattern was precedented. This is a purely mechanical additive change.</div>
+
+  <h2>Build / verification (D1)</h2>
+  <ul>
+    <li>TDD: wrote <code>test_status_stale_fields_present</code> first, confirmed failure, then implemented.</li>
+    <li>Tests: <code>uv run pytest tests/integration/test_web_api.py -q</code> — all 52 pass (0 failed).</li>
+    <li>Gate: <code>ruff check</code> clean (1 import-order fix applied by <code>--fix</code>);
+        <code>mypy --ignore-missing-imports</code> 128 files, 0 issues.</li>
+    <li>No schema change, no migration, no new dependency, MCP tool count unchanged at 16.</li>
+    <li><code>web.py</code>: 993 lines · <code>web_schema.py</code>: 424 lines — both under 1000.</li>
+  </ul>
+
+  <!-- ============================================================= -->
+  <!-- D2 — Explicit Overview/Symbol/Topology tab bar (#273) -->
+  <!-- ============================================================= -->
+
+  <h2>D2 (#273) — Explicit Overview/Symbol/Topology tab bar</h2>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>ViewMode type moved to lib/tabs.ts; imported from there in App.tsx.</strong>
+    The single source of truth for the tab list <em>and</em> the ViewMode type is now
+    <code>lib/tabs.ts</code>. App.tsx imports both <code>TabBar</code> (the component) and
+    <code>ViewMode</code> (the type) from their respective new homes. The old local
+    <code>type ViewMode = ...</code> declaration in App.tsx was removed. This keeps the
+    label↔mode mapping co-located with the type definition so they cannot drift apart.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>HeaderToggle removed entirely; Changes drawer keeps a plain button.</strong>
+    <code>HeaderToggle</code> was the component that relabelled itself with the OTHER mode's name
+    (the anti-pattern). It was only used for two things: the Overview⇄Neighborhood toggle and
+    the Changes drawer toggle. Both are replaced inline. The Overview⇄Neighborhood toggle is now
+    the <code>TabBar</code>. The Changes button is now a plain inline button with <code>aria-pressed</code>
+    (it's a toggle, not a navigation tab — it does not switch the main content area). This avoids
+    <code>HeaderToggle</code> surviving as dead code, and keeps Changes visually distinct from the
+    three navigation tabs (restraint principle: one sky-accent element = the active tab).</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>iconName as a string discriminant in TabDef, resolved in TabBar.</strong>
+    <code>tabs.ts</code> must be importable in Node.js test environments without React. Storing
+    <code>ReactNode</code> or a Lucide component reference in <code>TabDef</code> would create a
+    React/DOM dep in a pure-data module. Instead, <code>iconName</code> is a string union
+    <code>"network" | "search" | "orbit"</code> resolved to the actual Lucide component by a
+    <code>ICON_MAP</code> constant in <code>TabBar.tsx</code>. The pure helper stays truly pure;
+    the component owns the React-specific mapping.</div>
+
+  <div class="deviation"><span class="tag t-dev">Test update</span> <strong>TopologyToggle.test.tsx selectors changed from role="button" to role="tab".</strong>
+    The existing tests used <code>getByRole("button", { name: /topology/i })</code>.
+    After the change the Topology item carries <code>role="tab"</code> (from the TabBar),
+    so the role was updated to <code>"tab"</code> across all existing test files.
+    Additionally, the "deactivating Topology" test was updated to click the Symbol tab
+    instead of clicking the already-active Topology tab (explicit tab bars do not toggle on
+    re-click — that was the old toggle-pill behavior being killed).</div>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>aria-current="page" vs aria-selected on tabs.</strong>
+    The full ARIA tabs pattern (<code>role="tablist"</code> + <code>role="tab"</code> +
+    <code>role="tabpanel"</code> with <code>aria-selected</code> and focus management) was
+    considered. We use a simplified form: <code>role="tablist"</code> + <code>role="tab"</code>
+    + <code>aria-current="page"</code>. Reason: the "panels" are the entire main-content area
+    (not DOM siblings of the nav), so <code>aria-controls</code> cannot point to a specific
+    element. <code>aria-current="page"</code> is semantically correct for a navigation landmark
+    that marks the current destination. Keyboard focus management (arrow key navigation within
+    the tablist) is out of scope for this slice — the TabBar is not a complex widget, just three
+    clearly labelled navigation buttons.</div>
+
+  <h2>Build / verification</h2>
+  <ul>
+    <li>TDD: wrote <code>TabBar.test.tsx</code> first (pure helper + component + App integration);
+        watched failure (TabBar not found); implemented; green.</li>
+    <li>Tests: <code>npm run test -- --run</code> — 41 files, 525 tests, 0 failed.</li>
+    <li>TypeScript: <code>npx tsc --noEmit</code> — clean (0 errors).</li>
+    <li>No schema change, no migration, no new dependency (Lucide icons already installed),
+        MCP tool count unchanged at 16.</li>
+    <li>New files: <code>web/src/lib/tabs.ts</code>, <code>web/src/components/TabBar.tsx</code>,
+        <code>web/src/__tests__/TabBar.test.tsx</code>.</li>
+    <li>Modified: <code>App.tsx</code> (HeaderToggle removed, TabBar wired), existing test
+        files updated to use <code>role="tab"</code>.</li>
+  </ul>
+
+  <!-- ============================================================= -->
+  <!-- D3 — Bottom server-admin status strip (#274) -->
+  <!-- ============================================================= -->
+
+  <h2>D3 (#274) — Bottom server-admin status strip</h2>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>StatusBadge removed entirely from the header; StatusStrip is the sole owner of index stats.</strong>
+    The spec says "move the existing StatusBadge + formatRelative logic OUT of the header into it".
+    Removed <code>StatusBadge</code> function and <code>formatRelative</code> utility from <code>App.tsx</code>;
+    <code>useStatus</code> import also removed from App (StatusStrip calls it directly). This means the
+    header has zero awareness of index status, matching the "header keeps navigation only" spec requirement.
+    <code>formatRelative</code> lives in <code>StatusStrip.tsx</code> now — single owner, single location.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>No-layout-shift via a blank spacer, not invisible text.</strong>
+    The spec says "no layout shift when the stale state toggles (reserve space)". First attempt used
+    <code>visibility:hidden</code> on the stale text — but <code>queryByText(/stale/i)</code> in tests
+    still found the hidden text, making the "shows NO stale warning text when stale=false" test fail.
+    Fix: render an empty <code>&lt;span&gt;</code> with <code>h-4 w-48</code> in the fresh branch
+    (same pixel dimensions as the stale indicator) — reserves layout space with zero text content.
+    Tests are now stable; <code>queryByText(/stale/)</code> returns null for fresh state as expected.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>data-testid="stale-indicator" as stable test hook for amber state.</strong>
+    Tailwind class names are implementation details; they can change in refactors without breaking
+    the semantic intent. The test asserts the presence of <code>data-testid="stale-indicator"</code>
+    (not a class or color) to verify the amber warning element exists. This follows the established
+    pattern seen in other Explorer tests.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>types.ts updated manually (not regenerated from OpenAPI).</strong>
+    The generated <code>types.ts</code> did not yet include the D1 <code>stale</code> and
+    <code>stale_reason</code> fields (regeneration would require running the FastAPI schema endpoint
+    and the codegen pipeline — not possible here). Added them manually with JSDoc matching the
+    Pydantic model docstring. The <code>StatusResponse</code> shape in <code>web_schema.py</code>
+    is authoritative; <code>types.ts</code> is kept in sync here by manual update.</div>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>amber as <code>role="alert" aria-live="assertive"</code>.</strong>
+    The stale warning is the only time this strip carries actionable urgency. Using
+    <code>role="alert"</code> and <code>aria-live="assertive"</code> on the stale indicator means
+    screen readers announce it immediately when it becomes visible. The fresh spacer element carries
+    <code>aria-hidden="true"</code> so it is invisible to assistive technology.
+    Tradeoff: <code>assertive</code> can interrupt ongoing speech on screen readers. Given the stale
+    warning is infrequent (fires only after a real index drift is detected) and actionable
+    (names the exact fix), this is the right balance — the user SHOULD be interrupted.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>StatusStrip is always rendered (not gated on mode or symbol state).</strong>
+    The strip is operational metadata, not content — it belongs at the app shell level alongside
+    the header. It renders in all modes (neighborhood, overview, topology) and whether or not a
+    center symbol is selected. This means one <code>useStatus()</code> call, one render path,
+    no conditional mounting that would cause the strip to flash in/out during navigation.</div>
+
+  <h2>Build / verification (D3)</h2>
+  <ul>
+    <li>TDD: wrote <code>StatusStrip.test.tsx</code> first (10 tests); watched all fail with
+        "module not found"; created <code>StatusStrip.tsx</code>; one test failed (invisible text
+        found by queryByText); fixed with blank spacer; all 10 green.</li>
+    <li>Tests: <code>npm run test -- --run</code> — 42 files, 535 tests, 0 failed.</li>
+    <li>TypeScript: <code>npx tsc --noEmit</code> — clean (0 errors).
+        Fixed: <code>hooks.test.tsx</code> STATUS_FIXTURE now includes <code>stale: false, stale_reason: null</code>;
+        <code>StatusStrip.test.tsx</code> casts use <code>as unknown as ReturnType&lt;typeof useStatus&gt;</code>.</li>
+    <li>No schema change, no migration, no new dependency. MCP tool count unchanged at 16.</li>
+    <li>New files: <code>web/src/components/StatusStrip.tsx</code>, <code>web/src/__tests__/StatusStrip.test.tsx</code>.</li>
+    <li>Modified: <code>App.tsx</code> (StatusBadge removed, StatusStrip wired below &lt;main&gt;),
+        <code>web/src/api/types.ts</code> (StatusResponse gains stale + stale_reason),
+        <code>web/src/__tests__/hooks.test.tsx</code> (STATUS_FIXTURE updated).</li>
+  </ul>
+
+  <!-- ============================================================= -->
+  <!-- D4 — End-to-end breadcrumbs (#275) -->
+  <!-- ============================================================= -->
+
+  <h2>S4 — End-to-end breadcrumbs (#275)</h2>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Pure <code>deriveCrumbs(state, handlers)</code> in <code>breadcrumbs.ts</code>.</strong>
+    The spec called for a "pure <code>state → Crumb[]</code> derivation" — but crumbs need <em>click handlers</em>,
+    which are side-effecting closures. Resolution: inject the handlers as a second argument, keeping the
+    function deterministic (same inputs → same outputs) while remaining fully unit-testable with vi.fn() mocks.
+    This pattern mirrors how <code>resolveClusterHandoff</code> in <code>lib/</code> is pure + injectable.
+  </div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Mode-awareness in deriveCrumbs (topology = repo only).</strong>
+    The PRD listed the trail as "repo → area → symbol → selected" without mentioning mode, but including
+    <code>mode</code> in <code>BreadcrumbState</code> is the right call: in topology mode, <code>centerSymbol</code>
+    may still be set from prior navigation, but the topology surface has no drill path — showing a symbol crumb
+    there would be misleading. Topology clamps to <code>[repo]</code>; overview shows up to <code>[repo, area]</code>;
+    neighborhood shows the full chain. Tests cover all mode × state combinations.
+  </div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Selected-node crumb always has an <code>onClick</code> (even if it's a no-op).</strong>
+    The PRD says "Crumbs are keyboard-focusable (buttons)." A <code>&lt;button&gt;</code> with no <code>onClick</code>
+    is still focusable, but for semantic consistency all crumbs carry an onClick. The selected-node crumb (the deepest
+    level, always <code>isCurrent=true</code>) has <code>onClick: () => {}</code> — a harmless no-op. This avoids
+    special-casing in the renderer and keeps the Crumb type uniform.
+  </div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong><code>&lt;main&gt;</code> restructured to <code>flex-col</code> with breadcrumb at row 1.</strong>
+    The breadcrumb must span ALL surfaces. The cleanest structural change: make <code>&lt;main&gt;</code> a
+    <code>flex-col</code> (was <code>flex</code> / horizontal row) with breadcrumb as <code>shrink-0</code> row 1
+    and a new wrapper <code>&lt;div class="flex flex-1 overflow-hidden"&gt;</code> as row 2 containing the existing
+    horizontal surface layout. No existing component was touched; the inner flex-row structure is unchanged.
+  </div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong><code>openCenterSymbol</code> clears <code>selectedSymbol</code> + forces <code>neighborhood</code> mode.</strong>
+    The symbol breadcrumb's job is to restore the center-symbol-only view when a deeper <code>selectedSymbol</code>
+    exists. Setting <code>selectedSymbol(null)</code> and <code>setMode("neighborhood")</code> is the minimal
+    restoration. <code>centerSymbol</code> is untouched (it's already the target level). This mirrors how clicking
+    "✕ clear" in the header resets both, except here we keep the center.
+  </div>
+
+  <div class="tradeoff"><span class="tag t-trade">Trade-off</span> <strong>No URL-based routing (in scope for this slice).</strong>
+    Breadcrumbs are in-memory state. Deep-linking is called out as "out of scope" in the PRD and is left
+    for a future item. The useMemo on crumbs avoids re-creating onClick closures on unrelated state changes
+    (e.g., changesOpen), but the gain is correctness, not a performance optimization.
+  </div>
+
+  <h2>Build / verification (D4)</h2>
+  <ul>
+    <li>TDD: wrote <code>breadcrumbs.test.ts</code> (pure helper, 25+ cases) and <code>App.test.tsx</code>
+        breadcrumb integration cases first; watched failure; implemented; green.</li>
+    <li>Tests: <code>npm run test -- --run</code> — 44 files, 560+ tests, 0 failed.</li>
+    <li>TypeScript: <code>npx tsc --noEmit</code> — clean (0 errors).</li>
+    <li>No schema change, no migration, no new dependency. MCP tool count unchanged at 16.</li>
+    <li>New files: <code>web/src/lib/breadcrumbs.ts</code>, <code>web/src/components/Breadcrumb.tsx</code>,
+        <code>web/src/__tests__/breadcrumbs.test.ts</code>.</li>
+    <li>Modified: <code>App.tsx</code> (<code>&lt;main&gt;</code> → <code>flex-col</code>, Breadcrumb inserted,
+        <code>openCenterSymbol</code> + <code>goHome</code> handlers wired, <code>crumbs</code> memoised).</li>
+  </ul>
+
+  <!-- ============================================================= -->
+  <!-- Review Fix Pass — respect_knob=False on /api/status (#255) -->
+  <!-- ============================================================= -->
+
+  <h2>Review Fix — <code>respect_knob=False</code> on <code>/api/status</code> (#255)</h2>
+
+  <div class="deviation"><span class="tag t-dev">Bug Fix</span>
+    <strong><code>check_staleness</code> at line 601 changed from default <code>respect_knob=True</code> to explicit <code>respect_knob=False</code>.</strong>
+    <p>The original call used the default <code>respect_knob=True</code>. When <code>SEAM_STALENESS_CHECK=off</code>,
+    <code>check_staleness</code> short-circuits and returns <code>stale=False</code> unconditionally (see
+    <code>staleness.py:246</code>). Meanwhile, both <code>seam/query/schema.py</code> and
+    <code>seam/query/architecture.py</code> call <code>check_staleness</code> with <code>respect_knob=False</code>,
+    so they return the real staleness verdict regardless of the knob. This caused <code>/api/status</code> to
+    disagree with <code>/api/schema</code> and <code>/api/architecture</code> — precisely the invariant PRD
+    user story 16 prohibits ("cannot disagree with <code>seam status</code>").</p>
+    <p>Fix is a one-liner: <code>respect_knob=False</code> on the <code>check_staleness</code> call in the
+    <code>/api/status</code> route handler. The existing comment already claimed this endpoint "cannot disagree
+    with seam status" — the fix makes that claim true even when <code>SEAM_STALENESS_CHECK=off</code>.</p>
+    <p>The integration test <code>test_status_stale_fields_present</code> exercises a freshly-indexed fixture
+    (always fresh), so it does not exercise the <code>SEAM_STALENESS_CHECK=off</code> divergence path. The
+    fix is correct by code inspection: <code>respect_knob=False</code> bypasses the knob entirely, identical
+    to what every other endpoint and <code>seam status</code> CLI does.</p>
+  </div>
+
+  <h2>Progress</h2>
+  <table>
+    <tr><th>Slice</th><th>What</th><th>Status</th></tr>
+    <tr><td>D1 (#272)</td><td>Additive <code>stale</code> + <code>stale_reason</code> on <code>GET /api/status</code>; <code>StatusResponse</code> moved to <code>web_schema.py</code></td><td class="done">✓ done</td></tr>
+    <tr><td>D2 (#273)</td><td>Explicit Overview/Symbol/Topology TabBar (<code>lib/tabs.ts</code> single source); kill contextual-label anti-pattern; <code>HeaderToggle</code> removed</td><td class="done">✓ done</td></tr>
+    <tr><td>D3 (#274)</td><td>Bottom server-admin <code>StatusStrip</code> with watcher-aware stale signal; <code>StatusBadge</code> removed from header; <code>formatRelative</code> moved</td><td class="done">✓ done</td></tr>
+    <tr><td>D4 (#275)</td><td>End-to-end breadcrumbs (pure <code>deriveCrumbs</code> + <code>Breadcrumb.tsx</code>); two-level trail; <code>&lt;main&gt;</code> flex-col restructure</td><td class="done">✓ done</td></tr>
+    <tr><td>Review fix (#255)</td><td><code>respect_knob=False</code> on <code>/api/status check_staleness</code> — prevents disagreement with <code>/api/schema</code> / <code>/api/architecture</code> when <code>SEAM_STALENESS_CHECK=off</code></td><td class="done">✓ done</td></tr>
+    <tr><td>Docs (#255)</td><td>App.tsx header comment updated (stale "detail panel" note removed, layout diagram updated); CLAUDE.md Phase D entry; progress.txt prepend; implementation-notes.html finalized</td><td class="done">✓ done</td></tr>
+  </table>
+</body>
+</html>

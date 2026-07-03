@@ -91,7 +91,7 @@ describe("Topology 2D/3D toggle (C3)", () => {
 
   it("renders a Topology button in the header", () => {
     renderApp();
-    expect(screen.getByRole("button", { name: /topology/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /topology/i })).toBeInTheDocument();
   });
 
   it("does NOT show the 2D/3D sub-toggle before Topology is activated", () => {
@@ -103,7 +103,7 @@ describe("Topology 2D/3D toggle (C3)", () => {
 
   it("shows the 2D/3D sub-toggle and renders 2D by default when Topology is clicked", async () => {
     renderApp();
-    fireEvent.click(screen.getByRole("button", { name: /topology/i }));
+    fireEvent.click(screen.getByRole("tab", { name: /topology/i }));
 
     await waitFor(() => {
       // Sub-toggle buttons are visible
@@ -119,7 +119,7 @@ describe("Topology 2D/3D toggle (C3)", () => {
 
   it("2D sub-toggle button has aria-pressed=true by default", () => {
     renderApp();
-    fireEvent.click(screen.getByRole("button", { name: /topology/i }));
+    fireEvent.click(screen.getByRole("tab", { name: /topology/i }));
 
     const btn2d = screen.getByRole("button", { name: /^2D$/i });
     expect(btn2d).toHaveAttribute("aria-pressed", "true");
@@ -129,7 +129,7 @@ describe("Topology 2D/3D toggle (C3)", () => {
 
   it("clicking 3D toggle shows ConstellationTab (lazy) and hides ClusterGraph2D", async () => {
     renderApp();
-    fireEvent.click(screen.getByRole("button", { name: /topology/i }));
+    fireEvent.click(screen.getByRole("tab", { name: /topology/i }));
 
     // Confirm 2D is showing
     await waitFor(() => expect(screen.getByTestId("cluster-graph-2d")).toBeInTheDocument());
@@ -146,7 +146,7 @@ describe("Topology 2D/3D toggle (C3)", () => {
 
   it("3D button has aria-pressed=true after switching to 3D", async () => {
     renderApp();
-    fireEvent.click(screen.getByRole("button", { name: /topology/i }));
+    fireEvent.click(screen.getByRole("tab", { name: /topology/i }));
     await waitFor(() => screen.getByTestId("cluster-graph-2d"));
 
     fireEvent.click(screen.getByRole("button", { name: /^3D$/i }));
@@ -161,7 +161,7 @@ describe("Topology 2D/3D toggle (C3)", () => {
 
   it("clicking a cluster with a representative hands off to neighborhood mode", async () => {
     renderApp();
-    fireEvent.click(screen.getByRole("button", { name: /topology/i }));
+    fireEvent.click(screen.getByRole("tab", { name: /topology/i }));
     await waitFor(() => expect(screen.getByTestId("cluster-graph-2d")).toBeInTheDocument());
 
     // Simulate a cluster click from ClusterGraph2D
@@ -185,7 +185,7 @@ describe("Topology 2D/3D toggle (C3)", () => {
 
   it("cluster hand-off with null representative falls back to label", async () => {
     renderApp();
-    fireEvent.click(screen.getByRole("button", { name: /topology/i }));
+    fireEvent.click(screen.getByRole("tab", { name: /topology/i }));
     await waitFor(() => expect(screen.getByTestId("cluster-graph-2d")).toBeInTheDocument());
 
     // Cluster with no representative — label is the fallback
@@ -209,7 +209,7 @@ describe("Topology 2D/3D toggle (C3)", () => {
 
   it("cluster hand-off with both null does nothing (no crash, stays in topology)", async () => {
     renderApp();
-    fireEvent.click(screen.getByRole("button", { name: /topology/i }));
+    fireEvent.click(screen.getByRole("tab", { name: /topology/i }));
     await waitFor(() => expect(screen.getByTestId("cluster-graph-2d")).toBeInTheDocument());
 
     // Cluster with no representative and no label → resolveClusterHandoff returns null
@@ -226,18 +226,20 @@ describe("Topology 2D/3D toggle (C3)", () => {
     expect(screen.getByTestId("cluster-graph-2d")).toBeInTheDocument();
   });
 
-  it("deactivating Topology returns to neighborhood (landing) view", async () => {
+  it("switching from Topology to Symbol tab returns to neighborhood (landing) view", async () => {
+    // #273: With an explicit TabBar, clicking the already-active Topology tab is a no-op.
+    // To return to the landing, the user clicks the Symbol tab.
     renderApp();
-    fireEvent.click(screen.getByRole("button", { name: /topology/i }));
+    fireEvent.click(screen.getByRole("tab", { name: /topology/i }));
     await waitFor(() => expect(screen.getByTestId("cluster-graph-2d")).toBeInTheDocument());
 
-    // Click Topology button again to toggle off
-    fireEvent.click(screen.getByRole("button", { name: /topology/i }));
+    // Click the Symbol tab to leave Topology and go back to the neighborhood landing
+    fireEvent.click(screen.getByRole("tab", { name: /symbol/i }));
 
     await waitFor(() =>
       expect(screen.queryByTestId("cluster-graph-2d")).not.toBeInTheDocument(),
     );
-    // Landing page should be back
+    // Landing page should be back (no symbol selected in Symbol mode = landing)
     expect(screen.getByText(/explore the codebase/i)).toBeInTheDocument();
   });
 });

@@ -3,6 +3,46 @@
 # Update this EVERY session. It is the first thing the agent reads.
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Phase D — Explorer redesign: Coherent flow + tab model  ← CLOSES A→D ARC
+# (issues #272/#273/#274/#275, worktree seam-phase-d)
+# Session: 2026-07-03 · documentation pass (#255 follow-up)
+# ─────────────────────────────────────────────────────────────────────────────
+#   This documentation pass finalises Phase D after all four slices landed and
+#   were reviewed. No behavior change — intentions expressed in comments,
+#   CLAUDE.md, progress.txt, and implementation-notes.html only.
+#
+#   D1 (#272) — Additive stale/stale_reason on GET /api/status:
+#     StatusResponse moved to web_schema.py (file was at 991 lines; established
+#     pattern). stale: bool + stale_reason: str|None added. Both derived from
+#     check_staleness(respect_knob=False) — same source as MCP banner and
+#     `seam status` CLI so the three can never disagree. respect_knob=False is
+#     the load-bearing call: without it, SEAM_STALENESS_CHECK=off short-circuits
+#     to stale=False and /api/status silently contradicts /api/schema.
+#
+#   D2 (#273) — Explicit Overview/Symbol/Topology tab bar (anti-pattern killed):
+#     lib/tabs.ts: single source for ViewMode, TabDef[], and the label↔mode
+#     mapping ("Symbol" → "neighborhood" — only place this is written down).
+#     HeaderToggle removed entirely. TabBar.tsx renders three fixed-label tabs
+#     (sky-accent on active only). Changes drawer → plain aria-pressed button.
+#
+#   D3 (#274) — Bottom server-admin status strip:
+#     StatusStrip.tsx: monospace bottom strip with symbol/edge/cluster counts,
+#     last-indexed relative time, and amber stale warning (fires only on real
+#     stale verdict from D1). Fixed height, no-layout-shift blank spacer in
+#     fresh state. StatusBadge + formatRelative removed from App.tsx.
+#
+#   D4 (#275) — End-to-end breadcrumbs:
+#     lib/breadcrumbs.ts: pure deriveCrumbs(state, handlers) → Crumb[].
+#     Trail: repo → area → symbol → selected (mode-aware; topology = repo only).
+#     Breadcrumb.tsx: thin keyboard-navigable renderer (all crumbs = <button>).
+#     <main> → flex-col; Breadcrumb as shrink-0 row 1; no existing component changed.
+#     Two-level system: App-level (outer drill) + TreemapCanvas (inner drill).
+#
+#   Gate: ruff + mypy clean, all Python tests pass / 6 skipped, tsc clean,
+#     vitest tests pass. No schema change, no migration, no re-index.
+#     MCP tool count = 16. Zero new dependencies. One additive API field.
+#
+# ─────────────────────────────────────────────────────────────────────────────
 # Phase B — Explorer redesign: Landing · Areas · Snippet
 # (issues #231/#232/#233/#234, worktree feat/explorer-redesign-phase-b)
 # ─────────────────────────────────────────────────────────────────────────────

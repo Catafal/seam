@@ -36,6 +36,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from seam.analysis.staleness import _watcher_is_alive, check_staleness
 from seam.indexer.db import connect
 from seam.indexer.readonly import open_readonly_connection
 from seam.server.graph_api import (
@@ -65,22 +66,12 @@ from seam.server.web_layout import register_layout_routes
 from seam.server.web_schema import (
     SchemaResponse,
     SnippetResponse,
+    StatusResponse,
     StructureResponse,
     StructureSymbol,
 )
 
 # Keep field names snake_case — the TS codegen will use them verbatim.
-
-class StatusResponse(BaseModel):
-    """Response for GET /api/status."""
-
-    root: str
-    symbol_count: int
-    edge_count: int
-    cluster_count: int
-    last_indexed: str | None
-    languages: list[str]
-
 
 class SearchResultItem(BaseModel):
     """One item in a search result list."""
@@ -575,10 +566,12 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
 
     @app.get("/api/status", response_model=StatusResponse, tags=["status"])
     def get_status() -> StatusResponse:
-        """Return index statistics and metadata.
+        """Return index statistics and metadata including watcher-aware staleness.
 
         Returns symbol_count, edge_count, cluster_count, last_indexed timestamp,
-        and the list of languages present in the index.
+        the list of languages present in the index, and additive stale/stale_reason
+        fields derived from the same check_staleness() source of truth used by the
+        MCP graph-traversal handlers — so /api/status never disagrees with seam status.
         """
         conn = _get_conn(db_path)
         try:
@@ -599,6 +592,19 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
                 )
 
             languages = _fetch_languages(conn)
+
+            # Watcher-aware staleness: mirrors the pattern in handler_common.py
+            # _maybe_attach_staleness — same conn/root/args so this endpoint
+            # cannot disagree with the MCP banner or `seam status`.
+            pid_file = root / ".seam" / "watcher.pid"
+            watcher_alive = _watcher_is_alive(pid_file) is not None
+            # respect_knob=False mirrors /api/schema + /api/architecture: always
+            # return the real verdict (never short-circuit to fresh when
+            # SEAM_STALENESS_CHECK=off) so /api/status cannot disagree with them
+            # or with `seam status` (PRD user story 16).
+            verdict = check_staleness(
+                conn, root=root, watcher_alive=watcher_alive, respect_knob=False
+            )
         finally:
             conn.close()
 
@@ -609,6 +615,8 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
             cluster_count=cluster_count,
             last_indexed=last_indexed,
             languages=languages,
+            stale=verdict["stale"],
+            stale_reason=verdict["reason"] if verdict["stale"] else None,
         )
 
     # ── Route: GET /api/search ────────────────────────────────────────────────

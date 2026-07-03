@@ -1,35 +1,49 @@
 /**
  * App — the main Seam Explorer shell.
  *
- * Layout:
- *   ┌─────────────────────────────────────────┐
- *   │  Header (status + search box)           │
- *   ├─────────────────────────────────────────┤
- *   │  Landing (cluster list) OR              │
- *   │  GraphCanvas (when a symbol is set)     │
- *   └─────────────────────────────────────────┘
+ * Layout (Phase D final shell):
+ *   ┌─────────────────────────────────────────────────────┐
+ *   │  Header (brand + TabBar + 2D/3D sub-toggle +        │
+ *   │          search box(es) + Changes button)           │
+ *   ├─────────────────────────────────────────────────────┤
+ *   │  Breadcrumb (repo → area → symbol → selected)      │  ← D4: cross-surface trail
+ *   ├─────────────────────────────────────────────────────┤
+ *   │  [FileSidebar]  Surface content (topology /         │
+ *   │                  overview / neighborhood / landing) │
+ *   │                  [DetailPanel] right of canvas      │
+ *   ├─────────────────────────────────────────────────────┤
+ *   │  StatusStrip (index counts + stale warn)            │  ← D3: demoted from header
+ *   └─────────────────────────────────────────────────────┘
  *
- * State: `centerSymbol` drives everything.
- * - null → show landing page (cluster list as entry points)
- * - non-null → show GraphCanvas
+ * State: `mode` (ViewMode from lib/tabs.ts) determines which surface is shown.
+ * Within neighborhood mode, `centerSymbol` drives the graph canvas:
+ *   - null → LandingPage (hub chips + area cards)
+ *   - non-null → GraphCanvas + DetailPanel
  *
- * The detail panel (F5) will be added in the next task; for now, selected
- * symbol name is stored but not yet rendered in a side panel.
+ * WHY tabs.ts owns ViewMode (not a local type here):
+ *   The "Symbol" tab label maps to the "neighborhood" ViewMode string — a mapping
+ *   that must be expressed exactly once. lib/tabs.ts is that one place; TabBar
+ *   reads it, App imports the type from it. No other file may define ViewMode.
  */
 
-import { useState, useRef, useCallback, useEffect, lazy, Suspense } from "react";
+import { useState, useRef, useCallback, useEffect, lazy, Suspense, useMemo } from "react";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { DetailPanel } from "./components/DetailPanel";
 import { ChangesDrawer } from "./components/ChangesDrawer";
 import { StructureOverview } from "./components/StructureOverview";
 import { FileSidebar } from "./components/FileSidebar";
 import { ClusterGraph2D } from "./components/ClusterGraph2D";
+import { TabBar } from "./components/TabBar";
+import { StatusStrip } from "./components/StatusStrip";
+import { Breadcrumb } from "./components/Breadcrumb";
+import type { ViewMode } from "./lib/tabs";
 import { ResizeHandle, clampPanelWidth, readPanelWidth } from "./components/ResizeHandle";
-import { useStatus, useSearch, useHubs, useAreas } from "./api/hooks";
+import { useSearch, useHubs, useAreas } from "./api/hooks";
 import { resolveClusterHandoff } from "./lib/resolveClusterHandoff";
+import { deriveCrumbs } from "./lib/breadcrumbs";
 import type { SearchResultItem, HubSymbol, ConstellationCluster } from "./api/schema-types";
 import type { Area } from "./lib/deriveAreas";
-import { GitBranch, Orbit, Network, Route } from "lucide-react";
+import { GitBranch, Route } from "lucide-react";
 
 // ── 2D detail-panel resize constants ─────────────────────────────────────────
 
@@ -52,64 +66,6 @@ const CANVAS_MIN_W = 300;
 // Lazy-load the 3D constellation tab to keep the main bundle small.
 // three.js + R3F are not loaded until the user clicks "Constellation".
 const ConstellationTab = lazy(() => import("./components/ConstellationTab"));
-
-// ── Utility: relative time formatter ─────────────────────────────────────────
-
-/**
- * Format a last_indexed timestamp as a human-friendly relative string.
- * Falls back to the raw string if parsing fails.
- */
-function formatRelative(ts: string | null | undefined): string {
-  if (!ts) return "never";
-  try {
-    const d = new Date(ts);
-    if (isNaN(d.getTime())) return ts;
-    const diff = Date.now() - d.getTime();
-    const secs = Math.round(diff / 1000);
-    if (secs < 60) return "just now";
-    const mins = Math.round(secs / 60);
-    if (mins < 60) return `${mins}m ago`;
-    const hrs = Math.round(mins / 60);
-    if (hrs < 24) return `${hrs}h ago`;
-    return `${Math.round(hrs / 24)}d ago`;
-  } catch {
-    return ts;
-  }
-}
-
-// ── StatusBadge ───────────────────────────────────────────────────────────────
-
-/**
- * Shows index counts and freshness in the header.
- * Renders loading skeleton / error states inline.
- */
-function StatusBadge() {
-  const { data, isLoading, isError } = useStatus();
-
-  if (isLoading) {
-    return (
-      <span className="text-xs text-zinc-600 animate-pulse">loading…</span>
-    );
-  }
-  if (isError || !data) {
-    return (
-      <span className="text-xs text-red-500" title="Could not reach seam serve">
-        no index
-      </span>
-    );
-  }
-
-  return (
-    <span className="text-xs text-zinc-400 font-mono tabular-nums" aria-label="index statistics">
-      {data.symbol_count.toLocaleString()} symbols ·{" "}
-      {data.edge_count.toLocaleString()} edges ·{" "}
-      {data.cluster_count} clusters ·{" "}
-      <span className="text-zinc-500">
-        indexed {formatRelative(data.last_indexed)}
-      </span>
-    </span>
-  );
-}
 
 // ── SearchBox ─────────────────────────────────────────────────────────────────
 
@@ -411,8 +367,7 @@ function LandingPage({ onSelect, onOpenOverview, onOpenScopedOverview }: Landing
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
-/** App view mode: per-symbol neighborhood, whole-repo cluster overview, or topology (2D/3D). */
-type ViewMode = "neighborhood" | "overview" | "topology";
+/** App view mode — defined in lib/tabs.ts and imported above; documented here for readers. */
 
 /**
  * Sub-mode within the Topology surface.
@@ -420,34 +375,6 @@ type ViewMode = "neighborhood" | "overview" | "topology";
  * "3d" = lazy ConstellationTab (the "wow" opt-in).
  */
 type TopologySubMode = "2d" | "3d";
-
-/** A small header toggle pill (mode switch, drawer toggle). */
-function HeaderToggle({
-  active,
-  onClick,
-  icon,
-  label,
-}: {
-  active: boolean;
-  onClick: () => void;
-  icon: React.ReactNode;
-  label: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      aria-pressed={active}
-      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs transition-colors border ${
-        active
-          ? "bg-sky-500/15 border-sky-500/50 text-sky-300"
-          : "bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500"
-      }`}
-    >
-      {icon}
-      {label}
-    </button>
-  );
-}
 
 /**
  * App root: assembles the header, search, mode toggle, and the main area.
@@ -557,6 +484,34 @@ function App() {
     setPreselectedArea(null);
   }, [setCenterSymbol]);
 
+  /**
+   * Restore the center-symbol level from a deeper selectedSymbol position.
+   * Called by the symbol crumb's onClick — clears selectedSymbol and ensures
+   * neighborhood mode. Does NOT change centerSymbol (it's already the target).
+   */
+  const openCenterSymbol = useCallback(() => {
+    setSelectedSymbol(null);
+    setMode("neighborhood");
+  }, []);
+
+  /**
+   * App-level breadcrumb trail derived from navigation state.
+   *
+   * WHY useMemo: deriveCrumbs is pure and cheap but creates new closure objects
+   * on every call; memoising avoids re-creating button onClick closures when
+   * unrelated state (e.g. changesOpen) changes.
+   *
+   * See breadcrumbs.ts for the two-level breadcrumb system documentation.
+   */
+  const crumbs = useMemo(
+    () =>
+      deriveCrumbs(
+        { mode, preselectedArea, centerSymbol, selectedSymbol },
+        { goHome, openArea: handleOpenScopedOverview, openCenterSymbol },
+      ),
+    [mode, preselectedArea, centerSymbol, selectedSymbol, goHome, handleOpenScopedOverview, openCenterSymbol],
+  );
+
   const showGraph = mode === "neighborhood" && centerSymbol;
 
   return (
@@ -587,41 +542,26 @@ function App() {
           <h1 className="text-sm font-semibold tracking-tight text-zinc-100">Seam Explorer</h1>
         </button>
 
-        {/* Mode toggle: overview ⇄ neighborhood.
-            B1: when switching TO overview via the header (not from a landing card),
-            reset preselectedArea so the full area-cards list shows first. */}
-        <HeaderToggle
-          active={mode === "overview"}
-          onClick={() =>
-            setMode((m) => {
-              if (m !== "overview") setPreselectedArea(null); // entering overview fresh
-              return m === "overview" ? "neighborhood" : "overview";
-            })
-          }
-          icon={mode === "overview" ? <Network className="w-3.5 h-3.5" /> : <Orbit className="w-3.5 h-3.5" />}
-          label={mode === "overview" ? "Neighborhood" : "Overview"}
+        {/* ── Explicit tab bar (#273) ────────────────────────────────────────
+            Overview · Symbol · Topology — the three questions a developer has.
+            "Symbol" is the user-facing label for the "neighborhood" ViewMode.
+            The tab bar replaces the old contextual HeaderToggle (which relabelled
+            itself with the OTHER mode's name — the anti-pattern killed here).
+            B1 note: switching to Overview from the TabBar always resets preselectedArea
+            so the full area-cards list shows first; landing-card clicks set it again. */}
+        <TabBar
+          mode={mode}
+          onSetMode={(next) => {
+            // Entering Overview fresh (not from a landing card) → clear preselectedArea
+            if (next === "overview" && mode !== "overview") setPreselectedArea(null);
+            setMode(next);
+          }}
         />
 
-        {/* Topology tab: 2D cluster graph (default) or 3D constellation (opt-in).
-            The outer button toggles topology mode on/off; the 2D/3D sub-toggle
-            appears inline when topology is active.
-            Anti-pattern avoided: the button label is always "Topology" — it does
-            NOT relabel itself with the OTHER mode's name. */}
-        <button
-          onClick={() => setMode((m) => (m === "topology" ? "neighborhood" : "topology"))}
-          aria-pressed={mode === "topology"}
-          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs transition-colors border ${
-            mode === "topology"
-              ? "bg-sky-500/15 border-sky-500/50 text-sky-300"
-              : "bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500"
-          }`}
-        >
-          <Orbit className="w-3.5 h-3.5" />
-          Topology
-        </button>
-
         {/* 2D/3D sub-toggle — only visible while topology mode is active.
-            Quiet pill buttons; neither relabels itself with the other mode's name. */}
+            Quiet pill buttons; neither relabels itself with the other mode's name.
+            Sits immediately after the TabBar so it reads as a refinement of the
+            active Topology tab (same horizontal row, no separator needed). */}
         {mode === "topology" && (
           <div className="flex items-center gap-1 bg-zinc-800 border border-zinc-700 rounded-md p-0.5">
             <button
@@ -674,16 +614,22 @@ function App() {
           )}
         </div>
 
-        {/* Changes drawer toggle */}
-        <HeaderToggle
-          active={changesOpen}
+        {/* Changes drawer toggle — a simple pill button, not a tab (it does not switch the
+            main content area, it slides in a drawer overlay). Kept as a standalone control
+            so it doesn't compete visually with the TabBar's sky-accent active-tab highlight.
+            aria-pressed because it's a toggle, not a navigation tab. */}
+        <button
           onClick={() => setChangesOpen((o) => !o)}
-          icon={<GitBranch className="w-3.5 h-3.5" />}
-          label="Changes"
-        />
-
-        {/* Index status */}
-        <StatusBadge />
+          aria-pressed={changesOpen}
+          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs transition-colors border ${
+            changesOpen
+              ? "bg-sky-500/15 border-sky-500/50 text-sky-300"
+              : "bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500"
+          }`}
+        >
+          <GitBranch className="w-3.5 h-3.5" />
+          Changes
+        </button>
 
         {/* Clear center — neighborhood mode with an active center */}
         {showGraph && (
@@ -701,7 +647,21 @@ function App() {
       </header>
 
       {/* ── Main content ───────────────────────────────────────────────── */}
-      <main className="flex flex-1 overflow-hidden">
+      {/*
+       * WHY flex-col here:
+       *   Row 1 — Breadcrumb: a thin full-width trail above every surface.
+       *   Row 2 — Surface content: topology / overview / neighborhood / landing.
+       *
+       * The Breadcrumb covers cross-surface navigation (landing → area → symbol).
+       * The TreemapCanvas's internal breadcrumb (scopeName → folder → file) sits
+       * INSIDE row 2 when Overview is active — the two rows form one coherent trail.
+       */}
+      <main className="flex flex-col flex-1 overflow-hidden">
+        {/* App-level breadcrumb — present on every surface, always at the top */}
+        <Breadcrumb crumbs={crumbs} />
+
+        {/* Surface content — takes the remaining height */}
+        <div className="flex flex-1 overflow-hidden">
         {/* Topology surface: 2D cluster graph (default) or 3D constellation. */}
         {mode === "topology" ? (
           topologySubMode === "2d" ? (
@@ -800,7 +760,15 @@ function App() {
             setSelectedSymbol(name);
           }}
         />
+        </div>{/* end surface-content flex row */}
       </main>
+
+      {/* ── Status strip ───────────────────────────────────────────────── */}
+      {/* WHY below main (not in header): operational metadata (index stats + stale
+          signal) is demoted from the header per the PRD. The header is for navigation
+          only. The strip is always a single fixed-height row so no layout shift occurs
+          when the stale flag toggles. StatusStrip owns its own useStatus() call. */}
+      <StatusStrip />
     </div>
   );
 }
