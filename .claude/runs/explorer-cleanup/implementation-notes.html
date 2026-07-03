@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Explorer Cleanup · Implementation Notes</title>
+  <style>
+    body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; max-width: 880px;
+           margin: 40px auto; padding: 0 24px; color: #292524; line-height: 1.55; }
+    h1 { border-bottom: 3px solid #0181c9; padding-bottom: 8px; }
+    h2 { margin-top: 36px; color: #0181c9; border-bottom: 1px solid #e5e5e5; padding-bottom: 4px; }
+    code { background: #f5f5f4; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+    .decision { background: #f0f9ff; border-left: 4px solid #0181c9; padding: 12px 16px; margin: 14px 0; }
+    .deviation { background: #fffbeb; border-left: 4px solid #d97706; padding: 12px 16px; margin: 14px 0; }
+    .tradeoff { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 12px 16px; margin: 14px 0; }
+    .open { background: #fef2f2; border-left: 4px solid #dc2626; padding: 12px 16px; margin: 14px 0; }
+    .tag { display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase;
+           letter-spacing: 0.5px; padding: 2px 8px; border-radius: 10px; color: #fff; }
+    .t-dec { background: #0181c9; } .t-dev { background: #d97706; }
+    .t-trade { background: #7c3aed; } .t-open { background: #dc2626; }
+    ul { margin-top: 6px; } .meta { color: #78716c; font-size: 0.9em; }
+    .done { color: #16a34a; font-weight: 600; }
+    table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+    th, td { border: 1px solid #e5e5e5; padding: 6px 10px; text-align: left; font-size: 0.92em; }
+    th { background: #fafaf9; }
+  </style>
+</head>
+<body>
+  <h1>Explorer Cleanup · Implementation Notes</h1>
+  <p class="meta">Branch <code>main</code> · started 2026-07-03 · Topology 3D-only (#285): delete 2D cluster-graph surface, sub-toggle, and all dead modules.</p>
+  <p>This is a <strong>living document</strong> capturing how the implementation interprets,
+     diverges from, or trades off against the spec. Updated as each slice lands.</p>
+
+  <h2>The spec, in one line</h2>
+  <p>Make the Topology tab render the 3D constellation directly by deleting the 2D
+     ClusterGraph2D surface, the 2D/3D sub-toggle, and all their supporting modules
+     (<code>ClusterGraph2D.tsx</code>, <code>clusterGraphLayout.ts</code>,
+     <code>resolveClusterHandoff.ts</code>, <code>useConstellation</code> hook);
+     backend <code>/api/constellation</code> left in place.</p>
+
+  <!-- ================================================================= -->
+
+  <h2>Design decisions</h2>
+
+  <div class="decision"><span class="tag t-dec">Decision</span>
+    <strong>Keep <code>focusSymbol</code> state in App even though ClusterGraph2D is gone.</strong>
+    The focus-symbol propagation from the 2D neighborhood graph to ConstellationTab still makes
+    sense for the 2D-neighborhood → Topology transition: a user clicks a symbol in the Symbol
+    tab, then clicks Topology and expects the 3D camera to fly to that symbol. Removing
+    <code>focusSymbol</code> would silently break that cross-tab sync.
+  </div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span>
+    <strong>Keep <code>handleOpenCluster</code> / <code>resolveClusterHandoff</code> out of scope
+    for the backend (no 3D cluster hand-off added).</strong>
+    The 3D ConstellationTab has its own isolate-on-click behavior (#263 ISOLATION CONTRACT) that
+    deliberately does NOT navigate the 2D neighborhood. Adding a 3D cluster hand-off would require
+    a new prop on ConstellationTab — that is out of scope for this deletion slice. If needed later,
+    add a separate issue.
+  </div>
+
+  <h2>Deviations</h2>
+
+  <div class="deviation"><span class="tag t-dev">Deviation</span>
+    <strong>Removed <code>ConstellationCluster</code> from App.tsx's schema-types import.</strong>
+    The type was only referenced by <code>handleOpenCluster</code>; removing both together is the
+    correct minimal footprint. No tsc breakage — verified with <code>npx tsc --noEmit</code>.
+  </div>
+
+  <div class="deviation"><span class="tag t-dev">Deviation</span>
+    <strong>Also removed <code>ConstellationResponse</code> from the hooks.ts import list.</strong>
+    After removing <code>useConstellation()</code> the type became an unused import (tsc error
+    TS6196). Removed in the same pass to keep the file clean.
+  </div>
+
+  <h2>Tradeoffs</h2>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span>
+    <strong>Delete <code>TopologyToggle.test.tsx</code> (9 tests) vs. repurpose it.</strong>
+    The entire file tested the 2D/3D sub-toggle and hand-off logic — all of which is now dead.
+    Keeping the file with the passing tests gutted would be misleading; deleting it and adding
+    the 3D-only assertion directly in <code>TabBar.test.tsx</code> (App integration section)
+    was cleaner and more readable.
+  </div>
+
+  <h2>Open questions</h2>
+
+  <p class="meta">None. All acceptance criteria are met and verified.</p>
+
+  <h2>Build / verification</h2>
+  <ul>
+    <li><strong>tsc</strong>: <code>npx tsc --noEmit</code> — clean (0 errors).</li>
+    <li><strong>vitest</strong>: 515 tests passed / 0 failed / 39 test files
+        (553 tests in 43 files before; 38 tests in 4 deleted test files removed).</li>
+    <li>No new dependencies added. No schema change. No migration. MCP tool count unchanged.</li>
+    <li>Deleted source files: <code>ClusterGraph2D.tsx</code>, <code>clusterGraphLayout.ts</code>,
+        <code>resolveClusterHandoff.ts</code>; deleted test files:
+        <code>TopologyToggle.test.tsx</code>, <code>clusterGraphLayout.test.ts</code>,
+        <code>resolveClusterHandoff.test.ts</code>, <code>ClusterGraph2D.test.tsx</code>.</li>
+    <li>Modified: <code>App.tsx</code> (remove imports, type, state, callback, sub-toggle JSX),
+        <code>api/hooks.ts</code> (remove <code>useConstellation</code> export),
+        <code>__tests__/TabBar.test.tsx</code> (remove dead mocks, update sub-toggle test to 3D-only assertion),
+        <code>__tests__/StatusStrip.test.tsx</code> (remove dead <code>useConstellation</code> mock entry).</li>
+  </ul>
+
+  <!-- ================================================================= -->
+  <h2>Slice #286 — Error boundary + non-navigable node gating</h2>
+  <p class="meta">Completed 2026-07-03</p>
+
+  <h3>Root cause of the blank-page bug</h3>
+  <p>
+    When the user double-clicked a locked/private helper node (<code>_fetch_edges</code>,
+    <code>_column_names</code>, etc.), <code>handleNodeDoubleClick</code> called
+    <code>setExpandTarget(node.id)</code> unconditionally. That triggered
+    <code>useNeighborhood(expandTarget)</code> which resolved to an empty or error
+    neighborhood. If the response caused a React render error in any downstream
+    component (e.g. a non-null assertion on a missing field), it propagated
+    unhandled — React unmounted the entire app, leaving a blank black screen with no
+    recovery path (no error boundary anywhere in the tree).
+  </p>
+  <p>
+    Two independent fixes were applied: (1) gate the double-click expand at the source
+    via <code>isNavigable</code>; (2) add an <code>ErrorBoundary</code> as a
+    belt-and-suspenders backstop so any future render error degrades gracefully.
+  </p>
+
+  <div class="decision"><span class="tag t-dec">Decision</span>
+    <strong>Pure <code>isNavigable(data)</code> predicate in <code>web/src/lib/isNavigable.ts</code>.</strong>
+    Navigability is decided from the node data, not from a runtime API call.
+    A node is non-navigable when <code>definition_count === 0</code> AND the visibility
+    is not explicitly <code>"public"</code> (covers both null-visibility bare-references
+    and restricted-access helpers). Public nodes with 0 definitions are let through
+    because a stale index is the more likely explanation; <code>EmptyNeighborhoodState</code>
+    communicates that cleanly without a blank canvas.
+  </div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span>
+    <strong>Two-layer ErrorBoundary: app-level (main.tsx) + graph-surface (GraphCanvas.tsx).</strong>
+    The app-level boundary in <code>main.tsx</code> is the durable guarantee (blank page
+    impossible). The graph-surface boundary wraps only <code>GraphCanvasInner</code> inside
+    <code>GraphCanvas</code>, so a canvas crash keeps the header, TabBar, and StatusStrip
+    alive and functional.
+  </div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span>
+    <strong><code>GraphCanvasInner</code> rename (private) + thin exported <code>GraphCanvas</code> wrapper.</strong>
+    The public API (<code>GraphCanvasProps</code>, the named export) is unchanged.
+    Only the internal implementation is renamed; all callers in <code>App.tsx</code>
+    and tests continue to import <code>GraphCanvas</code> unchanged.
+  </div>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span>
+    <strong>Single-click detail panel is ALWAYS allowed for all nodes.</strong>
+    Non-navigable nodes keep hover + single-click — they still carry useful metadata
+    (signature, kind, cluster). Only double-click expand is blocked.
+    This respects user story #8 from the PRD.
+  </div>
+
+  <div class="deviation"><span class="tag t-dev">Deviation</span>
+    <strong>No cursor CSS change in this slice.</strong>
+    The PRD says non-navigable nodes should render with a "default cursor / no
+    expandable affordance". SymbolNode.tsx has <code>cursor-pointer</code> unconditionally
+    applied. Changing the cursor requires threading <code>isNavigable</code> into
+    <code>SymbolNode</code>'s data or wrapping it — a larger change that touches the
+    rendering contract. The gating at the handler level is the safety-critical fix;
+    the cursor affordance is a UX polish. Deferred to avoid scope creep.
+  </div>
+
+  <h3>Files changed</h3>
+  <ul>
+    <li><strong>New</strong>: <code>web/src/lib/isNavigable.ts</code> (pure predicate, 68 lines)</li>
+    <li><strong>New</strong>: <code>web/src/components/ErrorBoundary.tsx</code> (class component, 133 lines)</li>
+    <li><strong>Modified</strong>: <code>web/src/components/GraphCanvas.tsx</code> — import <code>isNavigable</code>
+        + <code>ErrorBoundary</code>; gate <code>handleNodeDoubleClick</code>; rename inner component;
+        export thin wrapper. 584 lines (well under 1000).</li>
+    <li><strong>Modified</strong>: <code>web/src/main.tsx</code> — wrap tree with <code>ErrorBoundary</code>.</li>
+    <li><strong>New tests</strong>: <code>isNavigable.test.ts</code> (10 tests),
+        <code>ErrorBoundary.test.tsx</code> (6 tests),
+        <code>nonNavigableNode.test.tsx</code> (5 tests).</li>
+  </ul>
+
+  <h3>Gate result</h3>
+  <ul>
+    <li><strong>tsc</strong>: clean (0 errors).</li>
+    <li><strong>vitest</strong>: 536 tests passed / 0 failed / 42 test files (21 new tests added).</li>
+    <li>No new dependencies. No schema change. No migration. MCP tool count unchanged.</li>
+  </ul>
+
+  <!-- ================================================================= -->
+  <h2>Slice #287 — Package-file exclusion from rankings</h2>
+  <p class="meta">Completed 2026-07-03</p>
+
+  <h3>What was built</h3>
+  <p>
+    Package-plumbing files (<code>__init__.py</code>, <code>__init__.pyi</code>,
+    <code>mod.rs</code>, <code>index.ts/tsx/js/jsx</code>) are now excluded from the
+    ranked hub list and area derivation by default, mirroring the existing test-file
+    exclusion EXACTLY. A "show packages" toggle sits beside "show tests" on the landing
+    page, and <code>/api/hubs</code> gains an additive <code>show_packages</code> query
+    param (default <code>false</code>).
+  </p>
+
+  <div class="decision"><span class="tag t-dec">Decision</span>
+    <strong><code>is_package_file</code> added to <code>seam/analysis/testpaths.py</code>
+    (not a sibling leaf).</strong> The module is already the single source of path-classification
+    truth; adding <code>is_package_file</code> alongside <code>is_test_file</code> keeps the
+    module cohesive. File stays well under 1000 lines (160 after the addition).
+  </div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span>
+    <strong>Basename-only, case-sensitive match — no directory-segment check.</strong>
+    Unlike <code>is_test_file</code> which also checks for <code>tests/</code> directory
+    segments, <code>is_package_file</code> matches only by exact basename. A directory
+    named <code>mod.rs/</code> (hypothetical) would NOT trigger it; only a FILE named
+    <code>mod.rs</code> matches. Conservative: false-negatives (miss a non-standard barrel)
+    are safe; false-positives (hide real production code) are harmful.
+  </div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span>
+    <strong><code>PACKAGE_BASENAMES</code> constant duplicated in <code>deriveAreas.ts</code>.</strong>
+    The frontend cannot import from the Python backend, so the barrel-name set is declared
+    independently in <code>web/src/lib/deriveAreas.ts</code>. A sync comment in both files
+    documents the dependency. The set is small and stable — drift risk is low.
+  </div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span>
+    <strong><code>StructureOverview</code> uses <code>includePackages: false</code> (hardcoded).</strong>
+    The structure overview currently has only an <code>includeTests</code> prop; there is no
+    "show packages" toggle in the Overview UI. Hardcoding <code>false</code> keeps behavior
+    consistent with the landing default without adding a new prop+toggle in this slice.
+    Adding the toggle to the Overview is a follow-on task if needed.
+  </div>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span>
+    <strong><code>web.py</code> was at 999 lines; added 1 new param but saved 2 from docstring.</strong>
+    The <code>get_hubs</code> docstring was shortened from 4 body lines to 1 to create budget
+    for the new <code>show_packages</code> query param. Net result: 998 lines (safely under 1000).
+    The removed docstring lines were already reflected in the backend comments and the gate test.
+  </div>
+
+  <h3>Files changed</h3>
+  <ul>
+    <li><strong>Modified</strong>: <code>seam/analysis/testpaths.py</code> — add
+        <code>is_package_file()</code> + <code>_PACKAGE_BASENAMES</code> frozenset + updated module
+        docstring. 160 lines.</li>
+    <li><strong>Modified</strong>: <code>seam/server/graph_api.py</code> — import
+        <code>is_package_file</code>; add <code>show_packages: bool = False</code> param to
+        <code>top_hub_symbols</code>; add filter in the post-scan loop.</li>
+    <li><strong>Modified</strong>: <code>seam/server/web.py</code> — additive
+        <code>show_packages</code> query param on <code>GET /api/hubs</code>; pass through to
+        <code>top_hub_symbols</code>. 998 lines.</li>
+    <li><strong>Modified</strong>: <code>web/src/api/hooks.ts</code> — <code>useHubs</code> gains
+        <code>showPackages</code> param; <code>useAreas</code> gains <code>includePackages</code>
+        in opts; both threaded to fetch + derive calls.</li>
+    <li><strong>Modified</strong>: <code>web/src/lib/deriveAreas.ts</code> — add
+        <code>PACKAGE_BASENAMES</code> constant, <code>isPackagePath()</code> helper,
+        <code>includePackages</code> in <code>deriveAreas</code> opts; filtering merged into
+        a single <code>.filter()</code> pass (replaces the old ternary).</li>
+    <li><strong>Modified</strong>: <code>web/src/App.tsx</code> — add <code>showPackages</code>
+        state; pass to <code>useHubs</code>/<code>useAreas</code>; add "show packages" toggle button
+        beside "show tests" in the landing page "Key symbols" section.</li>
+    <li><strong>Modified</strong>: <code>web/src/components/StructureOverview.tsx</code> — pass
+        <code>includePackages: false</code> to <code>useAreas</code> (required by updated signature).</li>
+    <li><strong>New tests (Python)</strong>: 17 tests in <code>tests/unit/test_testpaths.py</code>
+        (is_package_file true/false cases); 4 tests in <code>tests/unit/test_graph_api.py</code>
+        (show_packages × show_tests independence).</li>
+    <li><strong>New tests (frontend)</strong>: <code>LandingPackagesToggle.test.tsx</code> (6 tests);
+        5 new tests in <code>lib.test.ts</code> deriveAreas section (includePackages combos).</li>
+    <li><strong>Updated tests</strong>: <code>web/src/__tests__/lib.test.ts</code> and
+        <code>useAreas.test.tsx</code> — all <code>deriveAreas</code>/<code>useAreas</code> calls
+        updated to pass <code>includePackages</code>.</li>
+  </ul>
+
+  <h3>Gate result</h3>
+  <ul>
+    <li><strong>ruff + mypy</strong>: clean.</li>
+    <li><strong>pytest</strong>: 3801 passed, 32 skipped (pre-existing fastembed/semantic skips), 0 failed.</li>
+    <li><strong>tsc</strong>: clean (0 errors).</li>
+    <li><strong>vitest</strong>: 547 passed / 0 failed / 43 test files (11 new tests added).</li>
+    <li>No new dependencies. No schema change. No migration. MCP tool count unchanged (16).</li>
+  </ul>
+
+  <!-- ================================================================= -->
+  <h2>Review fix pass (#284)</h2>
+
+  <div class="decision"><span class="tag t-dec">Decision</span>
+    <strong>Issue #2 — <code>navigable</code> field on <code>SymbolNodeData</code> (not a new prop).</strong>
+    To avoid a circular import (<code>isNavigable.ts</code> already imports <code>SymbolNodeData</code>
+    from <code>SymbolNode.tsx</code>), the cursor affordance is wired via a new optional
+    <code>navigable?: boolean</code> field on <code>SymbolNodeData</code>. <code>GraphCanvas.toRFNode</code>
+    computes it by calling <code>isNavigable(base)</code> before constructing the final data object.
+    <code>SymbolNode</code> uses <code>navigable ?? true</code> as a default so pre-existing nodes
+    (e.g. off-canvas impact nodes that skip <code>toRFNode</code>) keep <code>cursor-pointer</code>
+    without any migration.
+  </div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span>
+    <strong>Issue #3 — removed the always-true <code>|| allCalls.length &gt;= initialCallCount</code>
+    disjunct from the double-click test.</strong>
+    The original OR guard made the test unconditionally pass regardless of whether
+    <code>setExpandTarget</code> fired. Removed <code>initialCallCount</code> entirely
+    (unused → TypeScript error) and replaced with a direct assertion on
+    <code>calledWithPublicFn</code> which is falsifiable: it fails if the double-click handler
+    is silently removed or short-circuited.
+  </div>
+
+  <div class="deviation"><span class="tag t-dev">Deviation</span>
+    <strong>Issue #1 (bundle not rebuilt) — not run in this pass per worktree constraint.</strong>
+    The worktree instructions say "Do NOT run <code>npm run build</code> (the orchestrator rebuilds
+    the bundle once at the end)." The source changes for all three slices are correct; the orchestrator
+    will rebuild <code>seam/_web</code> after this commit lands. The review-fix gate only requires
+    <code>tsc --noEmit</code> + vitest, both of which are green.
+  </div>
+
+  <!-- ================================================================= -->
+  <h2>Progress</h2>
+  <table>
+    <tr><th>Slice</th><th>What</th><th>Status</th></tr>
+    <tr><td>#285</td><td>Topology 3D-only: delete 2D cluster-graph surface + sub-toggle</td><td class="done">✓ done</td></tr>
+    <tr><td>#286</td><td>Error boundary + non-navigable node gating (blank-page fix)</td><td class="done">✓ done</td></tr>
+    <tr><td>#287</td><td>Package-file exclusion from rankings + show-packages toggle</td><td class="done">✓ done</td></tr>
+    <tr><td>#284</td><td>Review fix pass: cursor affordance + falsifiable test + bundle note</td><td class="done">✓ done</td></tr>
+  </table>
+</body>
+</html>

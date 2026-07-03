@@ -58,6 +58,13 @@ export interface SymbolNodeData extends Record<string, unknown> {
   dimmed?: boolean;
   /** True for impact dependents that lie beyond the visible neighborhood. */
   offCanvas?: boolean;
+  /**
+   * Whether this node supports double-click expand / re-center (User Story 9).
+   * Set by GraphCanvas from isNavigable(). Absent means navigable (backward compat).
+   * WHY in data (not derived inline): SymbolNode cannot import isNavigable without
+   * a circular dep (isNavigable imports SymbolNodeData from this file).
+   */
+  navigable?: boolean;
 }
 
 /** Map Seam kind strings to lucide icons (closed vocabulary from engine) */
@@ -121,6 +128,8 @@ export function SymbolNode({ data }: SymbolNodeProps) {
     impactTier,
     dimmed,
     offCanvas,
+    // navigable absent (pre-existing nodes) → true (backward-compatible default).
+    navigable = true,
   } = data;
 
   const colour = clusterColor(cluster_id);
@@ -141,6 +150,10 @@ export function SymbolNode({ data }: SymbolNodeProps) {
   // "beyond the current view" rather than first-class neighborhood members.
   const borderClass = offCanvas ? "border-dashed border-zinc-600" : "border-zinc-700";
   const dimClass = dimmed ? "opacity-40" : "";
+  // WHY conditional cursor: non-navigable nodes (bare edge-target references with no
+  // indexed definition) use cursor-default so the user is NOT invited to double-click
+  // a dead end. Single-click (detail panel) still works on all nodes (User Story 9).
+  const cursorClass = navigable ? "cursor-pointer" : "cursor-default";
 
   return (
     <div
@@ -149,7 +162,7 @@ export function SymbolNode({ data }: SymbolNodeProps) {
         relative flex items-stretch
         bg-zinc-900 border ${borderClass} rounded-md
         min-w-[160px] max-w-[240px] overflow-hidden
-        cursor-pointer select-none
+        ${cursorClass} select-none
         hover:border-zinc-500 transition-all
         ${ringClass} ${dimClass}
       `}

@@ -139,22 +139,24 @@ function computeLayout(
 
 /** Build a base RF node from an API GraphNode (no overlay state — that's derived). */
 function toRFNode(n: GraphNode, center: string, pos: { x: number; y: number }): SymbolRFNode {
-  return {
-    id: n.id,
-    type: "symbolNode",
-    position: pos,
-    data: {
-      name: n.name,
-      kind: n.kind,
-      signature: n.signature,
-      cluster_id: n.cluster_id,
-      cluster_label: n.cluster_label,
-      definition_count: n.definition_count,
-      isCenter: n.id === center,
-      is_exported: n.is_exported,
-      visibility: n.visibility,
-    },
+  // Build core data first so isNavigable can read definition_count/visibility/isCenter.
+  // WHY isNavigable is wired here (not inside SymbolNode): isNavigable imports
+  // SymbolNodeData from SymbolNode.tsx — importing it back there creates a circular
+  // dep. GraphCanvas is the natural owner: it already calls isNavigable in the
+  // double-click guard, so both uses stay in the same file.
+  const base = {
+    name: n.name,
+    kind: n.kind,
+    signature: n.signature,
+    cluster_id: n.cluster_id,
+    cluster_label: n.cluster_label,
+    definition_count: n.definition_count,
+    isCenter: n.id === center,
+    is_exported: n.is_exported,
+    visibility: n.visibility,
   };
+  const data: SymbolNodeData = { ...base, navigable: isNavigable(base as SymbolNodeData) };
+  return { id: n.id, type: "symbolNode", position: pos, data };
 }
 
 /** Build a base RF edge — confidence style + kind/confidence in data for filtering. */

@@ -214,35 +214,31 @@ describe("non-navigable node gating (#286)", () => {
 
   it("double-click on a navigable node triggers expand (handler is wired)", () => {
     /**
-     * We can't inspect `expandTarget` state directly, so we verify that
-     * `useNeighborhood` is called with the expand target after double-click.
-     * The mock returns CONNECTED_RESPONSE for any argument; a second call with
-     * the new target signals that the expand path was taken.
+     * Verify that setExpandTarget fires by observing useNeighborhood being called
+     * with the expand target after double-click. The state update sets expandTarget
+     * to "publicFn", which triggers a re-render that calls useNeighborhood("publicFn").
+     *
+     * WHY this assertion was previously unfalsifiable:
+     *   The old form `calledWithPublicFn || allCalls.length >= initialCallCount`
+     *   always evaluated to true because a mock call count can never decrease —
+     *   `allCalls.length >= initialCallCount` is unconditionally true. Removing
+     *   the disjunct makes the test fail if setExpandTarget never fires.
      */
     render(
       <GraphCanvas center="MyService" />,
       { wrapper: makeWrapper() },
     );
 
-    const initialCallCount = mockUseNeighborhood.mock.calls.length;
-
     const navigableNode = makeRFNode({ id: "publicFn", visibility: "public", definition_count: 1 });
     act(() => {
       capturedNodeDoubleClick?.({}, navigableNode);
     });
 
-    // After double-click on a navigable node, useNeighborhood should be called
-    // with "publicFn" as the expand target (the state update triggers a re-render).
     const allCalls = mockUseNeighborhood.mock.calls;
     const calledWithPublicFn = allCalls.some(([arg]) => arg === "publicFn");
-    // useNeighborhood is called at minimum once with "MyService" (center).
-    // After the double-click on a navigable node, it should be called again or
-    // the expand target should have changed.
-    expect(allCalls.length).toBeGreaterThanOrEqual(initialCallCount);
-    // At least one call must have been for "publicFn" or the expand target path was taken.
-    // The expand sets expandTarget → useNeighborhood(expandTarget) fires.
-    // Accept: either the call was made or no exception was thrown (handler is non-blocking).
-    expect(calledWithPublicFn || allCalls.length >= initialCallCount).toBe(true);
+    // The only way this passes is if setExpandTarget("publicFn") actually fired,
+    // causing a re-render that called useNeighborhood("publicFn").
+    expect(calledWithPublicFn).toBe(true);
   });
 
   it("double-click on a NON-navigable node does NOT fire the expand/re-center handler", () => {
