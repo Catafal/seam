@@ -1,10 +1,21 @@
-"""Seam ANN scale benchmark — WS2b S4.
+"""Seam KNN scale benchmark — WS2b S4.
 
-Measures brute-force (numpy matmul cosine) vs ANN (sqlite-vec vec0 KNN) query latency
+Measures brute-force (numpy matmul cosine) vs sqlite-vec vec0 KNN query latency
 and recall@K parity across configurable synthetic embedding counts.
 
-This gives empirical grounding for the ANN tier's benefit and lets operators
-tune SEAM_VEC_ANN_MIN_ROWS to their hardware's actual crossover point.
+IMPORTANT — what this benchmark actually shows with sqlite-vec v0.1.9:
+  sqlite-vec's vec0 virtual table performs EXACT brute-force KNN — it has NO
+  approximate-nearest-neighbour index (no HNSW, no IVF). As a result the vec0
+  tier is currently SLOWER than the numpy matmul path at all tested scales, with
+  perfect recall@K = 1.000 (exact = brute-force agreement). Example results:
+    N=10k:   numpy 0.6ms  vs  vec0 3.9ms  (~5× slower)
+    N=100k:  numpy 7.1ms  vs  vec0 41.6ms  (~6× slower)
+  This benchmark exists to (a) measure the empirical gap and (b) confirm recall
+  parity. Once sqlite-vec ships a true approximate index, speedup > 1× will appear
+  here and SEAM_VEC_ANN_MIN_ROWS can be tuned to the real crossover point.
+
+This gives empirical grounding for the current scaffold state and lets operators
+track when sqlite-vec transitions from exact to approximate indexing.
 
 HOW TO RUN
 ----------
@@ -463,6 +474,12 @@ def _print_footer(results: list[ScaleResult]) -> None:
     print(
         "\nNOTE: Results are for SYNTHETIC normalised float32 embeddings, not real code "
         "embeddings. Latencies scale with hardware. Use --sizes for larger-scale measurement."
+    )
+    print(
+        "NOTE: sqlite-vec v0.1.9 performs EXACT brute-force KNN (no HNSW/IVF ANN index). "
+        "speedup < 1 is expected — the vec0 tier is a forward-compatible scaffold, not a "
+        "performance feature yet. Re-run after upgrading sqlite-vec to check for approximate "
+        "indexing (speedup > 1 will appear when HNSW/IVF is available)."
     )
     print()
 

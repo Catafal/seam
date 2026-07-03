@@ -298,21 +298,32 @@ Edges are keyed by **symbol name**, not row id — this is what lets the watcher
 
 **Semantic search.** Opt-in local embeddings (fastembed, ONNX on CPU) merge with FTS5 via Reciprocal Rank Fusion, so `"retry logic"` can surface `_backoff_with_jitter` even with no shared token. The model downloads once, then runs 100% locally.
 
-**ANN acceleration (WS2b).** At very large codebases, brute-force cosine scan over hundreds of thousands of embedding vectors approaches the ~10 ms latency bar. The optional `[semantic-ann]` extra adds a `sqlite-vec` vec0 KNN index that serves queries in sub-millisecond time regardless of corpus size. Three-tier read path: **ANN → mmap → SQL brute-force** — each tier falls through to the next on any structural issue (absent, stale, or load failure). ANN is off by default (`SEAM_VEC_ANN=off`); enable it with:
+**KNN scaffold via sqlite-vec (WS2b).** The optional `[semantic-ann]` extra wires in `sqlite-vec` as a third tier in the read path (**vec0 KNN → mmap → SQL brute-force**), each falling through to the next on any structural issue. This tier is **off by default** (`SEAM_VEC_ANN=off`) and ships as a **forward-compatible scaffold**, not a performance improvement today.
+
+> **Benchmark reality (sqlite-vec v0.1.9):** sqlite-vec's `vec0` virtual table performs **exact** brute-force KNN — it has no approximate-nearest-neighbour index (no HNSW, no IVF). Measured on synthetic 384-dim float32 embeddings it is **~5× slower** than the built-in numpy matmul path at every scale tested (10k–250k rows), with perfect recall@10 = 1.000. Enable `SEAM_VEC_ANN=on` only if you are testing the scaffold or waiting for sqlite-vec to ship a true approximate index.
+>
+> | N rows | numpy BF ms | sqlite-vec ms | speedup | recall@10 |
+> |-------:|------------:|--------------:|--------:|----------:|
+> | 10,000 | 0.588 | 3.919 | 0.2× | 1.000 |
+> | 50,000 | 5.903 | 20.496 | 0.3× | 1.000 |
+> | 100,000 | 7.053 | 41.609 | 0.2× | 1.000 |
+> | 250,000 | 19.740 | 109.373 | 0.2× | 1.000 |
+
+When sqlite-vec ships a true approximate index (HNSW/IVF), enabling `SEAM_VEC_ANN=on` will transparently upgrade from exact to approximate without any re-index of the embeddings table — the scaffold is there, waiting. To opt in:
 
 ```bash
 pip install 'seam-code[semantic-ann]'
-SEAM_VEC_ANN=on seam init --semantic   # builds embeddings + vec0 KNN index
+SEAM_VEC_ANN=on seam init --semantic   # builds embeddings + vec0 KNN table
 ```
 
-Two knobs govern the ANN tier:
+Two knobs govern the vec0 tier:
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `SEAM_VEC_ANN` | `off` | Master switch. `on` enables the vec0 KNN tier (requires `[semantic-ann]` extra + `seam init --semantic`). |
-| `SEAM_VEC_ANN_MIN_ROWS` | `50000` | Minimum embedding count before ANN activates. Below this threshold the mmap/SQL brute-force is already sub-10 ms, so ANN build overhead is not justified. |
+| `SEAM_VEC_ANN` | `off` | Master switch. `on` enables the vec0 KNN tier (off = byte-identical to pre-WS2b). **Leave `off` until sqlite-vec ships approximate indexing.** |
+| `SEAM_VEC_ANN_MIN_ROWS` | `50000` | Minimum embedding count before the vec0 table is built. Forward-compat gate; does not indicate a performance crossover today (vec0 is currently slower at all scales). |
 
-**Packaging caveat.** `sqlite-vec` is a native C extension. Some Python builds — notably the **macOS system Python** — disable `conn.enable_load_extension()` at compile time. On those builds Seam detects the failure, logs a single clear notice, and falls back to the mmap/brute-force path automatically. Nothing crashes; no results are lost. To use ANN on macOS, install Python via [python.org](https://www.python.org/downloads/) or `brew install python` (both enable extension loading), or run via `uv` (which uses its own Python build that supports extension loading).
+**Packaging caveat.** `sqlite-vec` is a native C extension. Some Python builds — notably the **macOS system Python** — disable `conn.enable_load_extension()` at compile time. On those builds Seam detects the failure, logs a single clear notice, and falls back to the mmap/brute-force path automatically. Nothing crashes; no results are lost. To use the vec0 tier on macOS, install Python via [python.org](https://www.python.org/downloads/) or `brew install python` (both enable extension loading), or run via `uv` (which uses its own Python build that supports extension loading).
 
 **Staleness banner.** Graph-traversal tools attach an `index_status` banner when the index has drifted from disk — so an agent is never silently handed wrong blast-radius answers.
 

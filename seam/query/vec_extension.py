@@ -4,9 +4,14 @@ A LEAF module: imports only stdlib (logging, sqlite3) plus the lazily-imported
 optional package sqlite_vec. No seam.config, no server, no CLI.
 
 WHY this exists:
-  WS2b adds an optional ANN (approximate-nearest-neighbour) acceleration tier
-  backed by the sqlite-vec extension.  Before any ANN operation (index build or
-  KNN query) the process must check whether sqlite-vec can actually be loaded:
+  WS2b adds an optional vec0 KNN tier backed by the sqlite-vec extension.
+  NOTE: sqlite-vec v0.1.9 performs EXACT brute-force KNN (no HNSW/IVF
+  approximate index). This module is the scaffold for when sqlite-vec ships
+  a true ANN index — the probe/load machinery is correct today even though
+  the tier is currently slower than the numpy mmap path.
+
+  Before any vec0 operation (index build or KNN query) the process must check
+  whether sqlite-vec can actually be loaded:
     - some Python builds (notably macOS system SQLite) disable
       conn.enable_load_extension() entirely;
     - the sqlite-vec package may not be installed ([semantic-ann] is optional);

@@ -255,9 +255,18 @@
 #   WHY this phase exists:
 #     WS2a mmap eliminated per-query blob-decode overhead but remained O(N)
 #     exhaustive cosine-scan.  On ≥50k-symbol repos this is 200–500 ms/query.
-#     WS2b adds an ANN tier via sqlite-vec vec0 virtual table (C extension,
-#     in-process, zero network) that runs O(log N) KNN probes — 5–20× faster at
-#     real scales while maintaining high recall@K parity with brute-force.
+#     WS2b wires in sqlite-vec vec0 as a forward-compatible scaffold for when
+#     sqlite-vec ships a true ANN index (HNSW/IVF).
+#
+#   BENCHMARK FINDING (2026-07-03, sqlite-vec v0.1.9, synthetic 384-dim):
+#     sqlite-vec v0.1.9 has NO approximate index — vec0 is EXACT brute-force KNN.
+#     Measured results:
+#       N=10k:   numpy BF 0.6ms  vs  vec0 3.9ms  (speedup 0.2×, recall@10 1.000)
+#       N=50k:   numpy BF 5.9ms  vs  vec0 20.5ms  (speedup 0.3×, recall@10 1.000)
+#       N=100k:  numpy BF 7.1ms  vs  vec0 41.6ms  (speedup 0.2×, recall@10 1.000)
+#       N=250k:  numpy BF 19.7ms vs  vec0 109.4ms (speedup 0.2×, recall@10 1.000)
+#     vec0 is ~5× SLOWER than numpy matmul at every scale.  SEAM_VEC_ANN is
+#     shipped off-by-default and documented as a scaffold, NOT a perf feature.
 #
 #   Shipped slices:
 #     S1 — seam/query/vec_extension.py (leaf): probe_vec_extension() — full

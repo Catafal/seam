@@ -1,8 +1,16 @@
-"""ANN index-builder bridge — WS2b S2.
+"""vec0 KNN table builder — WS2b S2 (forward-compatible scaffold).
 
 Builds (or rebuilds) a sqlite-vec `vec0` virtual table from the persisted
 embeddings so the S3 read path can issue KNN queries instead of brute-force
 cosine scans.
+
+WHY this is a scaffold, not a performance feature (yet):
+  sqlite-vec v0.1.9 performs EXACT brute-force KNN (no HNSW/IVF approximate
+  index). Building and querying the vec0 table is currently ~5× SLOWER than
+  the numpy matmul mmap path (measured 2026-07-03). This module exists so that
+  when sqlite-vec ships a true approximate index, enabling SEAM_VEC_ANN=on will
+  transparently upgrade from exact to approximate WITHOUT any code change or
+  re-index of embeddings. Until then, SEAM_VEC_ANN should remain "off".
 
 Import hierarchy (same discipline as cluster_index / synthesis_index):
     indexer/vec_index → query.vec_extension (S1 leaf) + query.vector_store + config
@@ -14,7 +22,7 @@ Design decisions (see .claude/runs/ws2b-s2-vec-index/implementation-notes.html):
     matches Seam's brute-force / mmap cosine ordering exactly.
   - Idempotency via DROP TABLE IF EXISTS + CREATE: no upsert on virtual tables.
   - Staleness token: stored in a companion ordinary table `vec_meta(model PK,
-    index_version, dim)` so the S3 read path can detect a stale ANN index without
+    index_version, dim)` so the S3 read path can detect a stale vec0 table without
     loading the extension (vec_meta is an ordinary table, readable by any connection).
   - The vec0 table and vec_meta INSERT happen in one transaction for consistency.
   - Extension loading must happen OUTSIDE the transaction (sqlite-vec restriction).
@@ -82,9 +90,12 @@ def index_vec(conn: sqlite3.Connection, *, model: str) -> int:
         return 0
 
     # ── Gate 3: minimum-row threshold ────────────────────────────────────────
-    # Brute-force cosine scan is fast enough below the crossover threshold; building
-    # the ANN index has real overhead (transaction, DDL, bulk INSERT) that is only
-    # justified for large embedding sets.
+    # WHY this gate: building the vec0 table has real DDL + bulk-INSERT overhead.
+    # The 50k default is a forward-compat threshold for when sqlite-vec ships a true
+    # approximate index (HNSW/IVF). NOTE: with sqlite-vec v0.1.9 the vec0 tier is
+    # currently ~5× SLOWER than numpy matmul at all scales — "faster above 50k" is
+    # NOT true today. The gate avoids the DDL overhead for small indexes that would
+    # not benefit even when sqlite-vec adds approximate indexing.
     try:
         count_row = conn.execute(
             "SELECT COUNT(*) FROM embeddings WHERE model = ?", (model,)

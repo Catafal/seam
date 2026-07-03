@@ -287,11 +287,12 @@ def _semantic_candidates_impl(
             )
         return []
 
-    # Step 4a: WS2b S3 — ANN tier (FIRST in the three-tier cascade: ANN → mmap → SQL).
-    # When SEAM_VEC_ANN=on, attempt to serve results from the sqlite-vec vec0 index
-    # built by index_vec() (S2).  Returns None (not []) on any structural issue so we
-    # fall through to the next tier transparently.  When SEAM_VEC_ANN is off (default),
-    # _try_vec_path returns None immediately → byte-identical to pre-WS2b behaviour.
+    # Step 4a: WS2b S3 — vec0 KNN tier (FIRST in the three-tier cascade: vec0 → mmap → SQL).
+    # SCAFFOLD NOTE: sqlite-vec v0.1.9 is exact brute-force KNN (~5× slower than numpy mmap).
+    # SEAM_VEC_ANN defaults to "off"; this path is for forward-compat with future sqlite-vec
+    # approximate indexing. Returns None (not []) on any structural issue — falls through to
+    # the faster mmap tier transparently. When SEAM_VEC_ANN is off (default), _try_vec_path
+    # returns None immediately → byte-identical to pre-WS2b behaviour.
     if config.SEAM_VEC_ANN == "on":
         vec_result = _try_vec_path(conn, query_vec, model=model, limit=limit)
         if vec_result is not None:
@@ -403,21 +404,28 @@ def _try_vec_path(
     model: str,
     limit: int,
 ) -> list[tuple[int, float]] | None:
-    """Attempt to serve semantic candidates from the sqlite-vec ANN index.
+    """Attempt to serve semantic candidates from the sqlite-vec vec0 KNN table.
 
-    This is the FIRST tier in the three-tier cascade (ANN → mmap → SQL).
+    This is the FIRST tier in the three-tier cascade (vec0 KNN → mmap → SQL).
     Returns a list on success (may be empty — a valid "searched, found nothing" result).
     Returns None on any structural issue so the caller falls through to the next tier.
 
+    WHY this is a forward-compatible scaffold (not a performance feature today):
+        sqlite-vec v0.1.9 performs EXACT brute-force KNN — no HNSW/IVF. The vec0
+        tier is currently ~5× SLOWER than the mmap numpy path. When sqlite-vec ships
+        a true approximate index, this function will transparently serve fast ANN
+        results without any code change. SEAM_VEC_ANN defaults to "off" for this
+        reason; the mmap tier (which is faster) is tried next when vec0 returns None.
+
     WHY None vs []:
-        None = "ANN tier structurally unavailable; please try the next fallback".
-        []   = "ANN tier searched successfully; no close neighbours found".
+        None = "vec0 tier structurally unavailable; please try the next fallback".
+        []   = "vec0 tier searched successfully; no close neighbours found".
         This matches the same contract as _try_mmap_path — both tiers use it.
 
     Failure modes that return None (NOT []):
         - SEAM_VEC_ANN != "on"  (master switch off → full bypass)
         - sqlite-vec probe fails (extension not loadable on this platform/build)
-        - vec_meta table absent  (ANN index not yet built)
+        - vec_meta table absent  (vec0 index not yet built)
         - no vec_meta row for the requested model  (model never indexed)
         - staleness: stored index_version != current compute_index_version()
         - extension load fails on the caller's conn

@@ -427,29 +427,38 @@ SEAM_RRF_K: int = int(os.getenv("SEAM_RRF_K", "60"))
 # No schema change, no migration. The artifact lives in .seam/ which is already gitignored.
 SEAM_VECTOR_STORE: str = os.getenv("SEAM_VECTOR_STORE", "on")
 
-# ── WS2b: ANN (Approximate Nearest Neighbour) acceleration via sqlite-vec ────
+# ── WS2b: sqlite-vec KNN scaffold (forward-compat; NOT yet a performance win) ─
 
-# Master switch for the ANN index tier backed by sqlite-vec's vec0 virtual table.
+# Master switch for the vec0 KNN tier backed by sqlite-vec's vec0 virtual table.
 # "off" (default) — byte-identical to pre-WS2b: no probe, no vec0 table, no overhead.
 # "on"  — after `seam init --semantic` / `seam sync --semantic`, index_vec() is called
 #   after index_embeddings(). It probes sqlite-vec availability, checks the minimum-row
 #   threshold, then (re)builds the vec0 virtual table `vec_embeddings` with cosine distance
-#   and a companion `vec_meta` table storing the staleness token. The S3 read path can then
-#   issue KNN queries directly against vec0 for sub-millisecond ANN lookup at large scale.
-# Requires: [semantic-ann] extra (pip install 'seam-code[semantic-ann]') AND SEAM_SEMANTIC=on
-#   AND at least SEAM_VEC_ANN_MIN_ROWS embeddings indexed.
+#   and a companion `vec_meta` table storing the staleness token. The S3 read path then
+#   tries vec0 MATCH queries before falling back to the mmap / SQL paths.
+#
+# IMPORTANT — scaffold status (measured 2026-07-03 with sqlite-vec v0.1.9):
+#   sqlite-vec v0.1.9 performs EXACT brute-force KNN (no HNSW, no IVF, no ANN index).
+#   Benchmark result (synthetic 384-dim, 10k–250k rows):
+#     N=10k:   BF 0.6ms  vs  vec0 3.9ms  (vec0 is ~0.2× speed of numpy = 5× SLOWER)
+#     N=100k:  BF 7.1ms  vs  vec0 41.6ms  (vec0 still ~5× slower; recall@10 = 1.000)
+#   DO NOT set "on" expecting a latency improvement. This is a forward-compatible scaffold:
+#   when sqlite-vec ships a true approximate index (HNSW/IVF), enabling this knob will
+#   transparently upgrade from exact to approximate without any code change or re-index.
+#
+# Requires: [semantic-ann] extra AND SEAM_SEMANTIC=on AND row count ≥ SEAM_VEC_ANN_MIN_ROWS.
 # No schema migration — vec_embeddings and vec_meta are created on demand by the bridge.
 # Toggling requires rerunning `seam init --semantic` / `seam sync --semantic` to populate.
 SEAM_VEC_ANN: str = os.getenv("SEAM_VEC_ANN", "off")
 
-# Minimum number of embedding rows (for the current model) that must exist before
-# index_vec() builds the ANN index. Below this threshold the brute-force cosine scan
-# (mmap path or SQL path) is fast enough that the ANN build overhead is not justified.
-# Rationale: with numpy on modern hardware, cosine scan over ~50k rows (384-dim float32)
-#   approaches the 10ms latency bar. Below that the mmap/SQL brute-force is sub-10ms.
-#   Above 50k rows, ANN KNN queries drop to sub-millisecond regardless of corpus size.
-# Default 50000. Set lower (e.g. SEAM_VEC_ANN_MIN_ROWS=10000) on older hardware where
-#   brute-force becomes noticeably slow at smaller corpora.
+# Minimum embedding rows before index_vec() builds the vec0 KNN table.
+# WHY this is a forward-compat gate, NOT a performance crossover:
+#   sqlite-vec v0.1.9 has no approximate index; vec0 is SLOWER than numpy at all scales.
+#   The 50000 default was set as the row-count where a true ANN index would pay off.
+#   Do NOT lower this to chase performance — the vec0 tier is currently slower at any N.
+#   Run `make bench-semantic-ann` to measure the exact-KNN vs numpy matmul crossover on
+#   your hardware; re-evaluate when sqlite-vec ships approximate indexing (HNSW/IVF).
+# Default 50000 = DDL-overhead guard + forward-compat threshold.
 SEAM_VEC_ANN_MIN_ROWS: int = int(os.getenv("SEAM_VEC_ANN_MIN_ROWS", "50000"))
 
 # ── WS1-A: Richer embedding input — body-slice enrichment ────────────────────
