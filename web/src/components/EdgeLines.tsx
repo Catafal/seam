@@ -4,16 +4,20 @@
  * The pure helper `buildEdgeGeometry` is exported for unit testing
  * (no WebGL dependency). The React component wraps it with useMemo.
  *
- * Intensity rules (reference §2 "Edge Lines"):
- *   Both highlighted:               0.50
- *   One highlighted:                0.04
- *   Same cluster, no highlight:     0.25
- *   Cross-cluster, no highlight:    0.06
- *   Neither highlighted when set:   0 (edge skipped — not emitted)
+ * Intensity rules (#262 — calmer edges, controlled bloom):
+ *   Both highlighted:                  0.50  (unchanged — full glow)
+ *   One highlighted:                   0.04  (unchanged — faint trace)
+ *   Same cluster, no highlight:        0.10  (was 0.25 — calmer ambient field)
+ *   Cross-cluster, no highlight:       0.02  (was 0.06 — even dimmer cross links)
+ *   Loud-kind multiplier (no-hl only): 0.50  (instantiates/uses/writes are warm+saturated
+ *                                             and spike visually at equal intensity; halved
+ *                                             in the ambient field; full color on highlight)
+ *   Neither highlighted when set:      0     (edge skipped — not emitted)
  *
  * Cluster key = first 2 slash components of file_path.
  *
  * Reference: docs/prd/phase11-p2-1-3d-constellation-reference.md §2
+ * Issue: #262 — "Calmer edges + controlled bloom"
  */
 
 import { useEffect, useMemo } from "react";
@@ -23,6 +27,32 @@ import { EDGE_TYPE_COLORS, DEFAULT_EDGE_COLOR } from "../lib/constellationColors
 import type { LayoutNode, LayoutEdge } from "../lib/layoutTypes";
 
 // ── Pure helper (exported for unit testing) ───────────────────────────────────
+
+// ── Intensity constants (#262) ────────────────────────────────────────────────
+
+/** Both endpoints highlighted — full glow (unchanged from before #262). */
+const INTENSITY_HL_BOTH = 0.5;
+/** One endpoint highlighted — faint trace (unchanged from before #262). */
+const INTENSITY_HL_ONE = 0.04;
+/** Same-cluster, no highlight. Lowered from 0.25 → calmer ambient field. */
+const INTENSITY_SAME_CLUSTER = 0.10;
+/** Cross-cluster, no highlight. Lowered from 0.06 → softer long-range links. */
+const INTENSITY_CROSS_CLUSTER = 0.02;
+
+/**
+ * Multiplier applied to "loud" edge kinds in the NO-HIGHLIGHT path only.
+ *
+ * `instantiates` (orange), `uses` (amber), `writes` (red) have high-saturation
+ * warm hues with large R-channel values (0.918–0.976).  At equal intensity their
+ * max channel exceeds that of `call` (teal, max G=0.635), so they dominate the
+ * ambient field visually even though they are less frequent.  The 0.5× multiplier
+ * brings their max channel below `call`'s max channel at the same base intensity.
+ * Full color is restored when either endpoint is highlighted.
+ */
+const LOUD_KIND_DIM = 0.5;
+
+/** Edge kinds that receive LOUD_KIND_DIM in the no-highlight ambient path. */
+const LOUD_KINDS = new Set(["instantiates", "uses", "writes"]);
 
 /**
  * Build Float32Array position and color buffers for a LineSegments geometry.
@@ -64,15 +94,22 @@ export function buildEdgeGeometry(
     let intensity: number;
     if (hasHighlight) {
       if (sH && tH) {
-        intensity = 0.5; // both endpoints highlighted — full glow
+        // Both endpoints highlighted — full glow; no loud-kind dim so warm edges
+        // return to their natural saturation in the highlighted selection.
+        intensity = INTENSITY_HL_BOTH;
       } else if (sH || tH) {
-        intensity = 0.04; // one endpoint highlighted — faint trace
+        intensity = INTENSITY_HL_ONE; // one endpoint highlighted — faint trace
       } else {
         intensity = 0; // neither highlighted — skip (dimmed)
       }
     } else {
-      // No highlight set: distinguish same-cluster vs cross-cluster.
-      intensity = clusterKey(s) === clusterKey(t) ? 0.25 : 0.06;
+      // No highlight set: distinguish same-cluster vs cross-cluster, then
+      // further dim loud/warm edge kinds so they don't spike in the ambient field.
+      const base = clusterKey(s) === clusterKey(t)
+        ? INTENSITY_SAME_CLUSTER
+        : INTENSITY_CROSS_CLUSTER;
+      const kindMult = LOUD_KINDS.has(e.type) ? LOUD_KIND_DIM : 1.0;
+      intensity = base * kindMult;
     }
 
     if (intensity === 0) continue; // do not write this edge
@@ -136,11 +173,15 @@ interface EdgeLinesProps {
  * without writing into the depth buffer (so nodes always render on top).
  * toneMapped=false tells Three.js to skip its built-in tone-mapping step for
  * this material, so the (very low) intensity values reach the linear render
- * target intact; the Bloom post-processing pass fires on luminance values
- * above 0.3 — the most intense "both-highlighted" edge at 0.5 × base-color
- * reaches those levels on the teal/amber palette, producing the Bloom corona.
- * At normal intensities (0.04–0.25) the same pipeline simply draws dim lines
- * without Bloom, keeping the background field legible.
+ * target intact.
+ *
+ * #262 bloom contract: with luminanceThreshold raised to 0.6, ambient edges
+ * (max channel 0.01–0.0635) and even the highlighted-endpoint faint traces
+ * (max ~0.04×0.635=0.025) sit well below the threshold.  The both-highlighted
+ * path at intensity 0.5 reaches a max channel of ~0.488 (instantiates R) —
+ * still below 0.6 — so edges do NOT bloom; only genuine node cores (boosted
+ * well above 1.0 by NodeCloud) bloom.  This eliminates the dense-region
+ * white-out while keeping bright node coronas.
  *
  * The geometry is rebuilt whenever `highlightedIds` changes (memoised).
  * Position updates due to camera movement are handled by Three.js — the

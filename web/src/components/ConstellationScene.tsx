@@ -8,7 +8,7 @@
  *
  * Features:
  *   OrbitControls  — dampingFactor 0.08, auto-rotate after 60s idle
- *   EffectComposer — Bloom (threshold .3, intensity 1.2, radius .6, mipmapBlur)
+ *   EffectComposer — Bloom (threshold .6, intensity .8, radius .65, mipmapBlur) [#262]
  *   CameraAnimator — ease-out cubic fly-to with 0.08 lerp factor
  *   EdgeLines      — additive-blended LineSegments (S3)
  *   NodeLabels     — canvas-sprite labels for top-80 nodes (S3)
@@ -252,14 +252,22 @@ export function ConstellationScene({
       {/* Camera fly-to animator */}
       <CameraAnimator target={cameraTarget} />
 
-      {/* Post-processing: Bloom glow corona (reference §2) */}
+      {/* Post-processing: Bloom glow corona (#262 — bright cores only, no white-out).
+          luminanceThreshold 0.3→0.6: only pixels above 0.6 linear luminance bloom.
+            - Ambient edges peak at ~0.0635 (call same-cluster G) — never bloom.
+            - Highlighted edges peak at ~0.488 (instantiates R × 0.5) — still below 0.6.
+            - Node cores with highlight boost reach 1.4–2.0 on dominant channels → bloom.
+          intensity 1.2→0.8: reduces spread on dense hub clusters (was clipping to white).
+          luminanceSmoothing 0.7: kept — smooth transition around the threshold.
+          radius 0.6→0.65: slightly wider corona to compensate for the lower intensity.
+          mipmapBlur: kept — anti-flickering pass; no cost change. */}
       <EffectComposer multisampling={0}>
         <Bloom
-          luminanceThreshold={0.3}
+          luminanceThreshold={0.6}
           luminanceSmoothing={0.7}
-          intensity={1.2}
+          intensity={0.8}
           mipmapBlur
-          radius={0.6}
+          radius={0.65}
         />
       </EffectComposer>
     </Canvas>
