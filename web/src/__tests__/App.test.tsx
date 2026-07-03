@@ -37,10 +37,10 @@ describe("App scaffold", () => {
     expect(screen.getByText(/explore the codebase/i)).toBeInTheDocument();
   });
 
-  // S2: assert the Constellation tab button is present in the header
-  it("shows the Constellation tab button", () => {
+  // C3: "Constellation" was renamed to "Topology" (2D leads, 3D is opt-in toggle).
+  it("shows the Topology tab button (renamed from Constellation in C3)", () => {
     renderWithQuery(<App />);
-    expect(screen.getByRole("button", { name: /constellation/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /topology/i })).toBeInTheDocument();
   });
 
   // The "Seam Explorer" brand is a home button: it is a clickable control and

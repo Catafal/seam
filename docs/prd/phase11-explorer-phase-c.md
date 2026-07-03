@@ -240,6 +240,34 @@ three/R3F are already installed. No SQLite schema change, no migration, no re-in
 
 ---
 
+## C3 implementation notes
+
+**Slice:** C3 — Topology 2D/3D toggle + cluster to 2D hand-off (issue #253).
+
+**What changed:**
+
+- `web/src/lib/resolveClusterHandoff.ts` (NEW, PURE) — `resolveClusterHandoff(cluster: ConstellationCluster) → string | null`. Resolution order: `cluster.representative` → `cluster.label` → `null`. Treats empty strings as absent (same contract as null) so the neighborhood center is never set to a blank string. Pure, no React, no DB — exported for vitest.
+- `web/src/App.tsx` — three targeted changes:
+  1. **Renamed `ViewMode` "constellation" → "topology"** and added `type TopologySubMode = "2d" | "3d"` with a matching `topologySubMode` state (default `"2d"` — 2D leads).
+  2. **Header: "Constellation" button renamed to "Topology"** (aria-pressed still correct; inline 2D/3D sub-toggle appears when mode === "topology"; both sub-toggle buttons have static labels "2D" / "3D" — the anti-pattern of relabeling a toggle with the other mode's name was deliberately avoided).
+  3. **Main content area**: when `mode === "topology"`, renders `ClusterGraph2D` (sub-mode "2d") or lazy `ConstellationTab` (sub-mode "3d"). The lazy `ConstellationTab` import is identical to the previous "constellation" branch — no internals modified. `handleOpenCluster` resolves via `resolveClusterHandoff` and calls `setCenterSymbol(target)` + `setMode("neighborhood")`; a null target is a graceful no-op.
+- `web/src/__tests__/App.test.tsx` — updated the S2 test assertion from `/constellation/i` to `/topology/i` (legitimate rename; the test still checks that the topology surface button exists).
+
+**New tests (TDD — all written before implementation, confirmed failing, then passing):**
+
+- `web/src/__tests__/resolveClusterHandoff.test.ts` — 7 pure unit tests: representative present → returns it; representative present + label null → returns representative; representative null + label present → returns label (fallback); both null → null; empty string representative treated as absent; empty string label treated as absent; idempotent (pure).
+- `web/src/__tests__/TopologyToggle.test.tsx` — 10 component/wiring tests for App: Topology button present in header; sub-toggle absent before Topology activated; sub-toggle shows on activation with 2D default; aria-pressed correct for default 2D; switching to 3D renders ConstellationTab and hides ClusterGraph2D; aria-pressed flips to 3D; cluster click with representative hands off to neighborhood (ClusterGraph2D disappears); cluster click with null representative falls back to label; both null is a graceful no-op (stays in topology); deactivating Topology returns to neighborhood landing.
+
+**Decisions:**
+
+- **`topologySubMode` persists across topology open/close** — the user's last 2D/3D choice is remembered within a session. A fresh session always starts at 2D (the default). We do NOT persist to localStorage because the UX thesis is "2D leads" and a returning user should see the legible view first; it would undermine the redesign thesis to silently restore 3D on next visit.
+- **Mocking strategy in TopologyToggle.test.tsx:** `GraphCanvas` is mocked as a simple stub alongside `ClusterGraph2D`, `ConstellationTab`, `FileSidebar`, `ChangesDrawer`, and `DetailPanel`. The App-level test only cares about mode transitions and the hand-off wiring — not GraphCanvas internals. Without the GraphCanvas mock, hand-off tests that resolve to a symbol would try to render GraphCanvas (which calls the unmocked `useNeighborhood` hook), causing unhandled exceptions and exit code 1.
+- **`topologySubMode` state vs conditional render:** the sub-mode controls what the topology surface shows, but it is independent of the outer `mode` state machine. This keeps the App logic simple: `mode` = which surface is open; `topologySubMode` = which variant of the topology surface.
+
+**Gate:** frontend: 465 tests passed (39 test files), typecheck clean, build in 3.22s. Backend: ruff clean, mypy clean (122 files), 3555 pytest passed, 6 skipped, 0 failed.
+
+---
+
 ## Further Notes
 
 - **Why the 2D cluster graph and not "just fix 3D":** per the first-principles judge panel (Ghoniem

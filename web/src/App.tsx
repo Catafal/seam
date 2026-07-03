@@ -23,9 +23,11 @@ import { DetailPanel } from "./components/DetailPanel";
 import { ChangesDrawer } from "./components/ChangesDrawer";
 import { StructureOverview } from "./components/StructureOverview";
 import { FileSidebar } from "./components/FileSidebar";
+import { ClusterGraph2D } from "./components/ClusterGraph2D";
 import { ResizeHandle, clampPanelWidth, readPanelWidth } from "./components/ResizeHandle";
 import { useStatus, useSearch, useHubs, useAreas } from "./api/hooks";
-import type { SearchResultItem, HubSymbol } from "./api/schema-types";
+import { resolveClusterHandoff } from "./lib/resolveClusterHandoff";
+import type { SearchResultItem, HubSymbol, ConstellationCluster } from "./api/schema-types";
 import type { Area } from "./lib/deriveAreas";
 import { GitBranch, Orbit, Network, Route } from "lucide-react";
 
@@ -409,8 +411,15 @@ function LandingPage({ onSelect, onOpenOverview, onOpenScopedOverview }: Landing
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
-/** App view mode: per-symbol neighborhood, whole-repo cluster overview, or 3D constellation. */
-type ViewMode = "neighborhood" | "overview" | "constellation";
+/** App view mode: per-symbol neighborhood, whole-repo cluster overview, or topology (2D/3D). */
+type ViewMode = "neighborhood" | "overview" | "topology";
+
+/**
+ * Sub-mode within the Topology surface.
+ * "2d" = ClusterGraph2D (the legible default, 2D leads).
+ * "3d" = lazy ConstellationTab (the "wow" opt-in).
+ */
+type TopologySubMode = "2d" | "3d";
 
 /** A small header toggle pill (mode switch, drawer toggle). */
 function HeaderToggle({
@@ -454,8 +463,11 @@ function App() {
   const [traceTarget, setTraceTarget] = useState<string | null>(null);
   // changesOpen: toggles the git working-changes drawer
   const [changesOpen, setChangesOpen] = useState(false);
-  // mode: per-symbol neighborhood, whole-repo overview, or 3D constellation
+  // mode: per-symbol neighborhood, whole-repo overview, or topology (2D/3D)
   const [mode, setMode] = useState<ViewMode>("neighborhood");
+  // topologySubMode: 2D cluster graph (default) or 3D constellation (opt-in).
+  // Persists across topology open/close so the user's last choice is remembered.
+  const [topologySubMode, setTopologySubMode] = useState<TopologySubMode>("2d");
   // focusSymbol: shared between 2D and 3D views for cross-tab navigation
   const [focusSymbol, setFocusSymbol] = useState<string | null>(null);
   // B1: preselectedArea — set when a landing area card is clicked; cleared when
@@ -521,6 +533,19 @@ function App() {
     setMode("overview");
   }, []);
 
+  // C3: cluster hand-off from the 2D cluster graph (and optionally 3D NDP).
+  // resolveClusterHandoff picks the best symbol name; if none resolves (null),
+  // we do nothing — no crash, no empty center.
+  const handleOpenCluster = useCallback(
+    (cluster: ConstellationCluster) => {
+      const target = resolveClusterHandoff(cluster);
+      if (!target) return; // graceful no-op when both representative and label are null
+      setCenterSymbol(target);
+      setMode("neighborhood");
+    },
+    [setCenterSymbol],
+  );
+
   // Clicking the "Seam Explorer" brand returns to the landing page: reset the
   // view to the default neighborhood mode with no centered/selected symbol, and
   // close any open drawer. This is the app's "home" action.
@@ -577,19 +602,52 @@ function App() {
           label={mode === "overview" ? "Neighborhood" : "Overview"}
         />
 
-        {/* Constellation tab: lazy 3D Explorer (S2) */}
+        {/* Topology tab: 2D cluster graph (default) or 3D constellation (opt-in).
+            The outer button toggles topology mode on/off; the 2D/3D sub-toggle
+            appears inline when topology is active.
+            Anti-pattern avoided: the button label is always "Topology" — it does
+            NOT relabel itself with the OTHER mode's name. */}
         <button
-          onClick={() => setMode((m) => (m === "constellation" ? "neighborhood" : "constellation"))}
-          aria-pressed={mode === "constellation"}
+          onClick={() => setMode((m) => (m === "topology" ? "neighborhood" : "topology"))}
+          aria-pressed={mode === "topology"}
           className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs transition-colors border ${
-            mode === "constellation"
+            mode === "topology"
               ? "bg-sky-500/15 border-sky-500/50 text-sky-300"
               : "bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500"
           }`}
         >
           <Orbit className="w-3.5 h-3.5" />
-          Constellation
+          Topology
         </button>
+
+        {/* 2D/3D sub-toggle — only visible while topology mode is active.
+            Quiet pill buttons; neither relabels itself with the other mode's name. */}
+        {mode === "topology" && (
+          <div className="flex items-center gap-1 bg-zinc-800 border border-zinc-700 rounded-md p-0.5">
+            <button
+              onClick={() => setTopologySubMode("2d")}
+              aria-pressed={topologySubMode === "2d"}
+              className={`px-2 py-0.5 rounded text-xs transition-colors ${
+                topologySubMode === "2d"
+                  ? "bg-zinc-600 text-zinc-100"
+                  : "text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              2D
+            </button>
+            <button
+              onClick={() => setTopologySubMode("3d")}
+              aria-pressed={topologySubMode === "3d"}
+              className={`px-2 py-0.5 rounded text-xs transition-colors ${
+                topologySubMode === "3d"
+                  ? "bg-zinc-600 text-zinc-100"
+                  : "text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              3D
+            </button>
+          </div>
+        )}
 
         {/* Center: search box(es) — hidden in overview mode */}
         <div className="flex-1 flex justify-center items-center gap-2">
@@ -644,23 +702,32 @@ function App() {
 
       {/* ── Main content ───────────────────────────────────────────────── */}
       <main className="flex flex-1 overflow-hidden">
-        {/* Constellation tab: full-screen 3D canvas (lazy-loaded) */}
-        {mode === "constellation" ? (
-          <Suspense
-            fallback={
-              <div className="flex items-center justify-center w-full h-full text-zinc-500 text-sm animate-pulse">
-                Loading constellation…
-              </div>
-            }
-          >
-            <ConstellationTab
-              focusSymbol={focusSymbol}
-              onFocusSymbol={(name) => {
-                setFocusSymbol(name);
-                setCenterSymbol(name);
-              }}
-            />
-          </Suspense>
+        {/* Topology surface: 2D cluster graph (default) or 3D constellation. */}
+        {mode === "topology" ? (
+          topologySubMode === "2d" ? (
+            /* 2D cluster-graph — default, leads the topology surface (C2 + C3).
+               onOpenCluster hands off to the neighborhood centered on the
+               cluster's representative symbol (resolveClusterHandoff). */
+            <ClusterGraph2D onOpenCluster={handleOpenCluster} />
+          ) : (
+            /* 3D constellation — opt-in, lazy-loaded to keep three/R3F out of
+               the initial bundle until the user explicitly picks 3D. */
+            <Suspense
+              fallback={
+                <div className="flex items-center justify-center w-full h-full text-zinc-500 text-sm animate-pulse">
+                  Loading constellation…
+                </div>
+              }
+            >
+              <ConstellationTab
+                focusSymbol={focusSymbol}
+                onFocusSymbol={(name) => {
+                  setFocusSymbol(name);
+                  setCenterSymbol(name);
+                }}
+              />
+            </Suspense>
+          )
         ) : (
           <>
             {/* File sidebar: visible in neighborhood mode only (not overview).
