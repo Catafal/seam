@@ -28,6 +28,7 @@ investigate and prepare a fix. Once resolved, we'll publish an advisory and cred
 Seam is designed to be **local-first and offline**:
 
 - It runs no network calls and uses no API keys at runtime (verified at the syscall level by `.github/workflows/no-egress.yml`, Linux CI).
+  The two documented **setup-time** exceptions are: (1) `seam init --semantic` downloads the embedding model (~67 MB, one-time); (2) `seam fetch` downloads a pre-built team index artifact from CI (WS4 shared-index flow, only when `SEAM_INDEX_ARTIFACT_URL` is set). Both are intentional provisioning downloads, not read-path egress — every `seam query`/`seam impact`/MCP call afterward is offline.
 - It stores its index in a local SQLite database under `.seam/`.
 - The MCP server (`seam start`) and the Explorer web server (`seam serve`, bound to
   `127.0.0.1`) are intended for local use only — do not expose them to untrusted networks.

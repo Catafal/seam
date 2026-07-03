@@ -1,0 +1,161 @@
+name: Seam Index — build and publish
+
+# ── TEMPLATE — read this before wiring ───────────────────────────────────────
+#
+# WHAT THIS WORKFLOW DOES
+#   On every merge to main it:
+#     1. indexes the repository with `seam init --semantic`
+#     2. packs the result into `seam-index.tar.gz` + `seam-index.sha256` via
+#        `seam pack-index`
+#     3. uploads the archive keyed by the git SHA so developers can download
+#        it later via `seam fetch`
+#
+# HOW DEVELOPERS CONSUME THE PUBLISHED INDEX
+#   1. Set the env var in their shell (or .env):
+#        SEAM_INDEX_ARTIFACT_URL="https://github.com/<owner>/<repo>/releases/download/seam-index-{sha}/seam-index.tar.gz"
+#      (The `{sha}` placeholder is expanded by `seam fetch` to the current HEAD SHA,
+#       then walked back through first-parent history until a match is found.)
+#   2. Run:
+#        seam fetch          # downloads, verifies checksum, rebases CI paths to local,
+#                            # then runs seam sync to catch any local-only edits
+#
+# THE SWAPPABLE PART (step "Upload index artifact")
+#   The upload step below uses `gh release create` to attach the archive to a
+#   lightweight GitHub Release keyed by the git SHA.  This is ONE approach that
+#   requires only the pre-installed `gh` CLI (no extra third-party action needed,
+#   so the pin-audit gate surface stays minimal).
+#
+#   Teams that store artifacts elsewhere (S3, GCS, Artifactory, a private release
+#   registry) should REPLACE the "Upload index artifact" step with their own.
+#   All that matters is that:
+#     a. `seam-index.tar.gz`   lands at the URL your SEAM_INDEX_ARTIFACT_URL points to
+#     b. `seam-index.sha256`   lands at the same URL with a `.sha256` suffix (or a
+#        peer path your `seam fetch` --checksum-url override can reach)
+#     c. The URL contains `{sha}` where the 40-hex commit SHA should appear
+#
+# MODEL-MATCH CAVEAT
+#   The SEAM_EMBED_MODEL used here (default: BAAI/bge-small-en-v1.5) must match
+#   the model developers have locally.  A mismatch is safe — `seam fetch` detects
+#   it (via the metadata in the archive), logs a warning, and the fetched index
+#   degrades gracefully to FTS5-only search.  Semantic search only works when both
+#   sides use the same model.  Override with:
+#     env:
+#       SEAM_EMBED_MODEL: "BAAI/bge-small-en-v1.5"
+#
+# PIN-AUDIT INVARIANT
+#   Every `uses:` ref in this file MUST be a full 40-hex commit SHA with an
+#   inline `# vN` comment.  The gate test `test_all_workflow_files_are_sha_pinned`
+#   runs on every `make gate` / CI push and fails immediately on any mutable ref.
+#   To add a new action: run `git ls-remote https://github.com/<action-owner>/<action-repo>`
+#   and pin to the commit SHA for the tag you want.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches: [main]
+
+# One in-flight build per ref; cancel superseded runs to save CI minutes.
+concurrency:
+  group: seam-index-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least-privilege default.  The upload step overrides to contents:write because
+# `gh release create` writes a GitHub Release.  Swap this to whatever your target
+# store requires (e.g. id-token:write for AWS OIDC).
+permissions:
+  contents: read
+
+jobs:
+  build-and-publish:
+    name: build-and-publish seam index
+    runs-on: ubuntu-latest
+    # contents:write is required for `gh release create` in the upload step.
+    # Remove or replace this if your swapped upload step targets a different store.
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        # Reusing the exact SHA already pinned in ci.yml — do NOT change this
+        # without also updating ci.yml and release.yml (keep all three in sync).
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          # Full history lets `seam fetch` walk first-parent ancestors to find
+          # the nearest published artifact when HEAD has no index yet.
+          fetch-depth: 0
+
+      - name: Install uv
+        # Reusing the exact SHA already pinned in ci.yml — do NOT change this
+        # without also updating ci.yml and release.yml (keep all three in sync).
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install seam-code (semantic extra)
+        # The `semantic` extra pulls in fastembed (ONNX/CPU, ~67 MB model on first
+        # run; cached by uv across runs).  Without it `seam init --semantic` would
+        # skip embedding and the index would be keyword-only.
+        run: uv sync --extra semantic --dev --python 3.12
+
+      # ── Build the index ───────────────────────────────────────────────────────
+      # This is the one legitimate outbound network call: fastembed downloads the
+      # embedding model on the first CI run; subsequent runs hit the uv/fastembed
+      # cache.  It is a one-time setup-time bootstrap, NOT a read-path egress call.
+      # (Contrast with `seam fetch`, which is another intentional setup-time call
+      # on the developer machine.  Both are documented exclusions from the
+      # no-egress proof in .github/workflows/no-egress.yml.)
+
+      - name: Index repository (graph + embeddings)
+        run: uv run seam init --semantic
+        env:
+          # Override to change the embedding model.  Must match whatever developers
+          # have locally (see model-match caveat in the header above).
+          SEAM_EMBED_MODEL: ${{ vars.SEAM_EMBED_MODEL || 'BAAI/bge-small-en-v1.5' }}
+
+      # ── Pack the index ────────────────────────────────────────────────────────
+      # `seam pack-index` produces two files in the current directory (or --dest):
+      #   seam-index.tar.gz   — the archive (DB + optional embeddings artifact)
+      #   seam-index.sha256   — SHA-256 checksum of the archive
+      # NOTE: this is `seam pack-index`, NOT `seam pack`.  `seam pack <symbol>` is
+      # the unrelated context-pack command for a single symbol (backward compat).
+
+      - name: Pack index into distributable archive
+        run: uv run seam pack-index --dest . --json
+        id: pack
+
+      # ── Upload index artifact ─────────────────────────────────────────────────
+      # ┌────────────────────────────────────────────────────────────────────────┐
+      # │  TEAM-SWAPPABLE STEP — replace this with your own upload mechanism.   │
+      # │                                                                        │
+      # │  Reference implementation: upload to a lightweight GitHub Release      │
+      # │  keyed by the 40-hex commit SHA.  No third-party action is needed —   │
+      # │  `gh` comes pre-installed on GitHub-hosted runners.                    │
+      # │                                                                        │
+      # │  After swapping, set SEAM_INDEX_ARTIFACT_URL to match the new URL     │
+      # │  template (must contain `{sha}` where the commit SHA goes):           │
+      # │    SEAM_INDEX_ARTIFACT_URL=https://your.store/{sha}/seam-index.tar.gz │
+      # └────────────────────────────────────────────────────────────────────────┘
+      - name: Upload index artifact (GitHub Release — SWAPPABLE)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Tag the release with the full 40-hex SHA so `seam fetch` can locate it
+          # via the {sha} placeholder in SEAM_INDEX_ARTIFACT_URL.
+          RELEASE_TAG="seam-index-${GITHUB_SHA}"
+
+          gh release create "${RELEASE_TAG}" \
+            seam-index.tar.gz \
+            seam-index.sha256 \
+            --title "Seam index for ${GITHUB_SHA:0:12}" \
+            --notes "Auto-generated Seam code-intelligence index.
+
+Commit: ${GITHUB_SHA}
+Branch: ${GITHUB_REF_NAME}
+
+Set SEAM_INDEX_ARTIFACT_URL on your machine and run \`seam fetch\` to use this index:
+  SEAM_INDEX_ARTIFACT_URL=https://github.com/${GITHUB_REPOSITORY}/releases/download/seam-index-{sha}/seam-index.tar.gz
+  seam fetch" \
+            --repo "$GITHUB_REPOSITORY"
