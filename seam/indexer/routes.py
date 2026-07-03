@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from tree_sitter import Node
 
@@ -39,6 +40,18 @@ def normalize_route_path(path: str) -> str:
         path = f"/{path}"
     normalized = _PARAM_RE.sub("{param}", path)
     return re.sub(r"/+", "/", normalized)
+
+
+def _http_call_route_name(method: str, url: str) -> str | None:
+    """Return a local route target only when a URL cannot imply third-party traffic."""
+    parsed = urlsplit(url.strip())
+    if parsed.scheme or parsed.netloc:
+        if parsed.hostname not in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}:
+            return None
+    path = parsed.path
+    if not path:
+        return None
+    return _route_name(method, path)
 
 
 def _literal_string(value: str) -> str | None:
@@ -192,7 +205,113 @@ def _python_decorator_routes(
                     line=symbol["start_line"],
                     confidence="EXTRACTED",
                 ))
+    route_edges.extend(_python_http_call_edges(root, symbols, filepath))
     return route_symbols, route_edges, route_metadata
+
+
+def _python_enclosing_symbol(symbols: list[Symbol], line: int) -> str | None:
+    candidates = [
+        symbol for symbol in symbols
+        if symbol["kind"] in {"function", "method"}
+        and symbol["start_line"] <= line <= symbol["end_line"]
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda symbol: symbol["start_line"])["name"]
+
+
+def _python_import_aliases(tree: ast.AST) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in {"requests", "httpx"}:
+                    aliases[alias.asname or alias.name] = alias.name
+    return aliases
+
+
+def _python_client_receivers(tree: ast.AST, module_aliases: dict[str, str]) -> dict[str, str]:
+    receivers: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+            continue
+        call = node.value.func
+        if not isinstance(call, ast.Attribute) or not isinstance(call.value, ast.Name):
+            continue
+        module = module_aliases.get(call.value.id)
+        if module == "requests" and call.attr == "Session":
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    receivers[target.id] = "requests"
+        elif module == "httpx" and call.attr in {"Client", "AsyncClient"}:
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    receivers[target.id] = "httpx"
+    return receivers
+
+
+def _python_call_method_and_url(
+    call: ast.Call,
+    *,
+    module_aliases: dict[str, str],
+    client_receivers: dict[str, str],
+) -> tuple[str, str, str] | None:
+    func = call.func
+    if not isinstance(func, ast.Attribute):
+        return None
+    if not isinstance(func.value, ast.Name):
+        return None
+    method = func.attr.upper()
+    if method not in _HTTP_METHODS:
+        return None
+    receiver = func.value.id
+    client_module = client_receivers.get(receiver)
+    module = module_aliases.get(receiver) or client_module
+    if module not in {"requests", "httpx"}:
+        return None
+    if not call.args or not isinstance(call.args[0], ast.Constant) or not isinstance(call.args[0].value, str):
+        return None
+    channel = f"python-{module}-client-literal" if client_module else f"python-{module}-literal"
+    return method, call.args[0].value, channel
+
+
+def _python_http_call_edges(
+    root: Node,
+    symbols: list[Symbol],
+    filepath: Path,
+) -> list[Edge]:
+    try:
+        tree = ast.parse(_text(root))
+    except SyntaxError:
+        return []
+    file_str = str(filepath)
+    module_aliases = _python_import_aliases(tree)
+    client_receivers = _python_client_receivers(tree, module_aliases)
+    edges: list[Edge] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        parsed = _python_call_method_and_url(
+            node,
+            module_aliases=module_aliases,
+            client_receivers=client_receivers,
+        )
+        if parsed is None:
+            continue
+        method, url, provenance = parsed
+        target = _http_call_route_name(method, url)
+        source = _python_enclosing_symbol(symbols, int(node.lineno))
+        if target and source:
+            edges.append(Edge(
+                source=source,
+                target=target,
+                kind="http_calls",
+                file=file_str,
+                line=int(node.lineno),
+                confidence="EXTRACTED",
+                provenance=provenance,
+            ))
+    return edges
 
 
 def _walk(node: Node) -> list[Node]:
@@ -274,6 +393,8 @@ def _ts_express_receivers(root: Node) -> set[str]:
             receivers.add(_text(name))
         elif call_name == "Router":
             receivers.add(_text(name))
+        elif call_name == "require" and _ts_literal_string(_first_arg(value.child_by_field_name("arguments"))) == "express":
+            receivers.add(_text(name))
         elif member and member[0] == "express" and member[1] == "Router":
             receivers.add(_text(name))
     return receivers
@@ -344,16 +465,22 @@ def _typescript_routes(
                     ))
                 continue
 
-            if receiver == "axios" and action_lower in _HTTP_METHODS_LOWER and path:
+            target = _http_call_route_name(action_lower.upper(), path) if path else None
+            if receiver == "axios" and action_lower in _HTTP_METHODS_LOWER and target:
                 source = _find_enclosing_function(node, language)
                 if source:
                     route_edges.append(Edge(
                         source=source,
-                        target=_route_name(action_lower.upper(), path),
+                        target=target,
                         kind="http_calls",
                         file=file_str,
                         line=node.start_point[0] + 1,
                         confidence="EXTRACTED",
+                        provenance=(
+                            "typescript-axios-literal"
+                            if language == "typescript"
+                            else "javascript-axios-literal"
+                        ),
                     ))
                 continue
 
@@ -366,29 +493,41 @@ def _typescript_routes(
             method = (_ts_object_literal_value(_second_arg(arguments), "method") or "GET").upper()
             if method not in _HTTP_METHODS:
                 continue
+            target = _http_call_route_name(method, path)
             source = _find_enclosing_function(node, language)
-            if source:
+            if source and target:
                 route_edges.append(Edge(
                     source=source,
-                    target=_route_name(method, path),
+                    target=target,
                     kind="http_calls",
                     file=file_str,
                     line=node.start_point[0] + 1,
                     confidence="EXTRACTED",
+                    provenance=(
+                        "typescript-fetch-literal"
+                        if language == "typescript"
+                        else "javascript-fetch-literal"
+                    ),
                 ))
         elif call_name == "axios":
             config = _first_arg(arguments)
             path = _ts_object_literal_value(config, "url")
             method = (_ts_object_literal_value(config, "method") or "").upper()
+            target = _http_call_route_name(method, path) if path and method in _HTTP_METHODS else None
             source = _find_enclosing_function(node, language)
-            if source and path and method in _HTTP_METHODS:
+            if source and target:
                 route_edges.append(Edge(
                     source=source,
-                    target=_route_name(method, path),
+                    target=target,
                     kind="http_calls",
                     file=file_str,
                     line=node.start_point[0] + 1,
                     confidence="EXTRACTED",
+                    provenance=(
+                        "typescript-axios-literal"
+                        if language == "typescript"
+                        else "javascript-axios-literal"
+                    ),
                 ))
     return route_symbols, route_edges, route_metadata
 

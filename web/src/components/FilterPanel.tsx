@@ -3,8 +3,7 @@
  *
  * Shows toggle chips for:
  *   - 6 node kinds (function, class, method, interface, type, field)
- *   - 9 edge kinds (call, import, extends, implements, instantiates, holds,
- *     reads, writes, uses)
+ *   - the current Seam edge vocabulary from edgeFilter.ts
  *
  * Counts are derived from the RAW (unfiltered) data so the chip badge always
  * reflects the full corpus, not the current visible set.
@@ -15,11 +14,11 @@
 
 import type { LayoutNode, LayoutEdge, LayoutData } from "../lib/layoutTypes";
 import { EDGE_TYPE_COLORS, KIND_COLORS, DEFAULT_KIND_COLOR, DEFAULT_EDGE_COLOR } from "../lib/constellationColors";
+import { ALL_EDGE_KINDS } from "../lib/edgeFilter";
 
 // ── Node kinds and edge kinds in stable display order ────────────────────────
 
 const NODE_KINDS = ["function", "class", "method", "interface", "type", "field"] as const;
-const EDGE_KINDS = ["call", "import", "extends", "implements", "instantiates", "holds", "reads", "writes", "uses"] as const;
 
 // ── Pure helper ───────────────────────────────────────────────────────────────
 
@@ -179,7 +178,7 @@ export function FilterPanel({
           </span>
         </div>
         <div className="flex flex-col gap-1">
-          {EDGE_KINDS.map((kind) => {
+          {ALL_EDGE_KINDS.map((kind) => {
             const count = edgeCounts[kind] ?? 0;
             const active = enabledEdges.has(kind);
             const color = EDGE_TYPE_COLORS[kind] ?? DEFAULT_EDGE_COLOR;

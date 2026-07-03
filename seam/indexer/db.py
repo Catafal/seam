@@ -11,7 +11,8 @@ Key design decisions:
   v9->v10 (Tier B B1: edges.receiver column for call-edge receiver capture),
   v11->v12 (edge-synthesis post-pass: edges.synthesized_by column),
   v12->v13 (routes table for first-class HTTP route metadata),
-  v13->v14 (config/resource metadata tables).
+  v13->v14 (config/resource metadata tables),
+  v14->v15 (direct extractor provenance: edges.provenance column).
 - upsert_file is a single transaction: INSERT OR REPLACE the file row,
   DELETE old symbols/edges/comments, then re-insert. Triggers handle FTS sync.
 - delete_file DELETE FROM files cascades to symbols/edges/comments via FK; FTS
@@ -54,6 +55,7 @@ from seam.indexer.migrations import (
     _run_migration_v11_to_v12,
     _run_migration_v12_to_v13,
     _run_migration_v13_to_v14,
+    _run_migration_v14_to_v15,
 )
 from seam.indexer.tokenize import build_search_text
 
@@ -134,7 +136,7 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
     Guard: only run when:
       1. The metadata table EXISTS (i.e. this is an initialized DB, not a fresh
          empty file with no schema yet).
-      2. schema_version < current version (14).
+      2. schema_version < current version (15).
 
     Fresh-DB safety: a brand-new empty file (no metadata table yet) is left alone —
     init_db() will create the schema and run all migrations in the correct order.
@@ -163,7 +165,7 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
         row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
         version = int(row["value"]) if row else 0
 
-        if version >= 14:
+        if version >= 15:
             return  # Already up to date — no-op.
 
         # Version is < 13: run pending migrations in order.
@@ -205,6 +207,9 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
         # v13→v14: config/resource metadata tables.
         if version < 14:
             _run_migration_v13_to_v14(conn)
+        # v14→v15: direct extractor provenance column.
+        if version < 15:
+            _run_migration_v14_to_v15(conn)
 
     except Exception as exc:  # noqa: BLE001
         # Do NOT raise here — failing to auto-migrate should not crash a read-only
@@ -285,6 +290,9 @@ def init_db(db_path: Path) -> sqlite3.Connection:
 
     # Run v13->v14 migration guard (adds config/resource metadata tables).
     _run_migration_v13_to_v14(conn)
+
+    # Run v14->v15 migration guard (adds edges.provenance for direct extractor detail).
+    _run_migration_v14_to_v15(conn)
 
     return conn
 
@@ -409,6 +417,7 @@ def upsert_file(
         #                             Edge['confidence'] -> confidence (schema v2)
         #                             Edge['receiver'] -> receiver (schema v10, nullable)
         #                             Edge['synthesized_by'] -> synthesized_by (schema v12, nullable)
+        #                             Edge['provenance'] -> provenance (schema v15, nullable)
         #
         # synthesized_by: NULL for statically extracted edges (the default for all
         # parser-emitted edges); a channel name string for synthesis post-pass edges.
@@ -417,8 +426,11 @@ def upsert_file(
         # upsert_file) because synthesized edges are not file-scoped.
         conn.executemany(
             """
-            INSERT INTO edges (source_name, target_name, kind, file_id, line, confidence, receiver, synthesized_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO edges (
+                source_name, target_name, kind, file_id, line, confidence,
+                receiver, synthesized_by, provenance
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -430,6 +442,7 @@ def upsert_file(
                     edge["confidence"],         # required field — fail loud if missing
                     edge.get("receiver"),       # nullable: None for import/bare-call edges
                     edge.get("synthesized_by"),  # nullable: None for parser-extracted edges
+                    edge.get("provenance"),     # nullable: extractor-specific detail
                 )
                 for edge in edges
             ],

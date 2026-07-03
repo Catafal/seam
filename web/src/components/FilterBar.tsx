@@ -6,7 +6,7 @@
  *   - Per-option live counts sourced from the post-overlay displayEdges so
  *     counts update after impact/trace overlays are applied
  *   - Colored dot per edge-kind matching the graph edge colors (EDGE_TYPE_COLORS)
- *   - 6 phantom edge kinds removed from the kind list (the 9 real kinds only)
+ *   - All currently indexed Seam edge kinds from the shared vocabulary
  *   - Scrollable-column layout when the horizontal strip overflows the viewport
  *
  * Issue #192 (S6b) adds:

@@ -44,6 +44,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/graph/layout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Layout
+         * @description Compute a whole-repo 3D constellation layout (server-side positions).
+         *
+         *     Returns pre-positioned nodes, edges, and cluster summaries for the 3D
+         *     Constellation Explorer tab. Positions are deterministic and cached per
+         *     (MAX(files.indexed_at), max_nodes) with a TTL of SEAM_STALENESS_TTL_SECONDS.
+         *
+         *     The O(n²) numpy ForceAtlas2 kernel is only re-run when the index changes or
+         *     the cache entry expires. Cluster halos are derived from node positions.
+         *
+         *     Responds with 503 NO_INDEX when the index does not exist.
+         */
+        get: operations["get_layout_api_graph_layout_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/schema": {
         parameters: {
             query?: never;
@@ -308,9 +337,9 @@ export interface paths {
          * Get Hubs
          * @description Return the most-connected symbols — landing-page entry points.
          *
-         *     Reuses graph_api.top_hub_symbols (degree-ranked, defined-only). The default
-         *     is high enough (60) that the Explorer's area cards each get covered when it
-         *     buckets hubs by their declaring path.
+         *     Reuses graph_api.top_hub_symbols (degree-ranked, defined-only).
+         *     show_tests=false (default) excludes test-path symbols (real hubs only).
+         *     Pass show_tests=true to include test helpers in the hub list.
          */
         get: operations["get_hubs_api_hubs_get"];
         put?: never;
@@ -385,6 +414,8 @@ export interface components {
             embeddings: number;
             /** Routes */
             routes: number;
+            /** Http Calls */
+            http_calls: number;
             /** Config Keys */
             config_keys: number;
             /** Resources */
@@ -415,6 +446,24 @@ export interface components {
             };
             /** Synthesized Total */
             synthesized_total: number;
+        };
+        /**
+         * ArchitectureEvidenceSection
+         * @description Bounded evidence section with status, count, and optional explanation.
+         */
+        ArchitectureEvidenceSection: {
+            /** Status */
+            status: string;
+            /** Count */
+            count: number;
+            /** Items */
+            items: {
+                [key: string]: unknown;
+            }[];
+            /** Truncated */
+            truncated: number;
+            /** Reason */
+            reason?: string | null;
         };
         /**
          * ArchitectureExceptionsSection
@@ -564,6 +613,7 @@ export interface components {
             clusters?: components["schemas"]["ArchitectureListSection"] | null;
             entry_points?: components["schemas"]["ArchitectureListSection"] | null;
             routes?: components["schemas"]["ArchitectureListSection"] | null;
+            http_calls?: components["schemas"]["ArchitectureEvidenceSection"] | null;
             configs?: components["schemas"]["ArchitectureListSection"] | null;
             resources?: components["schemas"]["ArchitectureListSection"] | null;
             hotspots?: components["schemas"]["ArchitectureListSection"] | null;
@@ -612,6 +662,21 @@ export interface components {
             }[] | null;
             /** Truncated */
             truncated?: number | null;
+        };
+        /**
+         * CallerRef
+         * @description S2 enriched caller/callee: edge metadata added at the web layer.
+         *
+         *     The context handler returns bare name strings; fetch_edge_refs enriches them
+         *     with kind + confidence from a direct edges query (no handler change).
+         */
+        CallerRef: {
+            /** Name */
+            name: string;
+            /** Kind */
+            kind: string;
+            /** Confidence */
+            confidence: string;
         };
         /**
          * ChangedSymbol
@@ -668,9 +733,8 @@ export interface components {
          * @description One cluster in the cluster list.
          *
          *     `representative` is a member symbol NAME the UI can center the graph on when
-         *     the cluster is clicked as an entry point — clusters themselves are not symbols,
-         *     so the landing page needs a real symbol to open. None only if the cluster has
-         *     no clustered symbols (shouldn't happen, but degrades safely to label fallback).
+         *     the cluster is clicked — clusters aren't symbols, so the landing page needs a
+         *     real symbol to open. None only if the cluster has no members (degrades safely).
          */
         ClusterItem: {
             /** Cluster Id */
@@ -693,6 +757,10 @@ export interface components {
         /**
          * ConstellationCluster
          * @description One cluster region in the whole-repo overview.
+         *
+         *     C1: `representative` is the MIN(id) member symbol name for this cluster —
+         *     the same value /api/clusters returns (single source of truth). None only for
+         *     orphan clusters that have no symbols assigned (rare in practice).
          */
         ConstellationCluster: {
             /** Cluster Id */
@@ -701,12 +769,8 @@ export interface components {
             label: string | null;
             /** Size */
             size: number;
-            /**
-             * Representative
-             * C1: MIN(id) member symbol name — same value as /api/clusters (single source of truth).
-             * Null for orphan clusters with no symbols assigned.
-             */
-            representative: string | null;
+            /** Representative */
+            representative?: string | null;
         };
         /**
          * ConstellationLink
@@ -846,6 +910,10 @@ export interface components {
             receiver?: string | null;
             /** Synthesized By */
             synthesized_by?: string | null;
+            /** Provenance */
+            provenance?: string | null;
+            /** Route Resolved */
+            route_resolved?: boolean | null;
         };
         /**
          * GraphSearchResponse
@@ -897,35 +965,14 @@ export interface components {
             symbols: components["schemas"]["HubSymbol"][];
         };
         /**
-         * CallerRef
-         * @description An enriched caller or callee reference carrying edge metadata.
-         *
-         *     S2 web-layer enrichment: the context handler returns caller/callee names as
-         *     bare strings; this model adds 'kind' and 'confidence' sourced from a direct
-         *     edge query in the web route — no change to the underlying handler.
-         *
-         *     When multiple edges exist for the same source→target pair (e.g. both a 'call'
-         *     and a 'reads' edge), one representative row is picked (MIN edge id) for a clean
-         *     1-entry-per-name contract that matches the handler's deduplicated list.
-         */
-        CallerRef: {
-            /** Name */
-            name: string;
-            /** Kind */
-            kind: string;
-            /** Confidence */
-            confidence: string;
-        };
-        /**
          * ImpactEntry
          * @description One affected symbol in an impact (blast-radius) result.
          *
-         *     Lean field set: the overlay only needs identity + tier + location. Heavy
-         *     provenance fields (resolved_by/best_candidate) are stripped by passing
-         *     verbose=False to handle_seam_impact, keeping the payload small.
-         *
-         *     S2: 'kind' is the edge kind of the final hop (e.g. 'call', 'reads').
-         *     Present when SEAM_EDGE_PROVENANCE=on (default); null when off or pre-E4 index.
+         *     Lean field set: identity + tier + location. Heavy provenance fields
+         *     (resolved_by/best_candidate) are stripped via verbose=False.
+         *     S2: 'kind' added — edge kind of the final hop; present when SEAM_EDGE_PROVENANCE=on.
+         *     'kind' is a core handler field (NOT in _HEAVY_FIELDS) that survived verbose=False
+         *     but was discarded by Pydantic until this model declared it.
          */
         ImpactEntry: {
             /** Name */
@@ -940,20 +987,15 @@ export interface components {
             file: string | null;
             /** Is Test */
             is_test: boolean;
-            /**
-             * Kind
-             * @description Edge kind of the final hop (S2). Present when SEAM_EDGE_PROVENANCE=on.
-             */
+            /** Kind */
             kind?: string | null;
         };
         /**
          * ImpactResponse
          * @description Response for GET /api/impact.
          *
-         *     risk_summary is the honest full-count per tier (computed before any cap), so
-         *     the UI can show true totals even when entry lists are capped by `limit`.
-         *     upstream/downstream are present only for the requested direction(s).
-         *     truncated is present only when a tier was capped.
+         *     risk_summary reflects honest full-count per tier (pre-cap). upstream/downstream
+         *     present only for the requested direction(s). truncated present only when capped.
          */
         ImpactResponse: {
             /** Found */
@@ -980,6 +1022,72 @@ export interface components {
                     [key: string]: number;
                 };
             } | null;
+        };
+        /**
+         * LayoutClusterModel
+         * @description Functional-area cluster summary for halo rendering.
+         */
+        LayoutClusterModel: {
+            /** Cluster Id */
+            cluster_id: number;
+            /** Label */
+            label: string | null;
+            /** Centroid */
+            centroid: number[];
+            /** Radius */
+            radius: number;
+            /** Color */
+            color: string;
+        };
+        /**
+         * LayoutEdgeModel
+         * @description One directed edge between layout nodes, referenced by node id.
+         */
+        LayoutEdgeModel: {
+            /** Source */
+            source: number;
+            /** Target */
+            target: number;
+            /** Type */
+            type: string;
+        };
+        /**
+         * LayoutNodeModel
+         * @description One positioned node in the constellation layout.
+         */
+        LayoutNodeModel: {
+            /** Id */
+            id: number;
+            /** X */
+            x: number;
+            /** Y */
+            y: number;
+            /** Z */
+            z: number;
+            /** Label */
+            label: string;
+            /** Name */
+            name: string;
+            /** File Path */
+            file_path: string | null;
+            /** Size */
+            size: number;
+            /** Color */
+            color: string;
+        };
+        /**
+         * LayoutResponse
+         * @description Response body for GET /api/graph/layout.
+         */
+        LayoutResponse: {
+            /** Nodes */
+            nodes: components["schemas"]["LayoutNodeModel"][];
+            /** Edges */
+            edges: components["schemas"]["LayoutEdgeModel"][];
+            /** Clusters */
+            clusters: components["schemas"]["LayoutClusterModel"][];
+            /** Total Nodes */
+            total_nodes: number;
         };
         /**
          * NeighborhoodResponse
@@ -1054,6 +1162,8 @@ export interface components {
             has_signature_column: boolean;
             /** Has Synthesized By Column */
             has_synthesized_by_column: boolean;
+            /** Has Edge Provenance Column */
+            has_edge_provenance_column: boolean;
             /** Has Routes Table */
             has_routes_table: boolean;
             /** Has Route Nodes */
@@ -1114,6 +1224,8 @@ export interface components {
             embeddings: number;
             /** Routes */
             routes: number;
+            /** Http Calls */
+            http_calls: number;
             /** Config Keys */
             config_keys: number;
             /** Resources */
@@ -1371,6 +1483,10 @@ export interface components {
         /**
          * StructureSymbol
          * @description One symbol row for the structure map (flat — the SPA builds the tree).
+         *
+         *     B2: `degree` = fan-in / incoming edge count (edges pointing TO this symbol).
+         *     Computed at read time via an additive LEFT JOIN — no schema change, no re-index.
+         *     Zero when a symbol has no incoming edges (isolated or outgoing-only).
          */
         StructureSymbol: {
             /** Path */
@@ -1383,10 +1499,7 @@ export interface components {
             line: number;
             /** Qualified Name */
             qualified_name: string | null;
-            /**
-             * Degree
-             * @description Fan-in (incoming edge) count for this symbol (B2).
-             */
+            /** Degree */
             degree: number;
         };
         /**
@@ -1420,15 +1533,9 @@ export interface components {
             name: string;
             /** Definitions */
             definitions: components["schemas"]["SymbolDefinition"][];
-            /**
-             * Callers
-             * @description S2: enriched {name, kind, confidence} objects instead of bare name strings.
-             */
+            /** Callers */
             callers: components["schemas"]["CallerRef"][];
-            /**
-             * Callees
-             * @description S2: enriched {name, kind, confidence} objects instead of bare name strings.
-             */
+            /** Callees */
             callees: components["schemas"]["CallerRef"][];
             cluster: components["schemas"]["ClusterInfo"] | null;
             /** Peers */
@@ -1454,10 +1561,9 @@ export interface components {
          * TraceResponse
          * @description Response for GET /api/trace.
          *
-         *     Only `paths` is surfaced (the path overlay's input). The handler's
-         *     callers/callees-of-source/target lists are intentionally dropped — the
-         *     neighborhood endpoint already covers immediate neighbors. paths[0] is the
-         *     shortest path; empty list when source and target are not connected.
+         *     Only `paths` is surfaced (the path overlay's input). The handler's neighbor lists
+         *     are dropped — the neighborhood endpoint covers those. paths[0] is the shortest path;
+         *     empty list when source and target are not connected.
          */
         TraceResponse: {
             /** Found */
@@ -1596,6 +1702,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ArchitectureResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_layout_api_graph_layout_get: {
+        parameters: {
+            query?: {
+                /** @description Maximum number of nodes to include in the layout. Nodes are selected by degree DESC (most-connected first). total_nodes in the response reflects the true count before this cap. */
+                max_nodes?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LayoutResponse"];
                 };
             };
             /** @description Validation Error */
@@ -1972,6 +2110,8 @@ export interface operations {
             query?: {
                 /** @description How many hub symbols to return */
                 limit?: number;
+                /** @description Include symbols from test paths (default: false) */
+                show_tests?: boolean;
             };
             header?: never;
             path?: never;

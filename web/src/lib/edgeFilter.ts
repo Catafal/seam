@@ -18,11 +18,11 @@ export interface EdgeFilterState {
 }
 
 /**
- * All REAL edge kinds Seam emits (the 9-kind schema vocabulary).
+ * All edge kinds Seam emits (the 15-kind schema vocabulary).
  *
- * WHY this list: the API only emits these 9 kinds. Six phantom kinds
- * (http_calls, reads_config, configures, raises, catches, tests) were never
- * part of the schema and have been removed so the filter shows only valid options.
+ * WHY this list is explicit: Explorer filters are local UI state, not a refetch.
+ * New backend edge kinds must be enabled here so graph views do not silently hide
+ * valid edges returned by the API.
  * See docs/database/schema.sql and CLAUDE.md "Edge kind vocabulary".
  */
 export const ALL_EDGE_KINDS = [
@@ -35,6 +35,12 @@ export const ALL_EDGE_KINDS = [
   "reads",
   "writes",
   "uses",
+  "http_calls",
+  "reads_config",
+  "configures",
+  "raises",
+  "catches",
+  "tests",
 ] as const;
 export const ALL_CONFIDENCES = ["EXTRACTED", "AMBIGUOUS", "INFERRED"] as const;
 

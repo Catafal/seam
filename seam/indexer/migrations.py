@@ -635,7 +635,8 @@ def _run_migration_v11_to_v12(conn: sqlite3.Connection) -> None:
     Edge-synthesis post-pass addition: captures which synthesis channel produced an
     edge (e.g. 'interface-override'). NULL = statically extracted by a parser;
     a channel name string = synthesized by the post-pass. Provenance is derived:
-    synthesized_by IS NOT NULL ⟹ heuristic. No separate provenance column needed.
+    synthesized_by IS NOT NULL ⟹ heuristic. Direct extractor provenance lives in
+    edges.provenance starting in schema v15 and must not be conflated with this column.
 
     Additive-only: adds a nullable TEXT column to the edges table if absent.
     Does NOT backfill — synthesized_by stays NULL on existing rows. Synthesized
@@ -853,6 +854,51 @@ def _run_migration_v13_to_v14(conn: sqlite3.Connection) -> None:
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(
             "Seam DB migration v13->v14 failed; run 'seam init' to rebuild the index"
+        ) from exc
+
+
+def _run_migration_v14_to_v15(conn: sqlite3.Connection) -> None:
+    """Guarded migration: add direct edge extractor provenance (v14 -> v15).
+
+    `synthesized_by` is reserved for post-pass/generated edges. This column gives
+    first-pass extractors a place to store evidence detail without making parser
+    edges look synthesized to graph filters.
+    """
+    try:
+        row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
+        version = int(row["value"]) if row else 0
+
+        if version >= 15:
+            return
+
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            col_names = {
+                r["name"] for r in conn.execute("PRAGMA table_info(edges)").fetchall()
+            }
+            if "provenance" not in col_names:
+                conn.execute("ALTER TABLE edges ADD COLUMN provenance TEXT")
+            conn.execute("UPDATE metadata SET value = '15' WHERE key = 'schema_version'")
+            conn.execute("COMMIT")
+
+            logger.info(
+                "Migrated Seam index v%d->v15 (added edges.provenance column). "
+                "Run 'seam init' to populate direct extractor provenance.",
+                version,
+            )
+        except Exception as exc:  # noqa: BLE001
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(
+                "Seam DB migration v14->v15 failed; run 'seam init' to rebuild the index"
+            ) from exc
+    except RuntimeError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "Seam DB migration v14->v15 failed; run 'seam init' to rebuild the index"
         ) from exc
 
 

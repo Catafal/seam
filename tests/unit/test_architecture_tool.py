@@ -302,6 +302,108 @@ def test_architecture_routes_section_reports_indexed_routes(tmp_path: Path) -> N
         conn.close()
 
 
+def test_architecture_http_calls_section_reports_static_call_evidence(tmp_path: Path) -> None:
+    from seam.query.architecture import describe_architecture
+
+    root = tmp_path.resolve()
+    server = root / "server.ts"
+    client = root / "client.ts"
+    server.write_text(
+        "import express from 'express';\n"
+        "const app = express();\n"
+        "\n"
+        "app.get('/api/users', listUsers);\n"
+        "function listUsers(req, res) {\n"
+        "  return res.json([]);\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    client.write_text(
+        "export async function loadUsers() {\n"
+        "  return fetch('/api/users?active=1');\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    db = root / ".seam" / "seam.db"
+    db.parent.mkdir()
+    conn = init_db(db)
+    try:
+        index_one_file(conn, server)
+        index_one_file(conn, client)
+
+        result = describe_architecture(conn, root=root, sections=["http_calls"], limit=5)
+
+        assert result["counts"]["http_calls"] == 1
+        http_calls = result["sections"]["http_calls"]
+        assert http_calls["status"] == "populated"
+        assert http_calls["count"] == 1
+        assert http_calls["items"] == [
+            {
+                "source": "loadUsers",
+                "target": "ROUTE GET /api/users",
+                "file": "client.ts",
+                "line": 2,
+                "confidence": "EXTRACTED",
+                "provenance": "typescript-fetch-literal",
+                "route_resolved": True,
+                "route": {
+                    "method": "GET",
+                    "path": "/api/users",
+                    "normalized_path": "/api/users",
+                    "framework": "express",
+                    "handler": "listUsers",
+                    "file": "server.ts",
+                    "line": 4,
+                },
+            }
+        ]
+        assert any(call["params"].get("edge_kind") == "http_calls" for call in result["next_calls"])
+
+        from seam.server.web_schema import ArchitectureResponse
+
+        web_payload = ArchitectureResponse(**result).model_dump()
+        assert web_payload["counts"]["http_calls"] == 1
+        assert web_payload["sections"]["http_calls"]["count"] == 1
+        assert web_payload["sections"]["http_calls"]["items"][0]["provenance"] == "typescript-fetch-literal"
+        assert web_payload["sections"]["http_calls"]["items"][0]["route_resolved"] is True
+    finally:
+        conn.close()
+
+
+def test_architecture_http_calls_section_distinguishes_empty_evidence(tmp_path: Path) -> None:
+    from seam.query.architecture import describe_architecture
+
+    root = tmp_path.resolve()
+    src = root / "api.py"
+    src.write_text(
+        "from fastapi import FastAPI\n"
+        "app = FastAPI()\n"
+        "\n"
+        "@app.get('/health')\n"
+        "def health():\n"
+        "    return {'ok': True}\n",
+        encoding="utf-8",
+    )
+    db = root / ".seam" / "seam.db"
+    db.parent.mkdir()
+    conn = init_db(db)
+    try:
+        index_one_file(conn, src)
+
+        result = describe_architecture(conn, root=root, sections=["http_calls"], limit=5)
+
+        assert result["counts"]["routes"] == 1
+        assert result["counts"]["http_calls"] == 0
+        assert result["sections"]["http_calls"] == {
+            "status": "empty",
+            "count": 0,
+            "items": [],
+            "truncated": 0,
+        }
+    finally:
+        conn.close()
+
+
 def test_architecture_scope_sections_boundaries_and_byte_budget(tmp_path: Path) -> None:
     """Scoping and section selection keep architecture output bounded and honest."""
     from seam.query.architecture import describe_architecture

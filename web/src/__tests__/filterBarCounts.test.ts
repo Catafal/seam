@@ -14,6 +14,7 @@ import {
   countVisibleEdgesByConfidence,
   countEdgesByField,
 } from "../lib/filterBarCounts";
+import { ALL_EDGE_KINDS } from "../lib/edgeFilter";
 import type { Edge } from "@xyflow/react";
 
 // ── Fixture helpers ────────────────────────────────────────────────────────────
@@ -64,11 +65,10 @@ describe("countVisibleEdgesByKind", () => {
     expect(countVisibleEdgesByKind([])).toEqual({});
   });
 
-  it("handles all 9 real edge kinds", () => {
-    const kinds = ["call", "import", "extends", "implements", "instantiates", "holds", "reads", "writes", "uses"];
-    const edges: Edge[] = kinds.map((k, i) => mkEdge(`e${i}`, k, "EXTRACTED", false));
+  it("handles all real edge kinds", () => {
+    const edges: Edge[] = ALL_EDGE_KINDS.map((k, i) => mkEdge(`e${i}`, k, "EXTRACTED", false));
     const counts = countVisibleEdgesByKind(edges);
-    for (const k of kinds) {
+    for (const k of ALL_EDGE_KINDS) {
       expect(counts[k]).toBe(1);
     }
   });

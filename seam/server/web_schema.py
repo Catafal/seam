@@ -26,6 +26,7 @@ class SchemaCounts(BaseModel):
     import_mappings: int
     embeddings: int
     routes: int
+    http_calls: int
     config_keys: int
     resources: int
 
@@ -56,6 +57,7 @@ class SchemaCapabilities(BaseModel):
     has_search_text: bool
     has_signature_column: bool
     has_synthesized_by_column: bool
+    has_edge_provenance_column: bool
     has_routes_table: bool
     has_route_nodes: bool
     has_http_calls: bool
@@ -203,6 +205,8 @@ class GraphSearchPreviewItem(BaseModel):
     confidence: str
     receiver: str | None = None
     synthesized_by: str | None = None
+    provenance: str | None = None
+    route_resolved: bool | None = None
 
 
 class GraphSearchItem(BaseModel):
@@ -273,6 +277,7 @@ class ArchitectureCounts(BaseModel):
     import_mappings: int
     embeddings: int
     routes: int
+    http_calls: int
     config_keys: int
     resources: int
     test_files: int
@@ -341,6 +346,16 @@ class ArchitectureOptionalSurface(BaseModel):
     reason: str | None = None
 
 
+class ArchitectureEvidenceSection(BaseModel):
+    """Bounded evidence section with status, count, and optional explanation."""
+
+    status: str
+    count: int
+    items: list[dict[str, Any]]
+    truncated: int
+    reason: str | None = None
+
+
 class ArchitectureSections(BaseModel):
     """Optional architecture sections selected by the caller."""
 
@@ -350,6 +365,7 @@ class ArchitectureSections(BaseModel):
     clusters: ArchitectureListSection | None = None
     entry_points: ArchitectureListSection | None = None
     routes: ArchitectureListSection | None = None
+    http_calls: ArchitectureEvidenceSection | None = None
     configs: ArchitectureListSection | None = None
     resources: ArchitectureListSection | None = None
     hotspots: ArchitectureListSection | None = None

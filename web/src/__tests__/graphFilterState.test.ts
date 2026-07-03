@@ -31,7 +31,7 @@ describe("defaultGraphFilter", () => {
     expect(f.nodeKinds.size).toBe(ALL_NODE_KINDS.length);
   });
 
-  it("enables all 9 edge kinds", () => {
+  it("enables all edge kinds", () => {
     const f = defaultGraphFilter();
     for (const k of ALL_EDGE_KINDS) {
       expect(f.kinds.has(k)).toBe(true);

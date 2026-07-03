@@ -250,6 +250,7 @@ def _fetch_edges(conn: sqlite3.Connection) -> tuple[list[dict[str, Any]], list[d
     warnings: list[dict[str, str]] = []
     synthesized_expr = "e.synthesized_by" if "synthesized_by" in edge_columns else "NULL"
     receiver_expr = "e.receiver" if "receiver" in edge_columns else "NULL"
+    provenance_expr = "e.provenance" if "provenance" in edge_columns else "NULL"
     if "synthesized_by" not in edge_columns:
         warnings.append(_warning(
             "MISSING_SYNTHESIZED_PROVENANCE",
@@ -266,6 +267,7 @@ def _fetch_edges(conn: sqlite3.Connection) -> tuple[list[dict[str, Any]], list[d
             e.confidence,
             {receiver_expr} AS receiver,
             {synthesized_expr} AS synthesized_by,
+            {provenance_expr} AS provenance,
             f.path AS file
         FROM edges e
         JOIN files f ON f.id = e.file_id
@@ -280,6 +282,7 @@ def _fetch_edges(conn: sqlite3.Connection) -> tuple[list[dict[str, Any]], list[d
             "confidence": row["confidence"],
             "receiver": row["receiver"],
             "synthesized_by": row["synthesized_by"],
+            "provenance": row["provenance"],
             "file": row["file"],
         }
         for row in rows
@@ -415,6 +418,10 @@ def _preview(
         other_name = edge["source"] if edge_direction == "incoming" else edge["target"]
         candidates = symbol_by_name.get(other_name, [])
         other = candidates[0] if candidates else None
+        route_resolved = None
+        if edge["kind"] == "http_calls":
+            route_candidates = symbol_by_name.get(str(edge["target"]), [])
+            route_resolved = any(candidate["kind"] == "route" for candidate in route_candidates)
         items.append({
             "direction": edge_direction,
             "symbol": other_name,
@@ -426,6 +433,8 @@ def _preview(
             "confidence": edge["confidence"],
             "receiver": edge["receiver"],
             "synthesized_by": edge["synthesized_by"],
+            "provenance": edge["provenance"],
+            "route_resolved": route_resolved,
         })
     return items, truncated
 

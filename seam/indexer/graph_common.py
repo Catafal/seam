@@ -125,6 +125,11 @@ class Edge(TypedDict):
     # Provenance is DERIVED: synthesized_by IS NOT NULL ⟹ heuristic edge. This avoids
     # a separate boolean column and keeps the schema additive.
     synthesized_by: NotRequired[str | None]
+    # v15: extractor evidence channel for parser/direct edges that need more
+    # detail than kind+confidence, without changing synthesized-edge semantics.
+    # Example: http_calls edges can say "typescript-fetch-literal" while still
+    # keeping synthesized_by=NULL so graph filters treat them as parser evidence.
+    provenance: NotRequired[str | None]
 
 
 class RouteMetadata(TypedDict):
