@@ -8,11 +8,15 @@
  *
  * Features:
  *   OrbitControls  — dampingFactor 0.08, auto-rotate after 60s idle
- *   EffectComposer — Bloom (threshold .3, intensity 1.2, radius .6, mipmapBlur)
+ *   EffectComposer — Bloom (threshold .6, intensity .8, radius .65, mipmapBlur) [#262]
  *   CameraAnimator — ease-out cubic fly-to with 0.08 lerp factor
  *   EdgeLines      — additive-blended LineSegments (S3)
  *   NodeLabels     — canvas-sprite labels for top-80 nodes (S3)
  *   NodeTooltip    — drei Html glass-card on hover (S3)
+ *
+ * Interaction (# 263):
+ *   onPointerMissed on Canvas → fires when a click hits empty space → calls onDeselect
+ *   prefers-reduced-motion    → disables auto-rotate + snaps camera fly-to instantly
  *
  * Pure helpers exported for unit testing (no WebGL dependency):
  *   computeCameraTarget(nodes, ids) → CameraTarget | null
@@ -36,6 +40,21 @@ import type { LayoutNode, LayoutEdge } from "../lib/layoutTypes";
 
 /** Idle timeout in ms before auto-rotation kicks in (reference §2). */
 const IDLE_TIMEOUT_MS = 60_000;
+
+// ── Accessibility helper ──────────────────────────────────────────────────────
+
+/**
+ * Returns true if the user has opted into reduced motion via the OS preference
+ * (prefers-reduced-motion: reduce).  Checked once per component mount — the
+ * preference does not change mid-session in practice.
+ *
+ * Guards both auto-rotation (disable) and the camera fly-to (snap, no lerp).
+ * Returns false in SSR / environments without matchMedia.
+ */
+function prefersReducedMotion(): boolean {
+  if (typeof window === "undefined" || !window.matchMedia) return false;
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
 
 // ── Pure helpers (unit-testable without WebGL) ────────────────────────────────
 
@@ -99,12 +118,18 @@ interface CameraAnimatorProps {
  * Progress increments by 0.02/frame (~50 frames at 60fps).
  * The inner lerp factor (0.08) ensures smooth asymptotic arrival.
  *
+ * prefers-reduced-motion (#263): when the user has opted into reduced motion,
+ * the camera snaps to the target position immediately (no lerp animation).
+ * This keeps the isolate feature usable without triggering vestibular discomfort.
+ *
  * Reference: §2 "Camera fly-to" code block.
  */
 function CameraAnimator({ target }: CameraAnimatorProps) {
   const { camera } = useThree();
   const progress = useRef(0);
   const prevTarget = useRef<CameraTarget | null>(null);
+  // Read once at mount — the preference does not change mid-session.
+  const reducedMotion = useRef(prefersReducedMotion());
 
   // Reset progress whenever the target changes
   if (target !== prevTarget.current) {
@@ -117,12 +142,22 @@ function CameraAnimator({ target }: CameraAnimatorProps) {
 
   useFrame(() => {
     if (!target || progress.current >= 1.0) return;
-    progress.current = Math.min(progress.current + 0.02, 1.0);
-    const t = easeOutCubic(progress.current) * 0.08;
+
     posVec.current.set(...target.position);
     lookAtVec.current.set(...target.lookAt);
-    camera.position.lerp(posVec.current, t);
-    camera.lookAt(lookAtVec.current);
+
+    if (reducedMotion.current) {
+      // Snap: jump directly to the target with no animation (one frame).
+      camera.position.copy(posVec.current);
+      camera.lookAt(lookAtVec.current);
+      progress.current = 1.0; // mark done so we don't re-run
+    } else {
+      // Smooth ease-out cubic fly-to.
+      progress.current = Math.min(progress.current + 0.02, 1.0);
+      const t = easeOutCubic(progress.current) * 0.08;
+      camera.position.lerp(posVec.current, t);
+      camera.lookAt(lookAtVec.current);
+    }
   });
 
   return null;
@@ -135,9 +170,15 @@ interface AutoRotateControllerProps {
 /**
  * Tracks the last user interaction and enables auto-rotation after IDLE_TIMEOUT_MS.
  * Implemented as a useFrame check (not setInterval) per the reference.
+ *
+ * prefers-reduced-motion (#263): when the user has opted into reduced motion,
+ * auto-rotation is permanently disabled — the idle timer never fires.
+ * This prevents continuous rotation that can cause vestibular discomfort.
  */
 function AutoRotateController({ controlsRef }: AutoRotateControllerProps) {
   const lastInteraction = useRef(Date.now());
+  // Read once at mount — the preference does not change mid-session.
+  const reducedMotion = useRef(prefersReducedMotion());
 
   const handleInteraction = useCallback(() => {
     lastInteraction.current = Date.now();
@@ -159,6 +200,11 @@ function AutoRotateController({ controlsRef }: AutoRotateControllerProps) {
 
   useFrame(() => {
     if (!controlsRef.current) return;
+    // Reduced motion: always keep auto-rotate off (never engage).
+    if (reducedMotion.current) {
+      controlsRef.current.autoRotate = false;
+      return;
+    }
     const idle = Date.now() - lastInteraction.current > IDLE_TIMEOUT_MS;
     controlsRef.current.autoRotate = idle;
   });
@@ -177,6 +223,13 @@ interface ConstellationSceneProps {
   hoveredNode?: LayoutNode | null;
   onHover: (node: LayoutNode | null) => void;
   onSelect: (node: LayoutNode) => void;
+  /**
+   * Called when the user clicks empty canvas (no 3D object hit).
+   * Used to deselect the current node and restore the full star field (#263).
+   * Wired to Canvas.onPointerMissed which fires only on genuine miss-clicks,
+   * not on orbit-drag releases.
+   */
+  onDeselect?: () => void;
 }
 
 /**
@@ -202,6 +255,7 @@ export function ConstellationScene({
   hoveredNode,
   onHover,
   onSelect,
+  onDeselect,
 }: ConstellationSceneProps) {
   const controlsRef = useRef<{ autoRotate: boolean } | null>(null);
 
@@ -211,6 +265,7 @@ export function ConstellationScene({
       gl={{ antialias: false, alpha: false, powerPreference: "high-performance" }}
       camera={{ position: [0, 0, 800], fov: 50, near: 0.1, far: 100000 }}
       style={{ background: CANVAS_BG, width: "100%", height: "100%" }}
+      onPointerMissed={onDeselect}
     >
       {/* Lighting (cosmetic depth-cuing; nodes use meshBasicMaterial → unlit) */}
       <ambientLight intensity={0.5} />
@@ -252,14 +307,22 @@ export function ConstellationScene({
       {/* Camera fly-to animator */}
       <CameraAnimator target={cameraTarget} />
 
-      {/* Post-processing: Bloom glow corona (reference §2) */}
+      {/* Post-processing: Bloom glow corona (#262 — bright cores only, no white-out).
+          luminanceThreshold 0.3→0.6: only pixels above 0.6 linear luminance bloom.
+            - Ambient edges peak at ~0.0635 (call same-cluster G) — never bloom.
+            - Highlighted edges peak at ~0.488 (instantiates R × 0.5) — still below 0.6.
+            - Node cores with highlight boost reach 1.4–2.0 on dominant channels → bloom.
+          intensity 1.2→0.8: reduces spread on dense hub clusters (was clipping to white).
+          luminanceSmoothing 0.7: kept — smooth transition around the threshold.
+          radius 0.6→0.65: slightly wider corona to compensate for the lower intensity.
+          mipmapBlur: kept — anti-flickering pass; no cost change. */}
       <EffectComposer multisampling={0}>
         <Bloom
-          luminanceThreshold={0.3}
+          luminanceThreshold={0.6}
           luminanceSmoothing={0.7}
-          intensity={1.2}
+          intensity={0.8}
           mipmapBlur
-          radius={0.6}
+          radius={0.65}
         />
       </EffectComposer>
     </Canvas>

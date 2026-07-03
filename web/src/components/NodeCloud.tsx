@@ -1,27 +1,30 @@
 /**
  * NodeCloud — InstancedMesh rendering all visible nodes in a single GPU draw call.
  *
- * Rendering approach:
- * - One InstancedMesh with sphereGeometry + meshBasicMaterial (unlit, toneMapped=false)
- * - Per-instance position/scale matrix written in useFrame (dirty-flag optimised)
- * - Per-instance color Float32Array uploaded via instanceColor attribute
+ * Rendering approach (S2 #261 — additive glows, color by kind):
+ * - One InstancedMesh with sphereGeometry + meshBasicMaterial
+ * - Material uses THREE.AdditiveBlending + depthWrite=false + transparent so
+ *   nodes GLOW (colors ADD) instead of occluding (no black holes in the field).
+ *   This is the "additive emissive InstancedMesh" documented fallback — chosen
+ *   over Points because InstancedMesh raycasting already works perfectly for
+ *   hover/click, while Points raycasting requires fiddly threshold tuning.
+ * - Node HUE comes from KIND_COLORS[node.label] (single source of truth shared
+ *   with the filter legend). node.color (stellar/degree scale) is NO LONGER used.
+ * - Degree drives SIZE (via node.size from the layout engine) and BRIGHTNESS
+ *   (the highlight/dim boost applied to the kind color). Hue is kind-only.
  * - Color boost > 1.0 for highlighted nodes so the Bloom post-processing pass
  *   picks them up as coronas (reference §2: "values exceed 1.0, Bloom fires").
- *   THREE.js with toneMapped=false writes HDR values into the render target;
- *   the Bloom pass fires on any pixel whose luminance exceeds luminanceThreshold
- *   (0.3). Raw stellar colors are ≤1.0 and only barely trigger Bloom on the
- *   whitest/bluest classes. Multiplying highlighted nodes by boost=1.65–2.0
- *   pushes them firmly into HDR territory, producing a visible corona glow
- *   regardless of their spectral class.
  *
  * Pure helpers exported at module level for unit testing:
- *   computeInstanceColor(node, isHighlighted, isDimmed) → [r, g, b]
+ *   kindColor(label)                               → hex color string
+ *   computeInstanceColor(node, isH, isD)           → [r, g, b]
  */
 
 import { useRef, useMemo, useCallback } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import type { LayoutNode } from "../lib/layoutTypes";
+import { KIND_COLORS, DEFAULT_KIND_COLOR } from "../lib/constellationColors";
 
 // ── Pure helpers (unit-testable without WebGL) ────────────────────────────────
 
@@ -36,21 +39,36 @@ function parseHex(hex: string): [number, number, number] {
 }
 
 /**
+ * Return the kind color for a symbol label — the single source of truth shared
+ * with the filter legend chips. Unknown kinds fall back to DEFAULT_KIND_COLOR.
+ *
+ * This is the ONLY place where symbol kind → color is resolved, ensuring the
+ * node colors in the 3D view always match the legend dots.
+ */
+export function kindColor(label: string): string {
+  return KIND_COLORS[label] ?? DEFAULT_KIND_COLOR;
+}
+
+/**
  * Compute the per-instance [r, g, b] for a node.
  *
- * Highlighted: brightness-boosted above 1.0 (triggers Bloom post-processing).
- *   boost = 1.2 + brightness × 0.8  (1.65 for red-dwarf; 2.0 for white/blue)
- * Dimmed:      multiplied by 0.15 (dark, recedes into background)
- * Normal:      raw color components unchanged
+ * Color source: KIND_COLORS[node.label] (hue = symbol kind, same as the legend).
+ * node.color is intentionally ignored — it was the stellar/degree scale and is
+ * no longer the color authority after S2 (#261).
  *
- * Reference: docs/prd/phase11-p2-1-3d-constellation-reference.md §2
+ * Highlighted: brightness-boosted above 1.0 (triggers Bloom post-processing).
+ *   boost = 1.2 + brightness × 0.8  (1.65 for dark colors; up to 2.0 for white)
+ * Dimmed:      multiplied by 0.15 (dark, recedes into background)
+ * Normal:      raw kind-color components unchanged
  */
 export function computeInstanceColor(
   node: LayoutNode,
   isHighlighted: boolean,
   isDimmed: boolean,
 ): [number, number, number] {
-  const [r, g, b] = parseHex(node.color);
+  // Hue from kind, not from node.color (degree/stellar scale).
+  const [r, g, b] = parseHex(kindColor(node.label));
+
   if (isDimmed) {
     return [r * 0.15, g * 0.15, b * 0.15];
   }
@@ -76,6 +94,11 @@ const _matrix = new THREE.Matrix4();
 /**
  * All nodes rendered as one InstancedMesh.
  * Matrix and color arrays are rewritten on every relevant state change.
+ *
+ * AdditiveBlending + depthWrite=false: each node's glow ADDS color to whatever
+ * is behind it (edges, other nodes, halos) — the sphere never punches a black
+ * hole into the depth buffer. On the dark CANVAS_BG this creates the "star field"
+ * look where bright hubs appear as glowing coronas under Bloom.
  */
 export function NodeCloud({ nodes, highlightedIds, onHover, onSelect }: NodeCloudProps) {
   const meshRef = useRef<THREE.InstancedMesh>(null!);
@@ -102,6 +125,10 @@ export function NodeCloud({ nodes, highlightedIds, onHover, onSelect }: NodeClou
 
     nodes.forEach((node, i) => {
       const isH = highlightedIds.has(node.id);
+      // Highlighted nodes render at 0.5× (half of the no-selection 1.0 baseline) while
+      // dimmed nodes shrink further to 0.2×.  The highlighted node still appears
+      // visually prominent because the camera flies to it; the 0.5× vs 0.2× ratio
+      // (2.5× larger than dimmed) provides the focal contrast without over-sizing the mesh.
       const scaleFactor = isH ? 0.5 : hasHighlight ? 0.2 : 1.0;
       const s = node.size * scaleFactor;
       _matrix.makeScale(s, s, s);
@@ -113,7 +140,7 @@ export function NodeCloud({ nodes, highlightedIds, onHover, onSelect }: NodeClou
     // Upload colors via the instanceColor buffer. THREE.InstancedMesh starts with
     // instanceColor === null and only allocates it when setColorAt() is called — we
     // never call that, so without this lazy init the buffer stays null and every
-    // instance renders with the material's default white (stellar colors lost).
+    // instance renders with the material's default white (kind colors lost).
     // Re-allocate when the node count changes (a new InstancedMesh is mounted).
     if (!mesh.instanceColor || mesh.instanceColor.count !== nodes.length) {
       mesh.instanceColor = new THREE.InstancedBufferAttribute(
@@ -161,7 +188,22 @@ export function NodeCloud({ nodes, highlightedIds, onHover, onSelect }: NodeClou
       onClick={handleClick}
     >
       <sphereGeometry args={[1, 32, 24]} />
-      <meshBasicMaterial vertexColors toneMapped={false} />
+      {/*
+        AdditiveBlending + depthWrite=false + transparent:
+        - Colors accumulate (ADD) on the dark background → no black holes.
+        - depthWrite=false: the sphere leaves the depth buffer clean so
+          other primitives (edges, labels) always render on top correctly.
+        - transparent=true: required by Three.js to actually apply blending.
+        - toneMapped=false: HDR values > 1.0 on highlighted nodes reach the
+          Bloom pass without being clamped by the tone-mapper.
+      */}
+      <meshBasicMaterial
+        vertexColors
+        toneMapped={false}
+        transparent
+        blending={THREE.AdditiveBlending}
+        depthWrite={false}
+      />
     </instancedMesh>
   );
 }

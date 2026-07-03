@@ -99,6 +99,98 @@ describe("buildEdgeGeometry", () => {
     expect(positions[4]).toBe(50);
     expect(positions[5]).toBe(60);
   });
+
+  // ── #262: calmer edges + controlled loud-kind dimming ────────────────────────
+  //
+  // Nodes in "src/foo/*" share clusterKey "src/foo" (first 2 path components).
+  // Nodes in "src/foo/*" vs "src/bar/*" are cross-cluster.
+  //
+  // Color channel references:
+  //   call        = #1DA27E → R=0.114 G=0.635 B=0.494  (max: G)
+  //   instantiates= #f97316 → R=0.976 G=0.451 B=0.086  (max: R)
+  //   uses        = #eab308 → R=0.918 G=0.702 B=0.031  (max: R)
+  //   writes      = #ef4444 → R=0.937 G=0.267 B=0.267  (max: R)
+
+  it("#262 same-cluster call edge has strictly lower base intensity than old 0.25 baseline", () => {
+    // Old code: same-cluster intensity = 0.25. New target: ~0.10.
+    // call G-channel = 0xA2/255 ≈ 0.635. At intensity 0.25 → G = 0.159.
+    // After #262 the G-channel must be strictly below 0.159.
+    const a = mkNode(0, { file_path: "src/foo/a.ts" });
+    const b = mkNode(1, { file_path: "src/foo/b.ts" });
+    const nodeMap = new Map([[0, a], [1, b]]);
+    const { colors } = buildEdgeGeometry(nodeMap, [mkEdge(0, 1, "call")], new Set());
+    const g = colors[1]; // G channel of source vertex
+    expect(g).toBeLessThan(0.635 * 0.25); // strictly less than the old 0.25 baseline
+  });
+
+  it("#262 cross-cluster is always dimmer than same-cluster (no highlight)", () => {
+    // Same cluster: both nodes under "src/foo"; cross: one under "src/bar".
+    const sA = mkNode(0, { file_path: "src/foo/a.ts" });
+    const sB = mkNode(1, { file_path: "src/foo/b.ts" });
+    const xA = mkNode(2, { file_path: "src/foo/a.ts" });
+    const xB = mkNode(3, { file_path: "src/bar/c.ts" }); // different cluster
+    const nodeMap = new Map([[0, sA], [1, sB], [2, xA], [3, xB]]);
+    const { colors } = buildEdgeGeometry(
+      nodeMap,
+      [mkEdge(0, 1, "call"), mkEdge(2, 3, "call")],
+      new Set(),
+    );
+    const sameG = colors[1];  // G of same-cluster edge source vertex
+    const crossG = colors[7]; // G of cross-cluster edge source vertex (second edge)
+    expect(sameG).toBeGreaterThan(crossG);
+  });
+
+  it("#262 both-highlighted pair is brighter than same-cluster no-highlight", () => {
+    // Highlighted intensity (0.5) must exceed same-cluster no-highlight (~0.10).
+    const a = mkNode(0, { file_path: "src/foo/a.ts" });
+    const b = mkNode(1, { file_path: "src/foo/b.ts" });
+    const nodeMap = new Map([[0, a], [1, b]]);
+    const { colors: noH } = buildEdgeGeometry(nodeMap, [mkEdge(0, 1, "call")], new Set());
+    const { colors: hl } = buildEdgeGeometry(nodeMap, [mkEdge(0, 1, "call")], new Set([0, 1]));
+    expect(hl[1]).toBeGreaterThan(noH[1]); // G channel, highlighted > no-highlight
+  });
+
+  it("#262 loud kinds (instantiates, uses, writes) are dimmer than call in same-cluster no-highlight", () => {
+    // Without the loud-kind dim, instantiates R = 0.976×0.25 = 0.244 > call G = 0.635×0.25 = 0.159.
+    // After #262: call at ~0.10 → callMax ≈ 0.0635; instantiates at 0.10×0.5 → instMax ≈ 0.0488.
+    // All three loud kinds must have a lower max-channel value than call in the same context.
+    const a = mkNode(0, { file_path: "src/foo/a.ts" });
+    const b = mkNode(1, { file_path: "src/foo/b.ts" });
+    const nodeMap = new Map([[0, a], [1, b]]);
+    const noHl = new Set<number>();
+
+    const { colors: callC }   = buildEdgeGeometry(nodeMap, [mkEdge(0, 1, "call")],        noHl);
+    const { colors: instC }   = buildEdgeGeometry(nodeMap, [mkEdge(0, 1, "instantiates")], noHl);
+    const { colors: usesC }   = buildEdgeGeometry(nodeMap, [mkEdge(0, 1, "uses")],         noHl);
+    const { colors: writesC } = buildEdgeGeometry(nodeMap, [mkEdge(0, 1, "writes")],       noHl);
+
+    // Max channel (= visual prominence proxy) for each kind
+    const callMax   = Math.max(callC[0],   callC[1],   callC[2]);
+    const instMax   = Math.max(instC[0],   instC[1],   instC[2]);
+    const usesMax   = Math.max(usesC[0],   usesC[1],   usesC[2]);
+    const writesMax = Math.max(writesC[0], writesC[1], writesC[2]);
+
+    expect(instMax).toBeLessThan(callMax);
+    expect(usesMax).toBeLessThan(callMax);
+    expect(writesMax).toBeLessThan(callMax);
+  });
+
+  it("#262 loud kinds get full (undimmed) intensity when both endpoints are highlighted", () => {
+    // The loud-kind dim must NOT apply in the highlight path — full color returns.
+    // instantiates = #f97316, R ≈ 0.976. At intensity 0.5 (no dim): R ≈ 0.488.
+    // If dim were wrongly applied: R ≈ 0.244. Threshold 0.4 distinguishes them.
+    const a = mkNode(0, { file_path: "src/foo/a.ts" });
+    const b = mkNode(1, { file_path: "src/foo/b.ts" });
+    const nodeMap = new Map([[0, a], [1, b]]);
+    const hlSet = new Set([0, 1]);
+    const { colors: instHL }   = buildEdgeGeometry(nodeMap, [mkEdge(0, 1, "instantiates")], hlSet);
+    const { colors: usesHL }   = buildEdgeGeometry(nodeMap, [mkEdge(0, 1, "uses")],         hlSet);
+    const { colors: writesHL } = buildEdgeGeometry(nodeMap, [mkEdge(0, 1, "writes")],       hlSet);
+    // R channel for all three warm kinds should be near 0.5 × base-R (above threshold 0.4)
+    expect(instHL[0]).toBeGreaterThan(0.4);   // 0.976 × 0.5 ≈ 0.488
+    expect(usesHL[0]).toBeGreaterThan(0.4);   // 0.918 × 0.5 ≈ 0.459
+    expect(writesHL[0]).toBeGreaterThan(0.4); // 0.937 × 0.5 ≈ 0.469
+  });
 });
 
 // ── bareName ──────────────────────────────────────────────────────────────────
