@@ -60,6 +60,7 @@ from seam.analysis.impact import (
 )
 from seam.analysis.staleness import _watcher_is_alive, check_staleness
 from seam.cli.architecture import architecture_command
+from seam.cli.fetch import FetchError, fetch_index
 from seam.cli.file_sink import write_output_file
 from seam.cli.graph_search import graph_search_command
 from seam.cli.install import install_command, uninstall_command
@@ -68,9 +69,11 @@ from seam.cli.read import context_command, query_command, search_command
 from seam.cli.schema import schema_command
 from seam.cli.serve import serve_command
 from seam.cli.snippet import snippet_command
+from seam.indexer.artifact import pack_index as _pack_index_artifact
 from seam.indexer.db import connect
 from seam.indexer.embedding_index import sync_embeddings
 from seam.indexer.init_index import InitResult, run_init
+from seam.indexer.rebase import rebase_index
 from seam.indexer.sync import sync as sync_project
 from seam.query.clusters import cluster_members as query_cluster_members
 from seam.query.clusters import list_clusters as query_list_clusters
@@ -2416,10 +2419,12 @@ def affected_cmd(
 
 
 # ── seam pack ─────────────────────────────────────────────────────────────────
+# The context-pack command keeps its released `seam pack <symbol>` name (backward
+# compat is a Seam non-negotiable). WS4's index-archive producer is `seam pack-index`.
 
 
 @app.command(name="pack")
-def pack_cmd(
+def context_pack_cmd(
     symbol: str = typer.Argument(..., help="Symbol name to build context pack for."),
     path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
@@ -2595,6 +2600,108 @@ def pack_cmd(
             f"\n  [bold]cluster peers[/bold]: {', '.join(peers[:8])}"
             + (f" +{len(peers) - 8} more" if len(peers) > 8 else "")
         )
+
+
+# ── seam pack-index (artifact) ────────────────────────────────────────────────
+
+
+@app.command(name="pack-index")
+def pack_cmd(
+    path: str = typer.Argument(
+        ".", help="Project root whose .seam/ index will be packed (default: current directory)"
+    ),
+    db_dir: str = typer.Option(
+        "",
+        "--db-dir",
+        help="Override DB directory (default: same as project root)",
+    ),
+    dest: str = typer.Option(
+        "",
+        "--dest",
+        help=(
+            "Directory to write the archive and checksum into. "
+            "Default: project root (same as path)."
+        ),
+    ),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        help="Print only the archive path and checksum (terse one-liner).",
+    ),
+) -> None:
+    """Pack the .seam/ index into a portable archive for sharing or CI caching.
+
+    Produces a canonical .tar.gz archive + a sha256 checksum sidecar inside the
+    destination directory (default: project root). The archive contains seam.db
+    and, when present, the WS2a vector-store files (vectors.f32 / .ids.i64 / .meta.json).
+
+    The archive can be unpacked by a downstream consumer (e.g. `seam fetch`) so
+    agents on a new machine or in CI can skip running `seam init` from scratch.
+
+    Examples:
+      seam pack-index                         -- pack .seam/ from current directory
+      seam pack-index /path/to/project        -- pack from explicit root
+      seam pack-index --dest /tmp/artifacts   -- write archive to /tmp/artifacts/
+      seam pack-index --json                  -- structured output for CI scripts
+      seam pack-index --quiet                 -- terse: print only archive path + checksum
+    """
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
+    project_root = Path(path).resolve()
+    db_root = Path(db_dir).resolve() if db_dir else project_root
+    seam_dir = db_root / ".seam"
+
+    # Resolve destination directory for the archive.
+    # Default: project root (alongside .seam/, not inside it).
+    dest_dir = Path(dest).resolve() if dest else project_root
+
+    # Guard: seam.db must already exist (pack is a read operation on an existing index).
+    db_path = seam_dir / "seam.db"
+    if not db_path.exists():
+        if json_:
+            emit_json_error("NO_INDEX", "No index found. Run 'seam init' first.")
+        console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
+        raise typer.Exit(code=1)
+
+    # Call the artifact leaf (never raises; returns None on failure).
+    result = _pack_index_artifact(seam_dir, dest_dir=dest_dir)
+
+    if result is None:
+        if json_:
+            emit_json_error("DB_ERROR", "Failed to pack the index. See logs for details.")
+        console.print("[red]Failed to pack the index.[/red] See logs for details.")
+        raise typer.Exit(code=1)
+
+    # ── JSON mode ─────────────────────────────────────────────────────────────
+    if json_:
+        emit_json(
+            {
+                "archive": str(result.archive_path),
+                "checksum": result.checksum,
+                "checksum_file": str(result.checksum_path),
+                "size_bytes": result.size_bytes,
+            }
+        )
+        return
+
+    # ── Quiet mode — terse one-liner ──────────────────────────────────────────
+    if quiet:
+        print_quiet(f"{result.archive_path}  sha256:{result.checksum}")
+        return
+
+    # ── Rich (default) mode ───────────────────────────────────────────────────
+    table = Table(title="seam pack-index — complete", show_header=False, box=None)
+    table.add_column("key", style="dim", width=14)
+    table.add_column("value")
+    table.add_row("archive", str(result.archive_path))
+    table.add_row("size", f"{result.size_bytes:,} bytes")
+    table.add_row("sha256", result.checksum)
+    table.add_row("sidecar", str(result.checksum_path))
+    console.print(table)
 
 
 # ── seam sync ─────────────────────────────────────────────────────────────────
@@ -2861,3 +2968,234 @@ def sync_cmd(
             f"[dim]{result['skipped']} file(s) skipped (binary/oversize/parse error). "
             "Set SEAM_LOG_LEVEL=DEBUG to see which.[/dim]"
         )
+
+
+# ── seam rebase ───────────────────────────────────────────────────────────────
+
+
+@app.command(name="rebase")
+def rebase_cmd(
+    path: str = typer.Argument(".", help="Project root to rebase TO (default: current directory)"),
+    from_root: str = typer.Option(
+        "",
+        "--from",
+        help=(
+            "Source machine's project root to rebase FROM. "
+            "When omitted, auto-detected as the common prefix of all indexed paths."
+        ),
+    ),
+    db_dir: str = typer.Option(
+        "",
+        "--db-dir",
+        help="Override DB directory (default: same as project root)",
+    ),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        "-q",
+        help="Print bare key:value output, one per line.",
+    ),
+) -> None:
+    """Re-home a hand-copied Seam index from another machine's filesystem layout.
+
+    When you copy a Seam index (.seam/seam.db) from one machine to another, the
+    absolute file paths stored in the index still point to the source machine's
+    filesystem layout. `seam rebase` rewrites those paths so subsequent queries
+    (`seam context`, `seam query`, etc.) return results against LOCAL paths.
+
+    The rewrite touches ONLY the `files.path` column — symbols, edges, clusters,
+    and all other data remain intact. The operation is idempotent and safe to run
+    on an already-local index (returns 0 rows changed).
+
+    `--from` specifies the source machine's project root. When omitted, the root
+    is AUTO-DETECTED as the longest common directory prefix of all indexed paths
+    (works when all files in the index share a common source root).
+
+    Examples:
+      seam rebase                                  -- rebase to cwd, auto-detect old root
+      seam rebase /home/user/project               -- rebase to explicit new root
+      seam rebase --from /ci/runner/workspace      -- specify old root explicitly
+      seam rebase --from /old/path --json          -- structured output
+    """
+    # WHY: check mutual exclusion before any DB work so the error is immediate.
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
+    new_root = Path(path).resolve()
+
+    if not new_root.is_dir():
+        if json_:
+            emit_json_error("INVALID_INPUT", f"'{new_root}' is not a directory.")
+        console.print(f"[red]Error:[/red] '{new_root}' is not a directory.")
+        raise typer.Exit(code=1)
+
+    # Mirror sync's path/db-dir resolution.
+    db_root = Path(db_dir).resolve() if db_dir else new_root
+    db_path = config.get_db_path(db_root)
+
+    # rebase requires an existing index (like sync — it reconciles, it doesn't bootstrap).
+    if not db_path.exists():
+        if json_:
+            emit_json_error(
+                "NO_INDEX",
+                f"No index found at '{db_path}'. Run 'seam init' first to create the index.",
+            )
+        console.print(
+            "[red]No index found.[/red] Run [bold]seam init[/bold] first to create the index."
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        conn = connect(db_path)
+    except sqlite3.Error as exc:
+        if json_:
+            emit_json_error("DB_ERROR", f"Failed to open database: {exc}")
+        console.print(f"[red]Failed to open database:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        # from_root="" means auto-detect; pass None to the leaf in that case.
+        old_root_arg: str | None = from_root if from_root else None
+        n = rebase_index(conn, new_root=str(new_root), old_root=old_root_arg)
+    except sqlite3.Error as exc:
+        if json_:
+            emit_json_error("DB_ERROR", f"Rebase failed: {exc}")
+        console.print(f"[red]Rebase failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    finally:
+        conn.close()
+
+    result = {"rows_rewritten": n, "new_root": str(new_root)}
+
+    # ── JSON mode ─────────────────────────────────────────────────────────────
+    if json_:
+        emit_json(result)
+        return
+
+    # ── Quiet mode — bare key:value, one per line ─────────────────────────────
+    if quiet:
+        sys.stdout.write(f"rows_rewritten: {n}\n")
+        sys.stdout.write(f"new_root: {new_root}\n")
+        return
+
+    # ── Rich (default) mode — summary table ───────────────────────────────────
+    table = Table(title="seam rebase — complete", show_header=False, box=None)
+    table.add_column("key", style="bold cyan", width=20)
+    table.add_column("value")
+    table.add_row("new_root", str(new_root))
+    table.add_row("rows_rewritten", str(n))
+    if n == 0:
+        table.add_row("status", "already up-to-date (no paths rewritten)")
+    else:
+        table.add_row("status", f"{n} path(s) rewritten")
+    console.print(table)
+
+
+# ── seam fetch ────────────────────────────────────────────────────────────────
+
+
+@app.command(name="fetch")
+def fetch_cmd(
+    path: str = typer.Argument(".", help="Project root (git repo, default: current directory)"),
+    db_dir: str = typer.Option(
+        "",
+        "--db-dir",
+        help="Override DB directory (default: same as project root)",
+    ),
+    semantic: bool = typer.Option(
+        False,
+        "--semantic",
+        help=(
+            "Also run incremental semantic embedding after sync. "
+            "Mirrors `seam sync --semantic`. Requires the [semantic] extra."
+        ),
+    ),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        "-q",
+        help="Print bare key:value output, one per line.",
+    ),
+) -> None:
+    """Download a pre-built Seam index artifact from CI and land it locally.
+
+    Resolves the nearest published artifact (HEAD first, then first-parent ancestors),
+    downloads it, verifies the checksum, unpacks it, rebases absolute paths to the
+    local root, and syncs the local delta — so a subsequent `seam query` returns
+    results against local file paths.
+
+    Requires SEAM_INDEX_ARTIFACT_URL to be set (a URL template with a {sha} placeholder).
+    Requires git to be installed and the project to be a git repository.
+
+    Safety: an existing .seam/ index is NEVER corrupted on failure. The atomic swap-in
+    ensures that a bad download or checksum mismatch leaves the original index intact.
+
+    Examples:
+      seam fetch                    -- fetch for current directory
+      seam fetch /path/to/project   -- fetch for a specific project
+      seam fetch --semantic         -- also embed symbols after sync
+      seam fetch --json             -- structured output for CI / agents
+      seam fetch -q                 -- quiet key:value output for scripts
+    """
+    # WHY: check mutual exclusion before any work so the error is immediate.
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
+    project_root = Path(path).resolve()
+    if not project_root.is_dir():
+        if json_:
+            emit_json_error("INVALID_INPUT", f"'{project_root}' is not a directory.")
+        console.print(f"[red]Error:[/red] '{project_root}' is not a directory.")
+        raise typer.Exit(code=1)
+
+    db_root = Path(db_dir).resolve() if db_dir else None
+
+    try:
+        result = fetch_index(project_root, db_root=db_root, semantic=semantic)
+    except FetchError as exc:
+        if json_:
+            emit_json_error(exc.code, exc.message)
+        console.print(f"[red]fetch failed ({exc.code}):[/red] {exc.message}")
+        raise typer.Exit(code=1) from exc
+    except Exception as exc:  # noqa: BLE001
+        if json_:
+            emit_json_error("DB_ERROR", f"Unexpected fetch error: {exc}")
+        console.print(f"[red]Unexpected fetch error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    # ── JSON mode ──────────────────────────────────────────────────────────────
+    if json_:
+        emit_json(result)
+        return
+
+    # ── Quiet mode — one key:value per line for scripts ───────────────────────
+    if quiet:
+        sys.stdout.write(f"sha: {result['sha']}\n")
+        sys.stdout.write(f"bytes_downloaded: {result['bytes_downloaded']}\n")
+        sys.stdout.write(f"files_rebased: {result['files_rebased']}\n")
+        sync = result["sync"]
+        sys.stdout.write(f"sync_added: {sync['added']}\n")
+        sys.stdout.write(f"sync_modified: {sync['modified']}\n")
+        sys.stdout.write(f"sync_removed: {sync['removed']}\n")
+        sys.stdout.write(f"sync_unchanged: {sync['unchanged']}\n")
+        return
+
+    # ── Rich (default) mode — summary table ───────────────────────────────────
+    sync = result["sync"]
+    table = Table(title="seam fetch — complete", show_header=False, box=None)
+    table.add_column("key", style="bold cyan", width=20)
+    table.add_column("value")
+    table.add_row("sha", result["sha"][:12] + "…")
+    table.add_row("bytes downloaded", str(result["bytes_downloaded"]))
+    table.add_row("files rebased", str(result["files_rebased"]))
+    table.add_row("sync added", str(sync["added"]))
+    table.add_row("sync modified", str(sync["modified"]))
+    table.add_row("sync removed", str(sync["removed"]))
+    table.add_row("sync unchanged", str(sync["unchanged"]))
+    console.print(table)

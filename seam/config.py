@@ -651,6 +651,29 @@ SEAM_DIAGNOSTICS_PATH: str = os.getenv("SEAM_DIAGNOSTICS_PATH", ".seam/diagnosti
 SEAM_DIAGNOSTICS_SLOW_MS: int = int(os.getenv("SEAM_DIAGNOSTICS_SLOW_MS", "100"))
 
 
+# ── WS4 S2: Index artifact distribution ─────────────────────────────────────
+
+# HTTPS URL template for downloading a pre-built index artifact.
+# Must contain a `{sha}` placeholder which will be replaced with the commit SHA
+# or build identifier at download time. Default "" (empty string) = feature inert —
+# seam fetch (WS4 S3) checks for this value and skips network access when empty.
+#
+# Example:
+#   SEAM_INDEX_ARTIFACT_URL="https://example.com/artifacts/seam/{sha}/seam-index.tar.gz"
+#
+# WHY a URL template: the SHA changes per commit / build tag but the URL structure
+# is stable. A template lets CI publish the archive once and consumers reconstruct
+# the exact URL from the commit they checked out.
+SEAM_INDEX_ARTIFACT_URL: str = os.getenv("SEAM_INDEX_ARTIFACT_URL", "")
+
+# Maximum number of first-parent ancestors to walk when the HEAD artifact is absent.
+# `seam fetch` tries HEAD first, then walks up first-parent history (newest-first)
+# up to this bound, fetching the nearest published artifact.
+# Default 50: covers typical CI pipelines where artifacts are published every ~few commits.
+# Set to 1 to disable fallback (HEAD only). 0 = effectively "HEAD only" (same as 1).
+SEAM_FETCH_ANCESTOR_DEPTH: int = int(os.getenv("SEAM_FETCH_ANCESTOR_DEPTH", "50"))
+
+
 def get_db_path(project_root: Path) -> Path:
     """Resolve the database path relative to the project root."""
     return project_root / SEAM_DB_PATH
