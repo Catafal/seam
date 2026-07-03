@@ -417,6 +417,50 @@ def test_unpack_nothing_written_when_traversal_detected(tmp_path: Path) -> None:
     assert not (dest / "seam.db").exists()
 
 
+# ── Unpack: symlink/hardlink guard ───────────────────────────────────────────
+
+
+def test_unpack_rejects_symlink_member(tmp_path: Path) -> None:
+    """unpack_index returns False and extracts nothing when a member is a symlink.
+
+    Symlinks whose linkname escapes the destination are a classic path-traversal
+    vector that name-only checks miss.  Our canonical archives never contain links,
+    so any symlink member means the archive is corrupt or malicious.
+    """
+    archive = tmp_path / "symlink.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        # Create a symlink member pointing to an arbitrary location.
+        link_info = tarfile.TarInfo(name="evil-link")
+        link_info.type = tarfile.SYMTYPE
+        link_info.linkname = "/etc/passwd"
+        link_info.size = 0
+        tf.addfile(link_info)
+
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    ok = unpack_index(archive, dest_dir=dest)
+    assert ok is False
+    # Nothing must have been extracted
+    assert not list(dest.iterdir()), "Symlink member must not be extracted"
+
+
+def test_unpack_rejects_hardlink_member(tmp_path: Path) -> None:
+    """unpack_index returns False and extracts nothing when a member is a hardlink."""
+    archive = tmp_path / "hardlink.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        link_info = tarfile.TarInfo(name="evil-hardlink")
+        link_info.type = tarfile.LNKTYPE
+        link_info.linkname = "/etc/shadow"
+        link_info.size = 0
+        tf.addfile(link_info)
+
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    ok = unpack_index(archive, dest_dir=dest)
+    assert ok is False
+    assert not list(dest.iterdir()), "Hardlink member must not be extracted"
+
+
 # ── Unpack: corrupt archive ───────────────────────────────────────────────────
 
 

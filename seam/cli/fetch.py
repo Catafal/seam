@@ -270,6 +270,16 @@ def fetch_index(
         An existing .seam/ is NEVER corrupted on failure. The staging → swap
         sequence is: stage in tmp → rename existing → move staged → delete backup.
         On ANY exception after the rename, the backup is restored before re-raising.
+
+    Checksum leniency:
+        The sha256 sidecar (ARCHIVE_FILENAME.sha256) is downloaded alongside the
+        archive.  When it is PRESENT, verification is enforced: a mismatch aborts
+        the fetch with FetchError.  When the sidecar download returns a 404 (or any
+        HTTP/I/O error), a WARNING is logged and the fetch proceeds WITHOUT checksum
+        verification — so a CI setup that publishes archives but not sidecars still
+        works.  This leniency is intentional and documented here so it is not
+        mistaken for an oversight.  If you need mandatory verification, ensure your
+        CI always publishes the sidecar alongside the archive.
     """
     # ── Step 1: Validate URL template ─────────────────────────────────────────
     url_template = config.SEAM_INDEX_ARTIFACT_URL

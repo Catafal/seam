@@ -42,7 +42,7 @@ import hashlib
 import logging
 import os
 import tarfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 logger = logging.getLogger(__name__)
 
@@ -328,14 +328,15 @@ def _is_safe_member(name: str) -> bool:
     This is stricter than just checking the final resolved path (which might be safe
     after normalization) — but strictness here is correct: we are unpacking ONLY our
     own canonical archives which never have absolute paths or '..' components.
+
+    Note: symlink and hardlink member-type checks are done separately in _unpack_impl
+    (on the TarInfo object) because that information is not part of the member name.
     """
     if os.path.isabs(name):
         return False
 
     # Check every path component for '..'. We use PurePosixPath because tar member
     # names always use forward slashes regardless of the OS.
-    from pathlib import PurePosixPath  # noqa: PLC0415 — local import for clarity
-
     parts = PurePosixPath(name).parts
     if ".." in parts:
         return False
@@ -382,11 +383,25 @@ def _unpack_impl(
                         archive_path,
                     )
                     return False
+                # Defense-in-depth: reject symlinks and hardlinks regardless of
+                # their linkname.  Our canonical archives never contain links, so
+                # a link member means the archive is corrupt or malicious.
+                if member.issym() or member.islnk():
+                    logger.warning(
+                        "artifact.unpack_index: SECURITY — rejected symlink/hardlink "
+                        "member '%s' in '%s'; aborting unpack",
+                        member.name,
+                        archive_path,
+                    )
+                    return False
 
             # ── Extraction pass (all members are safe) ────────────────────────
             dest_dir.mkdir(parents=True, exist_ok=True)
             for member in members:
-                tf.extract(member, path=dest_dir, set_attrs=False)
+                # filter='data' is explicit and matches the Python 3.14+ default.
+                # It strips special attributes and refuses unsafe member types as a
+                # second line of defence (our validation pass above is the first).
+                tf.extract(member, path=dest_dir, set_attrs=False, filter="data")
 
     except tarfile.TarError as exc:
         logger.warning(

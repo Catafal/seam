@@ -162,6 +162,13 @@ def _rebase_index_impl(
     #
     # Special case: if old_root IS the filesystem root ("/"), do not add
     # another "/" (that would make "//"). Check with os.path.dirname identity.
+    #
+    # KNOWN LIMITATION (Windows cross-OS): When a Linux/macOS-built index is
+    # fetched on a Windows machine, the stored paths use forward-slash ('/') but
+    # os.sep is backslash ('\').  The prefix built here uses os.sep, so the LIKE
+    # pattern will not match stored paths that use '/'.  Cross-OS fetch from
+    # Linux/macOS → Windows is therefore an accepted MVP gap.  Same-OS fetches
+    # (Linux→Linux, macOS→macOS, Windows→Windows) always work correctly.
     old_sep = os.sep  # local OS separator (/ on macOS/Linux, \ on Windows)
     if old_root_norm.endswith(old_sep):
         old_prefix = old_root_norm
