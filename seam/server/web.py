@@ -598,12 +598,10 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
             # cannot disagree with the MCP banner or `seam status`.
             pid_file = root / ".seam" / "watcher.pid"
             watcher_alive = _watcher_is_alive(pid_file) is not None
-            # respect_knob=False so /api/status always returns the real staleness
-            # verdict — identical to seam/query/schema.py and architecture.py.
-            # When SEAM_STALENESS_CHECK=off, respect_knob=True would short-circuit
-            # to stale=False, causing /api/status to disagree with /api/schema and
-            # /api/architecture (both use respect_knob=False). PRD user story 16
-            # explicitly prohibits that disagreement.
+            # respect_knob=False mirrors /api/schema + /api/architecture: always
+            # return the real verdict (never short-circuit to fresh when
+            # SEAM_STALENESS_CHECK=off) so /api/status cannot disagree with them
+            # or with `seam status` (PRD user story 16).
             verdict = check_staleness(
                 conn, root=root, watcher_alive=watcher_alive, respect_knob=False
             )
