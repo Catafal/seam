@@ -125,7 +125,10 @@ export function NodeCloud({ nodes, highlightedIds, onHover, onSelect }: NodeClou
 
     nodes.forEach((node, i) => {
       const isH = highlightedIds.has(node.id);
-      // Highlighted nodes scale up; dimmed nodes shrink to emphasize focus.
+      // Highlighted nodes render at 0.5× (half of the no-selection 1.0 baseline) while
+      // dimmed nodes shrink further to 0.2×.  The highlighted node still appears
+      // visually prominent because the camera flies to it; the 0.5× vs 0.2× ratio
+      // (2.5× larger than dimmed) provides the focal contrast without over-sizing the mesh.
       const scaleFactor = isH ? 0.5 : hasHighlight ? 0.2 : 1.0;
       const s = node.size * scaleFactor;
       _matrix.makeScale(s, s, s);
