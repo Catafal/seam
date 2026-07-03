@@ -54,6 +54,7 @@ _DEFAULT_SECTIONS: tuple[str, ...] = (
     "clusters",
     "entry_points",
     "routes",
+    "http_calls",
     "configs",
     "resources",
     "exceptions",
@@ -421,12 +422,22 @@ def _edge_rows(
 ) -> list[dict[str, Any]]:
     if not _table_exists(conn, "edges"):
         return []
-    synth_expr = "e.synthesized_by" if "synthesized_by" in _column_names(conn, "edges") else "NULL"
+    edge_columns = _column_names(conn, "edges")
+    synth_expr = "e.synthesized_by" if "synthesized_by" in edge_columns else "NULL"
+    provenance_expr = "e.provenance" if "provenance" in edge_columns else "NULL"
     self_filter = "" if include_self_edges else "AND e.source_name != e.target_name"
     try:
         rows = conn.execute(
             f"""
-            SELECT e.source_name, e.target_name, e.kind, e.confidence, {synth_expr} AS synthesized_by, f.path AS file
+            SELECT
+                e.source_name,
+                e.target_name,
+                e.kind,
+                e.line,
+                e.confidence,
+                {synth_expr} AS synthesized_by,
+                {provenance_expr} AS provenance,
+                f.path AS file
             FROM edges e
             JOIN files f ON f.id = e.file_id
             WHERE 1 = 1
@@ -444,8 +455,10 @@ def _edge_rows(
             "source": row["source_name"],
             "target": row["target_name"],
             "kind": row["kind"],
+            "line": row["line"],
             "confidence": row["confidence"],
             "synthesized_by": row["synthesized_by"],
+            "provenance": row["provenance"],
             "file": row["file"],
         })
     return result
@@ -740,6 +753,84 @@ def _routes_section(
     ]
     return {
         "status": "populated" if rows else "empty",
+        "items": items,
+        "truncated": max(0, len(rows) - limit),
+    }
+
+
+def _route_metadata_by_symbol(conn: sqlite3.Connection, root: Path) -> dict[str, dict[str, Any]]:
+    if not _table_exists(conn, "routes"):
+        return {}
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                r.symbol_name,
+                r.method,
+                r.path,
+                r.normalized_path,
+                r.framework,
+                r.handler,
+                r.line,
+                f.path AS file
+            FROM routes r
+            JOIN files f ON f.id = r.file_id
+            WHERE f.path NOT LIKE ':%'
+            ORDER BY r.symbol_name, f.path, r.line
+            """
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    metadata: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        metadata.setdefault(
+            str(row["symbol_name"]),
+            {
+                "method": row["method"],
+                "path": row["path"],
+                "normalized_path": row["normalized_path"],
+                "framework": row["framework"],
+                "handler": row["handler"],
+                "file": _relativize(str(row["file"]), root),
+                "line": int(row["line"]),
+            },
+        )
+    return metadata
+
+
+def _http_calls_section(
+    conn: sqlite3.Connection,
+    root: Path,
+    edge_rows: list[dict[str, Any]],
+    limit: int = 10,
+) -> dict[str, Any]:
+    if not _table_exists(conn, "routes") or not _table_exists(conn, "edges"):
+        return {
+            "status": "unsupported",
+            "count": 0,
+            "items": [],
+            "reason": "HTTP-call evidence requires route metadata and graph edges.",
+            "truncated": 0,
+        }
+    route_metadata = _route_metadata_by_symbol(conn, root)
+    rows = [row for row in edge_rows if row["kind"] == "http_calls"]
+    rows.sort(key=lambda row: (str(row["target"]), str(row["source"]), str(row["file"]), int(row["line"])))
+    items = [
+        {
+            "source": row["source"],
+            "target": row["target"],
+            "file": _relativize(str(row["file"]), root),
+            "line": int(row["line"]),
+            "confidence": row["confidence"],
+            "provenance": row["provenance"],
+            "route_resolved": str(row["target"]) in route_metadata,
+            "route": route_metadata.get(str(row["target"])),
+        }
+        for row in rows[:limit]
+    ]
+    return {
+        "status": "populated" if rows else "empty",
+        "count": len(rows),
         "items": items,
         "truncated": max(0, len(rows) - limit),
     }
@@ -1065,6 +1156,16 @@ def _next_calls_for_sections(sections: dict[str, Any]) -> list[dict[str, Any]]:
                 "params": {"edge_kind": "tests", "limit": 10},
             },
         )
+    http_calls = sections.get("http_calls")
+    if isinstance(http_calls, dict) and http_calls.get("status") == "populated":
+        calls.insert(
+            1,
+            {
+                "tool": "seam_graph_search",
+                "reason": "Review static HTTP caller-to-route evidence.",
+                "params": {"edge_kind": "http_calls", "direction": "outgoing", "limit": 10},
+            },
+        )
     return calls
 
 
@@ -1107,6 +1208,7 @@ def _fit_to_byte_budget(result: dict[str, Any], *, max_bytes: int) -> dict[str, 
         "hotspots",
         "languages",
         "routes",
+        "http_calls",
         "configs",
         "resources",
         "exceptions",
@@ -1217,6 +1319,7 @@ def describe_architecture(
         "import_mappings": _count(conn, "import_mappings"),
         "embeddings": _count(conn, "embeddings"),
         "routes": _count(conn, "routes"),
+        "http_calls": sum(1 for row in edge_rows if row["kind"] == "http_calls"),
         "config_keys": _count(conn, "config_keys"),
         "resources": _count(conn, "resources"),
         "test_files": test_files,
@@ -1236,6 +1339,7 @@ def describe_architecture(
         "physical": _physical_section(conn, root, allowed_files, scope_path, safe_limit),
         "clusters": _cluster_section(conn, root, allowed_files, safe_limit),
         "routes": _routes_section(conn, root, allowed_files, safe_limit),
+        "http_calls": _http_calls_section(conn, root, edge_rows, safe_limit),
         "configs": _configs_section(conn, root, allowed_files, safe_limit),
         "resources": _resources_section(conn, root, allowed_files, safe_limit),
         "exceptions": _exceptions_section(conn, root, allowed_files, safe_limit),

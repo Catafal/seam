@@ -303,6 +303,7 @@ def describe_schema(
         "import_mappings": _count(conn, "import_mappings"),
         "embeddings": embeddings_count,
         "routes": _count(conn, "routes"),
+        "http_calls": _count(conn, "edges", "kind = 'http_calls'"),
         "config_keys": _count(conn, "config_keys"),
         "resources": _count(conn, "resources"),
     }
@@ -348,6 +349,7 @@ def describe_schema(
         "has_search_text": "search_text" in symbols_columns,
         "has_signature_column": "signature" in symbols_columns,
         "has_synthesized_by_column": "synthesized_by" in edges_columns,
+        "has_edge_provenance_column": "provenance" in edges_columns,
     }
 
     result: dict[str, Any] = {

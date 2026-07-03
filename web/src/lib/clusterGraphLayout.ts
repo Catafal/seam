@@ -193,7 +193,7 @@ export function clusterGraphLayout(
         // symbol, then a stable "cluster-<id>" so every node is identifiable.
         label: cluster.label ?? cluster.representative ?? `cluster-${cluster.cluster_id}`,
         size: cluster.size,
-        representative: cluster.representative,
+        representative: cluster.representative ?? null,
         color: clusterColor(cluster.cluster_id),
         nodeSize,
       },

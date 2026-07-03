@@ -20,7 +20,7 @@
 #
 # E4 edge provenance (closed follow-up): synthesized_by is now surfaced in seam_impact tier
 # entries and seam_trace hops when SEAM_EDGE_PROVENANCE=on (default). Edge kind vocabulary
-# is now 14: call | import | extends | implements | instantiates | holds | reads | writes | uses | http_calls | reads_config | configures | raises | catches
+# is now 15: call | import | extends | implements | instantiates | holds | reads | writes | uses | http_calls | reads_config | configures | raises | catches | tests
 # Each seam_impact entry carries 'kind' (final hop's edge kind; always kept incl. lean mode)
 # and 'synthesized_by' (channel name or null; stripped in lean mode like resolved_by).
 # Each seam_trace hop carries 'synthesized_by' in addition to the existing 'kind'.
@@ -41,10 +41,10 @@
 # Implemented in seam/analysis/staleness.py (check_staleness) +
 # seam/server/handler_common.py (_maybe_attach_staleness).
 #
-# A3 field-access edges: extraction-time, per-file, watcher-compatible. New edge kinds
-# 'reads' (field read) and 'writes' (field write/delete). Edge kind vocabulary (pre-E4 was 8,
-# post-E4 adds 'uses' = 9): call | import | extends | implements | instantiates | holds |
-# reads | writes | uses. symbols.kind gains 'field' (qualified_name='Type.field'). All
+# A3 field-access edges: extraction-time, per-file, watcher-compatible. Edge kinds
+# 'reads' (field read) and 'writes' (field write/delete). The full current edge
+# vocabulary is listed at the top of this file. symbols.kind gains 'field'
+# (qualified_name='Type.field'). All
 # reads/writes edges carry confidence='INFERRED'. Because traversal is KIND-AGNOSTIC,
 # seam_impact / seam_trace / seam_context pick them up automatically. seam_context
 # additionally returns field_readers and field_writers lists (typed split of the inclusive
@@ -93,7 +93,8 @@ tools:
           has_clusters, has_comments, has_import_mappings, has_embeddings,
           embedding_model_matches, has_synthesized_edges, has_field_symbols,
           has_receiver_column, has_search_text, has_signature_column,
-          has_synthesized_by_column, has_routes_table, has_route_nodes,
+          has_synthesized_by_column, has_edge_provenance_column,
+          has_routes_table, has_route_nodes,
           has_http_calls, has_config_keys_table, has_resources_table,
           has_config_nodes, has_resource_nodes, has_reads_config, has_configures,
           has_exception_edges, has_test_edges.
@@ -120,7 +121,7 @@ tools:
       Use this after seam_schema when an agent needs to understand the indexed repo
       before choosing precise follow-up tools. It composes existing index evidence into
       bounded sections: language distribution, physical areas, clusters, entry points,
-      routes, configs, resources, fan-in hotspots, fan-out orchestrators, cross-area boundaries, edge mix,
+      routes, HTTP caller evidence, configs, resources, fan-in hotspots, fan-out orchestrators, cross-area boundaries, edge mix,
       optional-surface status, warnings, truncation metadata, and concrete next calls.
     input:
       scope:
@@ -142,6 +143,7 @@ tools:
           - clusters
           - entry_points
           - routes
+          - http_calls
           - configs
           - resources
           - exceptions
@@ -175,8 +177,12 @@ tools:
           scoped file/symbol/edge/test/production counts plus global optional counts.
         sections:
           selected architecture sections. Default sections include summary, languages,
-          physical, clusters, entry_points, routes, configs, resources, exceptions, hotspots,
+          physical, clusters, entry_points, routes, http_calls, configs, resources, exceptions, hotspots,
           orchestrators, boundaries, edge_mix, tests, and optional_surfaces.
+          http_calls exposes status, count, bounded static caller-to-route evidence,
+          confidence, direct extractor provenance from edges.provenance, source file/line,
+          route_resolved, and route metadata when resolvable. route_resolved=false means
+          a local literal HTTP call was observed but no matching route node is indexed.
           configs items expose key, normalized_key, role, value_state,
           value_category, and provenance; resources items expose name,
           normalized_name, category, and provenance. exceptions exposes status,
@@ -426,9 +432,12 @@ tools:
         preview:
           Present per item only when include_preview=true. One-hop metadata only:
           connected symbol, uid when resolvable, file/line, edge_kind, confidence,
-          receiver, synthesized_by.
+          receiver, synthesized_by, provenance.
           Static test-evidence edges use edge_kind=tests and put their derivation
           channel in synthesized_by (for example test-call or test-import).
+          Direct extractor evidence such as http_calls may put its extraction channel
+          in provenance while synthesized_by remains null. http_calls previews also include
+          route_resolved so unresolved local literals are not confused with declared routes.
       found_false_ok: false
     errors:
       - INVALID_INPUT
@@ -1037,7 +1046,7 @@ tools:
       Returns the shortest path from source to target as an ordered list of hops,
       where each hop carries the edge kind (call | import | extends | implements |
       instantiates | holds | reads | writes | uses | http_calls | reads_config | configures |
-      raises | catches) and per-edge confidence
+      raises | catches | tests) and per-edge confidence
       (EXTRACTED | INFERRED | AMBIGUOUS).
       The extends/implements kinds are class-inheritance edges added in P6a
       (SEAM_INHERITANCE_EDGES=on). The instantiates kind was added in Tier B B6:
@@ -1126,7 +1135,8 @@ tools:
           to_name        (str)      — target of this edge
           kind           (str)      — full closed vocabulary:
                                         call | import | extends | implements | instantiates |
-                                        holds | reads | writes | uses
+                                        holds | reads | writes | uses | http_calls |
+                                        reads_config | configures | raises | catches | tests
                                       'reads' and 'writes' are A3 field-access edge kinds;
                                       'uses' captures method-param coupling (E4 vocab correction)
           confidence     (str)      — EXTRACTED | INFERRED | AMBIGUOUS

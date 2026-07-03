@@ -1,4 +1,4 @@
--- Seam SQLite Schema (v14 — config/resource metadata)
+-- Seam SQLite Schema (v15 — edge extractor provenance)
 -- Run via db.py:init_db() — idempotent (CREATE TABLE IF NOT EXISTS).
 -- FTS5 is required; init_db() verifies availability before proceeding.
 -- Schema v2 adds: edges.confidence (DEFAULT 'INFERRED').
@@ -18,6 +18,7 @@
 --                  NULL = parser-extracted; channel name = synthesized by post-pass).
 -- Schema v13 adds: routes table for first-class route node metadata.
 -- Schema v14 adds: config_keys and resources tables for no-secret config/resource metadata.
+-- Schema v15 adds: edges.provenance for direct extractor evidence channels.
 -- Migration from v1: db.py:_run_migration_v1_to_v2() (guarded ALTER TABLE).
 -- Migration from v2: db.py:_run_migration_v2_to_v3() (guards schema_version bump).
 -- Migration from v3: db.py:_run_migration_v3_to_v4() (adds clusters table + cluster_id).
@@ -31,6 +32,7 @@
 -- Migration from v11: db.py:_run_migration_v11_to_v12() (adds edges.synthesized_by column).
 -- Migration from v12: db.py:_run_migration_v12_to_v13() (adds routes table).
 -- Migration from v13: db.py:_run_migration_v13_to_v14() (adds config/resource tables).
+-- Migration from v14: db.py:_run_migration_v14_to_v15() (adds edges.provenance column).
 
 PRAGMA journal_mode = WAL;      -- Write-ahead logging for concurrent reads
 PRAGMA foreign_keys = ON;
@@ -108,7 +110,11 @@ CREATE TABLE IF NOT EXISTS edges (
     -- test-call evidence is static evidence derived after the whole index is known.
     -- Some synthesis channels use synthetic file rows; test-edge channels use the
     -- test file where the evidence was observed.
-    synthesized_by TEXT
+    synthesized_by TEXT,
+    -- v15+: direct-extractor provenance detail. NULL for ordinary parser edges;
+    -- non-NULL for parser/direct evidence where the extraction channel matters
+    -- without implying a post-pass synthesized edge.
+    provenance TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_name);
@@ -289,9 +295,9 @@ CREATE TABLE IF NOT EXISTS metadata (
 );
 
 -- NOTE: INSERT OR IGNORE does not update existing rows. Fresh DBs are seeded at
--- the CURRENT schema version ('14') so a brand-new `seam init` is born current and
+-- the CURRENT schema version ('15') so a brand-new `seam init` is born current and
 -- does NOT trigger any migration advisory.
 -- Existing older DBs keep their stored version; db.py migrations bump them in place.
 INSERT OR IGNORE INTO metadata(key, value) VALUES
-    ('schema_version', '14'),
+    ('schema_version', '15'),
     ('seam_version',   '0.2.0');

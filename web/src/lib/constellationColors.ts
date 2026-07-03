@@ -1,14 +1,14 @@
 /**
  * Seam teal-native color palette for the 3D constellation Explorer.
  *
- * EDGE_TYPE_COLORS: maps all 9 edge kinds to distinct hues.
+ * EDGE_TYPE_COLORS: maps all 15 edge kinds to distinct hues.
  * KIND_COLORS: maps 6 symbol kinds for node labeling and filter chips.
  * CANVAS_BG: teal-void background for the WebGL canvas.
  *
  * Reference: docs/prd/phase11-p2-1-3d-constellation-reference.md §6/§7
  */
 
-/** Per-edge-kind colors for the 9-kind Seam vocabulary. */
+/** Per-edge-kind colors for the 15-kind Seam vocabulary. */
 export const EDGE_TYPE_COLORS: Record<string, string> = {
   call: "#1DA27E",          // seafoam teal — the primary call edge
   import: "#3b82f6",        // blue
@@ -19,6 +19,12 @@ export const EDGE_TYPE_COLORS: Record<string, string> = {
   reads: "#22c55e",         // green (field read)
   writes: "#ef4444",        // red (field write)
   uses: "#eab308",          // amber (method param coupling)
+  http_calls: "#38bdf8",     // sky (protocol boundary)
+  reads_config: "#84cc16",   // lime (config read)
+  configures: "#14b8a6",     // teal (operational resource wiring)
+  raises: "#fb7185",         // rose (exception raise)
+  catches: "#f59e0b",        // amber-orange (exception handler)
+  tests: "#94a3b8",          // slate (static test evidence)
 };
 
 /** Fallback edge color for unknown kinds. */

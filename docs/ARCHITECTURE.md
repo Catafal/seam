@@ -18,10 +18,10 @@
  │  source files (12 langs)                                                  │
  │        │  tree-sitter (structural parse — never raises)                   │
  │        ▼                                                                  │
- │  indexer/pipeline.py ── parser → graph (symbols + 12-kind edges) → db     │
+ │  indexer/pipeline.py ── parser → graph (symbols + 15-kind edges) → db     │
  │        │                                                                  │
  │        ▼                                                                  │
- │  .seam/seam.db  (SQLite + FTS5, schema v14)                               │
+ │  .seam/seam.db  (SQLite + FTS5, schema v15)                               │
  │        │                                                                  │
  │        ├─▶ clustering post-pass   (Louvain communities + labels)          │
  │        └─▶ synthesis post-pass    (dynamic-dispatch edges; gated)         │
@@ -146,13 +146,13 @@ It returns metadata, ranked sections, warnings, truncation, and next-call guidan
 expects callers to switch to `seam_graph_search`, `seam_context`, `seam_snippet`, or
 `seam_impact` for precise follow-up work.
 
-### Storage (SQLite, schema v14)
+### Storage (SQLite, schema v15)
 
 | Table | Holds |
 |-------|-------|
 | `files` | indexed files with hash + mtime + `indexed_at` |
 | `symbols` | nodes: kind (incl. `field`, `route`, `config`, and `resource`), name, qualified_name, signature, decorators, visibility, is_exported, cluster_id, entry_score, search_text |
-| `edges` | directed relationships: source, target, `kind` (14 kinds), `confidence`, `receiver`, `synthesized_by` |
+| `edges` | directed relationships: source, target, `kind` (15 kinds), `confidence`, `receiver`, `synthesized_by`, `provenance` |
 | `routes` | first-class HTTP route metadata keyed to route symbols: method, path, normalized_path, framework, handler, confidence, provenance |
 | `config_keys` | config/env key metadata keyed to config symbols: normalized key, source family, role, redacted value state/category, confidence, provenance |
 | `resources` | runtime resource metadata keyed to resource symbols: category, normalized name, source family, confidence, provenance |
@@ -310,6 +310,8 @@ cli / server → analysis → query → indexer / db
    a. parser.parse_*(path) → tree-sitter Node
    b. graph.extract_symbols(node, language, path) → [Symbol]
    c. graph.extract_edges(node, language, path, symbols) → [Edge] with confidence tags
+      and first-pass extractor provenance where the evidence channel matters
+      (for example literal local HTTP client calls)
    d. graph.extract_comments(node, language, path) → [Comment]
    e. db.upsert_file(conn, path, symbols, edges, comments)
 3. FTS5 index updated automatically via SQLite triggers

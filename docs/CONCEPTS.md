@@ -70,7 +70,7 @@ test-evidence review.
 | `uses` | A function **references** a user type as a parameter | `def show(m: Manager)` → `show uses Manager` | INFERRED |
 | `reads` | A field/property is read | `obj.url` (rvalue) → `reads Config.url` | INFERRED |
 | `writes` | A field/property is written | `obj.url = x` / `del obj.url` | INFERRED |
-| `http_calls` | A symbol calls a literal HTTP route | `fetch("/users")` → `ROUTE GET /users` | INFERRED |
+| `http_calls` | A symbol has static literal evidence for calling an HTTP route | `fetch("/users")` → `ROUTE GET /users` | EXTRACTED |
 | `reads_config` | Code reads a literal config/env key | `os.getenv("DATABASE_URL")` → `CONFIG DATABASE_URL` | EXTRACTED |
 | `configures` | A config key describes a runtime resource | `CONFIG DATABASE_URL` → `RESOURCE database DATABASE` | INFERRED |
 | `raises` | A symbol explicitly raises or throws an exception | `raise ConfigError(...)` → `raises ConfigError` | EXTRACTED / INFERRED |
@@ -83,7 +83,16 @@ injection — so changing a type's constructor surfaces the classes that *store*
 functions that *receive* it, not only the call sites. `reads`/`writes` capture data-flow —
 so renaming a field surfaces every reader and writer, which a pure call graph misses
 entirely. `http_calls` connects literal client calls to first-class `route` symbols when
-the route target can be represented statically.
+the route target can be represented statically. Absence of an `http_calls` edge means
+"not statically observed", not "no runtime HTTP traffic"; Seam deliberately skips dynamic
+URL construction and third-party absolute URLs rather than guessing.
+HTTP call edges keep `synthesized_by` empty because they are parser/direct extractor
+evidence, not post-pass graph synthesis. The extractor channel is stored on
+`edges.provenance`, for example `typescript-fetch-literal` or `python-httpx-literal`.
+When a local literal points at a route-shaped target that is not declared in the current
+index, graph-search previews and architecture evidence expose `route_resolved: false`
+and omit route metadata. Treat those as unresolved local HTTP calls, not proof that the
+server implements that method/path.
 `reads_config` and `configures` connect code to runtime configuration and operational
 resources without storing raw config values; Seam persists key names and redacted value
 shape only.
@@ -160,13 +169,17 @@ path confidence as `min(EXTRACTED, AMBIGUOUS, INFERRED)` along the hops, and whe
 paths reach a symbol at the same distance, the strongest is reported. `resolved_by` on a
 path entry reflects the hop that produced that weakest link.
 
-### Provenance: `resolved_by` and `synthesized_by`
+### Provenance: `resolved_by`, `synthesized_by`, and `edges.provenance`
 
 Every resolved edge can explain itself. `resolved_by` says *how the tier was decided*
 (`import`, `name-unique`, `name-collision`, `builtin`, `unresolved`). `synthesized_by`
 (see §6) says *whether the edge was statically extracted (`null`) or produced by the
 synthesis post-pass* (a channel name). Together they let an agent distinguish a hard,
 unambiguous `call` from a heuristic, synthesized one — and weight its trust accordingly.
+`edges.provenance` is different: it stores direct extractor evidence channels without
+turning the edge into a synthesized edge. HTTP call edges use it for literal client
+evidence such as `typescript-fetch-literal` or `python-httpx-literal` while
+`synthesized_by` stays `null`.
 
 ---
 

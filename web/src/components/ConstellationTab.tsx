@@ -40,11 +40,11 @@ import { ResizeHandle, clampPanelWidth, readPanelWidth } from "./ResizeHandle";
 import { useLayoutData, GRAPH_RENDER_NODE_LIMIT } from "../hooks/useLayoutData";
 import type { CameraTarget } from "./ConstellationScene";
 import type { LayoutNode, LayoutEdge } from "../lib/layoutTypes";
+import { ALL_EDGE_KINDS } from "../lib/edgeFilter";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const NODE_KINDS = ["function", "class", "method", "interface", "type", "field"];
-const EDGE_KINDS = ["call", "import", "extends", "implements", "instantiates", "holds", "reads", "writes", "uses"];
 
 const DEFAULT_LEFT_W = 200;
 const DEFAULT_RIGHT_W = 280;
@@ -99,7 +99,7 @@ export default function ConstellationTab({
 
   // ── Filter state ───────────────────────────────────────────────────────────
   const [enabledKinds, setEnabledKinds] = useState<Set<string>>(new Set(NODE_KINDS));
-  const [enabledEdges, setEnabledEdges] = useState<Set<string>>(new Set(EDGE_KINDS));
+  const [enabledEdges, setEnabledEdges] = useState<Set<string>>(new Set(ALL_EDGE_KINDS));
 
   // ── Panel widths (persisted to localStorage) ───────────────────────────────
   const [leftW, setLeftW] = useState(() => readPanelWidth(LS_LEFT_KEY, DEFAULT_LEFT_W));
@@ -275,7 +275,7 @@ export default function ConstellationTab({
           onToggleEdge={toggleEdge}
           onAllKinds={() => setEnabledKinds(new Set(NODE_KINDS))}
           onNoneKinds={() => setEnabledKinds(new Set())}
-          onAllEdges={() => setEnabledEdges(new Set(EDGE_KINDS))}
+          onAllEdges={() => setEnabledEdges(new Set(ALL_EDGE_KINDS))}
           onNoneEdges={() => setEnabledEdges(new Set())}
         />
       </div>
