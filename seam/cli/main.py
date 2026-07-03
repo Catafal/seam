@@ -60,6 +60,11 @@ from seam.analysis.impact import (
 )
 from seam.analysis.staleness import _watcher_is_alive, check_staleness
 from seam.cli.architecture import architecture_command
+from seam.cli.artifacts import (
+    ArtifactLifecycleError,
+    import_index_artifact,
+    inspect_index_artifact,
+)
 from seam.cli.fetch import FetchError, fetch_index
 from seam.cli.file_sink import write_output_file
 from seam.cli.graph_search import graph_search_command
@@ -586,9 +591,9 @@ def status(
         # WHY derive row-count from index_version: counting rows in vec_embeddings (a vec0
         # virtual table) requires the sqlite-vec extension to be loaded. vec_meta stores the
         # staleness token "count:max_symbol_id" — we parse the count from it for free.
-        ann_built: bool = False    # True when vec_meta has a row for the configured model
-        ann_fresh: bool = False    # True when the stored token matches current DB state
-        ann_row_count: int = 0     # Embedding rows that were in the ANN index at build time
+        ann_built: bool = False  # True when vec_meta has a row for the configured model
+        ann_fresh: bool = False  # True when the stored token matches current DB state
+        ann_row_count: int = 0  # Embedding rows that were in the ANN index at build time
         if config.SEAM_VEC_ANN == "on":
             try:
                 ann_meta = conn.execute(
@@ -714,9 +719,7 @@ def status(
         if not ann_built:
             ann_display = "not built (run 'seam init --semantic' with SEAM_VEC_ANN=on)"
         elif not ann_fresh:
-            ann_display = (
-                f"{ann_row_count} rows (stale) — run 'seam sync --semantic' to rebuild"
-            )
+            ann_display = f"{ann_row_count} rows (stale) — run 'seam sync --semantic' to rebuild"
         else:
             ann_display = f"{ann_row_count} rows (cosine vec0, fresh)"
         table.add_row("ann", ann_display)
@@ -958,7 +961,7 @@ def impact_cmd(
     verbose = not lean
 
     try:
-        if (to_file or to_file_path):
+        if to_file or to_file_path:
             # WHY full result for --to-file:
             #   The file is the complete artifact; trim flags affect stdout presentation only.
             #   Passing limit=0 + max_bytes=0 + verbose=True overrides --lean/--limit/--max-bytes
@@ -1002,7 +1005,7 @@ def impact_cmd(
         conn.close()
 
     # ── --to-file mode: write full result to disk, emit summary + path ────────
-    if (to_file or to_file_path):
+    if to_file or to_file_path:
         _handle_to_file_output(
             result,
             command="impact",
@@ -1328,7 +1331,7 @@ def trace_cmd(
         conn.close()
 
     # ── --to-file mode: write full result to disk, emit summary + path ────────
-    if (to_file or to_file_path):
+    if to_file or to_file_path:
         # Use "source_to_target" as the label for trace (both symbol names)
         trace_label = f"{source}_to_{target}"
         _handle_to_file_output(
@@ -2077,7 +2080,7 @@ def flows_cmd(
         conn.close()
 
     # ── --to-file mode: write full result to disk, emit summary + path ────────
-    if (to_file or to_file_path):
+    if to_file or to_file_path:
         # Normalize: None result (not-found entry) becomes {"found": False}.
         # WHY the cast: result is Flow | dict[str, Any] | None; Flow is a TypedDict
         # (subtype of dict) but mypy requires explicit help for dict[str, Any] assignment.
@@ -2679,6 +2682,7 @@ def context_pack_cmd(
 # ── seam pack-index (artifact) ────────────────────────────────────────────────
 
 
+@app.command(name="export-index")
 @app.command(name="pack-index")
 def pack_cmd(
     path: str = typer.Argument(
@@ -2715,6 +2719,7 @@ def pack_cmd(
 
     Examples:
       seam pack-index                         -- pack .seam/ from current directory
+      seam export-index                       -- same artifact export, clearer command name
       seam pack-index /path/to/project        -- pack from explicit root
       seam pack-index --dest /tmp/artifacts   -- write archive to /tmp/artifacts/
       seam pack-index --json                  -- structured output for CI scripts
@@ -2742,7 +2747,7 @@ def pack_cmd(
         raise typer.Exit(code=1)
 
     # Call the artifact leaf (never raises; returns None on failure).
-    result = _pack_index_artifact(seam_dir, dest_dir=dest_dir)
+    result = _pack_index_artifact(seam_dir, dest_dir=dest_dir, project_root=project_root)
 
     if result is None:
         if json_:
@@ -2758,6 +2763,7 @@ def pack_cmd(
                 "checksum": result.checksum,
                 "checksum_file": str(result.checksum_path),
                 "size_bytes": result.size_bytes,
+                "manifest": result.manifest,
             }
         )
         return
@@ -2775,6 +2781,153 @@ def pack_cmd(
     table.add_row("size", f"{result.size_bytes:,} bytes")
     table.add_row("sha256", result.checksum)
     table.add_row("sidecar", str(result.checksum_path))
+    table.add_row("schema", str(result.manifest.get("schema_version")))
+    table.add_row("manifest", "embedded")
+    console.print(table)
+
+
+@app.command(name="inspect-index")
+def inspect_index_cmd(
+    archive: str = typer.Argument(..., help="Path to seam-index.tar.gz"),
+    checksum: str = typer.Option(
+        "",
+        "--checksum",
+        help="Checksum sidecar path (default: seam-index.sha256 beside archive)",
+    ),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        "-q",
+        help="Print one-line artifact summary.",
+    ),
+) -> None:
+    """Inspect a Seam index artifact without modifying .seam/."""
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
+    archive_path = Path(archive).resolve()
+    checksum_path = Path(checksum).resolve() if checksum else None
+    try:
+        result = inspect_index_artifact(archive_path, checksum_path=checksum_path)
+    except ArtifactLifecycleError as exc:
+        if json_:
+            emit_json_error(exc.code, exc.message)
+        console.print(f"[red]inspect failed ({exc.code}):[/red] {exc.message}")
+        raise typer.Exit(code=1) from exc
+
+    manifest = result["manifest"]
+    if json_:
+        emit_json(result)
+        return
+    if quiet:
+        print_quiet(
+            f"{archive_path}  schema:{manifest.get('schema_version')}  sha256:{result['checksum']}"
+        )
+        return
+
+    table = Table(title="seam inspect-index", show_header=False, box=None)
+    table.add_column("key", style="dim", width=16)
+    table.add_column("value")
+    table.add_row("archive", str(archive_path))
+    table.add_row("sha256", result["checksum"])
+    table.add_row("schema", str(manifest.get("schema_version")))
+    table.add_row("producer", str(manifest.get("producer", {}).get("version")))
+    table.add_row("created", str(manifest.get("created_at")))
+    table.add_row("members", ", ".join(result["members"]))
+    console.print(table)
+
+
+@app.command(name="import-index")
+def import_index_cmd(
+    archive: str = typer.Argument(..., help="Path to seam-index.tar.gz"),
+    path: str = typer.Option(
+        ".",
+        "--path",
+        help="Project root to land the index into (default: current directory)",
+    ),
+    db_dir: str = typer.Option(
+        "",
+        "--db-dir",
+        help="Override DB directory (default: same as project root)",
+    ),
+    checksum: str = typer.Option(
+        "",
+        "--checksum",
+        help="Checksum sidecar path (default: seam-index.sha256 beside archive)",
+    ),
+    allow_repo_mismatch: bool = typer.Option(
+        False,
+        "--allow-repo-mismatch",
+        help="Import even when the artifact root fingerprint differs from this checkout.",
+    ),
+    no_rebase: bool = typer.Option(
+        False,
+        "--no-rebase",
+        help="Leave file paths as stored in the artifact.",
+    ),
+    sync: bool = typer.Option(
+        False,
+        "--sync",
+        help="Run seam sync after landing the artifact.",
+    ),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        "-q",
+        help="Print terse import summary.",
+    ),
+) -> None:
+    """Import a local Seam index artifact with fail-closed validation."""
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
+    project_root = Path(path).resolve()
+    if not project_root.is_dir():
+        if json_:
+            emit_json_error("INVALID_INPUT", f"'{project_root}' is not a directory.")
+        console.print(f"[red]Error:[/red] '{project_root}' is not a directory.")
+        raise typer.Exit(code=1)
+
+    try:
+        result = import_index_artifact(
+            project_root,
+            Path(archive).resolve(),
+            checksum_path=Path(checksum).resolve() if checksum else None,
+            db_root=Path(db_dir).resolve() if db_dir else None,
+            allow_repo_mismatch=allow_repo_mismatch,
+            rebase=not no_rebase,
+            sync=sync,
+        )
+    except ArtifactLifecycleError as exc:
+        if json_:
+            emit_json_error(exc.code, exc.message)
+        console.print(f"[red]import failed ({exc.code}):[/red] {exc.message}")
+        raise typer.Exit(code=1) from exc
+
+    if json_:
+        emit_json(result)
+        return
+    if quiet:
+        print_quiet(
+            f"imported:{result['archive']}  rebased:{result['files_rebased']}  "
+            f"stale:{result['freshness']['stale']}"
+        )
+        return
+
+    table = Table(title="seam import-index — complete", show_header=False, box=None)
+    table.add_column("key", style="dim", width=16)
+    table.add_column("value")
+    table.add_row("archive", result["archive"])
+    table.add_row("sha256", result["checksum"])
+    table.add_row("files rebased", str(result["files_rebased"]))
+    table.add_row("repo match", str(result["repo_match"]))
+    table.add_row("stale", str(result["freshness"]["stale"]))
     console.print(table)
 
 

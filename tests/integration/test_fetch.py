@@ -16,9 +16,12 @@ Test groups:
     FT9 — --quiet output is key:value pairs, one per line
 """
 
+import hashlib
+import io
 import json
 import shutil
 import subprocess
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -27,7 +30,12 @@ from typer.testing import CliRunner
 import seam.config as config
 from seam.cli.fetch import FetchError, fetch_index
 from seam.cli.main import app
-from seam.indexer.artifact import ARCHIVE_FILENAME, CHECKSUM_FILENAME, pack_index
+from seam.indexer.artifact import (
+    ARCHIVE_FILENAME,
+    CHECKSUM_FILENAME,
+    MANIFEST_FILENAME,
+    pack_index,
+)
 from seam.indexer.db import connect
 from seam.indexer.init_index import run_init
 from seam.query.engine import query
@@ -41,25 +49,31 @@ def _git_init_with_commit(repo_dir: Path, files: dict[str, str]) -> str:
     subprocess.run(["git", "init", str(repo_dir)], check=True, capture_output=True)
     subprocess.run(
         ["git", "-C", str(repo_dir), "config", "user.email", "test@example.com"],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     subprocess.run(
         ["git", "-C", str(repo_dir), "config", "user.name", "Test"],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     for name, content in files.items():
         (repo_dir / name).write_text(content)
         subprocess.run(
             ["git", "-C", str(repo_dir), "add", name],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
     subprocess.run(
         ["git", "-C", str(repo_dir), "commit", "-m", "initial"],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     result = subprocess.run(
         ["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
-        check=True, capture_output=True, text=True,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     return result.stdout.strip()
 
@@ -73,6 +87,28 @@ def _build_artifact(repo_dir: Path, artifacts_dir: Path, sha: str) -> Path:
     result = pack_index(seam_dir, dest_dir=out_dir)
     assert result is not None, "pack_index should succeed"
     return out_dir
+
+
+def _strip_manifest_from_artifact(out_dir: Path) -> None:
+    """Rewrite an artifact into the pre-manifest format while keeping its checksum valid."""
+    archive = out_dir / ARCHIVE_FILENAME
+    members: list[tuple[str, bytes]] = []
+    with tarfile.open(archive, "r:gz") as src:
+        for member in src.getmembers():
+            if member.name == MANIFEST_FILENAME:
+                continue
+            extracted = src.extractfile(member)
+            assert extracted is not None
+            members.append((member.name, extracted.read()))
+
+    with tarfile.open(archive, "w:gz") as dst:
+        for name, data in members:
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            dst.addfile(info, io.BytesIO(data))
+
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    (out_dir / CHECKSUM_FILENAME).write_text(f"{digest}  {ARCHIVE_FILENAME}\n")
 
 
 def _artifact_url_template(artifacts_dir: Path) -> str:
@@ -108,7 +144,9 @@ def _sentinel_content(sentinel_dir: Path) -> dict[str, bytes]:
 class TestUnsetUrl:
     """FT1 — SEAM_INDEX_ARTIFACT_URL not set."""
 
-    def test_unset_url_raises_fetch_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_unset_url_raises_fetch_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """FT1a: When URL template is empty, FetchError with INVALID_INPUT is raised."""
         # Create a valid git repo so the git check doesn't fail first
         _git_init_with_commit(tmp_path, {"hello.py": "def hello(): pass\n"})
@@ -120,7 +158,9 @@ class TestUnsetUrl:
         assert exc_info.value.code == "INVALID_INPUT"
         assert "SEAM_INDEX_ARTIFACT_URL" in exc_info.value.message
 
-    def test_unset_url_leaves_no_seam_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_unset_url_leaves_no_seam_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """FT1b: When URL is unset, .seam/ is never created."""
         _git_init_with_commit(tmp_path, {"hello.py": "def hello(): pass\n"})
         monkeypatch.setattr(config, "SEAM_INDEX_ARTIFACT_URL", "")
@@ -137,9 +177,13 @@ class TestUnsetUrl:
 class TestNonGitDir:
     """FT2 — Not a git repository."""
 
-    def test_non_git_dir_raises_fetch_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_non_git_dir_raises_fetch_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """FT2a: A plain directory (not a git repo) raises FetchError with NOT_A_GIT_REPO."""
-        monkeypatch.setattr(config, "SEAM_INDEX_ARTIFACT_URL", "https://example.com/{sha}/seam-index.tar.gz")
+        monkeypatch.setattr(
+            config, "SEAM_INDEX_ARTIFACT_URL", "https://example.com/{sha}/seam-index.tar.gz"
+        )
 
         with pytest.raises(FetchError) as exc_info:
             fetch_index(tmp_path)
@@ -147,9 +191,13 @@ class TestNonGitDir:
         assert exc_info.value.code == "NOT_A_GIT_REPO"
         assert "seam init" in exc_info.value.message.lower()
 
-    def test_non_git_dir_leaves_no_seam_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_non_git_dir_leaves_no_seam_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """FT2b: On NOT_A_GIT_REPO, no .seam/ is created."""
-        monkeypatch.setattr(config, "SEAM_INDEX_ARTIFACT_URL", "https://example.com/{sha}/seam-index.tar.gz")
+        monkeypatch.setattr(
+            config, "SEAM_INDEX_ARTIFACT_URL", "https://example.com/{sha}/seam-index.tar.gz"
+        )
 
         with pytest.raises(FetchError):
             fetch_index(tmp_path)
@@ -193,7 +241,9 @@ class TestHappyPath:
         _build_artifact(repo_dir, artifacts_dir, sha)
         shutil.rmtree(repo_dir / ".seam", ignore_errors=True)
 
-        monkeypatch.setattr(config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir))
+        monkeypatch.setattr(
+            config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir)
+        )
 
         result = fetch_index(repo_dir)
 
@@ -209,7 +259,9 @@ class TestHappyPath:
         _build_artifact(repo_dir, artifacts_dir, sha)
         shutil.rmtree(repo_dir / ".seam", ignore_errors=True)
 
-        monkeypatch.setattr(config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir))
+        monkeypatch.setattr(
+            config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir)
+        )
 
         result = fetch_index(repo_dir)
 
@@ -230,7 +282,9 @@ class TestHappyPath:
         _build_artifact(repo_dir, artifacts_dir, sha)
         shutil.rmtree(repo_dir / ".seam", ignore_errors=True)
 
-        monkeypatch.setattr(config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir))
+        monkeypatch.setattr(
+            config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir)
+        )
 
         fetch_index(repo_dir)
 
@@ -249,6 +303,27 @@ class TestHappyPath:
                 f"Expected local path under {repo_dir}, got {row['file']}"
             )
 
+    def test_happy_path_accepts_legacy_checksummed_artifact_without_manifest(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """FT3 legacy: checksummed pre-manifest artifacts still fetch and report manifest=null."""
+        artifacts_dir = tmp_path / "artifacts"
+        repo_dir = tmp_path / "repo"
+        sha = _git_init_with_commit(repo_dir, {"module.py": "def greet(): return 'hello'\n"})
+        artifact_dir = _build_artifact(repo_dir, artifacts_dir, sha)
+        _strip_manifest_from_artifact(artifact_dir)
+        shutil.rmtree(repo_dir / ".seam", ignore_errors=True)
+
+        monkeypatch.setattr(
+            config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir)
+        )
+
+        result = fetch_index(repo_dir)
+
+        assert (repo_dir / ".seam" / "seam.db").is_file()
+        assert result["artifact"]["verified"] is True
+        assert result["artifact"]["manifest"] is None
+
     def test_happy_path_result_has_sync_counts(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -259,7 +334,9 @@ class TestHappyPath:
         _build_artifact(repo_dir, artifacts_dir, sha)
         shutil.rmtree(repo_dir / ".seam", ignore_errors=True)
 
-        monkeypatch.setattr(config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir))
+        monkeypatch.setattr(
+            config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir)
+        )
 
         result = fetch_index(repo_dir)
 
@@ -289,14 +366,19 @@ class TestAncestorFallback:
 
         # Commit 2: add a second commit (HEAD now = sha2, artifact NOT published)
         (repo_dir / "extra.py").write_text("def extra(): pass\n")
-        subprocess.run(["git", "-C", str(repo_dir), "add", "extra.py"], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(repo_dir), "add", "extra.py"], check=True, capture_output=True
+        )
         subprocess.run(
             ["git", "-C", str(repo_dir), "commit", "-m", "second commit"],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         sha2_result = subprocess.run(
             ["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
-            check=True, capture_output=True, text=True,
+            check=True,
+            capture_output=True,
+            text=True,
         )
         sha2 = sha2_result.stdout.strip()
         assert sha2 != sha1, "SHA should differ after second commit"
@@ -324,13 +406,18 @@ class TestAncestorFallback:
 
         # Add second commit (no artifact for sha2)
         (repo_dir / "extra.py").write_text("def extra(): pass\n")
-        subprocess.run(["git", "-C", str(repo_dir), "add", "extra.py"], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(repo_dir), "add", "extra.py"], check=True, capture_output=True
+        )
         subprocess.run(
             ["git", "-C", str(repo_dir), "commit", "-m", "second"],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
 
-        monkeypatch.setattr(config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir))
+        monkeypatch.setattr(
+            config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir)
+        )
 
         fetch_index(repo_dir)
 
@@ -399,7 +486,9 @@ class TestAtomicSwapOnFailure:
         # Snapshot the original .seam/ before the failed fetch
         snapshot_before = _sentinel_content(existing_seam)
 
-        monkeypatch.setattr(config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir))
+        monkeypatch.setattr(
+            config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir)
+        )
 
         with pytest.raises(FetchError):
             fetch_index(repo_dir)
@@ -429,7 +518,9 @@ class TestAtomicSwapOnFailure:
 
         snapshot_before = _sentinel_content(existing_seam)
 
-        monkeypatch.setattr(config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir))
+        monkeypatch.setattr(
+            config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir)
+        )
         monkeypatch.setattr(config, "SEAM_FETCH_ANCESTOR_DEPTH", 2)
 
         with pytest.raises(FetchError):
@@ -454,14 +545,18 @@ class TestAtomicSwapOnFailure:
         # Ensure no .seam/ initially
         assert not (repo_dir / ".seam").exists()
 
-        monkeypatch.setattr(config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir))
+        monkeypatch.setattr(
+            config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir)
+        )
         monkeypatch.setattr(config, "SEAM_FETCH_ANCESTOR_DEPTH", 2)
 
         with pytest.raises(FetchError):
             fetch_index(repo_dir)
 
         # No .seam/ should have been left behind
-        assert not (repo_dir / ".seam").exists(), ".seam/ created by a failed fetch (should not exist)"
+        assert not (repo_dir / ".seam").exists(), (
+            ".seam/ created by a failed fetch (should not exist)"
+        )
 
 
 # ── FT7: Idempotency ─────────────────────────────────────────────────────────
@@ -480,7 +575,9 @@ class TestIdempotency:
         _build_artifact(repo_dir, artifacts_dir, sha)
         shutil.rmtree(repo_dir / ".seam", ignore_errors=True)
 
-        monkeypatch.setattr(config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir))
+        monkeypatch.setattr(
+            config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir)
+        )
 
         result1 = fetch_index(repo_dir)
         result2 = fetch_index(repo_dir)
@@ -528,6 +625,8 @@ class TestJsonOutput:
         assert "bytes_downloaded" in data
         assert "files_rebased" in data
         assert "sync" in data
+        assert data["artifact"]["verified"] is True
+        assert data["artifact"]["manifest"]["schema_version"] == 15
 
     def test_json_error_on_missing_url(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

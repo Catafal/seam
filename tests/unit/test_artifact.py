@@ -9,10 +9,19 @@ TDD order: each group of tests was written BEFORE the corresponding implementati
 """
 
 import io
+import json
+import sqlite3
 import tarfile
 from pathlib import Path
 
-from seam.indexer.artifact import PackResult, pack_index, unpack_index, verify_archive
+from seam.indexer.artifact import (
+    MANIFEST_FILENAME,
+    PackResult,
+    inspect_artifact,
+    pack_index,
+    unpack_index,
+    verify_archive,
+)
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -21,11 +30,19 @@ def _make_seam_dir(tmp_path: Path, *, with_vectors: bool = False) -> Path:
     """Create a minimal .seam/ directory with a fake seam.db."""
     seam_dir = tmp_path / ".seam"
     seam_dir.mkdir()
-    (seam_dir / "seam.db").write_bytes(b"SQLite format 3\x00fake database content for testing")
+    conn = sqlite3.connect(seam_dir / "seam.db")
+    try:
+        conn.execute("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute("INSERT INTO metadata (key, value) VALUES ('schema_version', '15')")
+        conn.commit()
+    finally:
+        conn.close()
     if with_vectors:
         (seam_dir / "vectors.f32").write_bytes(b"\x01\x02\x03\x04" * 4)
         (seam_dir / "vectors.ids.i64").write_bytes(b"\x00\x00\x00\x00\x00\x00\x00\x01")
-        (seam_dir / "vectors.meta.json").write_text('{"model": "BAAI/bge-small-en-v1.5", "dim": 384}')
+        (seam_dir / "vectors.meta.json").write_text(
+            '{"model": "BAAI/bge-small-en-v1.5", "dim": 384}'
+        )
     return seam_dir
 
 
@@ -96,6 +113,17 @@ def test_pack_result_size_bytes_correct(tmp_path: Path) -> None:
     assert result.size_bytes > 0
 
 
+def test_pack_result_exposes_manifest_metadata(tmp_path: Path) -> None:
+    """Exported artifacts expose schema and contents metadata for CI logs."""
+    seam_dir = _make_seam_dir(tmp_path)
+    result = pack_index(seam_dir, dest_dir=tmp_path / "out", project_root=tmp_path)
+    assert result is not None
+    assert result.manifest["manifest_version"] == 1
+    assert result.manifest["schema_version"] is not None
+    assert result.manifest["contents"]["has_source_text"] is False
+    assert result.manifest["contents"]["files"] == ["seam.db"]
+
+
 # ── Pack: canonical contents ──────────────────────────────────────────────────
 
 
@@ -107,6 +135,20 @@ def test_pack_contains_seam_db(tmp_path: Path) -> None:
     with tarfile.open(result.archive_path, "r:gz") as tf:
         names = tf.getnames()
     assert "seam.db" in names
+
+
+def test_pack_contains_manifest(tmp_path: Path) -> None:
+    """manifest.json is stored inside the archive so inspection follows the artifact."""
+    seam_dir = _make_seam_dir(tmp_path)
+    result = pack_index(seam_dir, dest_dir=tmp_path / "out", project_root=tmp_path)
+    assert result is not None
+    with tarfile.open(result.archive_path, "r:gz") as tf:
+        names = tf.getnames()
+        manifest_bytes = tf.extractfile(MANIFEST_FILENAME)
+        assert manifest_bytes is not None
+        manifest = json.loads(manifest_bytes.read().decode("utf-8"))
+    assert MANIFEST_FILENAME in names
+    assert manifest["schema_version"] == result.manifest["schema_version"]
 
 
 def test_pack_excludes_gitignore(tmp_path: Path) -> None:
@@ -169,6 +211,7 @@ def test_pack_includes_all_vector_files_when_present(tmp_path: Path) -> None:
     assert "vectors.f32" in names
     assert "vectors.ids.i64" in names
     assert "vectors.meta.json" in names
+    assert "manifest.json" in names
 
 
 def test_pack_includes_only_canonical_files(tmp_path: Path) -> None:
@@ -181,6 +224,44 @@ def test_pack_includes_only_canonical_files(tmp_path: Path) -> None:
     with tarfile.open(result.archive_path, "r:gz") as tf:
         names = tf.getnames()
     assert "diagnostics.ndjson" not in names
+    assert "manifest.json" in names
+
+
+def test_inspect_artifact_reads_manifest_without_extracting(tmp_path: Path) -> None:
+    """Inspecting is a read-only preflight for agents before import."""
+    seam_dir = _make_seam_dir(tmp_path, with_vectors=True)
+    result = pack_index(seam_dir, dest_dir=tmp_path / "out", project_root=tmp_path)
+    assert result is not None
+    dest = tmp_path / "dest"
+
+    inspected = inspect_artifact(result.archive_path, checksum_path=result.checksum_path)
+
+    assert inspected is not None
+    assert inspected["checksum"] == result.checksum
+    assert inspected["manifest"]["contents"]["has_embeddings"] is True
+    assert not dest.exists()
+
+
+def test_inspect_artifact_rejects_unexpected_safe_member(tmp_path: Path) -> None:
+    """Safe-looking extra files are still rejected because artifacts use an allowlist."""
+    archive = tmp_path / "unexpected.tar.gz"
+    manifest = {
+        "manifest_version": 1,
+        "artifact_format": "seam-index",
+        "schema_version": 15,
+        "contents": {"files": ["seam.db"], "has_source_text": False},
+    }
+    with tarfile.open(archive, "w:gz") as tf:
+        for name, data in {
+            "seam.db": b"SQLite format 3\x00",
+            "manifest.json": json.dumps(manifest).encode("utf-8"),
+            "notes.txt": b"not allowed",
+        }.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+    assert inspect_artifact(archive) is None
 
 
 # ── Pack: graceful failure ─────────────────────────────────────────────────────
