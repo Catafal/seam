@@ -24,6 +24,10 @@
  *   The "Symbol" tab label maps to the "neighborhood" ViewMode string — a mapping
  *   that must be expressed exactly once. lib/tabs.ts is that one place; TabBar
  *   reads it, App imports the type from it. No other file may define ViewMode.
+ *
+ * #285: Topology is 3D-only. The 2D ClusterGraph2D surface (C2) and its inline
+ * 2D/3D sub-toggle were removed. The backend /api/constellation endpoint and its
+ * `representative` field remain in place but are no longer consumed by the frontend.
  */
 
 import { useState, useRef, useCallback, useEffect, lazy, Suspense, useMemo } from "react";
@@ -32,16 +36,14 @@ import { DetailPanel } from "./components/DetailPanel";
 import { ChangesDrawer } from "./components/ChangesDrawer";
 import { StructureOverview } from "./components/StructureOverview";
 import { FileSidebar } from "./components/FileSidebar";
-import { ClusterGraph2D } from "./components/ClusterGraph2D";
 import { TabBar } from "./components/TabBar";
 import { StatusStrip } from "./components/StatusStrip";
 import { Breadcrumb } from "./components/Breadcrumb";
 import type { ViewMode } from "./lib/tabs";
 import { ResizeHandle, clampPanelWidth, readPanelWidth } from "./components/ResizeHandle";
 import { useSearch, useHubs, useAreas } from "./api/hooks";
-import { resolveClusterHandoff } from "./lib/resolveClusterHandoff";
 import { deriveCrumbs } from "./lib/breadcrumbs";
-import type { SearchResultItem, HubSymbol, ConstellationCluster } from "./api/schema-types";
+import type { SearchResultItem, HubSymbol } from "./api/schema-types";
 import type { Area } from "./lib/deriveAreas";
 import { GitBranch, Route } from "lucide-react";
 
@@ -370,13 +372,6 @@ function LandingPage({ onSelect, onOpenOverview, onOpenScopedOverview }: Landing
 /** App view mode — defined in lib/tabs.ts and imported above; documented here for readers. */
 
 /**
- * Sub-mode within the Topology surface.
- * "2d" = ClusterGraph2D (the legible default, 2D leads).
- * "3d" = lazy ConstellationTab (the "wow" opt-in).
- */
-type TopologySubMode = "2d" | "3d";
-
-/**
  * App root: assembles the header, search, mode toggle, and the main area.
  * The main area is the StructureOverview (functional areas → structure treemap),
  * the GraphCanvas (neighborhood with a center), or the LandingPage (no center yet).
@@ -390,12 +385,10 @@ function App() {
   const [traceTarget, setTraceTarget] = useState<string | null>(null);
   // changesOpen: toggles the git working-changes drawer
   const [changesOpen, setChangesOpen] = useState(false);
-  // mode: per-symbol neighborhood, whole-repo overview, or topology (2D/3D)
+  // mode: per-symbol neighborhood, whole-repo overview, or topology (3D constellation)
   const [mode, setMode] = useState<ViewMode>("neighborhood");
-  // topologySubMode: 2D cluster graph (default) or 3D constellation (opt-in).
-  // Persists across topology open/close so the user's last choice is remembered.
-  const [topologySubMode, setTopologySubMode] = useState<TopologySubMode>("2d");
-  // focusSymbol: shared between 2D and 3D views for cross-tab navigation
+  // focusSymbol: propagated from the 2D neighborhood to the 3D topology tab so
+  // switching to Topology after selecting a symbol flies the camera there.
   const [focusSymbol, setFocusSymbol] = useState<string | null>(null);
   // B1: preselectedArea — set when a landing area card is clicked; cleared when
   // opening overview from the header so the area-cards list shows first.
@@ -459,19 +452,6 @@ function App() {
     setPreselectedArea(area);
     setMode("overview");
   }, []);
-
-  // C3: cluster hand-off from the 2D cluster graph (and optionally 3D NDP).
-  // resolveClusterHandoff picks the best symbol name; if none resolves (null),
-  // we do nothing — no crash, no empty center.
-  const handleOpenCluster = useCallback(
-    (cluster: ConstellationCluster) => {
-      const target = resolveClusterHandoff(cluster);
-      if (!target) return; // graceful no-op when both representative and label are null
-      setCenterSymbol(target);
-      setMode("neighborhood");
-    },
-    [setCenterSymbol],
-  );
 
   // Clicking the "Seam Explorer" brand returns to the landing page: reset the
   // view to the default neighborhood mode with no centered/selected symbol, and
@@ -558,37 +538,6 @@ function App() {
           }}
         />
 
-        {/* 2D/3D sub-toggle — only visible while topology mode is active.
-            Quiet pill buttons; neither relabels itself with the other mode's name.
-            Sits immediately after the TabBar so it reads as a refinement of the
-            active Topology tab (same horizontal row, no separator needed). */}
-        {mode === "topology" && (
-          <div className="flex items-center gap-1 bg-zinc-800 border border-zinc-700 rounded-md p-0.5">
-            <button
-              onClick={() => setTopologySubMode("2d")}
-              aria-pressed={topologySubMode === "2d"}
-              className={`px-2 py-0.5 rounded text-xs transition-colors ${
-                topologySubMode === "2d"
-                  ? "bg-zinc-600 text-zinc-100"
-                  : "text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              2D
-            </button>
-            <button
-              onClick={() => setTopologySubMode("3d")}
-              aria-pressed={topologySubMode === "3d"}
-              className={`px-2 py-0.5 rounded text-xs transition-colors ${
-                topologySubMode === "3d"
-                  ? "bg-zinc-600 text-zinc-100"
-                  : "text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              3D
-            </button>
-          </div>
-        )}
-
         {/* Center: search box(es) — hidden in overview mode */}
         <div className="flex-1 flex justify-center items-center gap-2">
           {mode === "neighborhood" && (
@@ -662,34 +611,23 @@ function App() {
 
         {/* Surface content — takes the remaining height */}
         <div className="flex flex-1 overflow-hidden">
-        {/* Topology surface: 2D cluster graph (default) or 3D constellation. */}
+        {/* Topology surface: 3D constellation (lazy-loaded to keep three/R3F out of
+            the initial bundle). focusSymbol propagates the last neighborhood selection
+            so the camera flies to it when the user switches to Topology (#285 3D-only).
+            #263 ISOLATION CONTRACT: selecting a node in 3D ONLY isolates its
+            neighborhood in the canvas — it does NOT navigate the 2D neighborhood.
+            The 3D scene is a spatial relationship viewer; navigation happens in the
+            2D neighborhood graph. */}
         {mode === "topology" ? (
-          topologySubMode === "2d" ? (
-            /* 2D cluster-graph — default, leads the topology surface (C2 + C3).
-               onOpenCluster hands off to the neighborhood centered on the
-               cluster's representative symbol (resolveClusterHandoff). */
-            <ClusterGraph2D onOpenCluster={handleOpenCluster} />
-          ) : (
-            /* 3D constellation — opt-in, lazy-loaded to keep three/R3F out of
-               the initial bundle until the user explicitly picks 3D.
-               #263 ISOLATION CONTRACT: selecting a node in 3D ONLY isolates its
-               neighborhood in the canvas — it does NOT navigate the 2D neighborhood.
-               onFocusSymbol has been removed from ConstellationTab; the only data
-               flow is INBOUND (2D→3D via focusSymbol), not outbound (3D→2D).
-               The 3D scene is a "wow" spectacle and a spatial relationship viewer;
-               navigation happens in the 2D neighborhood graph. */
-            <Suspense
-              fallback={
-                <div className="flex items-center justify-center w-full h-full text-zinc-500 text-sm animate-pulse">
-                  Loading constellation…
-                </div>
-              }
-            >
-              <ConstellationTab
-                focusSymbol={focusSymbol}
-              />
-            </Suspense>
-          )
+          <Suspense
+            fallback={
+              <div className="flex items-center justify-center w-full h-full text-zinc-500 text-sm animate-pulse">
+                Loading constellation…
+              </div>
+            }
+          >
+            <ConstellationTab focusSymbol={focusSymbol} />
+          </Suspense>
         ) : (
           <>
             {/* File sidebar: visible in neighborhood mode only (not overview).
