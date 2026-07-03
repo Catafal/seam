@@ -294,6 +294,7 @@ def test_target_all_guidance_writes_union(
     }
     assert changes.created == expected
     assert changes.modified == set()
+    assert changes.deleted == set()
 
 
 def test_target_all_with_mcp_user_writes_union(
@@ -331,6 +332,7 @@ def test_target_all_with_mcp_user_writes_union(
     }
     assert changes.created == expected
     assert changes.modified == set()
+    assert changes.deleted == set()
 
 
 # ── Idempotent second run produces zero mutations ─────────────────────────────
@@ -432,6 +434,70 @@ def test_print_config_with_mcp_zero_mutation(
     _assert_no_tmp(tmp_path)
     assert changes == FsChanges(set(), set(), set()), (
         f"--print-config --with-mcp wrote files: {changes}"
+    )
+
+
+# ── Corrupt pre-existing vscode MCP config: backup created ───────────────────
+
+
+def test_vscode_corrupt_config_creates_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When .vscode/mcp.json is corrupt, a .backup copy is made alongside normal writes."""
+    root, home, _sib, canary = _setup_dirs(tmp_path)
+    monkeypatch.setenv("HOME", str(home))
+
+    # Seed .vscode/mcp.json with unparseable bytes before install
+    vscode_dir = root / ".vscode"
+    vscode_dir.mkdir(parents=True)
+    vscode_mcp = vscode_dir / "mcp.json"
+    vscode_mcp.write_bytes(b"!!!not valid json!!!")
+
+    _, changes = _invoke_and_diff(
+        tmp_path,
+        ["install", str(root), "--target", "vscode", "--with-mcp"],
+    )
+
+    _assert_safe(changes, root, home, canary)
+    _assert_no_tmp(tmp_path)
+
+    backup = vscode_dir / "mcp.json.backup"
+    # Backup of the corrupt file must be among newly created files
+    assert str(backup) in changes.created, "Expected .vscode/mcp.json.backup in created set"
+    # Guidance file also created
+    assert _abs_root(root, ".github/copilot-instructions.md") in changes.created
+    # The original corrupt file was overwritten (modified, not created)
+    assert str(vscode_mcp) in changes.modified
+
+
+# ── vscode + user + --with-mcp: exit 1, zero writes ──────────────────────────
+
+
+def test_vscode_user_with_mcp_rejected_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """vscode --location user --with-mcp is invalid (project-only); exits 1 with no writes."""
+    root, home, _sib, canary = _setup_dirs(tmp_path)
+    monkeypatch.setenv("HOME", str(home))
+
+    result, changes = _invoke_and_diff(
+        tmp_path,
+        [
+            "install",
+            str(root),
+            "--target",
+            "vscode",
+            "--location",
+            "user",
+            "--with-mcp",
+        ],
+    )
+
+    assert result.exit_code == 1, "Expected exit code 1 for vscode user --with-mcp"
+    _assert_safe(changes, root, home, canary)
+    _assert_no_tmp(tmp_path)
+    assert changes == FsChanges(set(), set(), set()), (
+        f"vscode user --with-mcp should write nothing but wrote: {changes}"
     )
 
 
@@ -693,6 +759,61 @@ def test_foreign_content_codex_preserved(
     # Seam table must be gone
     assert "[mcp_servers.seam]" not in after_text, (
         "Seam codex server table was not removed by uninstall"
+    )
+
+    _assert_no_tmp(tmp_path)
+
+
+# ── Shared AGENTS.md block: Codex + Zed converge to ONE block ────────────────
+
+
+def test_codex_zed_share_agents_md_block_uninstall_removes_shared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DOCUMENTS the Codex/Zed shared AGENTS.md trade-off and verifies the contract.
+
+    Codex and Zed both write CLI guidance into AGENTS.md under the same
+    <!-- seam:start/end --> marker. This is intentional: both agents read AGENTS.md;
+    one shared block avoids duplication.
+
+    Trade-off: uninstalling EITHER target removes the shared block (the other agent
+    loses its guidance too). Escape hatch: re-run `seam install --target <other>`.
+
+    This test encodes and verifies:
+      1. install codex then zed → AGENTS.md has exactly ONE <!-- seam:start --> (no dup).
+      2. uninstall zed → shared block is removed (codex guidance gone too).
+      3. re-install codex guidance → block is restored (escape hatch works).
+    """
+    root, home, _sib, canary = _setup_dirs(tmp_path)
+    monkeypatch.setenv("HOME", str(home))
+
+    agents_md = root / "AGENTS.md"
+
+    # Step 1: install codex guidance, then zed guidance
+    runner.invoke(app, ["install", str(root), "--target", "codex"])
+    runner.invoke(app, ["install", str(root), "--target", "zed"])
+
+    # AGENTS.md must exist with EXACTLY ONE seam:start block (no duplication)
+    assert agents_md.exists(), "AGENTS.md not created after codex + zed install"
+    content = agents_md.read_text(encoding="utf-8")
+    assert content.count("<!-- seam:start -->") == 1, (
+        "Expected exactly ONE <!-- seam:start --> in AGENTS.md after codex + zed install; "
+        f"got {content.count('<!-- seam:start -->')} (duplication bug?)"
+    )
+
+    # Step 2: uninstall zed → shared block removed (documented trade-off)
+    runner.invoke(app, ["uninstall", str(root), "--target", "zed"])
+    content_after_uninstall = agents_md.read_text(encoding="utf-8")
+    assert "<!-- seam:start -->" not in content_after_uninstall, (
+        "Seam block in AGENTS.md was NOT removed after `seam uninstall --target zed` "
+        "(the shared block should be gone — both codex and zed guidance removed)"
+    )
+
+    # Step 3: re-install codex guidance → block is restored (escape hatch)
+    runner.invoke(app, ["install", str(root), "--target", "codex"])
+    content_restored = agents_md.read_text(encoding="utf-8")
+    assert "<!-- seam:start -->" in content_restored, (
+        "Seam block in AGENTS.md was NOT restored after re-running `seam install --target codex`"
     )
 
     _assert_no_tmp(tmp_path)
