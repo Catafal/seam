@@ -246,3 +246,49 @@
 #     Default behavior with SEAM_INDEX_ARTIFACT_URL="" is byte-identical to pre-WS4.
 #
 # NEXT: Documentation pass (CLAUDE.md Current Phase, Commands, config knobs, gotchas).
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WS2b — ANN acceleration for semantic search via sqlite-vec
+# (issues #267/#268/#269/#270, branch feat/ws2b-ann-search)
+# Session: 2026-07-03
+# ─────────────────────────────────────────────────────────────────────────────
+#   WHY this phase exists:
+#     WS2a mmap eliminated per-query blob-decode overhead but remained O(N)
+#     exhaustive cosine-scan.  On ≥50k-symbol repos this is 200–500 ms/query.
+#     WS2b adds an ANN tier via sqlite-vec vec0 virtual table (C extension,
+#     in-process, zero network) that runs O(log N) KNN probes — 5–20× faster at
+#     real scales while maintaining high recall@K parity with brute-force.
+#
+#   Shipped slices:
+#     S1 — seam/query/vec_extension.py (leaf): probe_vec_extension() — full
+#       CREATE/DROP round-trip probe (no side effects on real DB); load_vec_extension()
+#       — loads the extension onto a given connection for reuse.  Never raises; False
+#       on any failure.  Controlled by SEAM_VEC_ANN=on guard in callers.
+#     S2 — seam/indexer/vec_index.py (bridge, mirrors cluster_index pattern):
+#       index_vec() — triple-gated public entry (0=skip, -1=error, ≥1=rows).
+#       _build_vec_index() — inner impl (may raise): CREATE vec_embeddings vec0 table
+#       + batch-INSERT from embeddings WHERE model=? + write staleness token to
+#       vec_meta.  Called by seam init/sync --semantic after index_embeddings.
+#     S3 — seam/query/semantic.py three-tier cascade: ANN (_try_vec_path) → mmap
+#       (_try_mmap_path) → SQL brute-force.  Staleness guard reads vec_meta token,
+#       compares to compute_index_version; mismatch → None (fall through).  Transparent
+#       to all MCP tool callers.
+#     S4 — benchmarks/semantic_ann_scale.py: run_scale() + ScaleResult dataclass +
+#       CLI harness (--sizes, --dim, --queries, --k).  Self-skips when sqlite_vec
+#       absent.  `make bench-semantic-ann` target added to Makefile.  NOT gate.
+#       tests/unit/test_semantic_ann_bench_smoke.py: gate-wired smoke (tiny scale,
+#       pytest.importorskip("sqlite_vec")).
+#     Docs — README.md: [semantic-ann] install, knob table, macOS caveat, dev command.
+#       CLAUDE.md: Current Phase block, config knobs, Package Layout modules,
+#       semantic.py entry updated, 4 Known Gotchas.
+#       .github/workflows/no-egress.yml: WHY ANN needs no exclusion (in-process).
+#   2 new config knobs: SEAM_VEC_ANN ("off"/"on", default "off"), SEAM_VEC_ANN_MIN_ROWS
+#     (int, default 50000).  No schema change, no migration.  MCP tool count = 16.
+#     [semantic-ann] extra: sqlite-vec as its own optional dep (NOT folded into [semantic]).
+#
+#   Gate: ruff + mypy clean, full pytest suite passes (sqlite_vec-gated smoke skipped
+#     when [semantic-ann] absent, matching fastembed skip discipline).
+#   No schema change, no migration, no re-index needed (new path is additive).
+#   Default SEAM_VEC_ANN=off → byte-identical to pre-WS2b for all queries.
+#
+# NEXT: v0.1.0 release prep (PyPI publish as seam-code, README Quickstart update).

@@ -62,10 +62,11 @@ Three properties define it:
 Published on PyPI as **`seam-code`** — the PyPI name `seam` belongs to an unrelated package, so the *distribution* is `seam-code` while the import package and the `seam` command keep the short name.
 
 ```bash
-pip install seam-code              # CLI only
-pip install 'seam-code[server]'    # + the MCP server (seam start)
-pip install 'seam-code[semantic]'  # + semantic search (fastembed, ONNX/CPU, ~67 MB model on first run)
-pip install 'seam-code[web]'       # + the Seam Explorer web UI (FastAPI)
+pip install seam-code                    # CLI only
+pip install 'seam-code[server]'          # + the MCP server (seam start)
+pip install 'seam-code[semantic]'        # + semantic search (fastembed, ONNX/CPU, ~67 MB model on first run)
+pip install 'seam-code[semantic-ann]'    # + ANN acceleration for semantic search (sqlite-vec KNN)
+pip install 'seam-code[web]'             # + the Seam Explorer web UI (FastAPI)
 ```
 
 Or with **npx** (JS/TS projects, no Python toolchain required):
@@ -297,6 +298,22 @@ Edges are keyed by **symbol name**, not row id — this is what lets the watcher
 
 **Semantic search.** Opt-in local embeddings (fastembed, ONNX on CPU) merge with FTS5 via Reciprocal Rank Fusion, so `"retry logic"` can surface `_backoff_with_jitter` even with no shared token. The model downloads once, then runs 100% locally.
 
+**ANN acceleration (WS2b).** At very large codebases, brute-force cosine scan over hundreds of thousands of embedding vectors approaches the ~10 ms latency bar. The optional `[semantic-ann]` extra adds a `sqlite-vec` vec0 KNN index that serves queries in sub-millisecond time regardless of corpus size. Three-tier read path: **ANN → mmap → SQL brute-force** — each tier falls through to the next on any structural issue (absent, stale, or load failure). ANN is off by default (`SEAM_VEC_ANN=off`); enable it with:
+
+```bash
+pip install 'seam-code[semantic-ann]'
+SEAM_VEC_ANN=on seam init --semantic   # builds embeddings + vec0 KNN index
+```
+
+Two knobs govern the ANN tier:
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `SEAM_VEC_ANN` | `off` | Master switch. `on` enables the vec0 KNN tier (requires `[semantic-ann]` extra + `seam init --semantic`). |
+| `SEAM_VEC_ANN_MIN_ROWS` | `50000` | Minimum embedding count before ANN activates. Below this threshold the mmap/SQL brute-force is already sub-10 ms, so ANN build overhead is not justified. |
+
+**Packaging caveat.** `sqlite-vec` is a native C extension. Some Python builds — notably the **macOS system Python** — disable `conn.enable_load_extension()` at compile time. On those builds Seam detects the failure, logs a single clear notice, and falls back to the mmap/brute-force path automatically. Nothing crashes; no results are lost. To use ANN on macOS, install Python via [python.org](https://www.python.org/downloads/) or `brew install python` (both enable extension loading), or run via `uv` (which uses its own Python build that supports extension loading).
+
 **Staleness banner.** Graph-traversal tools attach an `index_status` banner when the index has drifted from disk — so an agent is never silently handed wrong blast-radius answers.
 
 ---
@@ -379,12 +396,15 @@ These are the non-negotiables — and they are guarantees to the user, not just 
 ## Development
 
 ```bash
-uv sync --dev      # install dev dependencies
-make gate          # lint (ruff) + typecheck (mypy) + tests — must be green before every commit
-make fmt           # format + autofix (not part of the gate)
-make build-web     # build the Explorer SPA into seam/_web/ (requires Node.js — build-time only)
-make eval          # run the recall-regression harness
-make test-npm      # run the npm shim vitest suite (requires Node.js ≥18)
+uv sync --dev              # install dev dependencies
+make gate                  # lint (ruff) + typecheck (mypy) + tests — must be green before every commit
+make fmt                   # format + autofix (not part of the gate)
+make build-web             # build the Explorer SPA into seam/_web/ (requires Node.js — build-time only)
+make eval                  # run the recall-regression harness
+make test-npm              # run the npm shim vitest suite (requires Node.js ≥18)
+make bench-semantic        # semantic recall benchmark — needs [semantic] extra + seam init --semantic
+make bench-semantic-ann    # ANN scale benchmark (brute-force vs KNN latency + recall) — needs [semantic-ann] extra
+make soak                  # sustained mixed read load (P5.5 diagnostics harness)
 ```
 
 ### Publishing the npm shim

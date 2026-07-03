@@ -27,6 +27,16 @@ name: No-Egress Proof
 #   read command is offline.  ``seam fetch`` is deliberately absent from the strace
 #   probes below; its egress is accepted and documented, not an oversight.
 #
+# WHY the ANN tier (WS2b ``sqlite-vec`` / SEAM_VEC_ANN) needs NO exclusion here:
+#   The sqlite-vec extension is an IN-PROCESS SQLite extension (a shared library
+#   loaded via conn.enable_load_extension).  It makes ZERO network calls at any
+#   point — index build time, query time, or extension-load time.  The ANN read
+#   path is: load extension → issue SQL KNN MATCH → return rows from the local DB.
+#   All I/O is to the local .seam/seam.db file; nothing touches the network.
+#   ANN activation therefore does NOT need to be excluded from the strace probes
+#   below — it is provably in-process and offline, unlike ``seam init --semantic``
+#   (model download) or ``seam fetch`` (artifact download).
+#
 # WHY ``set -euo pipefail``:
 #   Each strace command propagates the child's exit code.  A crashed seam command
 #   would produce an empty trace, which egress_audit would pass — giving a false
