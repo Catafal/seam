@@ -185,6 +185,89 @@ three/R3F are already installed. No SQLite schema change, no migration, no re-in
 - New MCP tools (count stays 16). New routes beyond the additive field on `/api/constellation`.
 - The explicit Overview/Symbol/Topology tab bar, status strip, and end-to-end breadcrumbs (Phase D).
 
+## C1 implementation notes
+
+**Slice:** C1 — additive `representative` field on `/api/constellation` (issue #251).
+
+**What changed:**
+
+- `seam/server/graph_api.py` — extracted a new public helper `fetch_cluster_representatives(conn) -> dict[int, str]` that runs `SELECT cluster_id, name, MIN(id) FROM symbols WHERE cluster_id IS NOT NULL GROUP BY cluster_id`. This is the single source of truth for the representative query; it is now used by BOTH `build_constellation()` and `get_clusters()` in `web.py`.
+  - `build_constellation()` calls `fetch_cluster_representatives()` after fetching the cluster rows and attaches `representative: representatives.get(r["id"])` to each cluster dict (`None` for orphan clusters with no members).
+- `seam/server/web.py` — `ConstellationCluster` Pydantic model gains `representative: str | None = None`. `get_constellation()` route unchanged — `ConstellationCluster(**c)` already unpacks the dict and Pydantic picks up `representative`. `get_clusters()` now calls `fetch_cluster_representatives(conn)` instead of running the inline SQL query, eliminating the prior divergence risk. `web.py` stayed at 991 lines (under the 1000-line gate).
+- `web/src/api/types.ts` — `ConstellationCluster` gains `representative: string | null` with a JSDoc comment explaining the C1 contract.
+
+**New tests (TDD — written before implementation):**
+
+- `tests/unit/test_graph_api.py`:
+  - `test_constellation_cluster_includes_representative` — cluster dict has `representative` key, non-null when a member exists.
+  - `test_constellation_representative_null_when_no_member` — orphan cluster row (no symbols assigned) → `representative` is `None`.
+  - `test_constellation_representative_consistent_with_clusters_query` — cross-check: `build_constellation` representative for each cluster equals what the raw `/api/clusters` rep query returns.
+- `tests/integration/test_web_api.py`:
+  - `test_constellation_clusters_have_representative_field` — HTTP response has `representative` key on every cluster.
+  - `test_constellation_representative_matches_clusters_endpoint` — seeds a cluster in the indexed repo DB and verifies `/api/constellation` and `/api/clusters` return identical representatives for the same cluster_id.
+
+**Decision: export `fetch_cluster_representatives` (not private).** Initially considered a private `_fetch_cluster_representatives`, but since `web.py` needs to import and call it, it must be public. Making it public also makes it directly unit-testable and available for future slices (e.g. the 2D layout component may need the same lookup).
+
+**Gate:** ruff clean, mypy clean (122 files), 82 tests passed (0 failed), frontend typecheck clean.
+
+---
+
+## C2 implementation notes
+
+**Slice:** C2 — 2D cluster-graph fallback in React Flow (issue #252).
+
+**What changed:**
+
+- `web/src/api/hooks.ts` — added `useConstellation()`: a thin hook fetching `GET /api/constellation`. Mirrors the existing `useClusters` pattern (always enabled, unwraps the `ConstellationResponse` envelope). Imports `ConstellationResponse` from schema-types.
+- `web/src/lib/clusterGraphLayout.ts` (NEW, PURE) — `clusterGraphLayout(clusters, links, opts) → { nodes, edges }`. Deterministic radial/circular layout: clusters sorted by size DESC (cluster_id ASC tiebreak), placed evenly on a circle of radius proportional to cluster count, starting at angle −π/2 (top). Node size uses a √(size) scale (monotonic, bounded [40,120]). Edge strokeWidth and opacity use a log1p(weight) scale (monotonic). Color from `clusterColor(cluster_id)`. Links referencing unknown cluster IDs are silently skipped. Zero deps beyond the existing `@xyflow/react` types and `clusterColor`. Returns React Flow `Node<ClusterNodeData>[]` + `Edge<ClusterEdgeData>[]` where the data payloads carry the raw values (`nodeSize`, `strokeWidth`, `opacity`) alongside the visual fields — this makes unit tests straightforward (no style introspection required).
+- `web/src/components/ClusterGraph2D.tsx` (NEW) — renders the layout in `@xyflow/react`. Sibling of `GraphCanvas` (not a modification). Uses `useNodesState`/`useEdgesState` + `useEffect` to rebuild the layout when `useConstellation` data changes. `FitOnLoad` inner component fires `fitView({padding:0.15})` after the first render (must be a child of `<ReactFlow>` to access the context). Empty state: "No clusters yet — run seam init to build the index." Loading state: "Loading cluster topology…". `onOpenCluster(cluster)` prop fires on node click; the cluster object is reconstructed from `node.data` so the callback receives a typed `ConstellationCluster`.
+
+**Tests (TDD — all failing before implementation, all green after):**
+
+- `web/src/__tests__/clusterGraphLayout.test.ts` — 14 pure unit tests: empty-input fast path; N clusters → N nodes; node id pattern; M links → M edges; edge id and source/target patterns; node size monotonic in cluster size; edge strokeWidth monotonic in weight; edge opacity monotonic in weight; color from clusterColor; data payload fields; determinism across two calls; single-cluster positioning; graceful handling of links with unknown cluster ids.
+- `web/src/__tests__/ClusterGraph2D.test.tsx` — 5 component tests: empty state; loading state; one node per cluster; onOpenCluster fired with correct cluster on click; no crash with no links. Used `vi.mock("@xyflow/react", ...)` with `React.useState` inside `useNodesState`/`useEdgesState` mocks so `setNodes`/`setEdges` calls from `useEffect` actually propagate to the mocked `ReactFlow` renderer.
+
+**Decisions:**
+
+- **Deterministic radial layout over force simulation:** a static circle is legible for 20–50 clusters, reproducible (story-13), and trivially unit-testable (story-16). The PRD explicitly chose this.
+- **`√(size)` node scale:** prevents large clusters from overwhelming small ones while still encoding size clearly. Bounded [40, 120] px.
+- **`log1p(weight)` edge scale:** log scale keeps lightly-coupled links visible rather than invisible. Bounded strokeWidth [1, 8], opacity [0.25, 1.0].
+- **`ClusterNodeData.nodeSize` + `ClusterEdgeData.strokeWidth`/`opacity` in node data:** these derived values let tests assert monotonicity without inspecting inline styles. They are also consumed by the MiniMap `nodeColor` getter.
+- **`FitOnLoad` as inner component:** `useReactFlow()` must be called inside the React Flow provider tree. A small 50 ms timeout avoids fitView running before nodes are laid out by the browser.
+- **No new dependencies:** @xyflow/react was already installed; zero new packages added.
+
+**Gate:** 448 tests passed (37 test files), typecheck clean, build succeeds in 3.02s.
+
+---
+
+## C3 implementation notes
+
+**Slice:** C3 — Topology 2D/3D toggle + cluster to 2D hand-off (issue #253).
+
+**What changed:**
+
+- `web/src/lib/resolveClusterHandoff.ts` (NEW, PURE) — `resolveClusterHandoff(cluster: ConstellationCluster) → string | null`. Resolution order: `cluster.representative` → `cluster.label` → `null`. Treats empty strings as absent (same contract as null) so the neighborhood center is never set to a blank string. Pure, no React, no DB — exported for vitest.
+- `web/src/App.tsx` — three targeted changes:
+  1. **Renamed `ViewMode` "constellation" → "topology"** and added `type TopologySubMode = "2d" | "3d"` with a matching `topologySubMode` state (default `"2d"` — 2D leads).
+  2. **Header: "Constellation" button renamed to "Topology"** (aria-pressed still correct; inline 2D/3D sub-toggle appears when mode === "topology"; both sub-toggle buttons have static labels "2D" / "3D" — the anti-pattern of relabeling a toggle with the other mode's name was deliberately avoided).
+  3. **Main content area**: when `mode === "topology"`, renders `ClusterGraph2D` (sub-mode "2d") or lazy `ConstellationTab` (sub-mode "3d"). The lazy `ConstellationTab` import is identical to the previous "constellation" branch — no internals modified. `handleOpenCluster` resolves via `resolveClusterHandoff` and calls `setCenterSymbol(target)` + `setMode("neighborhood")`; a null target is a graceful no-op.
+- `web/src/__tests__/App.test.tsx` — updated the S2 test assertion from `/constellation/i` to `/topology/i` (legitimate rename; the test still checks that the topology surface button exists).
+
+**New tests (TDD — all written before implementation, confirmed failing, then passing):**
+
+- `web/src/__tests__/resolveClusterHandoff.test.ts` — 7 pure unit tests: representative present → returns it; representative present + label null → returns representative; representative null + label present → returns label (fallback); both null → null; empty string representative treated as absent; empty string label treated as absent; idempotent (pure).
+- `web/src/__tests__/TopologyToggle.test.tsx` — 10 component/wiring tests for App: Topology button present in header; sub-toggle absent before Topology activated; sub-toggle shows on activation with 2D default; aria-pressed correct for default 2D; switching to 3D renders ConstellationTab and hides ClusterGraph2D; aria-pressed flips to 3D; cluster click with representative hands off to neighborhood (ClusterGraph2D disappears); cluster click with null representative falls back to label; both null is a graceful no-op (stays in topology); deactivating Topology returns to neighborhood landing.
+
+**Decisions:**
+
+- **`topologySubMode` persists across topology open/close** — the user's last 2D/3D choice is remembered within a session. A fresh session always starts at 2D (the default). We do NOT persist to localStorage because the UX thesis is "2D leads" and a returning user should see the legible view first; it would undermine the redesign thesis to silently restore 3D on next visit.
+- **Mocking strategy in TopologyToggle.test.tsx:** `GraphCanvas` is mocked as a simple stub alongside `ClusterGraph2D`, `ConstellationTab`, `FileSidebar`, `ChangesDrawer`, and `DetailPanel`. The App-level test only cares about mode transitions and the hand-off wiring — not GraphCanvas internals. Without the GraphCanvas mock, hand-off tests that resolve to a symbol would try to render GraphCanvas (which calls the unmocked `useNeighborhood` hook), causing unhandled exceptions and exit code 1.
+- **`topologySubMode` state vs conditional render:** the sub-mode controls what the topology surface shows, but it is independent of the outer `mode` state machine. This keeps the App logic simple: `mode` = which surface is open; `topologySubMode` = which variant of the topology surface.
+
+**Gate:** frontend: 465 tests passed (39 test files), typecheck clean, build in 3.22s. Backend: ruff clean, mypy clean (122 files), 3555 pytest passed, 6 skipped, 0 failed.
+
+---
+
 ## Further Notes
 
 - **Why the 2D cluster graph and not "just fix 3D":** per the first-principles judge panel (Ghoniem
@@ -201,3 +284,25 @@ three/R3F are already installed. No SQLite schema change, no migration, no re-in
   the drill path Phases A/B built — so the "wow" view now feeds the same coherent flow.
 - **Bundle gotcha (standing):** `seam/_web` is gitignored but force-committed; rebuild + `git add -f`
   before the PR or a merged `main` serves an index.html that 404s its assets.
+
+## C-review implementation notes (fixer pass)
+
+Applied both confirmed review findings; both were correct.
+
+- **Node-type mismatch (important, `web/src/lib/clusterGraphLayout.ts`):** the layout
+  emitted `type: "clusterNode"` on every node, but `ClusterGraph2D` registers NO
+  `nodeTypes` map — React Flow logged error 002 per node and silently fell back to the
+  default node. Changed the emitted type to `"default"` (the in-code comment already
+  assumed default; appearance stays on the `style` prop, off RF's custom-node API).
+  Corrected the stale "rendered via the nodeTypes map" comment in `ClusterGraph2D.tsx`.
+  Added a regression test in `clusterGraphLayout.test.ts` asserting every node's
+  `type === "default"`.
+- **Unverified hand-off outcome (important, `web/src/__tests__/TopologyToggle.test.tsx`):**
+  the two hand-off tests only asserted the topology surface disappeared, so the
+  representative-vs-label paths were behaviorally indistinguishable. Added
+  `toHaveTextContent("Indexer.run")` (representative path, story-7) and
+  `toHaveTextContent("CLI")` (null-representative → label fallback) assertions on the
+  mocked `graph-canvas`, guarding the `resolveClusterHandoff → setCenterSymbol` wiring.
+
+Gate: ruff + mypy clean, backend pytest all pass; frontend 466 vitest pass, typecheck +
+build green.

@@ -409,6 +409,92 @@ def test_constellation_empty_db_safe(tmp_db: tuple[sqlite3.Connection, Path]) ->
     assert result == {"clusters": [], "links": []}
 
 
+# ── Constellation C1: representative field ────────────────────────────────────
+
+
+def test_constellation_cluster_includes_representative(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """C1: each cluster dict from build_constellation includes a 'representative' key.
+
+    The representative is the name of a member symbol (MIN(id) row) — the same
+    value the /api/clusters endpoint returns for the same cluster_id (single
+    source of truth).
+    """
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    upsert_file(conn, Path(a), "python", "h1", [_sym("alpha", a), _sym("beta", a)], [
+        _edge("alpha", "beta", a),
+    ])
+    ca = _seed_cluster(conn, "A", ["alpha"])
+
+    result = build_constellation(conn)
+
+    cluster_a = next(c for c in result["clusters"] if c["cluster_id"] == ca)
+    # The 'representative' key must be present and non-null for a cluster with members.
+    assert "representative" in cluster_a, "cluster dict must carry 'representative' key"
+    assert cluster_a["representative"] is not None
+    assert isinstance(cluster_a["representative"], str)
+    # Must be a known member name of cluster A.
+    assert cluster_a["representative"] == "alpha"
+
+
+def test_constellation_representative_null_when_no_member(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """C1: representative is None for a cluster row with no symbols assigned.
+
+    This is an edge case (orphan cluster row). The representative query uses
+    GROUP BY on symbols.cluster_id, so a cluster_id that appears in clusters but
+    has no matching symbol row yields no representative → None.
+    """
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    # Insert a cluster row manually, but assign NO symbols to it.
+    cur = conn.execute(
+        "INSERT INTO clusters (label, size, naming_source) VALUES ('Orphan', 1, 'deterministic')"
+    )
+    orphan_id = cur.lastrowid
+    conn.commit()
+    # Make sure the orphan cluster appears (it has no symbols, so no edges → no links).
+    # Seed at least one symbol so symbols table is non-empty but NOT in the orphan cluster.
+    upsert_file(conn, Path(a), "python", "h1", [_sym("unrelated", a)], [])
+    # Do NOT assign unrelated to orphan_id.
+
+    result = build_constellation(conn)
+    orphan = next((c for c in result["clusters"] if c["cluster_id"] == orphan_id), None)
+    assert orphan is not None, "orphan cluster must appear in the result"
+    assert "representative" in orphan, "representative key must be present even for orphan cluster"
+    assert orphan["representative"] is None, "orphan cluster with no members → representative is None"
+
+
+def test_constellation_representative_consistent_with_clusters_query(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """C1: build_constellation representative == MIN(id) symbol per cluster (same query as /api/clusters).
+
+    Seed two clusters; verify the returned representative for each matches the
+    expected MIN(id) member (the first-inserted symbol per cluster).
+    """
+    conn, tmp = tmp_db
+    a = str(tmp / "a.py")
+    b = str(tmp / "b.py")
+    upsert_file(conn, Path(a), "python", "h1", [_sym("first_a", a), _sym("second_a", a)], [
+        _edge("first_a", "second_a", a),
+    ])
+    upsert_file(conn, Path(b), "python", "h2", [_sym("only_b", b)], [])
+
+    ca = _seed_cluster(conn, "A", ["first_a", "second_a"])
+    cb = _seed_cluster(conn, "B", ["only_b"])
+
+    result = build_constellation(conn)
+    by_cid = {c["cluster_id"]: c["representative"] for c in result["clusters"]}
+
+    # Run the same representative query the /api/clusters endpoint uses.
+    rep_rows = conn.execute(
+        "SELECT cluster_id, name, MIN(id) FROM symbols "
+        "WHERE cluster_id IS NOT NULL GROUP BY cluster_id"
+    ).fetchall()
+    expected = {row["cluster_id"]: row["name"] for row in rep_rows}
+
+    assert by_cid.get(ca) == expected.get(ca), "cluster A representative must match /api/clusters query"
+    assert by_cid.get(cb) == expected.get(cb), "cluster B representative must match /api/clusters query"
+
+
 # ── top_hub_symbols (landing entry points) ──────────────────────────────────────
 
 
