@@ -71,6 +71,7 @@ from seam.cli.snippet import snippet_command
 from seam.indexer.db import connect
 from seam.indexer.embedding_index import sync_embeddings
 from seam.indexer.init_index import InitResult, run_init
+from seam.indexer.rebase import rebase_index
 from seam.indexer.sync import sync as sync_project
 from seam.query.clusters import cluster_members as query_cluster_members
 from seam.query.clusters import list_clusters as query_list_clusters
@@ -2861,3 +2862,127 @@ def sync_cmd(
             f"[dim]{result['skipped']} file(s) skipped (binary/oversize/parse error). "
             "Set SEAM_LOG_LEVEL=DEBUG to see which.[/dim]"
         )
+
+
+# ── seam rebase ───────────────────────────────────────────────────────────────
+
+
+@app.command(name="rebase")
+def rebase_cmd(
+    path: str = typer.Argument(".", help="Project root to rebase TO (default: current directory)"),
+    from_root: str = typer.Option(
+        "",
+        "--from",
+        help=(
+            "Source machine's project root to rebase FROM. "
+            "When omitted, auto-detected as the common prefix of all indexed paths."
+        ),
+    ),
+    db_dir: str = typer.Option(
+        "",
+        "--db-dir",
+        help="Override DB directory (default: same as project root)",
+    ),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        "-q",
+        help="Print bare key:value output, one per line.",
+    ),
+) -> None:
+    """Re-home a hand-copied Seam index from another machine's filesystem layout.
+
+    When you copy a Seam index (.seam/seam.db) from one machine to another, the
+    absolute file paths stored in the index still point to the source machine's
+    filesystem layout. `seam rebase` rewrites those paths so subsequent queries
+    (`seam context`, `seam query`, etc.) return results against LOCAL paths.
+
+    The rewrite touches ONLY the `files.path` column — symbols, edges, clusters,
+    and all other data remain intact. The operation is idempotent and safe to run
+    on an already-local index (returns 0 rows changed).
+
+    `--from` specifies the source machine's project root. When omitted, the root
+    is AUTO-DETECTED as the longest common directory prefix of all indexed paths
+    (works when all files in the index share a common source root).
+
+    Examples:
+      seam rebase                                  -- rebase to cwd, auto-detect old root
+      seam rebase /home/user/project               -- rebase to explicit new root
+      seam rebase --from /ci/runner/workspace      -- specify old root explicitly
+      seam rebase --from /old/path --json          -- structured output
+    """
+    # WHY: check mutual exclusion before any DB work so the error is immediate.
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
+    new_root = Path(path).resolve()
+
+    if not new_root.is_dir():
+        if json_:
+            emit_json_error("INVALID_INPUT", f"'{new_root}' is not a directory.")
+        console.print(f"[red]Error:[/red] '{new_root}' is not a directory.")
+        raise typer.Exit(code=1)
+
+    # Mirror sync's path/db-dir resolution.
+    db_root = Path(db_dir).resolve() if db_dir else new_root
+    db_path = config.get_db_path(db_root)
+
+    # rebase requires an existing index (like sync — it reconciles, it doesn't bootstrap).
+    if not db_path.exists():
+        if json_:
+            emit_json_error(
+                "NO_INDEX",
+                f"No index found at '{db_path}'. Run 'seam init' first to create the index.",
+            )
+        console.print(
+            "[red]No index found.[/red] Run [bold]seam init[/bold] first to create the index."
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        conn = connect(db_path)
+    except sqlite3.Error as exc:
+        if json_:
+            emit_json_error("DB_ERROR", f"Failed to open database: {exc}")
+        console.print(f"[red]Failed to open database:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        # from_root="" means auto-detect; pass None to the leaf in that case.
+        old_root_arg: str | None = from_root if from_root else None
+        n = rebase_index(conn, new_root=str(new_root), old_root=old_root_arg)
+    except sqlite3.Error as exc:
+        if json_:
+            emit_json_error("DB_ERROR", f"Rebase failed: {exc}")
+        console.print(f"[red]Rebase failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    finally:
+        conn.close()
+
+    result = {"rows_rewritten": n, "new_root": str(new_root)}
+
+    # ── JSON mode ─────────────────────────────────────────────────────────────
+    if json_:
+        emit_json(result)
+        return
+
+    # ── Quiet mode — bare key:value, one per line ─────────────────────────────
+    if quiet:
+        sys.stdout.write(f"rows_rewritten: {n}\n")
+        sys.stdout.write(f"new_root: {new_root}\n")
+        return
+
+    # ── Rich (default) mode — summary table ───────────────────────────────────
+    table = Table(title="seam rebase — complete", show_header=False, box=None)
+    table.add_column("key", style="bold cyan", width=20)
+    table.add_column("value")
+    table.add_row("new_root", str(new_root))
+    table.add_row("rows_rewritten", str(n))
+    if n == 0:
+        table.add_row("status", "already up-to-date (no paths rewritten)")
+    else:
+        table.add_row("status", f"{n} path(s) rewritten")
+    console.print(table)
