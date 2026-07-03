@@ -1,22 +1,29 @@
 /**
  * App — the main Seam Explorer shell.
  *
- * Layout:
- *   ┌─────────────────────────────────────────┐
- *   │  Header (brand + TabBar + search box)   │
- *   ├─────────────────────────────────────────┤
- *   │  Landing (cluster list) OR              │
- *   │  GraphCanvas (when a symbol is set)     │
- *   ├─────────────────────────────────────────┤
- *   │  StatusStrip (index stats + stale warn) │
- *   └─────────────────────────────────────────┘
+ * Layout (Phase D final shell):
+ *   ┌─────────────────────────────────────────────────────┐
+ *   │  Header (brand + TabBar + 2D/3D sub-toggle +        │
+ *   │          search box(es) + Changes button)           │
+ *   ├─────────────────────────────────────────────────────┤
+ *   │  Breadcrumb (repo → area → symbol → selected)      │  ← D4: cross-surface trail
+ *   ├─────────────────────────────────────────────────────┤
+ *   │  [FileSidebar]  Surface content (topology /         │
+ *   │                  overview / neighborhood / landing) │
+ *   │                  [DetailPanel] right of canvas      │
+ *   ├─────────────────────────────────────────────────────┤
+ *   │  StatusStrip (index counts + stale warn)            │  ← D3: demoted from header
+ *   └─────────────────────────────────────────────────────┘
  *
- * State: `centerSymbol` drives everything.
- * - null → show landing page (cluster list as entry points)
- * - non-null → show GraphCanvas
+ * State: `mode` (ViewMode from lib/tabs.ts) determines which surface is shown.
+ * Within neighborhood mode, `centerSymbol` drives the graph canvas:
+ *   - null → LandingPage (hub chips + area cards)
+ *   - non-null → GraphCanvas + DetailPanel
  *
- * The detail panel (F5) will be added in the next task; for now, selected
- * symbol name is stored but not yet rendered in a side panel.
+ * WHY tabs.ts owns ViewMode (not a local type here):
+ *   The "Symbol" tab label maps to the "neighborhood" ViewMode string — a mapping
+ *   that must be expressed exactly once. lib/tabs.ts is that one place; TabBar
+ *   reads it, App imports the type from it. No other file may define ViewMode.
  */
 
 import { useState, useRef, useCallback, useEffect, lazy, Suspense, useMemo } from "react";
