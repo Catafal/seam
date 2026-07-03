@@ -21,12 +21,18 @@ from seam.installer.claude import ClaudeTarget
 from seam.installer.codex import CodexTarget
 from seam.installer.core import AgentTarget, InstallResult
 from seam.installer.cursor import CursorTarget
+from seam.installer.gemini import GeminiTarget
+from seam.installer.vscode import VscodeTarget
+from seam.installer.zed import ZedTarget
 
 # Registry — keys are the `--target` values the CLI accepts (besides "all").
 TARGETS: dict[str, AgentTarget] = {
     "claude": ClaudeTarget(),
     "cursor": CursorTarget(),
     "codex": CodexTarget(),
+    "vscode": VscodeTarget(),
+    "gemini": GeminiTarget(),
+    "zed": ZedTarget(),
 }
 
 
