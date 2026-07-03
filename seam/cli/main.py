@@ -60,6 +60,7 @@ from seam.analysis.impact import (
 )
 from seam.analysis.staleness import _watcher_is_alive, check_staleness
 from seam.cli.architecture import architecture_command
+from seam.cli.fetch import FetchError, fetch_index
 from seam.cli.file_sink import write_output_file
 from seam.cli.graph_search import graph_search_command
 from seam.cli.install import install_command, uninstall_command
@@ -3090,4 +3091,111 @@ def rebase_cmd(
         table.add_row("status", "already up-to-date (no paths rewritten)")
     else:
         table.add_row("status", f"{n} path(s) rewritten")
+    console.print(table)
+
+
+# ── seam fetch ────────────────────────────────────────────────────────────────
+
+
+@app.command(name="fetch")
+def fetch_cmd(
+    path: str = typer.Argument(".", help="Project root (git repo, default: current directory)"),
+    db_dir: str = typer.Option(
+        "",
+        "--db-dir",
+        help="Override DB directory (default: same as project root)",
+    ),
+    semantic: bool = typer.Option(
+        False,
+        "--semantic",
+        help=(
+            "Also run incremental semantic embedding after sync. "
+            "Mirrors `seam sync --semantic`. Requires the [semantic] extra."
+        ),
+    ),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        "-q",
+        help="Print bare key:value output, one per line.",
+    ),
+) -> None:
+    """Download a pre-built Seam index artifact from CI and land it locally.
+
+    Resolves the nearest published artifact (HEAD first, then first-parent ancestors),
+    downloads it, verifies the checksum, unpacks it, rebases absolute paths to the
+    local root, and syncs the local delta — so a subsequent `seam query` returns
+    results against local file paths.
+
+    Requires SEAM_INDEX_ARTIFACT_URL to be set (a URL template with a {sha} placeholder).
+    Requires git to be installed and the project to be a git repository.
+
+    Safety: an existing .seam/ index is NEVER corrupted on failure. The atomic swap-in
+    ensures that a bad download or checksum mismatch leaves the original index intact.
+
+    Examples:
+      seam fetch                    -- fetch for current directory
+      seam fetch /path/to/project   -- fetch for a specific project
+      seam fetch --semantic         -- also embed symbols after sync
+      seam fetch --json             -- structured output for CI / agents
+      seam fetch -q                 -- quiet key:value output for scripts
+    """
+    # WHY: check mutual exclusion before any work so the error is immediate.
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
+    project_root = Path(path).resolve()
+    if not project_root.is_dir():
+        if json_:
+            emit_json_error("INVALID_INPUT", f"'{project_root}' is not a directory.")
+        console.print(f"[red]Error:[/red] '{project_root}' is not a directory.")
+        raise typer.Exit(code=1)
+
+    db_root = Path(db_dir).resolve() if db_dir else None
+
+    try:
+        result = fetch_index(project_root, db_root=db_root, semantic=semantic)
+    except FetchError as exc:
+        if json_:
+            emit_json_error(exc.code, exc.message)
+        console.print(f"[red]fetch failed ({exc.code}):[/red] {exc.message}")
+        raise typer.Exit(code=1) from exc
+    except Exception as exc:  # noqa: BLE001
+        if json_:
+            emit_json_error("DB_ERROR", f"Unexpected fetch error: {exc}")
+        console.print(f"[red]Unexpected fetch error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    # ── JSON mode ──────────────────────────────────────────────────────────────
+    if json_:
+        emit_json(result)
+        return
+
+    # ── Quiet mode — one key:value per line for scripts ───────────────────────
+    if quiet:
+        sys.stdout.write(f"sha: {result['sha']}\n")
+        sys.stdout.write(f"bytes_downloaded: {result['bytes_downloaded']}\n")
+        sys.stdout.write(f"files_rebased: {result['files_rebased']}\n")
+        sync = result["sync"]
+        sys.stdout.write(f"sync_added: {sync['added']}\n")
+        sys.stdout.write(f"sync_modified: {sync['modified']}\n")
+        sys.stdout.write(f"sync_removed: {sync['removed']}\n")
+        sys.stdout.write(f"sync_unchanged: {sync['unchanged']}\n")
+        return
+
+    # ── Rich (default) mode — summary table ───────────────────────────────────
+    sync = result["sync"]
+    table = Table(title="seam fetch — complete", show_header=False, box=None)
+    table.add_column("key", style="bold cyan", width=20)
+    table.add_column("value")
+    table.add_row("sha", result["sha"][:12] + "…")
+    table.add_row("bytes downloaded", str(result["bytes_downloaded"]))
+    table.add_row("files rebased", str(result["files_rebased"]))
+    table.add_row("sync added", str(sync["added"]))
+    table.add_row("sync modified", str(sync["modified"]))
+    table.add_row("sync removed", str(sync["removed"]))
+    table.add_row("sync unchanged", str(sync["unchanged"]))
     console.print(table)

@@ -666,6 +666,13 @@ SEAM_DIAGNOSTICS_SLOW_MS: int = int(os.getenv("SEAM_DIAGNOSTICS_SLOW_MS", "100")
 # the exact URL from the commit they checked out.
 SEAM_INDEX_ARTIFACT_URL: str = os.getenv("SEAM_INDEX_ARTIFACT_URL", "")
 
+# Maximum number of first-parent ancestors to walk when the HEAD artifact is absent.
+# `seam fetch` tries HEAD first, then walks up first-parent history (newest-first)
+# up to this bound, fetching the nearest published artifact.
+# Default 50: covers typical CI pipelines where artifacts are published every ~few commits.
+# Set to 1 to disable fallback (HEAD only). 0 = effectively "HEAD only" (same as 1).
+SEAM_FETCH_ANCESTOR_DEPTH: int = int(os.getenv("SEAM_FETCH_ANCESTOR_DEPTH", "50"))
+
 
 def get_db_path(project_root: Path) -> Path:
     """Resolve the database path relative to the project root."""
