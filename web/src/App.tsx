@@ -245,13 +245,17 @@ interface LandingPageProps {
  * more; the DetailPanel cluster legend still uses it from its own component.
  */
 function LandingPage({ onSelect, onOpenOverview, onOpenScopedOverview }: LandingPageProps) {
-  // WHY local state for showTests: toggling triggers a fresh derive without any
-  // global state change — the toggle is scoped to the landing section.
+  // WHY local state for showTests/showPackages: toggling triggers a fresh derive
+  // without any global state change — toggles are scoped to the landing section.
   const [showTests, setShowTests] = useState(false);
+  const [showPackages, setShowPackages] = useState(false);
 
-  const { data: hubs, isLoading: hubsLoading } = useHubs(LANDING_HUBS, showTests);
+  const { data: hubs, isLoading: hubsLoading } = useHubs(LANDING_HUBS, showTests, showPackages);
   // B1: areas from the same hook the Overview uses — one derivation site.
-  const { areas, isLoading: areasLoading } = useAreas({ includeTests: showTests });
+  const { areas, isLoading: areasLoading } = useAreas({
+    includeTests: showTests,
+    includePackages: showPackages,
+  });
 
   const topAreas = areas.slice(0, LANDING_AREAS);
 
@@ -289,18 +293,36 @@ function LandingPage({ onSelect, onOpenOverview, onOpenScopedOverview }: Landing
               {/* A1: toggle to re-include test-path symbols. Default is off because
                   test helpers pollute the hub list with non-production entry points.
                   B1: also controls the areas section — one toggle, one concept. */}
-              <button
-                onClick={() => setShowTests((prev) => !prev)}
-                aria-pressed={showTests}
-                className={`text-[10px] transition-colors ${
-                  showTests
-                    ? "text-sky-400 hover:text-sky-300"
-                    : "text-zinc-600 hover:text-zinc-400"
-                }`}
-                title={showTests ? "Hiding test symbols — click to show" : "Showing production symbols — click to include tests"}
-              >
-                {showTests ? "hide tests" : "show tests"}
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setShowTests((prev) => !prev)}
+                  aria-pressed={showTests}
+                  className={`text-[10px] transition-colors ${
+                    showTests
+                      ? "text-sky-400 hover:text-sky-300"
+                      : "text-zinc-600 hover:text-zinc-400"
+                  }`}
+                  title={showTests ? "Hiding test symbols — click to show" : "Showing production symbols — click to include tests"}
+                >
+                  {showTests ? "hide tests" : "show tests"}
+                </button>
+                {/* #287: toggle to re-include package-plumbing symbols (__init__.py,
+                    mod.rs, index.ts …). Default off: these files accumulate degree
+                    from every importer but carry no independent logic — they pollute
+                    the hub list with plumbing, not meaningful entry points. */}
+                <button
+                  onClick={() => setShowPackages((prev) => !prev)}
+                  aria-pressed={showPackages}
+                  className={`text-[10px] transition-colors ${
+                    showPackages
+                      ? "text-sky-400 hover:text-sky-300"
+                      : "text-zinc-600 hover:text-zinc-400"
+                  }`}
+                  title={showPackages ? "Hiding package files — click to show" : "Showing implementation symbols — click to include packages"}
+                >
+                  {showPackages ? "hide packages" : "show packages"}
+                </button>
+              </div>
             </div>
             <div className="flex flex-wrap gap-2">
               {hubs!.map((h: HubSymbol) => (
