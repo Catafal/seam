@@ -30,7 +30,6 @@ vi.mock("../api/hooks", () => ({
   useSearch: () => ({ data: [], isLoading: false }),
   useHubs: () => ({ data: [], isLoading: false }),
   useAreas: () => ({ areas: [], isLoading: false }),
-  useConstellation: () => ({ data: { clusters: [], links: [] }, isLoading: false }),
   useStructure: () => ({ data: null, isLoading: false }),
   useClusters: () => ({ data: [], isLoading: false }),
 }));

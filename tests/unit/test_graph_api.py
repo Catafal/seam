@@ -663,6 +663,152 @@ def test_top_hub_symbols_source_hub_ranked_before_test_hub_with_show_tests(tmp_d
     assert names.index("src_hub") < names.index("test_hub"), "src_hub (degree 3) must rank above test_hub (degree 2)"
 
 
+# ── top_hub_symbols — package-exclusion (#287) ───────────────────────────────────
+
+
+def test_top_hub_symbols_excludes_package_paths_by_default(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """#287: default show_packages=False excludes symbols whose declaring file is a package init.
+
+    __init__.py symbols (like package-level re-exports or constants) accumulate
+    degree from every file that imports the package, but they are plumbing — not
+    meaningful entry points for a developer exploring production code.
+    """
+    from seam.server.graph_api import top_hub_symbols
+
+    conn, tmp = tmp_db
+    src_file = str(tmp / "a.py")
+    pkg_file = str(tmp / "__init__.py")
+    (tmp / "__init__.py").write_text("# stub\n")
+
+    # source hub: degree 3.
+    upsert_file(conn, Path(src_file), "python", "h1", [
+        _sym("src_hub", src_file),
+        _sym("a", src_file),
+        _sym("b", src_file),
+        _sym("c", src_file),
+    ], [
+        _edge("a", "src_hub", src_file),
+        _edge("b", "src_hub", src_file),
+        _edge("c", "src_hub", src_file),
+    ])
+
+    # package hub: degree 4 (higher) but lives in __init__.py.
+    upsert_file(conn, Path(pkg_file), "python", "h2", [
+        _sym("pkg_hub", pkg_file),
+        _sym("p1", pkg_file),
+        _sym("p2", pkg_file),
+        _sym("p3", pkg_file),
+        _sym("p4", pkg_file),
+    ], [
+        _edge("p1", "pkg_hub", pkg_file),
+        _edge("p2", "pkg_hub", pkg_file),
+        _edge("p3", "pkg_hub", pkg_file),
+        _edge("p4", "pkg_hub", pkg_file),
+    ])
+
+    # Default show_packages=False — pkg_hub must be absent even with higher degree.
+    names = [h["name"] for h in top_hub_symbols(conn, limit=10)]
+    assert "src_hub" in names, "source hub should appear by default"
+    assert "pkg_hub" not in names, "package hub must be excluded by default (show_packages=False)"
+
+
+def test_top_hub_symbols_show_packages_includes_package_path(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """#287: show_packages=True re-includes symbols from package files."""
+    from seam.server.graph_api import top_hub_symbols
+
+    conn, tmp = tmp_db
+    pkg_file = str(tmp / "__init__.py")
+    (tmp / "__init__.py").write_text("# stub\n")
+
+    upsert_file(conn, Path(pkg_file), "python", "h1", [
+        _sym("pkg_sym", pkg_file),
+        _sym("x", pkg_file),
+    ], [
+        _edge("x", "pkg_sym", pkg_file),
+    ])
+
+    # With show_packages=True it must be included.
+    names_with = [h["name"] for h in top_hub_symbols(conn, limit=10, show_packages=True)]
+    assert "pkg_sym" in names_with, "show_packages=True should include package-file hubs"
+
+    # Without it (default) it must be absent.
+    names_without = [h["name"] for h in top_hub_symbols(conn, limit=10)]
+    assert "pkg_sym" not in names_without, "show_packages=False (default) should exclude package-file hubs"
+
+
+def test_top_hub_symbols_show_packages_independent_of_show_tests(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """#287: show_packages and show_tests are independent axes — all four combos correct."""
+    from seam.server.graph_api import top_hub_symbols
+
+    conn, tmp = tmp_db
+    src_file = str(tmp / "src.py")
+    (tmp / "src.py").write_text("# stub\n")
+    test_dir = tmp / "tests"
+    test_dir.mkdir(exist_ok=True)
+    test_file = str(test_dir / "helper.py")
+    (test_dir / "helper.py").write_text("# stub\n")
+    pkg_file = str(tmp / "__init__.py")
+    (tmp / "__init__.py").write_text("# stub\n")
+
+    # Production hub (degree 1).
+    upsert_file(conn, Path(src_file), "python", "h1", [
+        _sym("prod_hub", src_file), _sym("q", src_file),
+    ], [_edge("q", "prod_hub", src_file)])
+
+    # Test hub (degree 1).
+    upsert_file(conn, Path(test_file), "python", "h2", [
+        _sym("test_hub", test_file), _sym("r", test_file),
+    ], [_edge("r", "test_hub", test_file)])
+
+    # Package hub (degree 1).
+    upsert_file(conn, Path(pkg_file), "python", "h3", [
+        _sym("pkg_hub", pkg_file), _sym("s", pkg_file),
+    ], [_edge("s", "pkg_hub", pkg_file)])
+
+    def _names(**kw: bool) -> set[str]:
+        return {h["name"] for h in top_hub_symbols(conn, limit=10, **kw)}
+
+    # Both defaults off: only production-file symbols appear.
+    both_off = _names(show_tests=False, show_packages=False)
+    assert "test_hub" not in both_off, "test_hub in test file must be excluded"
+    assert "pkg_hub" not in both_off, "pkg_hub in __init__.py must be excluded"
+    assert "prod_hub" in both_off, "production hub must appear with both off"
+
+    # show_tests=True only: test symbols appear, package still excluded.
+    tests_on = _names(show_tests=True, show_packages=False)
+    assert "test_hub" in tests_on, "show_tests=True must include test symbols"
+    assert "pkg_hub" not in tests_on, "pkg_hub still excluded when show_packages=False"
+
+    # show_packages=True only: package symbols appear, test still excluded.
+    packages_on = _names(show_tests=False, show_packages=True)
+    assert "test_hub" not in packages_on, "test_hub still excluded when show_tests=False"
+    assert "pkg_hub" in packages_on, "show_packages=True must include package symbols"
+
+    # Both on: all symbols included.
+    both_on = _names(show_tests=True, show_packages=True)
+    assert "test_hub" in both_on, "show_tests=True + show_packages=True must include test symbols"
+    assert "pkg_hub" in both_on, "show_tests=True + show_packages=True must include package symbols"
+
+
+def test_top_hub_symbols_rust_mod_rs_excluded_by_default(tmp_db: tuple[sqlite3.Connection, Path]) -> None:
+    """#287: mod.rs (Rust barrel) is also excluded by default."""
+    from seam.server.graph_api import top_hub_symbols
+
+    conn, tmp = tmp_db
+    rust_file = str(tmp / "mod.rs")
+    (tmp / "mod.rs").write_text("// stub\n")
+
+    upsert_file(conn, Path(rust_file), "rust", "h1", [
+        _sym("rust_sym", rust_file), _sym("y", rust_file),
+    ], [_edge("y", "rust_sym", rust_file)])
+
+    names = [h["name"] for h in top_hub_symbols(conn, limit=10)]
+    assert "rust_sym" not in names, "mod.rs symbols must be excluded by default"
+
+    names_with = [h["name"] for h in top_hub_symbols(conn, limit=10, show_packages=True)]
+    assert "rust_sym" in names_with, "show_packages=True must include mod.rs symbols"
+
+
 # ── list_structure (treemap source) ─────────────────────────────────────────────
 
 

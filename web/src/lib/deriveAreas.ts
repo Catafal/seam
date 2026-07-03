@@ -24,6 +24,21 @@ import type { StructureSymbol, HubSymbol } from "../api/schema-types";
 /** Directory names treated as tests — hidden from areas unless includeTests. */
 const TEST_SEGMENTS = new Set(["tests", "test", "__tests__", "spec", "specs", "e2e"]);
 
+/**
+ * Basenames recognized as package-plumbing barrel files.
+ * Mirrors seam/analysis/testpaths.py _PACKAGE_BASENAMES (must stay in sync).
+ * WHY exact basename match: conservative — 'my_index.ts' is NOT a barrel.
+ */
+const PACKAGE_BASENAMES = new Set([
+  "__init__.py",
+  "__init__.pyi",
+  "mod.rs",
+  "index.ts",
+  "index.tsx",
+  "index.js",
+  "index.jsx",
+]);
+
 /** Unwrap the top package only when it holds at least this fraction of symbols. */
 const DOMINANT_THRESHOLD = 0.6;
 
@@ -55,22 +70,34 @@ function isTestPath(path: string): boolean {
 }
 
 /**
+ * A path is a package-plumbing path if its BASENAME is a recognized barrel file.
+ * Mirrors seam/analysis/testpaths.py is_package_file — same conservative semantics.
+ */
+function isPackagePath(path: string): boolean {
+  const parts = path.split("/");
+  const basename = parts[parts.length - 1] ?? "";
+  return PACKAGE_BASENAMES.has(basename);
+}
+
+/**
  * Build the functional areas from the structure list + graph hubs.
  *
- * @param symbols     flat /api/structure rows
- * @param hubs        /api/hubs rows (pre-sorted by degree desc; each carries a path)
- * @param opts.includeTests  when false (default behavior of the caller), test dirs
- *                           are excluded from areas
+ * @param symbols              flat /api/structure rows
+ * @param hubs                 /api/hubs rows (pre-sorted by degree desc; each carries a path)
+ * @param opts.includeTests    when false (default), test dirs are excluded from areas
+ * @param opts.includePackages when false (default), package-plumbing files excluded
  * @returns areas sorted by symbol count desc; [] for an empty/all-filtered index
  */
 export function deriveAreas(
   symbols: StructureSymbol[],
   hubs: HubSymbol[],
-  opts: { includeTests: boolean },
+  opts: { includeTests: boolean; includePackages: boolean },
 ): Area[] {
-  const filtered = opts.includeTests
-    ? symbols
-    : symbols.filter((s) => !isTestPath(s.path));
+  const filtered = symbols.filter((s) => {
+    if (!opts.includeTests && isTestPath(s.path)) return false;
+    if (!opts.includePackages && isPackagePath(s.path)) return false;
+    return true;
+  });
   if (filtered.length === 0) return [];
 
   // Top-level segment counts → find the dominant package.

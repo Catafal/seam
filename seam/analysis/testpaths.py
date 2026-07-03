@@ -1,11 +1,13 @@
-"""Test-file path heuristic — pure function, no I/O, no external deps.
+"""Test-file and package-plumbing path heuristics — pure functions, no I/O.
 
-Used by impact.py to tag TieredEntry items with is_test (bool).
+Used by:
+  - impact.py: tag TieredEntry items with is_test (bool) via is_test_file
+  - graph_api.py: exclude package barrels from ranked surfaces via is_package_file
 
 Import hierarchy: this module imports nothing from seam (no circular deps).
 It may safely be imported by any analysis-layer module.
 
-Rule (documented):
+is_test_file rule (documented):
     Returns True when the path satisfies ANY of:
       1. A directory SEGMENT (exact match, case-sensitive) is 'tests' or 'test'.
          Segment = one component from Path.parts — NOT a substring search.
@@ -25,7 +27,20 @@ Rule (documented):
 
     Returns False for None or empty string (safe default).
 
-False-positive protection:
+is_package_file rule (documented):
+    Returns True when the BASENAME (case-sensitive exact match) is one of:
+      __init__.py   — Python package init
+      __init__.pyi  — Python stub package init
+      mod.rs        — Rust module root (package-plumbing convention)
+      index.ts      — TypeScript barrel
+      index.tsx     — TypeScript/JSX barrel
+      index.js      — JavaScript barrel
+      index.jsx     — JavaScript/JSX barrel
+
+    Conservative: only exact basenames match (no substring or glob).
+    Returns False for None or empty string (safe default).
+
+False-positive protection for is_test_file:
     'latest.py', 'attestation.py', 'contest.py' must NOT match.
     Only Path.parts is used for directory checks — never substring search.
     Basename patterns are anchored (prefix/suffix) via str.startswith /
@@ -101,3 +116,45 @@ def is_test_file(path: str | None) -> bool:
             return True
 
     return False
+
+
+# Exact basenames of package-plumbing entry-point files.
+# WHY exact: 'my_index.ts' or 'lib.rs' are NOT barrels — only these conventional
+# names are. Conservative: false-negatives (miss a non-standard barrel) are safe;
+# false-positives (hide production code) are harmful.
+_PACKAGE_BASENAMES: frozenset[str] = frozenset({
+    "__init__.py",   # Python package init
+    "__init__.pyi",  # Python stub package init
+    "mod.rs",        # Rust module root (pub mod declarations live here)
+    "index.ts",      # TypeScript barrel (re-exports the module's public surface)
+    "index.tsx",     # TypeScript/JSX barrel
+    "index.js",      # JavaScript barrel
+    "index.jsx",     # JavaScript/JSX barrel
+})
+
+
+def is_package_file(path: str | None) -> bool:
+    """Return True if path is a package-plumbing barrel file; False otherwise.
+
+    A "package file" is a conventional entry-point that re-exports or declares
+    a module's public API (__init__.py, mod.rs, index.ts, etc.). These files
+    tend to accumulate high degree in the call graph because every importer of
+    the package creates an edge through them — but they carry no independent
+    production logic, so they pollute ranked surfaces like the hub list.
+
+    Args:
+        path: Absolute or relative file path string, or None.
+
+    Returns:
+        True  — file is a recognized package-plumbing barrel.
+        False — normal source file, unresolved, or path is None/empty.
+
+    Never raises; None or empty string returns False.
+    """
+    # Guard: None or empty is treated as unknown → not a package file.
+    if not path:
+        return False
+
+    # Only the basename matters — any directory containing __init__.py is fine.
+    # Case-sensitive: package filenames are lowercase by convention on all platforms.
+    return Path(path).name in _PACKAGE_BASENAMES

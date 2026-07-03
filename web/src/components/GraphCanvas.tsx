@@ -54,6 +54,7 @@ import dagre from "dagre";
 import "@xyflow/react/dist/style.css";
 import { Zap, X, GitBranch } from "lucide-react";
 import { isEmptyNeighborhood } from "../lib/emptyNeighborhood";
+import { isNavigable } from "../lib/isNavigable";
 
 import { useNeighborhood, useImpact, useTrace } from "../api/hooks";
 import type { GraphNode, GraphEdge, NeighborhoodResponse } from "../api/schema-types";
@@ -82,6 +83,9 @@ import {
   countVisibleEdgesByConfidence,
 } from "../lib/filterBarCounts";
 import { ALL_EDGE_KINDS, ALL_CONFIDENCES } from "../lib/edgeFilter";
+// WHY imported here: the graph surface gets its own ErrorBoundary so a canvas
+// crash doesn't take down the header and StatusStrip (#286).
+import { ErrorBoundary } from "./ErrorBoundary";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -135,22 +139,24 @@ function computeLayout(
 
 /** Build a base RF node from an API GraphNode (no overlay state — that's derived). */
 function toRFNode(n: GraphNode, center: string, pos: { x: number; y: number }): SymbolRFNode {
-  return {
-    id: n.id,
-    type: "symbolNode",
-    position: pos,
-    data: {
-      name: n.name,
-      kind: n.kind,
-      signature: n.signature,
-      cluster_id: n.cluster_id,
-      cluster_label: n.cluster_label,
-      definition_count: n.definition_count,
-      isCenter: n.id === center,
-      is_exported: n.is_exported,
-      visibility: n.visibility,
-    },
+  // Build core data first so isNavigable can read definition_count/visibility/isCenter.
+  // WHY isNavigable is wired here (not inside SymbolNode): isNavigable imports
+  // SymbolNodeData from SymbolNode.tsx — importing it back there creates a circular
+  // dep. GraphCanvas is the natural owner: it already calls isNavigable in the
+  // double-click guard, so both uses stay in the same file.
+  const base = {
+    name: n.name,
+    kind: n.kind,
+    signature: n.signature,
+    cluster_id: n.cluster_id,
+    cluster_label: n.cluster_label,
+    definition_count: n.definition_count,
+    isCenter: n.id === center,
+    is_exported: n.is_exported,
+    visibility: n.visibility,
   };
+  const data: SymbolNodeData = { ...base, navigable: isNavigable(base as SymbolNodeData) };
+  return { id: n.id, type: "symbolNode", position: pos, data };
 }
 
 /** Build a base RF edge — confidence style + kind/confidence in data for filtering. */
@@ -226,7 +232,14 @@ export interface GraphCanvasProps {
   traceTarget?: string | null;
 }
 
-export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvasProps) {
+/**
+ * The actual graph canvas implementation.
+ *
+ * WHY a separate inner component: `GraphCanvas` (exported) wraps this in an
+ * ErrorBoundary so a graph-surface crash (e.g. a ReactFlow render error) isolates
+ * to this surface — the header and StatusStrip stay alive (#286).
+ */
+function GraphCanvasInner({ center, onSelectSymbol, traceTarget }: GraphCanvasProps) {
   const [expandTarget, setExpandTarget] = useState<string | null>(null);
   // Filter state is initialized from localStorage so preferences persist across
   // page reloads. It is NOT reset on center change (session-global by design).
@@ -314,8 +327,17 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
     },
     [onSelectSymbol],
   );
+  // WHY isNavigable guard: double-clicking a private bare-target helper (no
+  // indexed definition) previously set expandTarget to an un-navigable id,
+  // which resolved to an empty/error neighborhood and could unmount the canvas.
+  // Non-navigable nodes keep single-click (detail panel) but do NOT trigger
+  // expand/re-center (#286). The existing EmptyNeighborhoodState handles the
+  // edge case where a "navigable" node still has no connections.
   const handleNodeDoubleClick: NodeMouseHandler<SymbolRFNode> = useCallback(
-    (_evt, node) => setExpandTarget(node.id),
+    (_evt, node) => {
+      if (!isNavigable(node.data)) return;
+      setExpandTarget(node.id);
+    },
     [],
   );
   const handleToggleFilter = useCallback(
@@ -463,6 +485,23 @@ export function GraphCanvas({ center, onSelectSymbol, traceTarget }: GraphCanvas
         />
       </ReactFlow>
     </div>
+  );
+}
+
+/**
+ * Public export: GraphCanvasInner wrapped with an ErrorBoundary.
+ *
+ * WHY a graph-surface boundary (not just the app-level one in main.tsx):
+ *   The app-level boundary catches everything, but it also tears down the
+ *   header and StatusStrip. A second boundary here isolates the canvas so
+ *   a graph crash degrades to a contained fallback while the rest of the UI
+ *   (header, tabs, Changes drawer) keeps working (#286).
+ */
+export function GraphCanvas(props: GraphCanvasProps) {
+  return (
+    <ErrorBoundary>
+      <GraphCanvasInner {...props} />
+    </ErrorBoundary>
   );
 }
 

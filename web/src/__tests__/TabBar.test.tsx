@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 // ── 1. Pure tab-definitions helper ──────────────────────────────────────────
@@ -196,16 +196,11 @@ vi.mock("../components/ConstellationTab", () => ({
   default: () => <div data-testid="constellation-tab-3d">3D Scene</div>,
 }));
 
-vi.mock("../components/ClusterGraph2D", () => ({
-  ClusterGraph2D: () => <div data-testid="cluster-graph-2d">2D Cluster Graph</div>,
-}));
-
 vi.mock("../api/hooks", () => ({
   useStatus: () => ({ data: null, isLoading: true, isError: false }),
   useSearch: () => ({ data: [], isLoading: false }),
   useHubs: () => ({ data: [], isLoading: false }),
   useAreas: () => ({ areas: [], isLoading: false }),
-  useConstellation: () => ({ data: { clusters: [], links: [] }, isLoading: false }),
   useStructure: () => ({ data: null, isLoading: false }),
   useClusters: () => ({ data: [], isLoading: false }),
 }));
@@ -288,12 +283,21 @@ describe("App integration — TabBar anti-pattern regression", () => {
     expect(withCurrent[0]).toHaveTextContent(/overview/i);
   });
 
-  it("clicking Topology tab switches mode and shows the 2D/3D sub-toggle", async () => {
+  it("clicking Topology tab shows 3D constellation directly (no 2D/3D sub-toggle)", async () => {
+    // #285: Topology is 3D-only. The 2D cluster-graph surface and its sub-toggle
+    // were removed. Clicking Topology must render ConstellationTab without any
+    // 2D/3D sub-toggle buttons in the header.
     renderApp();
     fireEvent.click(screen.getByRole("tab", { name: /topology/i }));
-    // The 2D/3D sub-toggle must still appear inside Topology
-    expect(screen.getByRole("button", { name: /^2D$/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^3D$/i })).toBeInTheDocument();
+
+    // No sub-toggle buttons must appear
+    expect(screen.queryByRole("button", { name: /^2D$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^3D$/i })).not.toBeInTheDocument();
+
+    // The 3D constellation tab is rendered
+    await waitFor(() =>
+      expect(screen.getByTestId("constellation-tab-3d")).toBeInTheDocument(),
+    );
   });
 
   it("Symbol tab with no centerSymbol shows the landing page (empty state)", () => {

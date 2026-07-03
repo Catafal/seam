@@ -137,4 +137,29 @@ describe("SymbolNode", () => {
     const root = container.firstChild as HTMLElement;
     expect(root.style.boxShadow).not.toBe("");
   });
+
+  // ── User Story 9: non-navigable cursor affordance ─────────────────────────
+  // A non-navigable node must NOT show a pointer cursor — it signals to the user
+  // that double-clicking is a dead end (no indexed definition to expand).
+  // Single-click (detail panel) still works, but the UX must be honest.
+
+  it("renders with cursor-pointer for a navigable node (default when navigable is absent)", () => {
+    // navigable absent → defaults to true → cursor-pointer preserved
+    const { container } = renderSymbolNode(BASE_DATA);
+    const root = container.firstChild as HTMLElement;
+    expect(root.className).toMatch(/cursor-pointer/);
+  });
+
+  it("renders with cursor-pointer when navigable is explicitly true", () => {
+    const { container } = renderSymbolNode({ ...BASE_DATA, navigable: true });
+    const root = container.firstChild as HTMLElement;
+    expect(root.className).toMatch(/cursor-pointer/);
+  });
+
+  it("renders with cursor-default (not cursor-pointer) for a non-navigable node", () => {
+    const { container } = renderSymbolNode({ ...BASE_DATA, navigable: false });
+    const root = container.firstChild as HTMLElement;
+    expect(root.className).not.toMatch(/cursor-pointer/);
+    expect(root.className).toMatch(/cursor-default/);
+  });
 });

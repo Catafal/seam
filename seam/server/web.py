@@ -929,17 +929,16 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
     @app.get("/api/hubs", response_model=HubsResponse, tags=["graph"])
     def get_hubs(
         limit: int = Query(60, ge=1, le=200, description="How many hub symbols to return"),
-        show_tests: bool = Query(False, description="Include symbols from test paths (default: false)"),
+        show_tests: bool = Query(False, description="Include test-path symbols (default: false)"),
+        show_packages: bool = Query(False, description="Include package-plumbing files (default: false)"),
     ) -> HubsResponse:
         """Return the most-connected symbols — landing-page entry points.
 
-        Reuses graph_api.top_hub_symbols (degree-ranked, defined-only).
-        show_tests=false (default) excludes test-path symbols (real hubs only).
-        Pass show_tests=true to include test helpers in the hub list.
+        show_tests=false and show_packages=false (defaults) exclude plumbing symbols.
         """
         conn = _get_conn(db_path)
         try:
-            hubs = top_hub_symbols(conn, limit=limit, show_tests=show_tests)
+            hubs = top_hub_symbols(conn, limit=limit, show_tests=show_tests, show_packages=show_packages)
         finally:
             conn.close()
         # Relativize each hub's representative path so the UI matches it against

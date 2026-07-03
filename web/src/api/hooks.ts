@@ -40,7 +40,6 @@ import type {
   ClustersResponse,
   HubsResponse,
   StructureResponse,
-  ConstellationResponse,
 } from "./schema-types";
 
 /** Impact blast-radius direction (matches the API Literal). */
@@ -275,19 +274,27 @@ export function useChanges(scope: ChangesScope = "working", enabled: boolean = t
  *
  * WHY showTests defaults to false: test helpers accumulate high degree within the
  * test suite but are not meaningful production entry points for most developers.
- * The toggle lets the user opt-in to the full picture (including test graph hubs).
  *
- * @param limit      How many hub symbols to request (default 60).
- * @param showTests  When true, include test-path symbols (default false).
+ * WHY showPackages defaults to false: package-plumbing files (__init__.py, mod.rs,
+ * index.ts …) accumulate degree from every importer but carry no independent logic.
+ * Hiding them keeps the hub list focused on real implementation symbols.
+ *
+ * @param limit        How many hub symbols to request (default 60).
+ * @param showTests    When true, include test-path symbols (default false).
+ * @param showPackages When true, include package-plumbing symbols (default false).
  * @returns data — the flat symbols array (not the wrapper object)
  */
-export function useHubs(limit: number = 60, showTests: boolean = false) {
+export function useHubs(
+  limit: number = 60,
+  showTests: boolean = false,
+  showPackages: boolean = false,
+) {
   return useQuery<HubSymbol[]>({
-    // Include showTests in the cache key so toggling it triggers a fresh fetch.
-    queryKey: ["hubs", limit, showTests],
+    // Include all three params in the cache key so toggling triggers a fresh fetch.
+    queryKey: ["hubs", limit, showTests, showPackages],
     queryFn: async () => {
       const resp = await apiFetch<HubsResponse>("/api/hubs", {
-        params: { limit, show_tests: showTests },
+        params: { limit, show_tests: showTests, show_packages: showPackages },
       });
       return resp.symbols;
     },
@@ -433,21 +440,6 @@ export function useGraphSearch(filters: GraphSearchFilters = {}, enabled: boolea
   });
 }
 
-// ── useConstellation ─────────────────────────────────────────────────────────
-
-/**
- * Fetch the whole-repo cluster topology from GET /api/constellation.
- * Always enabled — used by the 2D cluster graph (C2).
- *
- * @returns data — the full ConstellationResponse { clusters, links }
- */
-export function useConstellation() {
-  return useQuery<ConstellationResponse>({
-    queryKey: ["constellation"],
-    queryFn: () => apiFetch<ConstellationResponse>("/api/constellation"),
-  });
-}
-
 // ── useAreas ─────────────────────────────────────────────────────────────────
 
 /** Result shape returned by useAreas. */
@@ -468,19 +460,27 @@ export interface UseAreasResult {
  * deriveAreas is unchanged (pure, unit-tested); this hook is the single wiring
  * point. See Phase B PRD §"One areas concept".
  *
- * @param opts.includeTests  when false (default), test directories are excluded.
+ * @param opts.includeTests    when false (default), test directories are excluded.
+ * @param opts.includePackages when false (default), package-plumbing paths excluded.
  */
-export function useAreas(opts: { includeTests: boolean }): UseAreasResult {
+export function useAreas(opts: {
+  includeTests: boolean;
+  includePackages: boolean;
+}): UseAreasResult {
   // Fetch structure always enabled — the Overview and landing both need it.
   const { data: symbols, isLoading: structureLoading } = useStructure(true);
   // 60 hubs gives good coverage for keySymbol hints across all areas.
-  // We do NOT filter hubs by showTests here: deriveAreas skips hub entries
-  // that fall in filtered-out (test) areas automatically.
+  // We do NOT filter hubs by showTests/showPackages here: deriveAreas skips
+  // hub entries that fall in filtered-out areas automatically.
   const { data: hubs, isLoading: hubsLoading } = useHubs(60);
 
   const areas = useMemo(
-    () => deriveAreas(symbols ?? [], hubs ?? [], { includeTests: opts.includeTests }),
-    [symbols, hubs, opts.includeTests],
+    () =>
+      deriveAreas(symbols ?? [], hubs ?? [], {
+        includeTests: opts.includeTests,
+        includePackages: opts.includePackages,
+      }),
+    [symbols, hubs, opts.includeTests, opts.includePackages],
   );
 
   return {

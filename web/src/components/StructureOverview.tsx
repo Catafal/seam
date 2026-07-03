@@ -37,7 +37,9 @@ export function StructureOverview({ onSelectSymbol, initialArea }: StructureOver
   const [area, setArea] = useState<Area | null>(initialArea ?? null);
 
   // B1: single derivation site — same hook the landing uses.
-  const { areas, isLoading } = useAreas({ includeTests });
+  // includePackages defaults to false here (structural overview shows real areas,
+  // not package-plumbing re-export files). Mirror the landing page default.
+  const { areas, isLoading } = useAreas({ includeTests, includePackages: false });
 
   if (area) {
     return (

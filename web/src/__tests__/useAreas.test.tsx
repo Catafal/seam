@@ -85,14 +85,14 @@ afterEach(() => {
 describe("useAreas", () => {
   it("A: returns deriveAreas output from fetched structure + hubs", async () => {
     mockFetch();
-    const { result } = renderHook(() => useAreas({ includeTests: false }), {
+    const { result } = renderHook(() => useAreas({ includeTests: false, includePackages: false }), {
       wrapper: makeWrapper(),
     });
 
     await waitFor(() => expect(result.current.isLoading).toBe(false));
 
     // Expected: deriveAreas with the fixture data (tests excluded)
-    const expected = deriveAreas(STRUCTURE_SYMBOLS, HUBS, { includeTests: false });
+    const expected = deriveAreas(STRUCTURE_SYMBOLS, HUBS, { includeTests: false, includePackages: false });
     expect(result.current.areas).toEqual(expected);
     // The test path (tests/unit/test_db.py) must NOT appear in any area
     const allKeys = result.current.areas.map((a) => a.key);
@@ -101,13 +101,13 @@ describe("useAreas", () => {
 
   it("B: includeTests=true includes the test area", async () => {
     mockFetch();
-    const { result } = renderHook(() => useAreas({ includeTests: true }), {
+    const { result } = renderHook(() => useAreas({ includeTests: true, includePackages: false }), {
       wrapper: makeWrapper(),
     });
 
     await waitFor(() => expect(result.current.isLoading).toBe(false));
 
-    const expected = deriveAreas(STRUCTURE_SYMBOLS, HUBS, { includeTests: true });
+    const expected = deriveAreas(STRUCTURE_SYMBOLS, HUBS, { includeTests: true, includePackages: false });
     expect(result.current.areas).toEqual(expected);
     // At least one area should cover the tests directory
     const allPaths = result.current.areas.flatMap((a) => a.paths);
@@ -116,7 +116,7 @@ describe("useAreas", () => {
 
   it("C: isLoading is true while structure is pending", async () => {
     mockFetch({ structurePending: true });
-    const { result } = renderHook(() => useAreas({ includeTests: false }), {
+    const { result } = renderHook(() => useAreas({ includeTests: false, includePackages: false }), {
       wrapper: makeWrapper(),
     });
 
@@ -128,7 +128,7 @@ describe("useAreas", () => {
 
   it("keySymbols for an area come from hubs in that area", async () => {
     mockFetch();
-    const { result } = renderHook(() => useAreas({ includeTests: false }), {
+    const { result } = renderHook(() => useAreas({ includeTests: false, includePackages: false }), {
       wrapper: makeWrapper(),
     });
 

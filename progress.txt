@@ -3,6 +3,42 @@
 # Update this EVERY session. It is the first thing the agent reads.
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Explorer cleanup — Topology 3D-only + error boundary + package exclusion
+# (issues #284/#285/#286/#287, worktree seam-cleanup)
+# Session: 2026-07-03 · documentation pass (this entry)
+# ─────────────────────────────────────────────────────────────────────────────
+#   WHY this cleanup exists:
+#     Three UX gaps remained after Phase D/C: (1) the Topology tab had a 2D/3D
+#     sub-toggle and a 2D ClusterGraph2D surface that added navigation confusion
+#     without adding value; (2) double-clicking a bare edge-target reference
+#     (private helper, definition_count=0) could crash the entire React tree,
+#     leaving a blank black screen; (3) package-plumbing files (__init__.py,
+#     mod.rs, index.ts …) dominated the hub-symbol ranking on the landing page
+#     because every importer creates an edge through them — masking real entry points.
+#
+#   #285 — Topology 3D-only: deleted ClusterGraph2D.tsx, clusterGraphLayout.ts,
+#     resolveClusterHandoff.ts, and the 2D/3D sub-toggle from App.tsx. ConstellationTab
+#     now mounts directly in topology mode. Backend /api/constellation and its
+#     `representative` field left in place. 4 test files deleted; coverage moved to
+#     TabBar.test.tsx as a 3D-only assertion. focusSymbol (2D→3D camera sync) kept.
+#
+#   #286 — Error boundary + non-navigable node gating: new ErrorBoundary class component
+#     (two layers: app-level in main.tsx + graph-surface in GraphCanvas); new
+#     isNavigable(data) pure predicate gates double-click expand on nodes with
+#     definition_count=0 and non-public visibility. Single-click detail panel
+#     always allowed. `navigable?: boolean` threaded via SymbolNodeData (not a prop)
+#     to avoid circular import with isNavigable.ts.
+#
+#   #287 — Package-plumbing exclusion: new is_package_file() in testpaths.py (exact
+#     basename match on __init__.py, mod.rs, index.ts/tsx/js/jsx; mirrors is_test_file);
+#     /api/hubs gains additive show_packages param (default false); useHubs / useAreas /
+#     deriveAreas all accept includePackages; "show packages" toggle on landing page.
+#     Read-path only. No schema change, no re-index.
+#
+#   Gate: ruff + mypy clean, 3801 pytest passed / 32 skipped, tsc clean,
+#     547 vitest passed / 43 test files. Zero new deps. MCP tool count = 16.
+#
+# ─────────────────────────────────────────────────────────────────────────────
 # Phase D — Explorer redesign: Coherent flow + tab model  ← CLOSES A→D ARC
 # (issues #272/#273/#274/#275, worktree seam-phase-d)
 # Session: 2026-07-03 · documentation pass (#255 follow-up)

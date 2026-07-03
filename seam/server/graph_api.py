@@ -46,6 +46,7 @@ LAYER: seam.server (adapter layer) — may import from seam.query.* and seam.ind
 import sqlite3
 from typing import Any
 
+from seam.analysis.testpaths import is_package_file as _is_package_file
 from seam.analysis.testpaths import is_test_file as _is_test_file
 from seam.query.names import bare_name as _bare_name
 from seam.query.names import edge_match_names as _edge_match_names
@@ -409,6 +410,7 @@ def top_hub_symbols(
     conn: sqlite3.Connection,
     limit: int = 8,
     show_tests: bool = False,
+    show_packages: bool = False,
 ) -> list[dict[str, Any]]:
     """Return the most-connected (highest-degree) symbols — the repo's hubs.
 
@@ -424,7 +426,14 @@ def top_hub_symbols(
     highly connected in their own test suite but are NOT meaningful entry points
     for a developer exploring production code. Excluding them by default surfaces
     real production hubs (init_db, parse_file, etc.) on the landing page.
-    Reuses seam.analysis.testpaths.is_test_file — single source of test-path truth.
+
+    WHY show_packages=False by default: package-plumbing files (__init__.py,
+    mod.rs, index.ts …) accumulate degree from every module that imports the
+    package, but they carry no independent logic. Hiding them keeps the hub list
+    focused on real implementation symbols.
+
+    Reuses seam.analysis.testpaths.{is_test_file, is_package_file} — single
+    sources of path-classification truth.
 
     Returns [{name, kind, degree, path}] sorted by degree desc, then name. `path`
     is a representative declaring file (lowest-id row for the name — homonym-safe);
@@ -432,11 +441,12 @@ def top_hub_symbols(
     DB error or empty index. NEVER raises.
 
     Args:
-        conn:       Open SQLite connection.
-        limit:      Maximum number of hubs to return.
-        show_tests: When False (default), exclude symbols whose representative
-                    declaring path is a test file (per is_test_file). When True,
-                    include them — useful for developers exploring the test graph.
+        conn:          Open SQLite connection.
+        limit:         Maximum number of hubs to return.
+        show_tests:    When False (default), exclude test-path symbols. When True,
+                       include them — useful for exploring the test graph.
+        show_packages: When False (default), exclude package-plumbing symbols
+                       (__init__.py, mod.rs, index.ts …). When True, include them.
     """
     # Fetch a generous overscan so post-filter still yields `limit` hubs even if
     # many are test paths. A 10× overscan is sufficient for any real codebase.
@@ -472,6 +482,9 @@ def top_hub_symbols(
     for r in rows:
         # Filter out test-path symbols unless the caller explicitly wants them.
         if not show_tests and _is_test_file(r["path"]):
+            continue
+        # Filter out package-plumbing symbols unless the caller explicitly wants them.
+        if not show_packages and _is_package_file(r["path"]):
             continue
         result.append(
             {"name": r["name"], "kind": r["kind"], "degree": r["degree"], "path": r["path"]}

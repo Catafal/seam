@@ -266,7 +266,7 @@ describe("deriveAreas", () => {
   ];
 
   it("unwraps the dominant package into sub-areas, tests hidden", () => {
-    const areas = deriveAreas(symbols, [], { includeTests: false });
+    const areas = deriveAreas(symbols, [], { includeTests: false, includePackages: false });
     const names = areas.map((a) => a.name);
     expect(names).toContain("indexer");
     expect(names).toContain("query");
@@ -282,7 +282,7 @@ describe("deriveAreas", () => {
   });
 
   it("folds loose package files into a 'core' area", () => {
-    const areas = deriveAreas(symbols, [], { includeTests: false });
+    const areas = deriveAreas(symbols, [], { includeTests: false, includePackages: false });
     const core = areas.find((a) => a.name === "core")!;
     expect(core.key).toBe("pkg/__core__");
     expect(core.symbolCount).toBe(1);
@@ -290,7 +290,7 @@ describe("deriveAreas", () => {
   });
 
   it("includes a tests area when includeTests is true", () => {
-    const areas = deriveAreas(symbols, [], { includeTests: true });
+    const areas = deriveAreas(symbols, [], { includeTests: true, includePackages: false });
     expect(areas.map((a) => a.name)).toContain("tests");
   });
 
@@ -300,7 +300,7 @@ describe("deriveAreas", () => {
       { name: "runQuery", kind: "function", degree: 5, path: "pkg/query/b.py" },
       { name: "settings", kind: "function", degree: 2, path: "pkg/config.py" },
     ];
-    const areas = deriveAreas(symbols, hubs, { includeTests: false });
+    const areas = deriveAreas(symbols, hubs, { includeTests: false, includePackages: false });
     expect(areas.find((a) => a.name === "indexer")!.keySymbols).toContain("index_one");
     expect(areas.find((a) => a.name === "query")!.keySymbols).toContain("runQuery");
     expect(areas.find((a) => a.name === "core")!.keySymbols).toContain("settings");
@@ -313,12 +313,12 @@ describe("deriveAreas", () => {
       degree: 10 - i,
       path: "pkg/indexer/a.py",
     }));
-    const areas = deriveAreas(symbols, hubs, { includeTests: false });
+    const areas = deriveAreas(symbols, hubs, { includeTests: false, includePackages: false });
     expect(areas.find((a) => a.name === "indexer")!.keySymbols).toHaveLength(3);
   });
 
   it("returns [] for an empty index", () => {
-    expect(deriveAreas([], [], { includeTests: false })).toEqual([]);
+    expect(deriveAreas([], [], { includeTests: false, includePackages: false })).toEqual([]);
   });
 
   it("falls back to top-level dirs when no package dominates", () => {
@@ -330,7 +330,80 @@ describe("deriveAreas", () => {
       sym("c/z.py", "h1"),
       sym("c/z.py", "h2"),
     ];
-    const names = deriveAreas(flat, [], { includeTests: false }).map((a) => a.name).sort();
+    const names = deriveAreas(flat, [], { includeTests: false, includePackages: false }).map((a) => a.name).sort();
     expect(names).toEqual(["a", "b", "c"]);
+  });
+
+  // ── #287: includePackages ────────────────────────────────────────────────────
+
+  it("#287: package files excluded by default (includePackages=false)", () => {
+    // __init__.py symbols should not contribute to area counts when excluded.
+    const withPkg: StructureSymbol[] = [
+      sym("pkg/indexer/a.py", "index_one"),
+      sym("pkg/indexer/__init__.py", "pkg_init"),  // package file
+      sym("pkg/query/b.py", "runQuery"),
+    ];
+    const areasOff = deriveAreas(withPkg, [], { includeTests: false, includePackages: false });
+    const allPaths = areasOff.flatMap((a) => a.paths);
+    expect(allPaths).not.toContain("pkg/indexer/__init__.py");
+  });
+
+  it("#287: package files included when includePackages=true", () => {
+    const withPkg: StructureSymbol[] = [
+      sym("pkg/indexer/a.py", "index_one"),
+      sym("pkg/indexer/__init__.py", "pkg_init"),  // package file
+      sym("pkg/query/b.py", "runQuery"),
+    ];
+    const areasOn = deriveAreas(withPkg, [], { includeTests: true, includePackages: true });
+    const allPaths = areasOn.flatMap((a) => a.paths);
+    expect(allPaths).toContain("pkg/indexer/__init__.py");
+  });
+
+  it("#287: index.ts barrel excluded by default", () => {
+    const withBarrel: StructureSymbol[] = [
+      sym("src/utils/index.ts", "reExport"),      // barrel
+      sym("src/utils/helpers.ts", "formatDate"),  // real module
+    ];
+    const areas = deriveAreas(withBarrel, [], { includeTests: false, includePackages: false });
+    const allPaths = areas.flatMap((a) => a.paths);
+    expect(allPaths).not.toContain("src/utils/index.ts");
+    expect(allPaths).toContain("src/utils/helpers.ts");
+  });
+
+  it("#287: mod.rs barrel excluded by default", () => {
+    const withMod: StructureSymbol[] = [
+      sym("src/foo/mod.rs", "mod_sym"),     // Rust barrel
+      sym("src/foo/bar.rs", "bar_fn"),      // real module
+    ];
+    const areas = deriveAreas(withMod, [], { includeTests: false, includePackages: false });
+    const allPaths = areas.flatMap((a) => a.paths);
+    expect(allPaths).not.toContain("src/foo/mod.rs");
+    expect(allPaths).toContain("src/foo/bar.rs");
+  });
+
+  it("#287: includePackages and includeTests are independent axes", () => {
+    const mixed: StructureSymbol[] = [
+      sym("src/a.py", "prod"),
+      sym("tests/test_b.py", "test_fn"),
+      sym("src/__init__.py", "pkg_fn"),
+    ];
+    // Only prod when both off.
+    const allOff = deriveAreas(mixed, [], { includeTests: false, includePackages: false });
+    const pathsOff = allOff.flatMap((a) => a.paths);
+    expect(pathsOff).not.toContain("tests/test_b.py");
+    expect(pathsOff).not.toContain("src/__init__.py");
+    expect(pathsOff).toContain("src/a.py");
+
+    // Tests on, packages off.
+    const testsOn = deriveAreas(mixed, [], { includeTests: true, includePackages: false });
+    const pathsTestsOn = testsOn.flatMap((a) => a.paths);
+    expect(pathsTestsOn).toContain("tests/test_b.py");
+    expect(pathsTestsOn).not.toContain("src/__init__.py");
+
+    // Packages on, tests off.
+    const pkgsOn = deriveAreas(mixed, [], { includeTests: false, includePackages: true });
+    const pathsPkgsOn = pkgsOn.flatMap((a) => a.paths);
+    expect(pathsPkgsOn).not.toContain("tests/test_b.py");
+    expect(pathsPkgsOn).toContain("src/__init__.py");
   });
 });
