@@ -187,7 +187,11 @@ export function clusterGraphLayout(
       position: { x, y },
       data: {
         clusterId: cluster.cluster_id,
-        label: cluster.label,
+        // The React Flow default node renders `data.label` directly, so it must
+        // never be null — an unlabeled cluster would show as a blank circle,
+        // defeating the whole point of a legible map. Fall back to the hub
+        // symbol, then a stable "cluster-<id>" so every node is identifiable.
+        label: cluster.label ?? cluster.representative ?? `cluster-${cluster.cluster_id}`,
         size: cluster.size,
         representative: cluster.representative,
         color: clusterColor(cluster.cluster_id),

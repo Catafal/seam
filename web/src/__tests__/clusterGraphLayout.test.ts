@@ -149,6 +149,16 @@ describe("clusterGraphLayout", () => {
     expect(n.data.representative).toBe("Parser.parse");
   });
 
+  it("node label falls back to representative, then 'cluster-<id>', when label is null", () => {
+    // A null cluster label must never render as a blank node — the map's whole
+    // point is legibility. Fallback chain: label → representative → cluster-<id>.
+    const withRep = clusterGraphLayout([makeCluster(5, 10, null, "Parser.parse")], []);
+    expect(withRep.nodes[0].data.label).toBe("Parser.parse");
+
+    const bare = clusterGraphLayout([makeCluster(9, 10, null, null)], []);
+    expect(bare.nodes[0].data.label).toBe("cluster-9");
+  });
+
   it("is deterministic — two calls with the same input produce identical positions", () => {
     const clusters = [
       makeCluster(1, 100),
