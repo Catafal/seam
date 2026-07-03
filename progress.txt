@@ -112,3 +112,38 @@
 #     No schema change, no migration, no re-index, no new config knobs, zero new deps.
 #
 # NEXT: Phase D — Coherent flow + tab model (explicit tab bar, breadcrumbs, status strip).
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WS4 — Shared prebuilt index via CI artifact (`seam fetch`)
+# (issues #247/#248/#249/#250, branch feat/ws4-shared-index)
+# Session: 2026-07-03
+# ─────────────────────────────────────────────────────────────────────────────
+#   WHY this phase exists:
+#     Every developer on a fresh clone — and every CI job — had to run `seam init`
+#     (possibly `seam init --semantic`) to build the index from scratch.  On a large
+#     codebase this takes minutes.  WS4 lets CI publish a prebuilt index archive once
+#     per commit; teammates run `seam fetch` to download, verify, unpack, rebase, and
+#     sync in seconds.
+#
+#   Shipped slices:
+#     S1 — seam/indexer/rebase.py (leaf): rebase_index() — single-column files.path
+#       prefix rewrite; auto-detects old root via os.path.commonpath; synthetic rows
+#       excluded; never raises; idempotent.
+#     S2 — seam/indexer/artifact.py (leaf): pack_index() + unpack_index() + verify_archive()
+#       — canonical .tar.gz + sha256 sidecar; path-traversal + symlink/hardlink guards;
+#       ALL-OR-NOTHING extraction; filter='data'; flat layout.
+#     S3 — seam/cli/fetch.py (orchestration): fetch_index() — git SHA resolve with
+#       first-parent ancestor fallback; urllib download (https + file://); atomic swap-in
+#       with backup/restore; rebase; sync + optional semantic embed.
+#       CLI commands: `seam rebase`, `seam pack-index`, `seam fetch` registered in main.py
+#       (seam pack context-pack preserved unchanged as backward-compat non-negotiable).
+#     CI — .github/workflows/seam-index.yml: example CI template for publishing artifacts.
+#     2 new config knobs: SEAM_INDEX_ARTIFACT_URL (str, default ""), SEAM_FETCH_ANCESTOR_DEPTH (int, default 50).
+#
+#   Gate on merge: ruff + mypy clean, full test suite passes (6 skipped: pre-existing
+#     fastembed real-model tests). New tests: test_rebase.py (434 lines, unit),
+#     test_artifact.py (497 lines, unit), test_fetch.py (588 lines, integration).
+#     No schema change, no migration, no new MCP tool. MCP tool count = 16 (unchanged).
+#     Default behavior with SEAM_INDEX_ARTIFACT_URL="" is byte-identical to pre-WS4.
+#
+# NEXT: Documentation pass (CLAUDE.md Current Phase, Commands, config knobs, gotchas).
