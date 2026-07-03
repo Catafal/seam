@@ -2417,13 +2417,12 @@ def affected_cmd(
     console.print(f"\n[dim]Run with:[/dim] [bold]pytest {' '.join(affected_tests)}[/bold]")
 
 
-# ── seam context-pack ─────────────────────────────────────────────────────────
-# NOTE: renamed from "pack" to "context-pack" in WS4 S2 so the bare "pack" name
-# is claimed by the artifact-pack command (seam pack → canonical .tar.gz archive).
-# Users of `seam pack <symbol>` must update to `seam context-pack <symbol>`.
+# ── seam pack ─────────────────────────────────────────────────────────────────
+# The context-pack command keeps its released `seam pack <symbol>` name (backward
+# compat is a Seam non-negotiable). WS4's index-archive producer is `seam pack-index`.
 
 
-@app.command(name="context-pack")
+@app.command(name="pack")
 def context_pack_cmd(
     symbol: str = typer.Argument(..., help="Symbol name to build context pack for."),
     path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
@@ -2602,10 +2601,10 @@ def context_pack_cmd(
         )
 
 
-# ── seam pack (artifact) ──────────────────────────────────────────────────────
+# ── seam pack-index (artifact) ────────────────────────────────────────────────
 
 
-@app.command(name="pack")
+@app.command(name="pack-index")
 def pack_cmd(
     path: str = typer.Argument(
         ".", help="Project root whose .seam/ index will be packed (default: current directory)"
@@ -2640,11 +2639,11 @@ def pack_cmd(
     agents on a new machine or in CI can skip running `seam init` from scratch.
 
     Examples:
-      seam pack                               -- pack .seam/ from current directory
-      seam pack /path/to/project              -- pack from explicit root
-      seam pack --dest /tmp/artifacts         -- write archive to /tmp/artifacts/
-      seam pack --json                        -- structured output for CI scripts
-      seam pack --quiet                       -- terse: print only archive path + checksum
+      seam pack-index                         -- pack .seam/ from current directory
+      seam pack-index /path/to/project        -- pack from explicit root
+      seam pack-index --dest /tmp/artifacts   -- write archive to /tmp/artifacts/
+      seam pack-index --json                  -- structured output for CI scripts
+      seam pack-index --quiet                 -- terse: print only archive path + checksum
     """
     try:
         check_mutual_exclusion(json_=json_, quiet=quiet)
@@ -2694,7 +2693,7 @@ def pack_cmd(
         return
 
     # ── Rich (default) mode ───────────────────────────────────────────────────
-    table = Table(title="seam pack — complete", show_header=False, box=None)
+    table = Table(title="seam pack-index — complete", show_header=False, box=None)
     table.add_column("key", style="dim", width=14)
     table.add_column("value")
     table.add_row("archive", str(result.archive_path))
