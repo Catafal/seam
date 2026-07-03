@@ -54,6 +54,13 @@ web = ["fastapi>=0.110", "uvicorn>=0.30", "numpy>=1.26"]
 # adds local vector search via quantized ONNX on CPU (no torch, ~67MB model download).
 # Requires `seam init --semantic` to build the embeddings table before use.
 semantic = ["fastembed>=0.4"]
+# ANN acceleration tier is OPTIONAL — `pip install 'seam-code[semantic-ann]'` adds
+# sqlite-vec, a native SQLite extension that powers KNN queries via a vec0 virtual
+# table.  Kept separate from [semantic] because sqlite-vec is a NATIVE extension with
+# real packaging caveats (e.g. macOS system SQLite may block enable_load_extension);
+# the brute-force mmap path (WS2a) always remains the safe fallback for every
+# [semantic] user who does not need ANN acceleration.
+semantic-ann = ["sqlite-vec>=0.1.0"]
 
 [project.scripts]
 seam = "seam.cli.main:app"
