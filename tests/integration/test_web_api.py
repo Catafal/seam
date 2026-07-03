@@ -293,6 +293,35 @@ def test_status_happy_path(client: TestClient) -> None:
     assert data["symbol_count"] > 0  # we indexed authenticate_user and check
 
 
+def test_status_stale_fields_present(client: TestClient) -> None:
+    """GET /api/status includes additive stale + stale_reason fields (#272).
+
+    The stale field must be a bool; stale_reason is str or null.
+    A freshly-indexed fixture has no uncommitted edits, so stale should be False
+    and stale_reason should be None.
+    Pre-existing keys (symbol_count, edge_count, cluster_count, languages,
+    last_indexed, root) must still be present — additive regression guard.
+    """
+    resp = client.get("/api/status")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    # Additive regression: pre-existing keys must still exist.
+    for key in ("root", "symbol_count", "edge_count", "cluster_count", "languages"):
+        assert key in data, f"pre-existing key '{key}' disappeared from /api/status"
+
+    # New additive fields must be present with the right types.
+    assert "stale" in data, "stale field missing from /api/status response"
+    assert isinstance(data["stale"], bool), "stale must be a bool"
+    assert "stale_reason" in data, "stale_reason field missing from /api/status response"
+    # stale_reason is str | None; for a freshly-indexed fixture it should be None.
+    assert data["stale_reason"] is None or isinstance(data["stale_reason"], str)
+
+    # A freshly-indexed tmp repo (no watcher, no edits since init) should be fresh.
+    assert data["stale"] is False, "freshly-indexed fixture should not be stale"
+    assert data["stale_reason"] is None, "freshly-indexed fixture should have no stale_reason"
+
+
 def test_status_no_index(no_index_client: TestClient) -> None:
     """Status returns 503 with JSON error when no index exists.
 

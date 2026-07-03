@@ -382,6 +382,26 @@ class ArchitectureResponse(BaseModel):
     next_calls: list[ArchitectureNextCall]
 
 
+class StatusResponse(BaseModel):
+    """Response for GET /api/status.
+
+    stale + stale_reason are ADDITIVE fields added in #272.
+    They mirror the same check_staleness() call used by the MCP graph-traversal
+    handlers so /api/status can never disagree with `seam status`.
+    stale_reason is None when the index is fresh.
+    """
+
+    root: str
+    symbol_count: int
+    edge_count: int
+    cluster_count: int
+    last_indexed: str | None
+    languages: list[str]
+    # Additive staleness fields (#272): watcher-aware, derived from staleness.py.
+    stale: bool
+    stale_reason: str | None
+
+
 class StructureSymbol(BaseModel):
     """One symbol row for the structure map (flat — the SPA builds the tree).
 
