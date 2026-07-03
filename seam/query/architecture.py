@@ -949,6 +949,7 @@ def _warnings(
     routes_supported: bool,
     configs_supported: bool,
     resources_supported: bool,
+    test_edges_supported: bool,
     exceptions_supported: bool,
 ) -> list[dict[str, str]]:
     warnings: list[dict[str, str]] = []
@@ -974,6 +975,8 @@ def _warnings(
         if name == "configs" and configs_supported:
             continue
         if name == "resources" and resources_supported:
+            continue
+        if name == "test_edges" and test_edges_supported:
             continue
         if name == "exceptions" and exceptions_supported:
             continue
@@ -1276,6 +1279,7 @@ def describe_architecture(
             routes_supported=_table_exists(conn, "routes"),
             configs_supported=_table_exists(conn, "config_keys"),
             resources_supported=_table_exists(conn, "resources"),
+            test_edges_supported=any(row["kind"] == "tests" for row in edge_rows),
             exceptions_supported=_table_exists(conn, "edges"),
         ),
     ]

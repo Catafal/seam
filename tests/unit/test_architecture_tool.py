@@ -361,6 +361,7 @@ def test_architecture_tests_section_reports_static_test_edges(tmp_path: Path) ->
     }
     assert tests["top_tested_symbols"][0]["symbol"] == "entry"
     assert tests["test_heavy_sources"] == [{"source": "test_entry", "test_edges": 1}]
+    assert all(warning["code"] != "NO_TEST_EDGES" for warning in result["warnings"])
     assert any(call["params"].get("edge_kind") == "tests" for call in result["next_calls"])
 
 
