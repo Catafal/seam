@@ -5,12 +5,21 @@
  *   [FilterPanel] | [ResizeHandle] | [ConstellationScene (flex-1)] | [ResizeHandle] | [NodeDetailPanel]
  *
  * Owns the state machine for node selection:
- *   click node → setSelectedNode → compute highlightedIds (node + direct neighbors)
+ *   click node  → setSelectedNode → compute highlightedIds (node + direct neighbors)
  *               → compute cameraTarget → fly camera → open NodeDetailPanel
+ *   click empty → deselect (handleClose) — full field restored
+ *   Esc key     → deselect (handleClose) — keyboard deselect
+ *
+ * ISOLATION CONTRACT (#263):
+ *   A 3D node click NEVER navigates the 2D neighborhood. The click is purely an
+ *   isolate action: the selection dims everything else and flies the camera to
+ *   frame the node's neighborhood. onFocusSymbol has been deliberately removed
+ *   from this component's props so no outbound navigation callback can exist.
+ *   The inbound 2D→3D sync (focusSymbol prop) is kept: when the user picks a
+ *   symbol in the 2D side, the 3D camera flies to it automatically.
  *
  * Props:
- *   focusSymbol    — symbol name set from the 2D side (2D→3D sync)
- *   onFocusSymbol  — called when a node is selected (3D→2D sync)
+ *   focusSymbol — symbol name set from the 2D side (inbound 2D→3D sync only)
  *
  * Pure helper (unit-tested):
  *   computeHighlightedIds(selectedId, edges) → Set<number>
@@ -65,8 +74,12 @@ export function computeHighlightedIds(
 // ── ConstellationTab ──────────────────────────────────────────────────────────
 
 interface ConstellationTabProps {
+  /**
+   * Inbound 2D→3D sync: when set, the 3D camera flies to this symbol.
+   * NOTE: onFocusSymbol is intentionally absent — a 3D click MUST NOT
+   * navigate the 2D neighborhood (#263 isolation contract).
+   */
   focusSymbol?: string | null;
-  onFocusSymbol?: (name: string) => void;
 }
 
 /**
@@ -74,7 +87,6 @@ interface ConstellationTabProps {
  */
 export default function ConstellationTab({
   focusSymbol,
-  onFocusSymbol,
 }: ConstellationTabProps) {
   // ── Node cap (drives the react-query key) ─────────────────────────────────
   const [maxNodes, setMaxNodes] = useState<number>(GRAPH_RENDER_NODE_LIMIT);
@@ -121,6 +133,10 @@ export default function ConstellationTab({
 
   /**
    * Core selection handler: runs the full click state machine.
+   *
+   * ISOLATION (#263): this handler ONLY updates local state — no external
+   * navigation callback is invoked. Clicking a 3D node isolates its
+   * neighborhood visually and flies the camera; nothing else changes.
    */
   const handleSelect = useCallback(
     (node: LayoutNode) => {
@@ -128,9 +144,9 @@ export default function ConstellationTab({
       const newIds = computeHighlightedIds(node.id, (data?.edges ?? []) as LayoutEdge[]);
       const target = computeCameraTarget(data?.nodes ?? [], newIds);
       setCameraTarget(target);
-      onFocusSymbol?.(node.name);
+      // Intentionally no onFocusSymbol call here — 3D click must NOT navigate (#263).
     },
-    [data, onFocusSymbol],
+    [data],
   );
 
   /**
@@ -155,27 +171,40 @@ export default function ConstellationTab({
     setHoveredNode(node);
   }, []);
 
+  // ── Esc key deselect (#263) ────────────────────────────────────────────────
+  //
+  // Pressing Escape clears the selection and restores the full star field —
+  // same as clicking empty canvas (via onPointerMissed → handleClose).
+  // The handler is attached to the document so it fires regardless of which
+  // element has focus (the R3F canvas does not propagate key events by default).
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") handleClose();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [handleClose]);
+
   // ── 2D → 3D sync: fly to focusSymbol when set from the 2D side ────────────
   //
-  // We track the last processed focusSymbol so we don't re-trigger when the
-  // 3D side itself caused the change (handleSelect already set the camera).
-  // Only navigate when the name actually changes AND differs from the current
-  // selectedNode (which was the source of the 3D→2D sync direction).
+  // When the 2D neighborhood selects a symbol (via setCenterSymbol → setFocusSymbol
+  // in App.tsx), this effect flies the 3D camera to the corresponding node.
+  //
+  // De-duplication: track the last processed focusSymbol so we don't re-fly
+  // when the prop re-renders with the same value. Since 3D clicks no longer set
+  // onFocusSymbol (#263), the round-trip guard is simplified: we only skip if
+  // focusSymbol is unchanged since last processing.
 
   const lastFocused = useRef<string | null>(null);
 
   useEffect(() => {
     if (!focusSymbol || !data) return;
-    if (focusSymbol === lastFocused.current) return;        // already processed
-    if (focusSymbol === selectedNode?.name) {
-      // 3D→2D round-trip: we sent this name, skip to avoid re-flying
-      lastFocused.current = focusSymbol;
-      return;
-    }
+    if (focusSymbol === lastFocused.current) return; // already processed
     lastFocused.current = focusSymbol;
-    const target = (data.nodes as LayoutNode[]).find((n) => n.name === focusSymbol);
-    if (target) handleNavigate(focusSymbol);
-  }, [focusSymbol, data, selectedNode, handleNavigate]);
+    const node = (data.nodes as LayoutNode[]).find((n) => n.name === focusSymbol);
+    if (node) handleSelect(node);
+  }, [focusSymbol, data, handleSelect]);
 
   // ── Filter handlers ────────────────────────────────────────────────────────
 
@@ -266,6 +295,20 @@ export default function ConstellationTab({
           onChangeMaxNodes={setMaxNodes}
         />
 
+        {/* Discoverability hint — quiet one-liner at the bottom when nothing is selected.
+            Hidden once a node is selected so it doesn't compete with NodeDetailPanel.
+            The hint surfaces BOTH interaction modes: click-to-isolate + empty/Esc reset. */}
+        {!selectedNode && (
+          <div
+            className="absolute bottom-4 left-0 right-0 flex justify-center pointer-events-none z-10"
+            aria-live="polite"
+          >
+            <p className="text-zinc-600 text-[11px] select-none">
+              Click a node to isolate its connections · click empty space or press Esc to reset
+            </p>
+          </div>
+        )}
+
         <ConstellationScene
           nodes={visibleNodes}
           edges={visibleEdges}
@@ -274,6 +317,7 @@ export default function ConstellationTab({
           hoveredNode={hoveredNode}
           onHover={handleHover}
           onSelect={handleSelect}
+          onDeselect={handleClose}
         />
       </div>
 

@@ -712,11 +712,12 @@ function App() {
           ) : (
             /* 3D constellation — opt-in, lazy-loaded to keep three/R3F out of
                the initial bundle until the user explicitly picks 3D.
-               WHY no navigation within 3D: selecting a node in 3D syncs focusSymbol
-               but the hand-off always exits to the 2D neighborhood (via onFocusSymbol →
-               setCenterSymbol + setMode("neighborhood")). The 3D scene is a "wow" spectacle,
-               not a drill path — navigating cluster→cluster in 3D perspective would not give
-               the legible relationship view that the 2D cluster graph already provides. */
+               #263 ISOLATION CONTRACT: selecting a node in 3D ONLY isolates its
+               neighborhood in the canvas — it does NOT navigate the 2D neighborhood.
+               onFocusSymbol has been removed from ConstellationTab; the only data
+               flow is INBOUND (2D→3D via focusSymbol), not outbound (3D→2D).
+               The 3D scene is a "wow" spectacle and a spatial relationship viewer;
+               navigation happens in the 2D neighborhood graph. */
             <Suspense
               fallback={
                 <div className="flex items-center justify-center w-full h-full text-zinc-500 text-sm animate-pulse">
@@ -726,10 +727,6 @@ function App() {
             >
               <ConstellationTab
                 focusSymbol={focusSymbol}
-                onFocusSymbol={(name) => {
-                  setFocusSymbol(name);
-                  setCenterSymbol(name);
-                }}
               />
             </Suspense>
           )
