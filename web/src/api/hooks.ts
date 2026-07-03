@@ -40,6 +40,7 @@ import type {
   ClustersResponse,
   HubsResponse,
   StructureResponse,
+  ConstellationResponse,
 } from "./schema-types";
 
 /** Impact blast-radius direction (matches the API Literal). */
@@ -429,6 +430,21 @@ export function useGraphSearch(filters: GraphSearchFilters = {}, enabled: boolea
         },
       }),
     enabled,
+  });
+}
+
+// ── useConstellation ─────────────────────────────────────────────────────────
+
+/**
+ * Fetch the whole-repo cluster topology from GET /api/constellation.
+ * Always enabled — used by the 2D cluster graph (C2).
+ *
+ * @returns data — the full ConstellationResponse { clusters, links }
+ */
+export function useConstellation() {
+  return useQuery<ConstellationResponse>({
+    queryKey: ["constellation"],
+    queryFn: () => apiFetch<ConstellationResponse>("/api/constellation"),
   });
 }
 

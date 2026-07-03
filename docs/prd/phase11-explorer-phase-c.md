@@ -212,6 +212,34 @@ three/R3F are already installed. No SQLite schema change, no migration, no re-in
 
 ---
 
+## C2 implementation notes
+
+**Slice:** C2 — 2D cluster-graph fallback in React Flow (issue #252).
+
+**What changed:**
+
+- `web/src/api/hooks.ts` — added `useConstellation()`: a thin hook fetching `GET /api/constellation`. Mirrors the existing `useClusters` pattern (always enabled, unwraps the `ConstellationResponse` envelope). Imports `ConstellationResponse` from schema-types.
+- `web/src/lib/clusterGraphLayout.ts` (NEW, PURE) — `clusterGraphLayout(clusters, links, opts) → { nodes, edges }`. Deterministic radial/circular layout: clusters sorted by size DESC (cluster_id ASC tiebreak), placed evenly on a circle of radius proportional to cluster count, starting at angle −π/2 (top). Node size uses a √(size) scale (monotonic, bounded [40,120]). Edge strokeWidth and opacity use a log1p(weight) scale (monotonic). Color from `clusterColor(cluster_id)`. Links referencing unknown cluster IDs are silently skipped. Zero deps beyond the existing `@xyflow/react` types and `clusterColor`. Returns React Flow `Node<ClusterNodeData>[]` + `Edge<ClusterEdgeData>[]` where the data payloads carry the raw values (`nodeSize`, `strokeWidth`, `opacity`) alongside the visual fields — this makes unit tests straightforward (no style introspection required).
+- `web/src/components/ClusterGraph2D.tsx` (NEW) — renders the layout in `@xyflow/react`. Sibling of `GraphCanvas` (not a modification). Uses `useNodesState`/`useEdgesState` + `useEffect` to rebuild the layout when `useConstellation` data changes. `FitOnLoad` inner component fires `fitView({padding:0.15})` after the first render (must be a child of `<ReactFlow>` to access the context). Empty state: "No clusters yet — run seam init to build the index." Loading state: "Loading cluster topology…". `onOpenCluster(cluster)` prop fires on node click; the cluster object is reconstructed from `node.data` so the callback receives a typed `ConstellationCluster`.
+
+**Tests (TDD — all failing before implementation, all green after):**
+
+- `web/src/__tests__/clusterGraphLayout.test.ts` — 14 pure unit tests: empty-input fast path; N clusters → N nodes; node id pattern; M links → M edges; edge id and source/target patterns; node size monotonic in cluster size; edge strokeWidth monotonic in weight; edge opacity monotonic in weight; color from clusterColor; data payload fields; determinism across two calls; single-cluster positioning; graceful handling of links with unknown cluster ids.
+- `web/src/__tests__/ClusterGraph2D.test.tsx` — 5 component tests: empty state; loading state; one node per cluster; onOpenCluster fired with correct cluster on click; no crash with no links. Used `vi.mock("@xyflow/react", ...)` with `React.useState` inside `useNodesState`/`useEdgesState` mocks so `setNodes`/`setEdges` calls from `useEffect` actually propagate to the mocked `ReactFlow` renderer.
+
+**Decisions:**
+
+- **Deterministic radial layout over force simulation:** a static circle is legible for 20–50 clusters, reproducible (story-13), and trivially unit-testable (story-16). The PRD explicitly chose this.
+- **`√(size)` node scale:** prevents large clusters from overwhelming small ones while still encoding size clearly. Bounded [40, 120] px.
+- **`log1p(weight)` edge scale:** log scale keeps lightly-coupled links visible rather than invisible. Bounded strokeWidth [1, 8], opacity [0.25, 1.0].
+- **`ClusterNodeData.nodeSize` + `ClusterEdgeData.strokeWidth`/`opacity` in node data:** these derived values let tests assert monotonicity without inspecting inline styles. They are also consumed by the MiniMap `nodeColor` getter.
+- **`FitOnLoad` as inner component:** `useReactFlow()` must be called inside the React Flow provider tree. A small 50 ms timeout avoids fitView running before nodes are laid out by the browser.
+- **No new dependencies:** @xyflow/react was already installed; zero new packages added.
+
+**Gate:** 448 tests passed (37 test files), typecheck clean, build succeeds in 3.02s.
+
+---
+
 ## Further Notes
 
 - **Why the 2D cluster graph and not "just fix 3D":** per the first-principles judge panel (Ghoniem
