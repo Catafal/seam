@@ -38,6 +38,17 @@ _INTROSPECT_TABLES = (
     "config_keys",
     "resources",
 )
+_INFRA_RESOURCE_CATEGORIES = {
+    "service",
+    "image",
+    "dockerfile",
+    "build_context",
+    "port",
+    "stage",
+    "env_file",
+    "volume",
+    "network",
+}
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -69,7 +80,9 @@ def _count(conn: sqlite3.Connection, table: str, where: str = "") -> int:
         return 0
 
 
-def _group_counts(conn: sqlite3.Connection, table: str, column: str, where: str = "") -> dict[str, int]:
+def _group_counts(
+    conn: sqlite3.Connection, table: str, column: str, where: str = ""
+) -> dict[str, int]:
     if column not in _column_names(conn, table):
         return {}
     try:
@@ -229,41 +242,53 @@ def _warnings(
 ) -> list[dict[str, str]]:
     warnings: list[dict[str, str]] = []
     if freshness["stale"]:
-        warnings.append({
-            "code": "INDEX_STALE",
-            "message": freshness["reason"] or "The index may be stale.",
-            "hint": freshness["hint"] or "Run 'seam sync' or 'seam init'.",
-        })
+        warnings.append(
+            {
+                "code": "INDEX_STALE",
+                "message": freshness["reason"] or "The index may be stale.",
+                "hint": freshness["hint"] or "Run 'seam sync' or 'seam init'.",
+            }
+        )
     if counts["files"] == 0 or counts["symbols"] == 0:
-        warnings.append({
-            "code": "INDEX_EMPTY",
-            "message": "The index has no real files or symbols.",
-            "hint": "Run 'seam init' from the project root.",
-        })
+        warnings.append(
+            {
+                "code": "INDEX_EMPTY",
+                "message": "The index has no real files or symbols.",
+                "hint": "Run 'seam init' from the project root.",
+            }
+        )
     for table in missing_tables:
-        warnings.append({
-            "code": "MISSING_OPTIONAL_TABLE",
-            "message": f"Optional table '{table}' is missing.",
-            "hint": "Run 'seam init' with the current Seam version if this capability is needed.",
-        })
+        warnings.append(
+            {
+                "code": "MISSING_OPTIONAL_TABLE",
+                "message": f"Optional table '{table}' is missing.",
+                "hint": "Run 'seam init' with the current Seam version if this capability is needed.",
+            }
+        )
     if not capabilities["has_clusters"]:
-        warnings.append({
-            "code": "NO_CLUSTERS",
-            "message": "No clusters are populated.",
-            "hint": "Cluster-aware context may be unavailable until a full index has clusters.",
-        })
+        warnings.append(
+            {
+                "code": "NO_CLUSTERS",
+                "message": "No clusters are populated.",
+                "hint": "Cluster-aware context may be unavailable until a full index has clusters.",
+            }
+        )
     if not capabilities["has_embeddings"]:
-        warnings.append({
-            "code": "NO_EMBEDDINGS",
-            "message": "No embeddings are populated for semantic hybrid search.",
-            "hint": "Run 'seam init --semantic' if semantic search is desired.",
-        })
+        warnings.append(
+            {
+                "code": "NO_EMBEDDINGS",
+                "message": "No embeddings are populated for semantic hybrid search.",
+                "hint": "Run 'seam init --semantic' if semantic search is desired.",
+            }
+        )
     elif not capabilities["embedding_model_matches"]:
-        warnings.append({
-            "code": "EMBEDDING_MODEL_MISMATCH",
-            "message": "Stored embeddings do not match the configured model.",
-            "hint": "Run 'seam init --semantic' to rebuild embeddings for the configured model.",
-        })
+        warnings.append(
+            {
+                "code": "EMBEDDING_MODEL_MISMATCH",
+                "message": "Stored embeddings do not match the configured model.",
+                "hint": "Run 'seam init --semantic' to rebuild embeddings for the configured model.",
+            }
+        )
     return warnings
 
 
@@ -320,6 +345,7 @@ def describe_schema(
         ),
         "comment_markers": _group_counts(conn, "comments", "marker"),
         "embedding_models": embedding_model_counts,
+        "resource_categories": _group_counts(conn, "resources", "category"),
     }
     symbols_columns = _column_names(conn, "symbols")
     edges_columns = _column_names(conn, "edges")
@@ -337,6 +363,10 @@ def describe_schema(
         "has_resources_table": _table_exists(conn, "resources"),
         "has_config_nodes": breakdowns["symbol_kinds"].get("config", 0) > 0,
         "has_resource_nodes": breakdowns["symbol_kinds"].get("resource", 0) > 0,
+        "has_infra_graph": any(
+            breakdowns["resource_categories"].get(category, 0) > 0
+            for category in _INFRA_RESOURCE_CATEGORIES
+        ),
         "has_reads_config": breakdowns["edge_kinds"].get("reads_config", 0) > 0,
         "has_configures": breakdowns["edge_kinds"].get("configures", 0) > 0,
         "has_exception_edges": (

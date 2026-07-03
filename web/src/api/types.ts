@@ -122,10 +122,12 @@ export interface paths {
         };
         /**
          * Get Status
-         * @description Return index statistics and metadata.
+         * @description Return index statistics and metadata including watcher-aware staleness.
          *
          *     Returns symbol_count, edge_count, cluster_count, last_indexed timestamp,
-         *     and the list of languages present in the index.
+         *     the list of languages present in the index, and additive stale/stale_reason
+         *     fields derived from the same check_staleness() source of truth used by the
+         *     MCP graph-traversal handlers — so /api/status never disagrees with seam status.
          */
         get: operations["get_status_api_status_get"];
         put?: never;
@@ -616,6 +618,7 @@ export interface components {
             http_calls?: components["schemas"]["ArchitectureEvidenceSection"] | null;
             configs?: components["schemas"]["ArchitectureListSection"] | null;
             resources?: components["schemas"]["ArchitectureListSection"] | null;
+            infra?: components["schemas"]["ArchitectureListSection"] | null;
             hotspots?: components["schemas"]["ArchitectureListSection"] | null;
             orchestrators?: components["schemas"]["ArchitectureListSection"] | null;
             boundaries?: components["schemas"]["ArchitectureListSection"] | null;
@@ -1134,6 +1137,10 @@ export interface components {
             embedding_models: {
                 [key: string]: number;
             };
+            /** Resource Categories */
+            resource_categories: {
+                [key: string]: number;
+            };
         };
         /**
          * SchemaCapabilities
@@ -1178,6 +1185,8 @@ export interface components {
             has_config_nodes: boolean;
             /** Has Resource Nodes */
             has_resource_nodes: boolean;
+            /** Has Infra Graph */
+            has_infra_graph: boolean;
             /** Has Reads Config */
             has_reads_config: boolean;
             /** Has Configures */
@@ -1445,6 +1454,11 @@ export interface components {
         /**
          * StatusResponse
          * @description Response for GET /api/status.
+         *
+         *     stale + stale_reason are ADDITIVE fields added in #272.
+         *     They mirror the same check_staleness() call used by the MCP graph-traversal
+         *     handlers so /api/status can never disagree with `seam status`.
+         *     stale_reason is None when the index is fresh.
          */
         StatusResponse: {
             /** Root */
@@ -1459,17 +1473,9 @@ export interface components {
             last_indexed: string | null;
             /** Languages */
             languages: string[];
-            /**
-             * Stale
-             * @description True when the index is detected as stale (#272 / D1).
-             * Derived from check_staleness() — same source of truth as the MCP
-             * staleness banner and `seam status` CLI. Watcher-aware.
-             */
+            /** Stale */
             stale: boolean;
-            /**
-             * Stale Reason
-             * @description Human-readable reason for staleness. null when fresh.
-             */
+            /** Stale Reason */
             stale_reason: string | null;
         };
         /**

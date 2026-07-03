@@ -16,6 +16,13 @@ from pathlib import Path
 from tree_sitter import Node
 
 from seam.indexer.graph_common import ConfigMetadata, Edge, ResourceMetadata, Symbol, _text
+from seam.indexer.infra_resources import (
+    extract_compose_resources as _extract_infra_compose_resources,
+)
+from seam.indexer.infra_resources import (
+    extract_dockerfile_resources as _extract_dockerfile_resources,
+)
+from seam.indexer.infra_resources import is_dockerfile_name as _is_dockerfile_name
 
 SAFE_ENV_FILENAMES = {
     ".env.example",
@@ -84,6 +91,8 @@ def is_config_resource_file(path: Path) -> bool:
     if lower_name in SAFE_CONFIG_FILENAMES:
         return True
     if any(lower_name.endswith(suffix) for suffix in SAFE_CONFIG_SUFFIXES):
+        return True
+    if _is_dockerfile_name(name):
         return True
     return "config" in {part.lower() for part in path.parts} and lower_name.endswith(
         (".json", ".toml", ".yaml", ".yml")
@@ -214,6 +223,30 @@ def _line_for_key(lines: list[str], key: str, default: int = 1) -> int:
     return default
 
 
+def _add_edge(
+    edges: list[Edge],
+    *,
+    source: str,
+    target: str,
+    kind: str,
+    filepath: Path,
+    line: int,
+    confidence: str = "EXTRACTED",
+    provenance: str | None = None,
+) -> None:
+    edge = Edge(
+        source=source,
+        target=target,
+        kind=kind,
+        file=str(filepath),
+        line=line,
+        confidence=confidence,  # type: ignore[typeddict-item]
+    )
+    if provenance is not None:
+        edge["provenance"] = provenance
+    edges.append(edge)
+
+
 def _flatten_mapping(value: object, prefix: str = "") -> list[tuple[str, object]]:
     if not isinstance(value, dict):
         return []
@@ -274,15 +307,17 @@ def _add_config(
         symbol_name,
         _symbol(symbol_name, "config", str(filepath), line, f"config {normalize_config_key(key)}"),
     )
-    configs.append(_config_metadata(
-        key=key,
-        source_family=source_family,
-        role=role,
-        value_state="redacted" if value is not None else "key-only",
-        value_category=_value_category(value),
-        line=line,
-        provenance=provenance,
-    ))
+    configs.append(
+        _config_metadata(
+            key=key,
+            source_family=source_family,
+            role=role,
+            value_state="redacted" if value is not None else "key-only",
+            value_category=_value_category(value),
+            line=line,
+            provenance=provenance,
+        )
+    )
     resource = _resource_for_key(key)
     if resource is None:
         return
@@ -305,14 +340,16 @@ def _add_config(
             f"{category} resource {metadata['normalized_name']}",
         ),
     )
-    edges.append(Edge(
+    _add_edge(
+        edges,
         source=symbol_name,
         target=metadata["symbol_name"],
         kind="configures",
-        file=str(filepath),
+        filepath=filepath,
         line=line,
         confidence="INFERRED",
-    ))
+        provenance=f"{provenance}-resource",
+    )
 
 
 def _extract_env_template(
@@ -411,36 +448,6 @@ def _extract_package_resources(
     return list(symbols.values()), [], [], list(resources.values())
 
 
-def _extract_compose_resources(
-    path: Path,
-    text: str,
-    mapping: dict[str, object],
-) -> tuple[list[Symbol], list[Edge], list[ConfigMetadata], list[ResourceMetadata]]:
-    symbols: dict[str, Symbol] = {}
-    resources: dict[str, ResourceMetadata] = {}
-    lines = text.splitlines()
-    services = mapping.get("services")
-    if isinstance(services, dict):
-        for service in services:
-            metadata = _resource_metadata(
-                name=str(service),
-                category="service",
-                source_family="compose",
-                line=_line_for_key(lines, str(service)),
-                provenance="compose-service",
-                confidence="EXTRACTED",
-            )
-            resources[metadata["symbol_name"]] = metadata
-            symbols[metadata["symbol_name"]] = _symbol(
-                metadata["symbol_name"],
-                "resource",
-                str(path),
-                metadata["line"],
-                f"compose service {service}",
-            )
-    return list(symbols.values()), [], [], list(resources.values())
-
-
 def extract_config_file(
     path: Path,
 ) -> tuple[list[Symbol], list[Edge], list[ConfigMetadata], list[ResourceMetadata]]:
@@ -449,6 +456,8 @@ def extract_config_file(
     if not is_config_resource_file(path):
         return [], [], [], []
     text = path.read_text(encoding="utf-8", errors="replace")
+    if _is_dockerfile_name(path.name):
+        return _extract_dockerfile_resources(path, text)
     if lower_name in SAFE_ENV_FILENAMES or lower_name.endswith((".env.example", ".env.template")):
         return _extract_env_template(path, text)
     try:
@@ -468,12 +477,14 @@ def extract_config_file(
         if lower_name.endswith(".toml"):
             data = tomllib.loads(text)
             if lower_name == "pyproject.toml":
-                package_symbols, package_edges, package_configs, package_resources = _extract_mapping_config(
-                    path,
-                    text,
-                    data,
-                    source_family="toml-config",
-                    provenance="toml-config-key",
+                package_symbols, package_edges, package_configs, package_resources = (
+                    _extract_mapping_config(
+                        path,
+                        text,
+                        data,
+                        source_family="toml-config",
+                        provenance="toml-config-key",
+                    )
                 )
                 return package_symbols, package_edges, package_configs, package_resources
             return _extract_mapping_config(
@@ -485,8 +496,13 @@ def extract_config_file(
             )
         if lower_name.endswith((".yaml", ".yml")):
             data = _parse_simple_yaml(text)
-            if lower_name in {"docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"}:
-                return _extract_compose_resources(path, text, data)
+            if lower_name in {
+                "docker-compose.yml",
+                "docker-compose.yaml",
+                "compose.yml",
+                "compose.yaml",
+            }:
+                return _extract_infra_compose_resources(path, text)
             return _extract_mapping_config(
                 path,
                 text,
@@ -508,7 +524,9 @@ def _enclosing_symbol(symbols: list[Symbol], line: int) -> str | None:
     ]
     if not candidates:
         return None
-    return min(candidates, key=lambda symbol: (symbol["end_line"] - symbol["start_line"], symbol["name"]))["name"]
+    return min(
+        candidates, key=lambda symbol: (symbol["end_line"] - symbol["start_line"], symbol["name"])
+    )["name"]
 
 
 def _ignored_source_ranges(root: Node) -> list[tuple[int, int]]:
@@ -561,24 +579,28 @@ def _source_read(
         symbol_name,
         _symbol(symbol_name, "config", str(filepath), line, f"config {normalize_config_key(key)}"),
     )
-    configs.append(_config_metadata(
-        key=key,
-        source_family=language,
-        role="read",
-        value_state="not-read",
-        value_category=None,
-        line=line,
-        provenance=provenance,
-    ))
-    if source_name:
-        edges.append(Edge(
-            source=source_name,
-            target=symbol_name,
-            kind="reads_config",
-            file=str(filepath),
+    configs.append(
+        _config_metadata(
+            key=key,
+            source_family=language,
+            role="read",
+            value_state="not-read",
+            value_category=None,
             line=line,
-            confidence="EXTRACTED",
-        ))
+            provenance=provenance,
+        )
+    )
+    if source_name:
+        edges.append(
+            Edge(
+                source=source_name,
+                target=symbol_name,
+                kind="reads_config",
+                file=str(filepath),
+                line=line,
+                confidence="EXTRACTED",
+            )
+        )
     resource = _resource_for_key(key)
     if resource:
         category, resource_name = resource
@@ -600,14 +622,16 @@ def _source_read(
                 f"{category} resource {metadata['normalized_name']}",
             ),
         )
-        edges.append(Edge(
-            source=symbol_name,
-            target=metadata["symbol_name"],
-            kind="configures",
-            file=str(filepath),
-            line=line,
-            confidence="INFERRED",
-        ))
+        edges.append(
+            Edge(
+                source=symbol_name,
+                target=metadata["symbol_name"],
+                kind="configures",
+                file=str(filepath),
+                line=line,
+                confidence="INFERRED",
+            )
+        )
 
 
 def extract_source_config_reads(
@@ -636,9 +660,20 @@ def extract_source_config_reads(
         ]
     else:
         patterns = [
-            (_TS_PROCESS_DOT_RE, "typescript-process-env" if language == "typescript" else "javascript-process-env"),
-            (_TS_PROCESS_BRACKET_RE, "typescript-process-env" if language == "typescript" else "javascript-process-env"),
-            (_TS_IMPORT_META_RE, "typescript-import-meta-env" if language == "typescript" else "javascript-import-meta-env"),
+            (
+                _TS_PROCESS_DOT_RE,
+                "typescript-process-env" if language == "typescript" else "javascript-process-env",
+            ),
+            (
+                _TS_PROCESS_BRACKET_RE,
+                "typescript-process-env" if language == "typescript" else "javascript-process-env",
+            ),
+            (
+                _TS_IMPORT_META_RE,
+                "typescript-import-meta-env"
+                if language == "typescript"
+                else "javascript-import-meta-env",
+            ),
         ]
     for line_no, line in enumerate(lines, start=1):
         source_name = _enclosing_symbol(source_symbols, line_no)

@@ -46,6 +46,17 @@ _OPTIONAL_SURFACES: dict[str, dict[str, str]] = {
         "hint": "Run 'seam sync' or 'seam init' with P3.4 support to populate raises/catches edges.",
     },
 }
+_INFRA_RESOURCE_CATEGORIES = {
+    "service",
+    "image",
+    "dockerfile",
+    "build_context",
+    "port",
+    "stage",
+    "env_file",
+    "volume",
+    "network",
+}
 
 _DEFAULT_SECTIONS: tuple[str, ...] = (
     "summary",
@@ -57,6 +68,7 @@ _DEFAULT_SECTIONS: tuple[str, ...] = (
     "http_calls",
     "configs",
     "resources",
+    "infra",
     "exceptions",
     "hotspots",
     "orchestrators",
@@ -127,7 +139,9 @@ def _count(conn: sqlite3.Connection, table: str, where: str = "") -> int:
         return 0
 
 
-def _group_counts(conn: sqlite3.Connection, table: str, column: str, where: str = "") -> dict[str, int]:
+def _group_counts(
+    conn: sqlite3.Connection, table: str, column: str, where: str = ""
+) -> dict[str, int]:
     if column not in _column_names(conn, table):
         return {}
     try:
@@ -149,11 +163,15 @@ def _schema_version(meta: dict[str, str]) -> int | str:
         return raw
 
 
-def _file_rows(conn: sqlite3.Connection, allowed_files: set[str] | None = None) -> list[sqlite3.Row]:
+def _file_rows(
+    conn: sqlite3.Connection, allowed_files: set[str] | None = None
+) -> list[sqlite3.Row]:
     if not _table_exists(conn, "files"):
         return []
     try:
-        rows = conn.execute("SELECT path, language FROM files WHERE path NOT LIKE ':%' ORDER BY path").fetchall()
+        rows = conn.execute(
+            "SELECT path, language FROM files WHERE path NOT LIKE ':%' ORDER BY path"
+        ).fetchall()
     except sqlite3.Error:
         return []
     if allowed_files is not None:
@@ -190,7 +208,9 @@ def _symbol_counts_by_language(
     return dict(result)
 
 
-def _language_section(conn: sqlite3.Connection, allowed_files: set[str] | None = None) -> dict[str, Any]:
+def _language_section(
+    conn: sqlite3.Connection, allowed_files: set[str] | None = None
+) -> dict[str, Any]:
     file_counts: dict[str, int] = defaultdict(int)
     for row in _file_rows(conn, allowed_files):
         if row["language"] is not None:
@@ -338,7 +358,11 @@ def _cluster_section(
     grouped: dict[int, dict[str, Any]] = {}
     area_counts: dict[int, dict[str, int]] = defaultdict(dict)
     for row in rows:
-        if row["file"] is not None and allowed_files is not None and str(row["file"]) not in allowed_files:
+        if (
+            row["file"] is not None
+            and allowed_files is not None
+            and str(row["file"]) not in allowed_files
+        ):
             continue
         cluster_id = int(row["cluster_id"])
         grouped.setdefault(
@@ -371,7 +395,9 @@ def _cluster_section(
         cluster_areas = area_counts.get(int(item["cluster_id"]), {})
         item["top_physical_areas"] = [
             {"path": path, "symbols": count}
-            for path, count in sorted(cluster_areas.items(), key=lambda pair: (-pair[1], pair[0]))[:5]
+            for path, count in sorted(cluster_areas.items(), key=lambda pair: (-pair[1], pair[0]))[
+                :5
+            ]
         ]
     items.sort(key=lambda item: (-int(item["size"]), int(item["cluster_id"])))
     return {"items": items[:limit], "truncated": max(0, len(items) - limit)}
@@ -451,16 +477,18 @@ def _edge_rows(
     for row in rows:
         if allowed_files is not None and str(row["file"]) not in allowed_files:
             continue
-        result.append({
-            "source": row["source_name"],
-            "target": row["target_name"],
-            "kind": row["kind"],
-            "line": row["line"],
-            "confidence": row["confidence"],
-            "synthesized_by": row["synthesized_by"],
-            "provenance": row["provenance"],
-            "file": row["file"],
-        })
+        result.append(
+            {
+                "source": row["source_name"],
+                "target": row["target_name"],
+                "kind": row["kind"],
+                "line": row["line"],
+                "confidence": row["confidence"],
+                "synthesized_by": row["synthesized_by"],
+                "provenance": row["provenance"],
+                "file": row["file"],
+            }
+        )
     return result
 
 
@@ -490,7 +518,17 @@ def _topology_sections(
             incoming[target] += 1
 
     def _item(name: str) -> dict[str, Any]:
-        base = dict(meta.get(name) or {"symbol": name, "uid": None, "kind": None, "file": None, "line": None, "is_test": False})
+        base = dict(
+            meta.get(name)
+            or {
+                "symbol": name,
+                "uid": None,
+                "kind": None,
+                "file": None,
+                "line": None,
+                "is_test": False,
+            }
+        )
         base["degrees"] = {
             "incoming": incoming.get(name, 0),
             "outgoing": outgoing.get(name, 0),
@@ -499,7 +537,8 @@ def _topology_sections(
         return base
 
     entry_names = [
-        name for name in sources - declared_targets
+        name
+        for name in sources - declared_targets
         if not bool(meta.get(name, {}).get("is_test", False))
     ]
     entry_points = sorted(
@@ -509,7 +548,11 @@ def _topology_sections(
 
     hotspots = sorted(
         (_item(name) for name in incoming if incoming.get(name, 0) > 0),
-        key=lambda item: (-int(item["degrees"]["incoming"]), bool(item["is_test"]), str(item["symbol"])),
+        key=lambda item: (
+            -int(item["degrees"]["incoming"]),
+            bool(item["is_test"]),
+            str(item["symbol"]),
+        ),
     )[:limit]
 
     orchestrators: list[dict[str, Any]] = []
@@ -519,12 +562,21 @@ def _topology_sections(
         item = _item(name)
         item["edge_kinds"] = dict(sorted(outgoing_kinds[name].items()))
         orchestrators.append(item)
-    orchestrators.sort(key=lambda item: (-int(item["degrees"]["outgoing"]), bool(item["is_test"]), str(item["symbol"])))
+    orchestrators.sort(
+        key=lambda item: (
+            -int(item["degrees"]["outgoing"]),
+            bool(item["is_test"]),
+            str(item["symbol"]),
+        )
+    )
 
     return {
         "entry_points": {"items": entry_points, "truncated": max(0, len(entry_names) - limit)},
         "hotspots": {"items": hotspots, "truncated": max(0, len(incoming) - limit)},
-        "orchestrators": {"items": orchestrators[:limit], "truncated": max(0, len(orchestrators) - limit)},
+        "orchestrators": {
+            "items": orchestrators[:limit],
+            "truncated": max(0, len(orchestrators) - limit),
+        },
     }
 
 
@@ -572,7 +624,10 @@ def _tests_section(
         non_test_degree[str(row["target"])] += 1
 
     def _target_item(name: str, count: int) -> dict[str, Any]:
-        base = dict(symbol_meta.get(name) or {"symbol": name, "uid": None, "kind": None, "file": None, "line": None})
+        base = dict(
+            symbol_meta.get(name)
+            or {"symbol": name, "uid": None, "kind": None, "file": None, "line": None}
+        )
         base["test_edges"] = count
         return base
 
@@ -596,7 +651,9 @@ def _tests_section(
         untested_hotspots.append(item)
         if len(untested_hotspots) >= limit:
             break
-    truncated = max(0, len(incoming) - len(top_tested)) + max(0, len(outgoing) - len(test_heavy_sources))
+    truncated = max(0, len(incoming) - len(top_tested)) + max(
+        0, len(outgoing) - len(test_heavy_sources)
+    )
     return {
         "files": {"production": production_files, "test": test_files, "unknown": 0},
         "coverage_edges": {
@@ -652,7 +709,11 @@ def _boundary_section(
         bucket["confidence"][row["confidence"]] = bucket["confidence"].get(row["confidence"], 0) + 1
     items = sorted(
         boundaries.values(),
-        key=lambda item: (-int(item["edge_count"]), str(item["source_area"]), str(item["target_area"])),
+        key=lambda item: (
+            -int(item["edge_count"]),
+            str(item["source_area"]),
+            str(item["target_area"]),
+        ),
     )
     return {"items": items[:limit], "truncated": max(0, len(items) - limit)}
 
@@ -672,7 +733,13 @@ def _resolve_scope(
             {"path": scope, "applied": False},
             set(),
             None,
-            [_warning("SCOPE_OUTSIDE_ROOT", "Scope path is outside the project root.", "Pass a root-relative path inside the indexed project.")],
+            [
+                _warning(
+                    "SCOPE_OUTSIDE_ROOT",
+                    "Scope path is outside the project root.",
+                    "Pass a root-relative path inside the indexed project.",
+                )
+            ],
         )
     prefix = str(abs_scope) + "/"
     allowed = {
@@ -682,7 +749,13 @@ def _resolve_scope(
     }
     warnings = []
     if not allowed:
-        warnings.append(_warning("SCOPE_EMPTY", "Scope did not match any indexed files.", "Check the path or run 'seam sync'."))
+        warnings.append(
+            _warning(
+                "SCOPE_EMPTY",
+                "Scope did not match any indexed files.",
+                "Check the path or run 'seam sync'.",
+            )
+        )
     return {"path": scope, "applied": True}, allowed, abs_scope, warnings
 
 
@@ -814,7 +887,9 @@ def _http_calls_section(
         }
     route_metadata = _route_metadata_by_symbol(conn, root)
     rows = [row for row in edge_rows if row["kind"] == "http_calls"]
-    rows.sort(key=lambda row: (str(row["target"]), str(row["source"]), str(row["file"]), int(row["line"])))
+    rows.sort(
+        key=lambda row: (str(row["target"]), str(row["source"]), str(row["file"]), int(row["line"]))
+    )
     items = [
         {
             "source": row["source"],
@@ -948,6 +1023,28 @@ def _resources_section(
     }
 
 
+def _infra_section(
+    conn: sqlite3.Connection,
+    root: Path,
+    allowed_files: set[str] | None = None,
+    limit: int = 10,
+) -> dict[str, Any]:
+    section = _resources_section(conn, root, allowed_files, limit=10_000)
+    if section.get("status") == "unsupported":
+        return section
+    rows = [
+        item for item in section["items"] if str(item.get("category")) in _INFRA_RESOURCE_CATEGORIES
+    ]
+    rows.sort(
+        key=lambda item: (str(item["category"]), str(item["normalized_name"]), str(item["file"]))
+    )
+    return {
+        "status": "populated" if rows else "empty",
+        "items": rows[:limit],
+        "truncated": max(0, len(rows) - limit),
+    }
+
+
 def _exceptions_section(
     conn: sqlite3.Connection,
     root: Path,
@@ -994,18 +1091,22 @@ def _exceptions_section(
             caught[target] += 1
             source_counts[source]["catches"] += 1
             if target.rsplit(".", 1)[-1] in broad_names:
-                broad_catches.append({
-                    "source": source,
-                    "target": target,
-                    "file": _relativize(str(row["file"]), root),
-                    "line": int(row["line"]),
-                    "confidence": row["confidence"],
-                })
+                broad_catches.append(
+                    {
+                        "source": source,
+                        "target": target,
+                        "file": _relativize(str(row["file"]), root),
+                        "line": int(row["line"]),
+                        "confidence": row["confidence"],
+                    }
+                )
 
     def _ranked_types(counts: dict[str, int]) -> list[dict[str, Any]]:
         return [
             {"target": target, "count": count}
-            for target, count in sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))[:limit]
+            for target, count in sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))[
+                :limit
+            ]
         ]
 
     heavy_symbols = [
@@ -1211,6 +1312,7 @@ def _fit_to_byte_budget(result: dict[str, Any], *, max_bytes: int) -> dict[str, 
         "http_calls",
         "configs",
         "resources",
+        "infra",
         "exceptions",
     )
 
@@ -1225,7 +1327,11 @@ def _fit_to_byte_budget(result: dict[str, Any], *, max_bytes: int) -> dict[str, 
         for section_name in priority:
             section = result.get("sections", {}).get(section_name)
             if isinstance(section, dict):
-                if section_name == "physical" and isinstance(section.get("top_areas"), list) and section["top_areas"]:
+                if (
+                    section_name == "physical"
+                    and isinstance(section.get("top_areas"), list)
+                    and section["top_areas"]
+                ):
                     section["top_areas"].pop()
                     section["truncated"] = int(section.get("truncated") or 0) + 1
                     trimmed = 1
@@ -1342,6 +1448,7 @@ def describe_architecture(
         "http_calls": _http_calls_section(conn, root, edge_rows, safe_limit),
         "configs": _configs_section(conn, root, allowed_files, safe_limit),
         "resources": _resources_section(conn, root, allowed_files, safe_limit),
+        "infra": _infra_section(conn, root, allowed_files, safe_limit),
         "exceptions": _exceptions_section(conn, root, allowed_files, safe_limit),
         "edge_mix": _edge_mix_section(edge_rows),
         "tests": _tests_section(

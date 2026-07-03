@@ -178,7 +178,7 @@ Grouped by the question an agent is asking. Every tool is **read-only**; the ser
 | Tool | Answers | Key args |
 |------|---------|----------|
 | `seam_schema` | "What can this index answer?" — schema version, counts, optional capabilities, freshness, tool guidance, and warnings. | `verbose` |
-| `seam_architecture` | "What kind of repo is this?" — bounded architecture briefing with physical areas, clusters, entry points, routes, configs, resources, hotspots, boundaries, edge mix, warnings, and next calls. | `scope`, `sections` (MCP) / `section` (CLI/Web), `limit`, `max_bytes` |
+| `seam_architecture` | "What kind of repo is this?" — bounded architecture briefing with physical areas, clusters, entry points, routes, configs, resources, infra, hotspots, boundaries, edge mix, warnings, and next calls. | `scope`, `sections` (MCP) / `section` (CLI/Web), `limit`, `max_bytes` |
 | `seam_search` | "Where is text X mentioned?" — FTS5 over names + docstrings + signatures, with fuzzy fallback; hybrid keyword+semantic when enabled. | `text`, `limit`, `semantic` |
 | `seam_query` | "Find all code related to concept X." — FTS5 match + 1-hop graph expansion, rescored by name/path/cluster signals. | `concept`, `limit`, `semantic` |
 | `seam_graph_search` | "Which symbols match this graph shape?" — typed structural discovery by kind, edge kind, degree, path, preset, route/config/resource nodes, and optional one-hop previews. | `kind`, `edge_kind`, `direction`, `preset`, `limit` |
@@ -286,7 +286,9 @@ A short tour — the full treatment is in [`docs/CONCEPTS.md`](docs/CONCEPTS.md)
 | `catches` | a symbol explicitly handles a typed exception |
 | `tests` | a test symbol statically exercises or names a production symbol |
 
-Edges are keyed by **symbol name**, not row id — this is what lets the watcher re-index one file independently without rewriting the whole graph. Route, config, and resource nodes live as normal `symbols.kind` values; route metadata lives in `routes`, config metadata lives in `config_keys`, and resource metadata lives in `resources`. Config metadata stores key names and redacted value shape only, never raw values. Traversal is kind-agnostic, and exception/test edges are exposed through graph search, trace, context, and architecture. Default blast-radius impact intentionally excludes `raises`/`catches` and `tests` so failure-path and test-evidence relationships do not inflate production change-risk tiers.
+Edges are keyed by **symbol name**, not row id — this is what lets the watcher re-index one file independently without rewriting the whole graph. Route, config, and resource nodes live as normal `symbols.kind` values; route metadata lives in `routes`, config metadata lives in `config_keys`, and resource metadata lives in `resources`. Config metadata stores key names and redacted value shape only, never raw values. Docker Compose and Dockerfile evidence is indexed as resource nodes for services, images, Dockerfiles, build contexts, ports, stages, env files, volumes, and networks; dynamic/interpolated values are skipped. Traversal is kind-agnostic, and exception/test edges are exposed through graph search, trace, context, and architecture. Default blast-radius impact intentionally excludes `raises`/`catches` and `tests` so failure-path and test-evidence relationships do not inflate production change-risk tiers.
+
+For infra evidence, start with `seam architecture --section infra --json`, then use `seam graph-search --kind resource --json` for concrete resource nodes and previews.
 
 **Confidence tiers.** Each edge resolves to `EXTRACTED` (target is unambiguous), `AMBIGUOUS` (name collides — verify), or `INFERRED` (heuristic / cross-module). A multi-hop path is only as strong as its weakest hop. Each result carries `resolved_by` provenance explaining *how* the tier was decided.
 

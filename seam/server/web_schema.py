@@ -41,6 +41,7 @@ class SchemaBreakdowns(BaseModel):
     synthesized_edges: dict[str, int]
     comment_markers: dict[str, int]
     embedding_models: dict[str, int]
+    resource_categories: dict[str, int]
 
 
 class SchemaCapabilities(BaseModel):
@@ -65,6 +66,7 @@ class SchemaCapabilities(BaseModel):
     has_resources_table: bool
     has_config_nodes: bool
     has_resource_nodes: bool
+    has_infra_graph: bool
     has_reads_config: bool
     has_configures: bool
     has_exception_edges: bool
@@ -368,6 +370,7 @@ class ArchitectureSections(BaseModel):
     http_calls: ArchitectureEvidenceSection | None = None
     configs: ArchitectureListSection | None = None
     resources: ArchitectureListSection | None = None
+    infra: ArchitectureListSection | None = None
     hotspots: ArchitectureListSection | None = None
     orchestrators: ArchitectureListSection | None = None
     boundaries: ArchitectureListSection | None = None

@@ -53,6 +53,20 @@ P3.2 config/resource extraction has no separate knob. It indexes safe declaratio
 Python/TS/JS config reads, but deliberately skips value-bearing `.env` files by default and
 never persists raw config values.
 
+Docker Compose and Dockerfile infra extraction is part of that same no-secret surface. Compose
+files contribute services, images, build contexts, Dockerfile references, static ports,
+`depends_on` service links, `env_file` references, named volumes, and networks. Dockerfiles
+contribute Dockerfile, stage, base-image, exposed-port, `ARG`, and `ENV` key evidence. Seam stores
+resource names and config keys only; it skips interpolated values such as `${PORT}`, command-like
+runtime bodies, bind-mount paths, and raw config values.
+
+Useful discovery calls:
+
+```bash
+uv run seam architecture --section infra --json
+uv run seam graph-search --kind resource --json
+```
+
 ---
 
 ## Edge synthesis (post-pass)
