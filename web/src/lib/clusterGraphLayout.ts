@@ -174,7 +174,11 @@ export function clusterGraphLayout(
 
     return {
       id: `cluster-${cluster.cluster_id}`,
-      type: "clusterNode",
+      // Use React Flow's built-in "default" node type. ClusterGraph2D does NOT
+      // register a `nodeTypes` map, so any custom type name (e.g. "clusterNode")
+      // would trigger RF error 002 and fall back to default anyway. Appearance is
+      // injected via the `style` prop below, keeping us off RF's custom-node API.
+      type: "default",
       position: { x, y },
       data: {
         clusterId: cluster.cluster_id,

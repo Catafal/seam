@@ -177,6 +177,10 @@ describe("Topology 2D/3D toggle (C3)", () => {
     await waitFor(() =>
       expect(screen.queryByTestId("cluster-graph-2d")).not.toBeInTheDocument(),
     );
+    // Story-7: land in the 2D neighborhood centered on the cluster's most-connected
+    // symbol (its representative). The mocked GraphCanvas renders `center` as text,
+    // so the resolved target is observable — assert it is the representative.
+    expect(screen.getByTestId("graph-canvas")).toHaveTextContent("Indexer.run");
   });
 
   it("cluster hand-off with null representative falls back to label", async () => {
@@ -197,6 +201,10 @@ describe("Topology 2D/3D toggle (C3)", () => {
     await waitFor(() =>
       expect(screen.queryByTestId("cluster-graph-2d")).not.toBeInTheDocument(),
     );
+    // Null representative → resolveClusterHandoff falls back to the cluster label.
+    // Assert the centered symbol is the label, not the representative or id — this
+    // distinguishes the fallback path from the representative path above.
+    expect(screen.getByTestId("graph-canvas")).toHaveTextContent("CLI");
   });
 
   it("cluster hand-off with both null does nothing (no crash, stays in topology)", async () => {

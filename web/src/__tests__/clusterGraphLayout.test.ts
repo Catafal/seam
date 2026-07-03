@@ -176,6 +176,19 @@ describe("clusterGraphLayout", () => {
     expect(typeof nodes[0].position.y).toBe("number");
   });
 
+  it('every node uses the built-in "default" RF type (ClusterGraph2D registers no nodeTypes)', () => {
+    // Regression: the layout previously emitted type "clusterNode", but
+    // ClusterGraph2D has no nodeTypes map — RF would log error 002 per node and
+    // fall back to default. Lock the type to "default" so appearance stays on the
+    // style prop and no console error is emitted.
+    const clusters = [makeCluster(1, 10), makeCluster(2, 5), makeCluster(3, 3)];
+    const { nodes } = clusterGraphLayout(clusters, []);
+    expect(nodes.length).toBe(3);
+    for (const node of nodes) {
+      expect(node.type).toBe("default");
+    }
+  });
+
   it("handles links referencing unknown cluster ids gracefully (no crash)", () => {
     const clusters = [makeCluster(1, 10)];
     // Link references cluster 99 which does not exist

@@ -284,3 +284,25 @@ three/R3F are already installed. No SQLite schema change, no migration, no re-in
   the drill path Phases A/B built — so the "wow" view now feeds the same coherent flow.
 - **Bundle gotcha (standing):** `seam/_web` is gitignored but force-committed; rebuild + `git add -f`
   before the PR or a merged `main` serves an index.html that 404s its assets.
+
+## C-review implementation notes (fixer pass)
+
+Applied both confirmed review findings; both were correct.
+
+- **Node-type mismatch (important, `web/src/lib/clusterGraphLayout.ts`):** the layout
+  emitted `type: "clusterNode"` on every node, but `ClusterGraph2D` registers NO
+  `nodeTypes` map — React Flow logged error 002 per node and silently fell back to the
+  default node. Changed the emitted type to `"default"` (the in-code comment already
+  assumed default; appearance stays on the `style` prop, off RF's custom-node API).
+  Corrected the stale "rendered via the nodeTypes map" comment in `ClusterGraph2D.tsx`.
+  Added a regression test in `clusterGraphLayout.test.ts` asserting every node's
+  `type === "default"`.
+- **Unverified hand-off outcome (important, `web/src/__tests__/TopologyToggle.test.tsx`):**
+  the two hand-off tests only asserted the topology surface disappeared, so the
+  representative-vs-label paths were behaviorally indistinguishable. Added
+  `toHaveTextContent("Indexer.run")` (representative path, story-7) and
+  `toHaveTextContent("CLI")` (null-representative → label fallback) assertions on the
+  mocked `graph-canvas`, guarding the `resolveClusterHandoff → setCenterSymbol` wiring.
+
+Gate: ruff + mypy clean, backend pytest all pass; frontend 466 vitest pass, typecheck +
+build green.

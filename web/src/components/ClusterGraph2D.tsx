@@ -87,9 +87,9 @@ function FitOnLoad({ ready }: { ready: boolean }) {
  * GraphCanvas (cluster semantics, not symbol semantics), we use a plain inline
  * style rather than the SymbolNode card component.
  *
- * The node is rendered by React Flow via the `nodeTypes` map. We use the default
- * React Flow node type here for simplicity — the custom look is achieved via the
- * `style` prop set by clusterGraphLayout.
+ * The node is rendered by React Flow's built-in "default" type (clusterGraphLayout
+ * sets `type: "default"`). We register NO `nodeTypes` map — the custom look is
+ * achieved entirely via the `style` prop set by clusterGraphLayout.
  *
  * NOTE: We render cluster nodes as the RF "default" type and inject appearance
  * via the `style` prop so we stay dependency-free on react-flow's custom node API.
