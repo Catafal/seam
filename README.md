@@ -133,13 +133,22 @@ Prefer native tool-calling? Add `--with-mcp` (install the `server` extra first).
 }
 ```
 
-### Shared team index — CI publishes, developers fetch
+### Shared team index — CI publishes, developers fetch or import
 
 For teams, running `seam init` on every developer machine (and keeping each one fresh) is unnecessary overhead. The **shared-index flow** lets CI build the index once on each merge to `main`, publish it as an artifact, and let developers download a pre-built index in seconds instead of waiting for full indexing.
 
 **Step 1 — wire the CI workflow (one-time)**
 
 Copy `.github/workflows/seam-index.yml` (included in this repo as a template) into your project and adapt the upload step to your artifact store. The template uses `gh release create` with no extra pinned actions; teams can swap the upload step for S3, GCS, Artifactory, or any store that serves the archive over HTTPS.
+
+CI can produce the same artifact directly:
+
+```bash
+seam export-index --json
+# seam pack-index --json remains as a compatibility alias
+```
+
+The archive contains `seam.db`, optional vector sidecars, and an embedded `manifest.json` with the producer version, schema version, repository fingerprint, git metadata, and content flags. The archive is paired with `seam-index.sha256`.
 
 **Step 2 — set `SEAM_INDEX_ARTIFACT_URL` (per developer)**
 
@@ -160,7 +169,20 @@ seam fetch --semantic  # also embed any symbols added locally after the CI cut-p
 
 `seam fetch` is the **one intentional setup-time network path** in Seam. Every other command is fully offline — query time makes zero network calls (verified at the syscall level by `.github/workflows/no-egress.yml`). `seam fetch` is excluded from that proof because it is a deliberate one-time provisioning download, exactly like `seam init --semantic`'s model bootstrap.
 
-**After `seam fetch` runs**, the index is local. All subsequent reads (`seam query`, `seam impact`, `seam context`, MCP tools) are offline. Run `seam fetch` again when you want to pull a newer CI build.
+When a checksum sidecar is available, `seam fetch --json` also reports `artifact.verified`, the checksum, and the embedded manifest when present. Pre-manifest artifacts with a valid checksum still fetch as verified legacy artifacts and report `artifact.manifest=null`. Older artifact stores that do not publish `seam-index.sha256` still work, but they are reported as unverified so automation can decide whether to reject them.
+
+**Local archive workflow**
+
+Use the local lifecycle commands when an artifact has already been downloaded or moved through a trusted internal channel:
+
+```bash
+seam inspect-index /path/to/seam-index.tar.gz --json
+seam import-index /path/to/seam-index.tar.gz --path /repo --json
+```
+
+`inspect-index` is read-only. `import-index` requires the checksum sidecar, rejects unsupported manifest/schema versions, refuses repository identity mismatches unless `--allow-repo-mismatch` is explicit, stages extraction in a temporary directory, opens the staged SQLite DB, rebases paths to the local checkout by default, then atomically swaps `.seam/`. Git remote and HEAD are used when available; the path fingerprint is a fallback for non-git artifacts. Validation, extraction, rebase, and swap failures preserve the existing index. Pass `--sync` only when you want local edits incorporated immediately after the artifact has landed.
+
+**After `seam fetch` or `seam import-index` runs**, the index is local. All subsequent reads (`seam query`, `seam impact`, `seam context`, MCP tools) are offline. Run `seam fetch` again when you want to pull a newer CI build.
 
 **Caveats**
 

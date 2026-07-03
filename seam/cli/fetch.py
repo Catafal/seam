@@ -35,7 +35,14 @@ from pathlib import Path
 from typing import Any
 
 import seam.config as config
-from seam.indexer.artifact import ARCHIVE_FILENAME, CHECKSUM_FILENAME, unpack_index
+from seam.indexer.artifact import (
+    ARCHIVE_FILENAME,
+    CHECKSUM_FILENAME,
+    artifact_has_manifest,
+    inspect_artifact,
+    unpack_index,
+    verify_archive,
+)
 from seam.indexer.db import connect
 from seam.indexer.embedding_index import sync_embeddings
 from seam.indexer.rebase import rebase_index
@@ -82,14 +89,12 @@ def _git_head_sha(project_root: Path) -> str:
     except FileNotFoundError as exc:
         raise FetchError(
             "NOT_A_GIT_REPO",
-            "git is not installed or not on PATH. "
-            "Run 'seam init' to build the index locally.",
+            "git is not installed or not on PATH. Run 'seam init' to build the index locally.",
         ) from exc
     except subprocess.TimeoutExpired as exc:
         raise FetchError(
             "NOT_A_GIT_REPO",
-            "git rev-parse timed out. "
-            "Run 'seam init' to build the index locally.",
+            "git rev-parse timed out. Run 'seam init' to build the index locally.",
         ) from exc
 
     if result.returncode != 0:
@@ -330,6 +335,24 @@ def fetch_index(
                 checksum_url,
             )
 
+        inspected_artifact = None
+        artifact_verified = False
+        artifact_checksum = None
+        if has_checksum:
+            if not verify_archive(archive_local, checksum_local):
+                raise FetchError("FETCH_FAILED", "Archive checksum verification failed.")
+            artifact_verified = True
+            artifact_checksum = checksum_local.read_text(encoding="utf-8").split()[0].lower()
+            inspected_artifact = inspect_artifact(archive_local)
+            if inspected_artifact is None:
+                has_manifest = artifact_has_manifest(archive_local)
+                if has_manifest is not False:
+                    raise FetchError(
+                        "FETCH_FAILED",
+                        "Artifact manifest inspection failed. "
+                        "The archive, checksum, or manifest is invalid.",
+                    )
+
         # ── Step 4: Verify + unpack into a staging dir ──────────────────────
         stage_dir = tmp_dir / "staged"
         ok = unpack_index(
@@ -453,5 +476,10 @@ def fetch_index(
         "sha": sha,
         "bytes_downloaded": bytes_downloaded,
         "files_rebased": files_rebased,
+        "artifact": {
+            "verified": artifact_verified,
+            "checksum": inspected_artifact["checksum"] if inspected_artifact else artifact_checksum,
+            "manifest": inspected_artifact["manifest"] if inspected_artifact else None,
+        },
         "sync": dict(sync_result),
     }

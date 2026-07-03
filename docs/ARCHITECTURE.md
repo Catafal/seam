@@ -166,6 +166,25 @@ Schema is loaded packaged-first (`seam/_data/schema.sql`, force-included in the 
 auto-migrates additively on `connect()`. See [`database/schema.sql`](database/schema.sql)
 for the authoritative DDL.
 
+Index artifacts use a flat `seam-index.tar.gz` format owned by
+`seam.indexer.artifact`: `seam.db` is mandatory, vector sidecars are optional, and
+`manifest.json` is embedded in the archive. The manifest records the artifact format,
+producer, schema version, repository fingerprint, git metadata, and content flags so
+automation can inspect compatibility before touching `.seam/`.
+
+Local artifact import is intentionally stricter than the legacy fetch path. The
+`seam inspect-index` and `seam import-index` commands require `seam-index.sha256`,
+reject unsafe or unexpected archive members, reject unsupported schema/manifest versions,
+and refuse repository identity mismatches unless the caller passes
+`--allow-repo-mismatch`. Git remote and HEAD are used when available; the path fingerprint
+is a fallback for non-git artifacts. Import extracts into a temporary staging directory,
+verifies that the staged SQLite database opens, rebases stored file paths to the local
+checkout by default, then swaps `.seam/` atomically. Validation, extraction, rebase, and
+swap failures preserve the previous index. `seam fetch` reuses manifest inspection when a
+checksum is published, but preserves older no-manifest artifacts as checksum-verified
+legacy artifacts with `artifact.manifest=null`, and preserves the no-checksum path with
+`artifact.verified=false`.
+
 Infra graph extraction is schema-neutral: Docker Compose and Dockerfile evidence reuses
 `symbols.kind='resource'`, the `resources` table, and existing `uses`/`configures` edges. The
 dedicated extractor persists only declaration-level evidence: service names, image names,
