@@ -87,7 +87,8 @@ tools:
           (object) — files, symbols, edges, clusters, comments, import_mappings, embeddings, routes, config_keys, resources.
         breakdowns:
           (object) — grouped maps for languages, symbol_kinds, edge_kinds,
-          edge_confidence, synthesized_edges, comment_markers, embedding_models.
+          edge_confidence, synthesized_edges, comment_markers, embedding_models,
+          resource_categories.
         capabilities:
           (object) — derived booleans for optional features and important columns:
           has_clusters, has_comments, has_import_mappings, has_embeddings,
@@ -96,8 +97,8 @@ tools:
           has_synthesized_by_column, has_edge_provenance_column,
           has_routes_table, has_route_nodes,
           has_http_calls, has_config_keys_table, has_resources_table,
-          has_config_nodes, has_resource_nodes, has_reads_config, has_configures,
-          has_exception_edges, has_test_edges.
+          has_config_nodes, has_resource_nodes, has_infra_graph, has_reads_config,
+          has_configures, has_exception_edges, has_test_edges.
         tools:
           (list) — read-only tool guide entries with transports, dependencies, and use_when.
         recommended_next_calls:
@@ -121,7 +122,7 @@ tools:
       Use this after seam_schema when an agent needs to understand the indexed repo
       before choosing precise follow-up tools. It composes existing index evidence into
       bounded sections: language distribution, physical areas, clusters, entry points,
-      routes, HTTP caller evidence, configs, resources, fan-in hotspots, fan-out orchestrators, cross-area boundaries, edge mix,
+      routes, HTTP caller evidence, configs, resources, infra, fan-in hotspots, fan-out orchestrators, cross-area boundaries, edge mix,
       optional-surface status, warnings, truncation metadata, and concrete next calls.
     input:
       scope:
@@ -146,6 +147,7 @@ tools:
           - http_calls
           - configs
           - resources
+          - infra
           - exceptions
           - hotspots
           - orchestrators
@@ -177,7 +179,7 @@ tools:
           scoped file/symbol/edge/test/production counts plus global optional counts.
         sections:
           selected architecture sections. Default sections include summary, languages,
-          physical, clusters, entry_points, routes, http_calls, configs, resources, exceptions, hotspots,
+          physical, clusters, entry_points, routes, http_calls, configs, resources, infra, exceptions, hotspots,
           orchestrators, boundaries, edge_mix, tests, and optional_surfaces.
           http_calls exposes status, count, bounded static caller-to-route evidence,
           confidence, direct extractor provenance from edges.provenance, source file/line,
@@ -185,7 +187,9 @@ tools:
           a local literal HTTP call was observed but no matching route node is indexed.
           configs items expose key, normalized_key, role, value_state,
           value_category, and provenance; resources items expose name,
-          normalized_name, category, and provenance. exceptions exposes status,
+          normalized_name, category, and provenance. infra is the resource subset for
+          service, image, dockerfile, build_context, port, stage, env_file, volume,
+          and network categories. exceptions exposes status,
           raised_types, caught_types, broad_catches, heavy_symbols, and truncated.
           tests exposes files, coverage_edges {status,count,provenance},
           top_tested_symbols, test_heavy_sources, untested_hotspots, and truncated.
@@ -305,7 +309,7 @@ tools:
         type: string
         required: false
         nullable: true
-        description: Symbol kind filter: function, class, method, interface, type, field, or route.
+        description: Symbol kind filter: function, class, method, interface, type, field, route, config, or resource.
       name_pattern:
         type: string
         required: false

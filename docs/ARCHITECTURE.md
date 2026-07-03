@@ -166,6 +166,12 @@ Schema is loaded packaged-first (`seam/_data/schema.sql`, force-included in the 
 auto-migrates additively on `connect()`. See [`database/schema.sql`](database/schema.sql)
 for the authoritative DDL.
 
+Infra graph extraction is schema-neutral: Docker Compose and Dockerfile evidence reuses
+`symbols.kind='resource'`, the `resources` table, and existing `uses`/`configures` edges. The
+dedicated extractor persists only declaration-level evidence: service names, image names,
+Dockerfile/stage names, static ports, env-file references, named volumes, networks, and config key
+names. Dynamic/interpolated values and raw config values are not written to SQLite.
+
 ---
 
 # Phase History (Appendix)

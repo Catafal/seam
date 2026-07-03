@@ -383,6 +383,7 @@ const SCHEMA_FIXTURE: SchemaResponse = {
     synthesized_edges: {},
     comment_markers: { WHY: 3 },
     embedding_models: {},
+    resource_categories: { service: 1 },
   },
   capabilities: {
     has_clusters: true,
@@ -404,6 +405,7 @@ const SCHEMA_FIXTURE: SchemaResponse = {
     has_resources_table: true,
     has_config_nodes: true,
     has_resource_nodes: true,
+    has_infra_graph: true,
     has_reads_config: true,
     has_configures: true,
     has_exception_edges: true,
