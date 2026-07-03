@@ -18,13 +18,30 @@ WHY numpy rather than a C extension?
     2 k-node graph is ~180 ms (40 iterations × ~4.5 ms each), well within the
     500 ms budget for a cached-miss first load.
 
-WHY FNV-1a ring seeding?
+WHY Fibonacci (golden-spiral) sphere seeding instead of a flat ring? (#260)
+    The original flat XY ring + z-smear produced a disc-cloud: all nodes collapsed
+    onto a thin pancake with a depth spike along Z. The Fibonacci sphere distributes
+    n points nearly uniformly over a sphere surface (the Fibonacci/sunflower pattern
+    used in stratified hemisphere sampling). Sorting nodes by cluster key before
+    assigning Fibonacci indices groups same-cluster nodes onto the same polar-angle
+    band — their seeds form a contiguous "cap" on the sphere, giving FA2 a warm start
+    that respects spatial locality without any per-node randomness.
+
+WHY FNV-1a seeding?
     Python's built-in hash() is randomized per-process (PYTHONHASHSEED). Using it
     for initial positions would make the layout non-deterministic across server
     restarts, breaking the cache. FNV-1a is a simple non-cryptographic hash that is
     stable, fast in pure Python, and produces well-distributed seeds. The cluster-key
-    scheme (first 3 path components) groups co-located files into the same ring arc
+    scheme (first 3 path components) groups co-located files into the same sphere arc
     so the initial layout already approximates spatial locality before FA2 runs.
+
+WHY radial outlier clamping? (#260)
+    The original "orange spike" artefact came from very-high-degree hubs whose
+    repulsion force dominated attraction, flinging them far from the cluster. The
+    anchor spring in FA2 bounds most nodes, but extreme mass ratios can still produce
+    isolated outliers. Clamping at mean + k·sigma after FA2 is a deterministic safety
+    net that pulls only genuine outliers (≈beyond the 99th percentile of a Gaussian)
+    without flattening the normal spread.
 
 WHY the module-level cache keyed on (indexed_at, file_count, max_nodes)?
     The layout endpoint is called every time the Constellation tab loads and on every
@@ -47,6 +64,11 @@ Public surface:
     stellar_color(degree) -> str                          -- pure
     node_size(kind, degree) -> float                      -- pure
 
+Internal helpers exposed for testing:
+    _sphere_seed_positions(selected, reps, depth) -> np.ndarray
+    _recenter_and_clamp(pos, *, k) -> np.ndarray
+    _fnv1a(text) -> int
+
 See docs/prd/phase11-p2-1-3d-constellation-reference.md for the source algorithm
 and docs/superpowers/plans/2026-07-01-3d-constellation-explorer.md for the plan.
 """
@@ -54,6 +76,7 @@ and docs/superpowers/plans/2026-07-01-3d-constellation-explorer.md for the plan.
 from __future__ import annotations
 
 import logging
+import math
 import sqlite3
 import time
 from collections import defaultdict, deque
@@ -75,10 +98,22 @@ _REPULSION = 8.0          # gravity repulsion constant kr
 _ATTRACTION = 1.0         # edge spring constant ka
 _ANCHOR = 0.25            # anchor spring to seed (prevents explosion)
 _DISPLACEMENT_CAP = 8.0   # per-iteration displacement ceiling
-_DEPTH_Z = 50.0           # z-axis spread per BFS depth level
-_RING_MIN = 500.0         # minimum ring radius for seed placement
-_RING_SPAN = 250.0        # ring radius variation span
-_JITTER = 40.0            # per-node positional jitter magnitude
+
+# Golden ratio for the Fibonacci sphere: ensures maximum angular separation
+# (~137.5°) between consecutive φ-steps, producing a near-uniform covering.
+_PHI_GOLDEN = (1.0 + 5.0 ** 0.5) / 2.0   # ≈ 1.618
+
+# Spherical seeding constants (#260 — replace flat XY ring)
+_SPHERE_RADIUS = 600.0    # base shell radius for seed placement (world units)
+_DEPTH_RADIUS = 30.0      # extra radius per BFS depth level (gentle stratification)
+_OUTLIER_K = 2.5          # sigma multiplier for post-FA2 radial outlier clamping
+
+# Node-size constants (#260 — sub-linear log1p replaces linear boost)
+# log1p(degree) × 1.5 with a 6.0 ceiling gives:
+#   deg=0 → 0, deg=10 → 3.6, deg=50 → 5.9, deg=100+ → 6.0 (capped)
+# For function kind (base=4.0): leaf=4.0, hub=10.0 → ratio 2.5× ("a few×").
+_SIZE_LOG_FACTOR = 1.5    # log1p boost scale
+_SIZE_LOG_CEIL = 6.0      # max log boost (caps hub/leaf ratio at ~2.5× for function)
 
 # Stellar color scale: (max_degree, hex_color) pairs, ascending by degree.
 # Mirrors the stellar classification O > B > A > F > G > K > M (blue → red).
@@ -173,20 +208,26 @@ def stellar_color(degree: int) -> str:
 
 
 def node_size(kind: str, degree: int) -> float:
-    """Compute the display size for a node from its kind and degree.
+    """Compute the display size for a node using a sub-linear log1p degree scale.
 
-    Base size is 6.0 for class/interface, 4.0 for everything else.
-    Nodes with degree > 5 gain a boost of min(degree * 0.3, 10.0).
+    WHY log1p instead of linear?
+        The old formula `base + min(deg * 0.3, 10)` reached its cap abruptly and
+        made very-high-degree hubs visually grotesque before the cap kicked in.
+        log1p(degree) grows fast initially then flattens, so the hub/leaf visual
+        ratio stays within "a few×" (≈2.5× for function kind) at ANY degree, with
+        no discontinuity at the cap.
 
     Args:
         kind:   Symbol kind string (e.g. "function", "class").
         degree: Undirected degree for boost computation.
 
     Returns:
-        Float size value (minimum 4.0 for most kinds, maximum base + 10.0).
+        Float size bounded to [base, base + _SIZE_LOG_CEIL].
+        For function (base=4.0): min=4.0, max=10.0, hub/leaf ratio≈2.5×.
+        For class/interface (base=6.0): min=6.0, max=12.0.
     """
     base = _SIZE_FOR_KIND.get(kind, 4.0)
-    boost = min(degree * 0.3, 10.0) if degree > 5 else 0.0
+    boost = min(math.log1p(max(degree, 0)) * _SIZE_LOG_FACTOR, _SIZE_LOG_CEIL)
     return base + boost
 
 
@@ -249,7 +290,7 @@ def compute_layout(
 
 
 def _fnv1a(text: str) -> int:
-    """32-bit FNV-1a hash (unsigned) — deterministic ring seeding.
+    """32-bit FNV-1a hash (unsigned) — deterministic sphere seeding.
 
     Pure Python, no stdlib hash(): CPython randomizes hash() at startup via
     PYTHONHASHSEED, so hash("foo") changes between server restarts and would
@@ -257,14 +298,142 @@ def _fnv1a(text: str) -> int:
     deterministic. FNV-1a is a fast, collision-resistant, well-understood
     non-cryptographic hash whose output is stable across Python versions.
 
-    The bit-splitting trick below extracts independent x/y seeds from the same
-    32-bit value (lower 16 bits → ring angle, next 8 bits → radius variation)
-    so a single call produces all spatial seeding needed per cluster-group.
+    Used to derive the cluster-sort key for Fibonacci sphere index assignment
+    (same-cluster nodes get contiguous indices → same polar-angle band on sphere).
     """
     h = 2166136261
     for byte in text.encode("utf-8"):
         h = ((h ^ byte) * 16777619) & 0xFFFFFFFF
     return h
+
+
+def _sphere_seed_positions(
+    selected: list[str],
+    reps: dict,
+    depth: dict[str, int],
+) -> np.ndarray:
+    """Deterministic Fibonacci (golden-spiral) sphere seed positions for FA2.
+
+    WHY Fibonacci sphere?
+        The old XY ring + z-smear seed produced a disc-cloud with a depth spike.
+        The Fibonacci sphere places n points uniformly over a sphere surface using
+        the golden-angle step (~137.5°) in azimuth and equal-area bands in polar
+        angle. An evaluator sees a recognisable "ball of code" at first glance.
+
+    WHY cluster-sorted Fibonacci indices for locality?
+        Consecutive Fibonacci indices share the same polar-angle (theta) band —
+        they differ primarily in azimuth by the golden angle, but their z-component
+        (cos theta) varies slowly. By sorting nodes by (fnv1a(cluster_key),
+        fnv1a(name)) before assigning indices, same-cluster nodes get contiguous
+        indices → they land on the same spherical cap. FA2 then refines these into
+        compact islands rather than starting from a fully scrambled spread.
+
+    WHY depth modulates radius instead of Z?
+        z = -depth * 50 created a visible "depth spike" perpendicular to the disc.
+        Modulating the shell radius (entry points at base radius, deeper nodes on
+        slightly larger shells) encodes depth as distance from the globe's centre
+        without breaking the spherical shape. The effect is subtle by design.
+
+    Args:
+        selected:  Ordered list of node names (position in list = numpy row index).
+        reps:      Dict mapping name → row-like object with subscript access to
+                   "file_path" (matches sqlite3.Row interface).
+        depth:     BFS depth per name (0 for unreachable / entry-point nodes).
+
+    Returns:
+        (n, 3) float64 array of seed positions. Row i corresponds to selected[i].
+        All positions have magnitude _SPHERE_RADIUS + depth[name] * _DEPTH_RADIUS.
+    """
+    n = len(selected)
+    name_to_layout_idx = {name: i for i, name in enumerate(selected)}
+
+    # Cluster-grouped sort: nodes sharing a cluster_key get contiguous Fibonacci
+    # indices → same polar-angle band on the sphere (angular locality).
+    # Within a cluster, FNV-1a(name) gives a stable per-node offset.
+    def _sort_key(name: str) -> tuple[int, int]:
+        fp = reps[name]["file_path"] or ""
+        cluster_key = "/".join(fp.split("/")[:3])  # first 3 path components
+        return (_fnv1a(cluster_key), _fnv1a(name))
+
+    sphere_order = sorted(selected, key=_sort_key)
+    # sphere_idx[name] = j means this name gets the j-th Fibonacci sphere position
+    sphere_idx = {name: j for j, name in enumerate(sphere_order)}
+
+    pos = np.zeros((n, 3), dtype=np.float64)
+    for name in selected:
+        i = name_to_layout_idx[name]   # row in output array
+        j = sphere_idx[name]           # Fibonacci sphere index
+
+        # Fibonacci sphere: equal-area polar bands + golden-angle azimuth.
+        # acos(1 - 2*(j+0.5)/n) distributes theta uniformly in cos-space so
+        # each band subtends the same solid angle (no polar-cap crowding).
+        if n > 1:
+            cos_theta = 1.0 - 2.0 * (j + 0.5) / n
+            cos_theta = max(-1.0, min(1.0, cos_theta))  # guard float rounding
+            theta = math.acos(cos_theta)
+        else:
+            theta = math.pi / 2.0   # single node → equatorial
+
+        phi = 2.0 * math.pi * j / _PHI_GOLDEN  # golden-angle azimuth step
+
+        # Shell radius: depth-0 nodes at _SPHERE_RADIUS; deeper nodes slightly farther
+        r = _SPHERE_RADIUS + depth.get(name, 0) * _DEPTH_RADIUS
+
+        sin_theta = math.sin(theta)
+        pos[i, 0] = r * sin_theta * math.cos(phi)
+        pos[i, 1] = r * sin_theta * math.sin(phi)
+        pos[i, 2] = r * math.cos(theta)
+
+    return pos
+
+
+def _recenter_and_clamp(pos: np.ndarray, *, k: float = _OUTLIER_K) -> np.ndarray:
+    """Recenter positions to centroid; clamp radial outliers beyond mean + k·sigma.
+
+    WHY recenter?
+        FA2 does not guarantee that the final layout centroid is at the origin.
+        Recentering after the force pass ensures the constellation sits at (0,0,0)
+        so the camera look-at framing works without adjustment.
+
+    WHY clamp at mean + k·sigma?
+        Very-high-degree hubs can dominate repulsion and get pushed far from the
+        cluster even with an anchor spring — creating the "orange spike" artefact.
+        Clamping at mean + k·sigma (k=2.5 ≈ 99th percentile of a Gaussian) is
+        a deterministic safety net that handles rare extreme cases without
+        flattening the normal spread. Nodes within 2.5σ are never moved.
+
+    Args:
+        pos: (n, 3) float64 positions from FA2. Not mutated.
+        k:   Standard-deviation multiplier for the outlier threshold (default 2.5).
+
+    Returns:
+        (n, 3) float64 recentred and clamped positions (new array).
+    """
+    n = len(pos)
+    if n <= 1:
+        return pos.copy()
+
+    # Recentre: shift so the constellation cloud is centred at the origin.
+    # pos - centroid returns a NEW array — the FA2 output is never mutated.
+    centroid = pos.mean(axis=0)
+    pos = pos - centroid
+
+    # Radial distances from the recentred origin
+    radii = np.linalg.norm(pos, axis=1)   # (n,)
+    mean_r = float(radii.mean())
+    sigma_r = float(radii.std())
+    clamp_r = mean_r + k * sigma_r
+
+    # Pull outliers inward: preserve direction, reduce magnitude to clamp_r.
+    # Only fires when there are genuine outliers (sigma > 0 and some radius > clamp_r).
+    beyond = radii > clamp_r
+    if np.any(beyond):
+        # Scale factors: shape (m, 1) so they broadcast correctly against (m, 3)
+        scales = (clamp_r / radii[beyond])[:, np.newaxis]
+        pos = pos.copy()          # avoid mutating the post-centroid intermediate
+        pos[beyond] = pos[beyond] * scales
+
+    return pos
 
 
 def _compute_layout_impl(
@@ -278,15 +447,16 @@ def _compute_layout_impl(
     by compute_layout's narrow except).
 
     Pipeline:
-        1. Representative per unique symbol name (min-id wins → deterministic)
-        2. Qualified↔bare degree computation via edge_match_names (CR1)
-        3. Select top-N by degree DESC, name ASC (deterministic tie-break)
-        4. Filter edges to selected names, dedup, build adjacency
-        5. BFS call-depth from entry points
-        6. FNV-1a ring seed positions
-        7. numpy ForceAtlas2 (O(n²) repulsion)
-        8. Assign colors / sizes
-        9. Cluster centroids and radii
+        1.  Representative per unique symbol name (min-id wins → deterministic)
+        2.  Qualified↔bare degree computation via edge_match_names (CR1)
+        3.  Select top-N by degree DESC, name ASC (deterministic tie-break)
+        4.  Filter edges to selected names, dedup, build adjacency
+        5.  BFS call-depth from entry points
+        6.  Fibonacci sphere seed positions (cluster-grouped for angular locality)
+        7.  numpy ForceAtlas2 (O(n²) repulsion)
+        8.  Recenter positions + clamp radial outliers
+        9.  Assign colors / sizes
+        10. Cluster centroids and radii
     """
     conn.row_factory = sqlite3.Row
 
@@ -373,34 +543,23 @@ def _compute_layout_impl(
     # 5. BFS call-depth from entry-point names
     depth = _bfs_depth(conn, selected, sel_set, adjacency)
 
-    # 6. FNV-1a ring seed positions (deterministic — no random/time in math)
+    # 6. Fibonacci sphere seed positions (cluster-grouped, deterministic)
     n = len(selected)
-    seed = np.zeros((n, 3), dtype=np.float64)
-    mass = np.ones(n, dtype=np.float64)
+    seed = _sphere_seed_positions(selected, reps, depth)
 
+    # Node masses: 1 + degree so high-degree hubs have stronger repulsion & anchor pull
+    mass = np.ones(n, dtype=np.float64)
     for name in selected:
         i = name_to_idx[name]
-        fp = reps[name]["file_path"] or ""
-        # Cluster ring: first 3 path components group co-located files together
-        cluster_key = "/".join(fp.split("/")[:3])
-        h = _fnv1a(cluster_key)
-        angle = (h & 0xFFFF) / 65535.0 * 2.0 * np.pi
-        radius = _RING_MIN + ((h >> 16) & 0xFF) / 255.0 * _RING_SPAN
-        # Per-node jitter via LCG(FNV-1a(name)) — deterministic
-        js = _fnv1a(name)
-        js = (js * 1103515245 + 12345) & 0xFFFFFFFF
-        jx = ((js >> 16) & 0x7FFF) / 32768.0 - 0.5
-        js = (js * 1103515245 + 12345) & 0xFFFFFFFF
-        jy = ((js >> 16) & 0x7FFF) / 32768.0 - 0.5
-        seed[i, 0] = np.cos(angle) * radius + jx * _JITTER
-        seed[i, 1] = np.sin(angle) * radius + jy * _JITTER
-        seed[i, 2] = -depth[name] * _DEPTH_Z
         mass[i] = 1.0 + degree[name]
 
     # 7. ForceAtlas2 (numpy O(n²)), positions only — no randomness
     pos = _force_atlas2(seed, mass, out_edges)
 
-    # 8. Build output nodes list
+    # 8. Recenter to centroid + clamp radial outliers (prevents "orange spike" artefact)
+    pos = _recenter_and_clamp(pos)
+
+    # 9. Build output nodes list
     nodes: list[LayoutNode] = []
     for name in selected:
         i = name_to_idx[name]
@@ -420,7 +579,7 @@ def _compute_layout_impl(
             }
         )
 
-    # 9. Cluster centroids and radii
+    # 10. Cluster centroids and radii
     clusters = _cluster_summaries(conn, selected, reps, name_to_idx, pos)
 
     return {
@@ -440,7 +599,7 @@ def _bfs_depth(
     """BFS call-depth from entry-point names.
 
     Seeds are the entry points (call-graph roots) that appear in the selected set.
-    Nodes unreachable from any entry point get depth 0 (placed at z=0).
+    Nodes unreachable from any entry point get depth 0 (placed at the base shell radius).
     Never raises — falls back to all-zero on any error.
     """
     depth = {name: 0 for name in selected}
@@ -473,7 +632,7 @@ def _force_atlas2(
     """40-iteration ForceAtlas2 with anchor springs. numpy O(n²) repulsion.
 
     Args:
-        seed:  (n, 3) float64 initial positions.
+        seed:  (n, 3) float64 initial positions (Fibonacci sphere seeds).
         mass:  (n,) float64 node masses (1 + degree).
         edges: directed edge list with source/target indices.
 
@@ -522,7 +681,6 @@ def _force_atlas2(
         # high-degree hubs can explode to infinity when their repulsion dominates.
         # A weak spring (ka=0.25, mass-scaled so heavier nodes feel a stronger pull)
         # keeps the layout bounded while still allowing FA2 to find the energy minimum.
-        # This is the "anchor spring" from the reference §3.
         force += _ANCHOR * mass[:, None] * (seed - pos)
 
         # Per-iteration displacement cap: prevents explosion on first iterations
