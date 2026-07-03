@@ -19,7 +19,7 @@
  * symbol name is stored but not yet rendered in a side panel.
  */
 
-import { useState, useRef, useCallback, useEffect, lazy, Suspense } from "react";
+import { useState, useRef, useCallback, useEffect, lazy, Suspense, useMemo } from "react";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { DetailPanel } from "./components/DetailPanel";
 import { ChangesDrawer } from "./components/ChangesDrawer";
@@ -28,10 +28,12 @@ import { FileSidebar } from "./components/FileSidebar";
 import { ClusterGraph2D } from "./components/ClusterGraph2D";
 import { TabBar } from "./components/TabBar";
 import { StatusStrip } from "./components/StatusStrip";
+import { Breadcrumb } from "./components/Breadcrumb";
 import type { ViewMode } from "./lib/tabs";
 import { ResizeHandle, clampPanelWidth, readPanelWidth } from "./components/ResizeHandle";
 import { useSearch, useHubs, useAreas } from "./api/hooks";
 import { resolveClusterHandoff } from "./lib/resolveClusterHandoff";
+import { deriveCrumbs } from "./lib/breadcrumbs";
 import type { SearchResultItem, HubSymbol, ConstellationCluster } from "./api/schema-types";
 import type { Area } from "./lib/deriveAreas";
 import { GitBranch, Route } from "lucide-react";
@@ -475,6 +477,34 @@ function App() {
     setPreselectedArea(null);
   }, [setCenterSymbol]);
 
+  /**
+   * Restore the center-symbol level from a deeper selectedSymbol position.
+   * Called by the symbol crumb's onClick — clears selectedSymbol and ensures
+   * neighborhood mode. Does NOT change centerSymbol (it's already the target).
+   */
+  const openCenterSymbol = useCallback(() => {
+    setSelectedSymbol(null);
+    setMode("neighborhood");
+  }, []);
+
+  /**
+   * App-level breadcrumb trail derived from navigation state.
+   *
+   * WHY useMemo: deriveCrumbs is pure and cheap but creates new closure objects
+   * on every call; memoising avoids re-creating button onClick closures when
+   * unrelated state (e.g. changesOpen) changes.
+   *
+   * See breadcrumbs.ts for the two-level breadcrumb system documentation.
+   */
+  const crumbs = useMemo(
+    () =>
+      deriveCrumbs(
+        { mode, preselectedArea, centerSymbol, selectedSymbol },
+        { goHome, openArea: handleOpenScopedOverview, openCenterSymbol },
+      ),
+    [mode, preselectedArea, centerSymbol, selectedSymbol, goHome, handleOpenScopedOverview, openCenterSymbol],
+  );
+
   const showGraph = mode === "neighborhood" && centerSymbol;
 
   return (
@@ -610,7 +640,21 @@ function App() {
       </header>
 
       {/* ── Main content ───────────────────────────────────────────────── */}
-      <main className="flex flex-1 overflow-hidden">
+      {/*
+       * WHY flex-col here:
+       *   Row 1 — Breadcrumb: a thin full-width trail above every surface.
+       *   Row 2 — Surface content: topology / overview / neighborhood / landing.
+       *
+       * The Breadcrumb covers cross-surface navigation (landing → area → symbol).
+       * The TreemapCanvas's internal breadcrumb (scopeName → folder → file) sits
+       * INSIDE row 2 when Overview is active — the two rows form one coherent trail.
+       */}
+      <main className="flex flex-col flex-1 overflow-hidden">
+        {/* App-level breadcrumb — present on every surface, always at the top */}
+        <Breadcrumb crumbs={crumbs} />
+
+        {/* Surface content — takes the remaining height */}
+        <div className="flex flex-1 overflow-hidden">
         {/* Topology surface: 2D cluster graph (default) or 3D constellation. */}
         {mode === "topology" ? (
           topologySubMode === "2d" ? (
@@ -709,6 +753,7 @@ function App() {
             setSelectedSymbol(name);
           }}
         />
+        </div>{/* end surface-content flex row */}
       </main>
 
       {/* ── Status strip ───────────────────────────────────────────────── */}
