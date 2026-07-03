@@ -31,6 +31,7 @@ from seam.installer.markdownfile import (
     write_file,
 )
 from seam.installer.tomlfile import get_server_table, load_toml
+from seam.installer.vscode import VscodeTarget
 
 # ── jsonfile leaf ────────────────────────────────────────────────────────────
 
@@ -347,3 +348,121 @@ def test_guidance_is_project_scoped_and_idempotent(tmp_path: Path) -> None:
     # Guidance ignores location — it always lives in the repo; second run = no-op.
     CursorTarget().install_guidance(tmp_path)
     assert CursorTarget().install_guidance(tmp_path)[0].action == "unchanged"
+
+
+# ── VS Code target ────────────────────────────────────────────────────────────
+
+
+def test_vscode_project_config_path(tmp_path: Path) -> None:
+    t = VscodeTarget()
+    assert t.config_path(tmp_path, "project") == tmp_path / ".vscode" / "mcp.json"
+
+
+def test_vscode_supports_project_only() -> None:
+    assert VscodeTarget().supported_locations() == ["project"]
+
+
+def test_vscode_install_created(tmp_path: Path) -> None:
+    t = VscodeTarget()
+    res = t.install(tmp_path, "project", "/abs/seam", ["start", str(tmp_path)])
+    assert res.action == "created"
+    cfg = tmp_path / ".vscode" / "mcp.json"
+    entry = json.loads(cfg.read_text())["servers"]["seam"]
+    # VS Code requires "type": "stdio" and uses "servers" (not "mcpServers").
+    assert entry["type"] == "stdio"
+    assert entry["command"] == "/abs/seam"
+    assert entry["args"] == ["start", str(tmp_path)]
+
+
+def test_vscode_install_is_idempotent(tmp_path: Path) -> None:
+    t = VscodeTarget()
+    t.install(tmp_path, "project", "/abs/seam", ["start", "/r"])
+    res = t.install(tmp_path, "project", "/abs/seam", ["start", "/r"])
+    assert res.action == "unchanged"
+
+
+def test_vscode_install_updated_on_change(tmp_path: Path) -> None:
+    t = VscodeTarget()
+    t.install(tmp_path, "project", "/abs/seam", ["start", "/r"])
+    res = t.install(tmp_path, "project", "/abs/seam2", ["start", "/r"])
+    assert res.action == "updated"
+
+
+def test_vscode_uninstall_removed_then_not_present(tmp_path: Path) -> None:
+    t = VscodeTarget()
+    t.install(tmp_path, "project", "/abs/seam", ["start", "/r"])
+    assert t.uninstall(tmp_path, "project").action == "removed"
+    assert t.uninstall(tmp_path, "project").action == "not_present"
+    # Uninstall leaves {"servers": {}} — the empty parent dict persists.
+    data = json.loads((tmp_path / ".vscode" / "mcp.json").read_text())
+    assert data.get("servers") == {}
+
+
+def test_vscode_corrupt_config_backup(tmp_path: Path) -> None:
+    cfg = tmp_path / ".vscode" / "mcp.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("{ broken json")
+    t = VscodeTarget()
+    res = t.install(tmp_path, "project", "/abs/seam", ["start", "/r"])
+    assert res.backed_up is True
+    assert (tmp_path / ".vscode" / "mcp.json.backup").read_text() == "{ broken json"
+
+
+def test_vscode_render_entry_uses_servers_key(tmp_path: Path) -> None:
+    t = VscodeTarget()
+    rendered = json.loads(t.render_entry("/abs/seam", ["start", "/r"]))
+    # VS Code uses "servers", NOT "mcpServers" — critical shape difference.
+    assert "servers" in rendered
+    assert "mcpServers" not in rendered
+    entry = rendered["servers"]["seam"]
+    assert entry["type"] == "stdio"
+    assert entry["command"] == "/abs/seam"
+
+
+def test_vscode_guidance_writes_copilot_instructions(tmp_path: Path) -> None:
+    t = VscodeTarget()
+    res = t.install_guidance(tmp_path)
+    assert res[0].action == "created"
+    copilot_md = tmp_path / ".github" / "copilot-instructions.md"
+    assert copilot_md.exists()
+    text = copilot_md.read_text()
+    assert "<!-- seam:start -->" in text
+    assert "Escalation ladder" in text  # guide body is included
+
+
+def test_vscode_guidance_is_idempotent(tmp_path: Path) -> None:
+    t = VscodeTarget()
+    t.install_guidance(tmp_path)
+    res = t.install_guidance(tmp_path)
+    assert res[0].action == "unchanged"
+
+
+def test_vscode_guidance_preserves_foreign_content(tmp_path: Path) -> None:
+    copilot_md = tmp_path / ".github" / "copilot-instructions.md"
+    copilot_md.parent.mkdir(parents=True)
+    copilot_md.write_text("# Project conventions\n\nAlways write tests.\n")
+    t = VscodeTarget()
+    t.install_guidance(tmp_path)
+    text = copilot_md.read_text()
+    assert "Always write tests." in text  # foreign content preserved
+    assert "Escalation ladder" in text  # seam block appended
+
+
+def test_vscode_guidance_uninstall_removes_block(tmp_path: Path) -> None:
+    t = VscodeTarget()
+    t.install_guidance(tmp_path)
+    res = t.uninstall_guidance(tmp_path)
+    assert res[0].action == "removed"
+    # File persists (empty after block removal — shared-file residue).
+    copilot_md = tmp_path / ".github" / "copilot-instructions.md"
+    assert copilot_md.exists()
+    assert "<!-- seam:start -->" not in copilot_md.read_text()
+
+
+def test_vscode_guidance_previews(tmp_path: Path) -> None:
+    previews = VscodeTarget().guidance_previews(tmp_path)
+    assert len(previews) == 1
+    path_str, content = previews[0]
+    assert path_str == str(tmp_path / ".github" / "copilot-instructions.md")
+    assert "<!-- seam:start -->" in content
+    assert "Escalation ladder" in content

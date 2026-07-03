@@ -77,7 +77,7 @@ def _preview_target(
 
 def install_command(
     path: str = typer.Argument(".", help="Project root to index (default: current directory)."),
-    target: str = typer.Option("claude", "--target", help="claude | cursor | codex | all"),
+    target: str = typer.Option("claude", "--target", help="claude | cursor | codex | vscode | all"),
     location: str = typer.Option(
         "project", "--location", help="MCP config scope: project | user (codex: user only)."
     ),
@@ -151,7 +151,7 @@ def install_command(
 
 def uninstall_command(
     path: str = typer.Argument(".", help="Project root the entry points at (default: current directory)."),
-    target: str = typer.Option("claude", "--target", help="claude | cursor | codex | all"),
+    target: str = typer.Option("claude", "--target", help="claude | cursor | codex | vscode | all"),
     location: str = typer.Option("project", "--location", help="MCP config scope: project | user."),
     json_: bool = typer.Option(False, "--json", help="Emit a structured JSON envelope to stdout."),
 ) -> None:

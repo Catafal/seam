@@ -75,7 +75,11 @@ def test_with_mcp_all_user_scope_writes_mcp_for_three(tmp_path: Path, monkeypatc
     )
     payload = json.loads(res.stdout)
     actions = {r["target"]: r["mcp"]["action"] for r in payload["data"]["results"]}
-    assert actions == {"claude": "created", "cursor": "created", "codex": "created"}
+    # claude/cursor/codex support user scope; vscode is project-only → skipped under "all".
+    assert actions["claude"] == "created"
+    assert actions["cursor"] == "created"
+    assert actions["codex"] == "created"
+    assert actions["vscode"] == "skipped"
     assert (tmp_path / ".codex" / "config.toml").exists()
     assert (tmp_path / ".claude.json").exists()
     assert (tmp_path / ".cursor" / "mcp.json").exists()
@@ -158,3 +162,90 @@ def test_uninstall_removes_guidance_and_mcp(tmp_path: Path) -> None:
     assert all(g["action"] == "removed" for g in claude["guidance"])
     assert not (tmp_path / ".claude" / "skills" / "seam" / "SKILL.md").exists()
     assert json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"] == {}
+
+
+# ── VS Code target ─────────────────────────────────────────────────────────────
+
+
+def test_vscode_guidance_only_writes_copilot_instructions(tmp_path: Path) -> None:
+    res = runner.invoke(app, ["install", str(tmp_path), "--target", "vscode"])
+    assert res.exit_code == 0
+    copilot_md = tmp_path / ".github" / "copilot-instructions.md"
+    assert copilot_md.exists()
+    assert "Escalation ladder" in copilot_md.read_text()
+    # No MCP config without --with-mcp.
+    assert not (tmp_path / ".vscode" / "mcp.json").exists()
+
+
+def test_vscode_with_mcp_writes_servers_key(tmp_path: Path) -> None:
+    res = runner.invoke(
+        app, ["install", str(tmp_path), "--target", "vscode", "--with-mcp", "--json"]
+    )
+    payload = json.loads(res.stdout)
+    vscode = next(r for r in payload["data"]["results"] if r["target"] == "vscode")
+    assert vscode["mcp"]["action"] == "created"
+
+    mcp_json = tmp_path / ".vscode" / "mcp.json"
+    assert mcp_json.exists()
+    data = json.loads(mcp_json.read_text())
+    # VS Code uses "servers" (not "mcpServers") — the critical shape difference.
+    assert "servers" in data
+    assert "mcpServers" not in data
+    entry = data["servers"]["seam"]
+    assert entry["type"] == "stdio"
+    assert entry["args"] == ["start", str(tmp_path)]
+
+
+def test_vscode_with_mcp_project_is_valid(tmp_path: Path) -> None:
+    # VS Code supports project location — must not be rejected.
+    res = runner.invoke(
+        app,
+        ["install", str(tmp_path), "--target", "vscode", "--location", "project", "--with-mcp", "--json"],
+    )
+    assert res.exit_code == 0
+    assert (tmp_path / ".vscode" / "mcp.json").exists()
+
+
+def test_vscode_with_mcp_user_is_invalid(tmp_path: Path) -> None:
+    # VS Code user scope is not supported for MVP — must exit 1 with INVALID_INPUT.
+    res = runner.invoke(
+        app,
+        ["install", str(tmp_path), "--target", "vscode", "--location", "user", "--with-mcp", "--json"],
+    )
+    assert res.exit_code == 1
+    assert json.loads(res.stdout)["error"]["code"] == "INVALID_INPUT"
+    # No files should have been written (upfront validation fails before any write).
+    assert not (tmp_path / ".vscode" / "mcp.json").exists()
+
+
+def test_vscode_print_config_shows_servers_key(tmp_path: Path) -> None:
+    res = runner.invoke(
+        app, ["install", str(tmp_path), "--target", "vscode", "--with-mcp", "--print-config"]
+    )
+    assert res.exit_code == 0
+    assert not (tmp_path / ".vscode" / "mcp.json").exists()  # nothing written
+    assert "servers" in res.stdout
+    assert "stdio" in res.stdout
+
+
+def test_vscode_target_all_includes_vscode(tmp_path: Path) -> None:
+    res = runner.invoke(app, ["install", str(tmp_path), "--target", "all", "--json"])
+    payload = json.loads(res.stdout)
+    targets = {r["target"] for r in payload["data"]["results"]}
+    assert "vscode" in targets
+    # vscode guidance must have been written
+    assert (tmp_path / ".github" / "copilot-instructions.md").exists()
+
+
+def test_vscode_uninstall_removes_guidance_and_mcp(tmp_path: Path) -> None:
+    runner.invoke(app, ["install", str(tmp_path), "--target", "vscode", "--with-mcp"])
+    res = runner.invoke(
+        app, ["uninstall", str(tmp_path), "--target", "vscode", "--location", "project", "--json"]
+    )
+    payload = json.loads(res.stdout)
+    vscode = payload["data"]["results"][0]
+    assert vscode["mcp"]["action"] == "removed"
+    assert vscode["guidance"][0]["action"] == "removed"
+    # MCP file persists with empty "servers" dict (shared-file residue).
+    mcp_json = tmp_path / ".vscode" / "mcp.json"
+    assert json.loads(mcp_json.read_text())["servers"] == {}

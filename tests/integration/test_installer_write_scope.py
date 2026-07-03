@@ -143,6 +143,7 @@ _GUIDANCE_CASES: list[tuple[str, set[str]]] = [
     ("claude", {".claude/skills/seam/SKILL.md", "CLAUDE.md"}),
     ("cursor", {".cursor/rules/seam.mdc"}),
     ("codex", {"AGENTS.md"}),
+    ("vscode", {".github/copilot-instructions.md"}),
 ]
 
 
@@ -202,6 +203,12 @@ _WITH_MCP_CASES: list[tuple[str, str, set[str], set[str]]] = [
         {"AGENTS.md"},
         {".codex/config.toml"},
     ),
+    (
+        "vscode",
+        "project",
+        {".github/copilot-instructions.md", ".vscode/mcp.json"},
+        set(),
+    ),
 ]
 
 
@@ -256,6 +263,7 @@ def test_target_all_guidance_writes_union(
         _abs_root(root, "CLAUDE.md"),
         _abs_root(root, ".cursor/rules/seam.mdc"),
         _abs_root(root, "AGENTS.md"),
+        _abs_root(root, ".github/copilot-instructions.md"),
     }
     assert changes.created == expected
     assert changes.modified == set()
@@ -284,6 +292,9 @@ def test_target_all_with_mcp_user_writes_union(
         _abs_home(home, ".cursor/mcp.json"),
         _abs_root(root, "AGENTS.md"),
         _abs_home(home, ".codex/config.toml"),
+        # vscode: project-only; user location is not supported → MCP skipped;
+        # guidance still written to root.
+        _abs_root(root, ".github/copilot-instructions.md"),
     }
     assert changes.created == expected
     assert changes.modified == set()
@@ -292,7 +303,7 @@ def test_target_all_with_mcp_user_writes_union(
 # ── Idempotent second run produces zero mutations ─────────────────────────────
 
 
-@pytest.mark.parametrize("target", ["claude", "cursor", "codex"])
+@pytest.mark.parametrize("target", ["claude", "cursor", "codex", "vscode"])
 def test_idempotent_second_install_no_writes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
 ) -> None:
@@ -453,6 +464,10 @@ _ROUND_TRIP_CASES: list[tuple[str, str, bool, set[str], set[str]]] = [
     ("codex", "user", False, {"AGENTS.md"}, set()),
     # codex user-mcp: empty AGENTS.md + empty config.toml persist
     ("codex", "user", True, {"AGENTS.md"}, {".codex/config.toml"}),
+    # vscode guidance-only: empty copilot-instructions.md persists (shared-file block removed)
+    ("vscode", "project", False, {".github/copilot-instructions.md"}, set()),
+    # vscode project-mcp: copilot-instructions.md + empty .vscode/mcp.json persist
+    ("vscode", "project", True, {".github/copilot-instructions.md", ".vscode/mcp.json"}, set()),
 ]
 
 
