@@ -132,6 +132,40 @@ Prefer native tool-calling? Add `--with-mcp` (install the `server` extra first).
 }
 ```
 
+### Shared team index — CI publishes, developers fetch
+
+For teams, running `seam init` on every developer machine (and keeping each one fresh) is unnecessary overhead. The **shared-index flow** lets CI build the index once on each merge to `main`, publish it as an artifact, and let developers download a pre-built index in seconds instead of waiting for full indexing.
+
+**Step 1 — wire the CI workflow (one-time)**
+
+Copy `.github/workflows/seam-index.yml` (included in this repo as a template) into your project and adapt the upload step to your artifact store. The template uses `gh release create` with no extra pinned actions; teams can swap the upload step for S3, GCS, Artifactory, or any store that serves the archive over HTTPS.
+
+**Step 2 — set `SEAM_INDEX_ARTIFACT_URL` (per developer)**
+
+Add to your shell profile (or `.env`):
+
+```bash
+# The {sha} placeholder is expanded by `seam fetch` to the current HEAD SHA,
+# then walked back through first-parent history until a published artifact is found.
+export SEAM_INDEX_ARTIFACT_URL="https://github.com/<owner>/<repo>/releases/download/seam-index-{sha}/seam-index.tar.gz"
+```
+
+**Step 3 — run `seam fetch`**
+
+```bash
+seam fetch           # download, verify checksum, rebase CI paths to local, sync delta
+seam fetch --semantic  # also embed any symbols added locally after the CI cut-point
+```
+
+`seam fetch` is the **one intentional setup-time network path** in Seam. Every other command is fully offline — query time makes zero network calls (verified at the syscall level by `.github/workflows/no-egress.yml`). `seam fetch` is excluded from that proof because it is a deliberate one-time provisioning download, exactly like `seam init --semantic`'s model bootstrap.
+
+**After `seam fetch` runs**, the index is local. All subsequent reads (`seam query`, `seam impact`, `seam context`, MCP tools) are offline. Run `seam fetch` again when you want to pull a newer CI build.
+
+**Caveats**
+
+- **Model match**: the embedding model used in CI (set via `SEAM_EMBED_MODEL` in the workflow, defaulting to `BAAI/bge-small-en-v1.5`) must match the model on developer machines. A mismatch is safe — `seam fetch` detects it and the fetched index degrades gracefully to FTS5-only search. Semantic search re-enables automatically after `seam fetch --semantic`.
+- **Staleness banner**: after `seam fetch`, the index reflects the CI commit. If local files have diverged (new code, edited files), `seam_impact` and other graph tools will attach an `index_status: {stale: true, ...}` banner. This is the normal signal to re-run `seam fetch` (for a newer CI build) or `seam sync` (to incorporate local edits into the fetched base).
+
 ---
 
 ## The 16 MCP tools

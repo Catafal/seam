@@ -19,6 +19,14 @@ name: No-Egress Proof
 #   The no-egress contract applies to the READ path: init (graph only), search,
 #   context, impact, and the MCP server after a warm index.
 #
+# WHY NOT ``seam fetch``:
+#   ``seam fetch`` downloads a pre-built index artifact from a CI-published URL —
+#   another intentional SETUP-TIME network path, explicitly excluded from this proof.
+#   It is the team-shared-index provisioning download (WS4 S3), analogous to the
+#   model download above.  Once the fetched index is on disk, every subsequent
+#   read command is offline.  ``seam fetch`` is deliberately absent from the strace
+#   probes below; its egress is accepted and documented, not an oversight.
+#
 # WHY ``set -euo pipefail``:
 #   Each strace command propagates the child's exit code.  A crashed seam command
 #   would produce an empty trace, which egress_audit would pass — giving a false

@@ -143,6 +143,9 @@ _GUIDANCE_CASES: list[tuple[str, set[str]]] = [
     ("claude", {".claude/skills/seam/SKILL.md", "CLAUDE.md"}),
     ("cursor", {".cursor/rules/seam.mdc"}),
     ("codex", {"AGENTS.md"}),
+    ("vscode", {".github/copilot-instructions.md"}),
+    ("gemini", {"GEMINI.md"}),
+    ("zed", {"AGENTS.md"}),
 ]
 
 
@@ -202,6 +205,36 @@ _WITH_MCP_CASES: list[tuple[str, str, set[str], set[str]]] = [
         {"AGENTS.md"},
         {".codex/config.toml"},
     ),
+    (
+        "vscode",
+        "project",
+        {".github/copilot-instructions.md", ".vscode/mcp.json"},
+        set(),
+    ),
+    (
+        "gemini",
+        "project",
+        {"GEMINI.md", ".gemini/settings.json"},
+        set(),
+    ),
+    (
+        "gemini",
+        "user",
+        {"GEMINI.md"},
+        {".gemini/settings.json"},
+    ),
+    (
+        "zed",
+        "project",
+        {"AGENTS.md", ".zed/settings.json"},
+        set(),
+    ),
+    (
+        "zed",
+        "user",
+        {"AGENTS.md"},
+        {".config/zed/settings.json"},
+    ),
 ]
 
 
@@ -256,9 +289,12 @@ def test_target_all_guidance_writes_union(
         _abs_root(root, "CLAUDE.md"),
         _abs_root(root, ".cursor/rules/seam.mdc"),
         _abs_root(root, "AGENTS.md"),
+        _abs_root(root, ".github/copilot-instructions.md"),
+        _abs_root(root, "GEMINI.md"),
     }
     assert changes.created == expected
     assert changes.modified == set()
+    assert changes.deleted == set()
 
 
 def test_target_all_with_mcp_user_writes_union(
@@ -284,15 +320,25 @@ def test_target_all_with_mcp_user_writes_union(
         _abs_home(home, ".cursor/mcp.json"),
         _abs_root(root, "AGENTS.md"),
         _abs_home(home, ".codex/config.toml"),
+        # vscode: project-only; user location is not supported → MCP skipped;
+        # guidance still written to root.
+        _abs_root(root, ".github/copilot-instructions.md"),
+        # gemini: supports user scope → MCP written to ~/.gemini/settings.json.
+        _abs_root(root, "GEMINI.md"),
+        _abs_home(home, ".gemini/settings.json"),
+        # zed: supports user scope → MCP written to ~/.config/zed/settings.json.
+        # Guidance writes to AGENTS.md (same file as codex — already counted above).
+        _abs_home(home, ".config/zed/settings.json"),
     }
     assert changes.created == expected
     assert changes.modified == set()
+    assert changes.deleted == set()
 
 
 # ── Idempotent second run produces zero mutations ─────────────────────────────
 
 
-@pytest.mark.parametrize("target", ["claude", "cursor", "codex"])
+@pytest.mark.parametrize("target", ["claude", "cursor", "codex", "vscode", "gemini", "zed"])
 def test_idempotent_second_install_no_writes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
 ) -> None:
@@ -391,6 +437,70 @@ def test_print_config_with_mcp_zero_mutation(
     )
 
 
+# ── Corrupt pre-existing vscode MCP config: backup created ───────────────────
+
+
+def test_vscode_corrupt_config_creates_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When .vscode/mcp.json is corrupt, a .backup copy is made alongside normal writes."""
+    root, home, _sib, canary = _setup_dirs(tmp_path)
+    monkeypatch.setenv("HOME", str(home))
+
+    # Seed .vscode/mcp.json with unparseable bytes before install
+    vscode_dir = root / ".vscode"
+    vscode_dir.mkdir(parents=True)
+    vscode_mcp = vscode_dir / "mcp.json"
+    vscode_mcp.write_bytes(b"!!!not valid json!!!")
+
+    _, changes = _invoke_and_diff(
+        tmp_path,
+        ["install", str(root), "--target", "vscode", "--with-mcp"],
+    )
+
+    _assert_safe(changes, root, home, canary)
+    _assert_no_tmp(tmp_path)
+
+    backup = vscode_dir / "mcp.json.backup"
+    # Backup of the corrupt file must be among newly created files
+    assert str(backup) in changes.created, "Expected .vscode/mcp.json.backup in created set"
+    # Guidance file also created
+    assert _abs_root(root, ".github/copilot-instructions.md") in changes.created
+    # The original corrupt file was overwritten (modified, not created)
+    assert str(vscode_mcp) in changes.modified
+
+
+# ── vscode + user + --with-mcp: exit 1, zero writes ──────────────────────────
+
+
+def test_vscode_user_with_mcp_rejected_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """vscode --location user --with-mcp is invalid (project-only); exits 1 with no writes."""
+    root, home, _sib, canary = _setup_dirs(tmp_path)
+    monkeypatch.setenv("HOME", str(home))
+
+    result, changes = _invoke_and_diff(
+        tmp_path,
+        [
+            "install",
+            str(root),
+            "--target",
+            "vscode",
+            "--location",
+            "user",
+            "--with-mcp",
+        ],
+    )
+
+    assert result.exit_code == 1, "Expected exit code 1 for vscode user --with-mcp"
+    _assert_safe(changes, root, home, canary)
+    _assert_no_tmp(tmp_path)
+    assert changes == FsChanges(set(), set(), set()), (
+        f"vscode user --with-mcp should write nothing but wrote: {changes}"
+    )
+
+
 # ── codex + project + --with-mcp: exit 1, zero writes ─────────────────────────
 
 
@@ -453,6 +563,22 @@ _ROUND_TRIP_CASES: list[tuple[str, str, bool, set[str], set[str]]] = [
     ("codex", "user", False, {"AGENTS.md"}, set()),
     # codex user-mcp: empty AGENTS.md + empty config.toml persist
     ("codex", "user", True, {"AGENTS.md"}, {".codex/config.toml"}),
+    # vscode guidance-only: empty copilot-instructions.md persists (shared-file block removed)
+    ("vscode", "project", False, {".github/copilot-instructions.md"}, set()),
+    # vscode project-mcp: copilot-instructions.md + empty .vscode/mcp.json persist
+    ("vscode", "project", True, {".github/copilot-instructions.md", ".vscode/mcp.json"}, set()),
+    # gemini guidance-only: empty GEMINI.md persists (shared-file block removed)
+    ("gemini", "project", False, {"GEMINI.md"}, set()),
+    # gemini project-mcp: empty GEMINI.md + empty .gemini/settings.json persist
+    ("gemini", "project", True, {"GEMINI.md", ".gemini/settings.json"}, set()),
+    # gemini user-mcp: empty GEMINI.md in root + empty ~/.gemini/settings.json persist
+    ("gemini", "user", True, {"GEMINI.md"}, {".gemini/settings.json"}),
+    # zed guidance-only: empty AGENTS.md persists (shared-file block removed)
+    ("zed", "project", False, {"AGENTS.md"}, set()),
+    # zed project-mcp: empty AGENTS.md + empty .zed/settings.json persist
+    ("zed", "project", True, {"AGENTS.md", ".zed/settings.json"}, set()),
+    # zed user-mcp: empty AGENTS.md in root + empty ~/.config/zed/settings.json persist
+    ("zed", "user", True, {"AGENTS.md"}, {".config/zed/settings.json"}),
 ]
 
 
@@ -633,6 +759,61 @@ def test_foreign_content_codex_preserved(
     # Seam table must be gone
     assert "[mcp_servers.seam]" not in after_text, (
         "Seam codex server table was not removed by uninstall"
+    )
+
+    _assert_no_tmp(tmp_path)
+
+
+# ── Shared AGENTS.md block: Codex + Zed converge to ONE block ────────────────
+
+
+def test_codex_zed_share_agents_md_block_uninstall_removes_shared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DOCUMENTS the Codex/Zed shared AGENTS.md trade-off and verifies the contract.
+
+    Codex and Zed both write CLI guidance into AGENTS.md under the same
+    <!-- seam:start/end --> marker. This is intentional: both agents read AGENTS.md;
+    one shared block avoids duplication.
+
+    Trade-off: uninstalling EITHER target removes the shared block (the other agent
+    loses its guidance too). Escape hatch: re-run `seam install --target <other>`.
+
+    This test encodes and verifies:
+      1. install codex then zed → AGENTS.md has exactly ONE <!-- seam:start --> (no dup).
+      2. uninstall zed → shared block is removed (codex guidance gone too).
+      3. re-install codex guidance → block is restored (escape hatch works).
+    """
+    root, home, _sib, canary = _setup_dirs(tmp_path)
+    monkeypatch.setenv("HOME", str(home))
+
+    agents_md = root / "AGENTS.md"
+
+    # Step 1: install codex guidance, then zed guidance
+    runner.invoke(app, ["install", str(root), "--target", "codex"])
+    runner.invoke(app, ["install", str(root), "--target", "zed"])
+
+    # AGENTS.md must exist with EXACTLY ONE seam:start block (no duplication)
+    assert agents_md.exists(), "AGENTS.md not created after codex + zed install"
+    content = agents_md.read_text(encoding="utf-8")
+    assert content.count("<!-- seam:start -->") == 1, (
+        "Expected exactly ONE <!-- seam:start --> in AGENTS.md after codex + zed install; "
+        f"got {content.count('<!-- seam:start -->')} (duplication bug?)"
+    )
+
+    # Step 2: uninstall zed → shared block removed (documented trade-off)
+    runner.invoke(app, ["uninstall", str(root), "--target", "zed"])
+    content_after_uninstall = agents_md.read_text(encoding="utf-8")
+    assert "<!-- seam:start -->" not in content_after_uninstall, (
+        "Seam block in AGENTS.md was NOT removed after `seam uninstall --target zed` "
+        "(the shared block should be gone — both codex and zed guidance removed)"
+    )
+
+    # Step 3: re-install codex guidance → block is restored (escape hatch)
+    runner.invoke(app, ["install", str(root), "--target", "codex"])
+    content_restored = agents_md.read_text(encoding="utf-8")
+    assert "<!-- seam:start -->" in content_restored, (
+        "Seam block in AGENTS.md was NOT restored after re-running `seam install --target codex`"
     )
 
     _assert_no_tmp(tmp_path)

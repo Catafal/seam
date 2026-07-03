@@ -77,7 +77,7 @@ def _preview_target(
 
 def install_command(
     path: str = typer.Argument(".", help="Project root to index (default: current directory)."),
-    target: str = typer.Option("claude", "--target", help="claude | cursor | codex | all"),
+    target: str = typer.Option("claude", "--target", help="claude | cursor | codex | vscode | gemini | zed | all"),
     location: str = typer.Option(
         "project", "--location", help="MCP config scope: project | user (codex: user only)."
     ),
@@ -89,7 +89,7 @@ def install_command(
     ),
     json_: bool = typer.Option(False, "--json", help="Emit a structured JSON envelope to stdout."),
 ) -> None:
-    """Set up Seam for a coding agent (Claude Code / Cursor / Codex).
+    """Set up Seam for a coding agent (Claude Code / Cursor / Codex / VS Code / Gemini CLI / Zed).
 
     Default: writes the token-lean CLI guidance into the repo so the agent queries
     via the `seam` CLI. Add `--with-mcp` to also wire the MCP server. Idempotent and
@@ -151,11 +151,14 @@ def install_command(
 
 def uninstall_command(
     path: str = typer.Argument(".", help="Project root the entry points at (default: current directory)."),
-    target: str = typer.Option("claude", "--target", help="claude | cursor | codex | all"),
+    target: str = typer.Option("claude", "--target", help="claude | cursor | codex | vscode | gemini | zed | all"),
     location: str = typer.Option("project", "--location", help="MCP config scope: project | user."),
     json_: bool = typer.Option(False, "--json", help="Emit a structured JSON envelope to stdout."),
 ) -> None:
-    """Remove Seam's guidance AND MCP config from a coding agent (reverses `seam install`)."""
+    """Remove Seam's guidance AND MCP config from a coding agent (reverses `seam install`).
+
+    Supports: Claude Code / Cursor / Codex / VS Code / Gemini CLI / Zed / all.
+    """
     root = Path(path).resolve()
     targets = _select_targets(target)
     if targets is None:
