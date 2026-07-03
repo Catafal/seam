@@ -185,6 +185,33 @@ three/R3F are already installed. No SQLite schema change, no migration, no re-in
 - New MCP tools (count stays 16). New routes beyond the additive field on `/api/constellation`.
 - The explicit Overview/Symbol/Topology tab bar, status strip, and end-to-end breadcrumbs (Phase D).
 
+## C1 implementation notes
+
+**Slice:** C1 — additive `representative` field on `/api/constellation` (issue #251).
+
+**What changed:**
+
+- `seam/server/graph_api.py` — extracted a new public helper `fetch_cluster_representatives(conn) -> dict[int, str]` that runs `SELECT cluster_id, name, MIN(id) FROM symbols WHERE cluster_id IS NOT NULL GROUP BY cluster_id`. This is the single source of truth for the representative query; it is now used by BOTH `build_constellation()` and `get_clusters()` in `web.py`.
+  - `build_constellation()` calls `fetch_cluster_representatives()` after fetching the cluster rows and attaches `representative: representatives.get(r["id"])` to each cluster dict (`None` for orphan clusters with no members).
+- `seam/server/web.py` — `ConstellationCluster` Pydantic model gains `representative: str | None = None`. `get_constellation()` route unchanged — `ConstellationCluster(**c)` already unpacks the dict and Pydantic picks up `representative`. `get_clusters()` now calls `fetch_cluster_representatives(conn)` instead of running the inline SQL query, eliminating the prior divergence risk. `web.py` stayed at 991 lines (under the 1000-line gate).
+- `web/src/api/types.ts` — `ConstellationCluster` gains `representative: string | null` with a JSDoc comment explaining the C1 contract.
+
+**New tests (TDD — written before implementation):**
+
+- `tests/unit/test_graph_api.py`:
+  - `test_constellation_cluster_includes_representative` — cluster dict has `representative` key, non-null when a member exists.
+  - `test_constellation_representative_null_when_no_member` — orphan cluster row (no symbols assigned) → `representative` is `None`.
+  - `test_constellation_representative_consistent_with_clusters_query` — cross-check: `build_constellation` representative for each cluster equals what the raw `/api/clusters` rep query returns.
+- `tests/integration/test_web_api.py`:
+  - `test_constellation_clusters_have_representative_field` — HTTP response has `representative` key on every cluster.
+  - `test_constellation_representative_matches_clusters_endpoint` — seeds a cluster in the indexed repo DB and verifies `/api/constellation` and `/api/clusters` return identical representatives for the same cluster_id.
+
+**Decision: export `fetch_cluster_representatives` (not private).** Initially considered a private `_fetch_cluster_representatives`, but since `web.py` needs to import and call it, it must be public. Making it public also makes it directly unit-testable and available for future slices (e.g. the 2D layout component may need the same lookup).
+
+**Gate:** ruff clean, mypy clean (122 files), 82 tests passed (0 failed), frontend typecheck clean.
+
+---
+
 ## Further Notes
 
 - **Why the 2D cluster graph and not "just fix 3D":** per the first-principles judge panel (Ghoniem

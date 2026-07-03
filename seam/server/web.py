@@ -41,6 +41,7 @@ from seam.indexer.readonly import open_readonly_connection
 from seam.server.graph_api import (
     build_constellation,
     build_neighborhood,
+    fetch_cluster_representatives,
     list_structure,
     top_hub_symbols,
 )
@@ -296,11 +297,17 @@ class ChangesResponse(BaseModel):
 
 
 class ConstellationCluster(BaseModel):
-    """One cluster region in the whole-repo overview."""
+    """One cluster region in the whole-repo overview.
+
+    C1: `representative` is the MIN(id) member symbol name for this cluster —
+    the same value /api/clusters returns (single source of truth). None only for
+    orphan clusters that have no symbols assigned (rare in practice).
+    """
 
     cluster_id: int
     label: str | None
     size: int
+    representative: str | None = None
 
 
 class ConstellationLink(BaseModel):
@@ -759,17 +766,12 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
         conn = _get_conn(db_path)
         try:
             raw = handle_seam_clusters(conn, root)
-            # Pick one representative member symbol per cluster so the landing-page
-            # entry points open a real neighborhood (clusters aren't symbols). The
-            # name comes from the MIN(id) row per cluster → deterministic across runs.
-            rep_rows = conn.execute(
-                "SELECT cluster_id, name, MIN(id) FROM symbols "
-                "WHERE cluster_id IS NOT NULL GROUP BY cluster_id"
-            ).fetchall()
+            # C1: reuse fetch_cluster_representatives() — single source of truth shared
+            # with /api/constellation so both endpoints return the same representative
+            # for the same cluster_id. MIN(id) per cluster → deterministic across runs.
+            representatives = fetch_cluster_representatives(conn)
         finally:
             conn.close()
-
-        representatives = {row["cluster_id"]: row["name"] for row in rep_rows}
         items: list[ClusterItem] = []
         for c in raw:  # type: ignore[union-attr]
             items.append(ClusterItem(

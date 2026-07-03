@@ -292,14 +292,42 @@ def build_neighborhood(
     }
 
 
+def fetch_cluster_representatives(conn: sqlite3.Connection) -> dict[int, str]:
+    """Return {cluster_id: representative_member_name} for all clusters with members.
+
+    The representative is the MIN(id) symbol row per cluster — deterministic and
+    consistent with the /api/clusters endpoint (single source of truth). Returns an
+    empty dict on any DB error. NEVER raises.
+
+    WHY MIN(id): symbol IDs are assigned sequentially during indexing, so the
+    lowest-id row for a cluster is a stable, reproducible choice that doesn't
+    change between reads of the same index. It is the same criterion /api/clusters
+    already uses to pick a 'real' symbol name the frontend can open in the
+    neighborhood view (clusters themselves are not symbols).
+    """
+    try:
+        rows = conn.execute(
+            "SELECT cluster_id, name, MIN(id) FROM symbols "
+            "WHERE cluster_id IS NOT NULL GROUP BY cluster_id"
+        ).fetchall()
+        return {row["cluster_id"]: row["name"] for row in rows}
+    except sqlite3.Error:
+        return {}
+
+
 def build_constellation(conn: sqlite3.Connection) -> dict[str, Any]:
     """Build the whole-repo cluster overview: clusters + inter-cluster links.
 
     Returns:
         {
-            "clusters": [ {cluster_id, label, size} ],   # all clusters, largest first
-            "links":    [ {source, target, weight} ],    # cross-cluster edge counts
+            "clusters": [ {cluster_id, label, size, representative} ],  # largest first
+            "links":    [ {source, target, weight} ],  # cross-cluster edge counts
         }
+
+    `representative` is the MIN(id) member symbol name per cluster — the same value
+    the /api/clusters endpoint returns. None for a cluster with no symbols assigned
+    (rare orphan-cluster edge case). Single source of truth: uses
+    fetch_cluster_representatives() which /api/clusters also calls.
 
     `links` aggregates the `edges` table: every call/import whose source and target
     symbols live in DIFFERENT clusters contributes 1 to the (source_cid → target_cid)
@@ -320,14 +348,23 @@ def build_constellation(conn: sqlite3.Connection) -> dict[str, Any]:
     except sqlite3.Error:
         return {"clusters": [], "links": []}
 
-    clusters = [
-        {"cluster_id": r["id"], "label": r["label"], "size": r["size"]}
-        for r in cluster_rows
-    ]
-    if not clusters:
+    if not cluster_rows:
         return {"clusters": [], "links": []}
 
-    # 2. name → cluster_id (lowest-id row per name). SQLite's bare-column rule binds
+    # 2. Representative member per cluster (C1: additive field, single source of truth).
+    representatives = fetch_cluster_representatives(conn)
+
+    clusters = [
+        {
+            "cluster_id": r["id"],
+            "label": r["label"],
+            "size": r["size"],
+            "representative": representatives.get(r["id"]),  # None for orphan clusters
+        }
+        for r in cluster_rows
+    ]
+
+    # 3. name → cluster_id (lowest-id row per name). SQLite's bare-column rule binds
     #    cluster_id to the MIN(id) row, so each name resolves to one cluster.
     try:
         name_rows = conn.execute(
@@ -338,7 +375,7 @@ def build_constellation(conn: sqlite3.Connection) -> dict[str, Any]:
         return {"clusters": clusters, "links": []}
     name_to_cid: dict[str, int] = {r["name"]: r["cluster_id"] for r in name_rows}
 
-    # 3. Aggregate cross-cluster edge weights.
+    # 4. Aggregate cross-cluster edge weights.
     weights: dict[tuple[int, int], int] = {}
     try:
         edge_rows = conn.execute("SELECT source_name, target_name FROM edges").fetchall()

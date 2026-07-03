@@ -644,6 +644,77 @@ def test_constellation_no_index(no_index_client: TestClient) -> None:
     assert resp.json()["detail"]["code"] == "NO_INDEX"
 
 
+# ── C1: /api/constellation representative field ───────────────────────────────
+
+
+def test_constellation_clusters_have_representative_field(client: TestClient) -> None:
+    """C1: every cluster in /api/constellation carries a 'representative' key (str or null).
+
+    The field is present regardless of whether clusters exist in this tiny repo.
+    """
+    resp = client.get("/api/constellation")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert isinstance(data["clusters"], list)
+    for cluster in data["clusters"]:
+        assert "representative" in cluster, (
+            f"cluster {cluster.get('cluster_id')} is missing 'representative' key"
+        )
+        # Value is str or null — not absent.
+        assert cluster["representative"] is None or isinstance(cluster["representative"], str)
+
+
+def test_constellation_representative_matches_clusters_endpoint(indexed_repo: Path) -> None:
+    """C1: representative in /api/constellation equals the representative from /api/clusters.
+
+    Both endpoints must return the same representative for the same cluster_id —
+    single source of truth (same MIN(id)-per-cluster query).
+    """
+    import sqlite3 as _sqlite3
+
+    from seam import config
+
+    # Seed the tiny indexed repo with an explicit cluster so the assertion is non-trivial.
+    db_path = config.get_db_path(indexed_repo)
+    conn = _sqlite3.connect(str(db_path))
+    conn.row_factory = _sqlite3.Row
+    try:
+        # Assign both symbols to a new cluster.
+        cur = conn.execute(
+            "INSERT INTO clusters (label, size, naming_source) VALUES ('TestArea', 2, 'deterministic')"
+        )
+        cid = cur.lastrowid
+        conn.execute(
+            "UPDATE symbols SET cluster_id = ? WHERE name IN ('authenticate_user', 'check')", (cid,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    from seam.server.web import create_web_app
+
+    app = create_web_app(db_path=db_path, root=indexed_repo)
+    from fastapi.testclient import TestClient
+
+    c = TestClient(app)
+
+    # Fetch both endpoints.
+    constellation = c.get("/api/constellation").json()
+    clusters = c.get("/api/clusters").json()
+
+    # Build lookup by cluster_id for both.
+    const_by_id = {cl["cluster_id"]: cl["representative"] for cl in constellation["clusters"]}
+    cluster_by_id = {cl["cluster_id"]: cl["representative"] for cl in clusters["clusters"]}
+
+    # For every cluster in constellation, the representative must match /api/clusters.
+    for cid_key, rep in const_by_id.items():
+        assert cid_key in cluster_by_id, f"cluster {cid_key} present in constellation but not /api/clusters"
+        assert rep == cluster_by_id[cid_key], (
+            f"representative mismatch for cluster {cid_key}: "
+            f"constellation={rep!r} vs /api/clusters={cluster_by_id[cid_key]!r}"
+        )
+
+
 # ── T11: GET /api/hubs ────────────────────────────────────────────────────────
 
 

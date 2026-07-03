@@ -701,6 +701,12 @@ export interface components {
             label: string | null;
             /** Size */
             size: number;
+            /**
+             * Representative
+             * C1: MIN(id) member symbol name — same value as /api/clusters (single source of truth).
+             * Null for orphan clusters with no symbols assigned.
+             */
+            representative: string | null;
         };
         /**
          * ConstellationLink
