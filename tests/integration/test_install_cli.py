@@ -75,16 +75,18 @@ def test_with_mcp_all_user_scope_writes_mcp_for_three(tmp_path: Path, monkeypatc
     )
     payload = json.loads(res.stdout)
     actions = {r["target"]: r["mcp"]["action"] for r in payload["data"]["results"]}
-    # claude/cursor/codex/gemini support user scope; vscode is project-only → skipped.
+    # claude/cursor/codex/gemini/zed support user scope; vscode is project-only → skipped.
     assert actions["claude"] == "created"
     assert actions["cursor"] == "created"
     assert actions["codex"] == "created"
     assert actions["vscode"] == "skipped"
     assert actions["gemini"] == "created"
+    assert actions["zed"] == "created"
     assert (tmp_path / ".codex" / "config.toml").exists()
     assert (tmp_path / ".claude.json").exists()
     assert (tmp_path / ".cursor" / "mcp.json").exists()
     assert (tmp_path / ".gemini" / "settings.json").exists()
+    assert (tmp_path / ".config" / "zed" / "settings.json").exists()
 
 
 def test_with_mcp_all_project_skips_codex_mcp_but_writes_guidance(tmp_path: Path) -> None:
@@ -333,3 +335,86 @@ def test_gemini_uninstall_removes_guidance_and_mcp(tmp_path: Path) -> None:
     # MCP file persists with empty "mcpServers" dict (shared-file residue).
     settings = tmp_path / ".gemini" / "settings.json"
     assert json.loads(settings.read_text())["mcpServers"] == {}
+
+
+# ── Zed target ─────────────────────────────────────────────────────────────────
+
+
+def test_zed_guidance_only_writes_agents_md(tmp_path: Path) -> None:
+    res = runner.invoke(app, ["install", str(tmp_path), "--target", "zed"])
+    assert res.exit_code == 0
+    agents_md = tmp_path / "AGENTS.md"
+    assert agents_md.exists()
+    assert "Escalation ladder" in agents_md.read_text()
+    # No MCP config without --with-mcp.
+    assert not (tmp_path / ".zed" / "settings.json").exists()
+
+
+def test_zed_with_mcp_project_writes_context_servers(tmp_path: Path) -> None:
+    res = runner.invoke(
+        app, ["install", str(tmp_path), "--target", "zed", "--with-mcp", "--json"]
+    )
+    payload = json.loads(res.stdout)
+    zed = next(r for r in payload["data"]["results"] if r["target"] == "zed")
+    assert zed["mcp"]["action"] == "created"
+
+    settings = tmp_path / ".zed" / "settings.json"
+    assert settings.exists()
+    data = json.loads(settings.read_text())
+    # Zed uses "context_servers" with "source": "custom".
+    assert "context_servers" in data
+    assert "mcpServers" not in data
+    entry = data["context_servers"]["seam"]
+    assert entry["source"] == "custom"
+    assert entry["args"] == ["start", str(tmp_path)]
+
+
+def test_zed_with_mcp_user_scope(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    root = tmp_path / "repo"
+    root.mkdir()
+    res = runner.invoke(
+        app,
+        ["install", str(root), "--target", "zed", "--location", "user", "--with-mcp", "--json"],
+    )
+    assert res.exit_code == 0
+    payload = json.loads(res.stdout)
+    zed = next(r for r in payload["data"]["results"] if r["target"] == "zed")
+    assert zed["mcp"]["action"] == "created"
+    # User-scope MCP written to ~/.config/zed/settings.json.
+    user_settings = tmp_path / ".config" / "zed" / "settings.json"
+    assert user_settings.exists()
+    data = json.loads(user_settings.read_text())
+    assert data["context_servers"]["seam"]["args"] == ["start", str(root)]
+
+
+def test_zed_print_config_shows_context_servers_key(tmp_path: Path) -> None:
+    res = runner.invoke(
+        app, ["install", str(tmp_path), "--target", "zed", "--with-mcp", "--print-config"]
+    )
+    assert res.exit_code == 0
+    assert not (tmp_path / ".zed" / "settings.json").exists()  # nothing written
+    assert "context_servers" in res.stdout
+
+
+def test_zed_target_all_includes_zed(tmp_path: Path) -> None:
+    res = runner.invoke(app, ["install", str(tmp_path), "--target", "all", "--json"])
+    payload = json.loads(res.stdout)
+    targets = {r["target"] for r in payload["data"]["results"]}
+    assert "zed" in targets
+    # zed guidance must have been written (shares AGENTS.md with codex)
+    assert (tmp_path / "AGENTS.md").exists()
+
+
+def test_zed_uninstall_removes_guidance_and_mcp(tmp_path: Path) -> None:
+    runner.invoke(app, ["install", str(tmp_path), "--target", "zed", "--with-mcp"])
+    res = runner.invoke(
+        app, ["uninstall", str(tmp_path), "--target", "zed", "--location", "project", "--json"]
+    )
+    payload = json.loads(res.stdout)
+    zed = payload["data"]["results"][0]
+    assert zed["mcp"]["action"] == "removed"
+    assert zed["guidance"][0]["action"] == "removed"
+    # MCP file persists with empty "context_servers" dict (shared-file residue).
+    settings = tmp_path / ".zed" / "settings.json"
+    assert json.loads(settings.read_text())["context_servers"] == {}

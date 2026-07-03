@@ -145,6 +145,7 @@ _GUIDANCE_CASES: list[tuple[str, set[str]]] = [
     ("codex", {"AGENTS.md"}),
     ("vscode", {".github/copilot-instructions.md"}),
     ("gemini", {"GEMINI.md"}),
+    ("zed", {"AGENTS.md"}),
 ]
 
 
@@ -221,6 +222,18 @@ _WITH_MCP_CASES: list[tuple[str, str, set[str], set[str]]] = [
         "user",
         {"GEMINI.md"},
         {".gemini/settings.json"},
+    ),
+    (
+        "zed",
+        "project",
+        {"AGENTS.md", ".zed/settings.json"},
+        set(),
+    ),
+    (
+        "zed",
+        "user",
+        {"AGENTS.md"},
+        {".config/zed/settings.json"},
     ),
 ]
 
@@ -312,6 +325,9 @@ def test_target_all_with_mcp_user_writes_union(
         # gemini: supports user scope → MCP written to ~/.gemini/settings.json.
         _abs_root(root, "GEMINI.md"),
         _abs_home(home, ".gemini/settings.json"),
+        # zed: supports user scope → MCP written to ~/.config/zed/settings.json.
+        # Guidance writes to AGENTS.md (same file as codex — already counted above).
+        _abs_home(home, ".config/zed/settings.json"),
     }
     assert changes.created == expected
     assert changes.modified == set()
@@ -320,7 +336,7 @@ def test_target_all_with_mcp_user_writes_union(
 # ── Idempotent second run produces zero mutations ─────────────────────────────
 
 
-@pytest.mark.parametrize("target", ["claude", "cursor", "codex", "vscode", "gemini"])
+@pytest.mark.parametrize("target", ["claude", "cursor", "codex", "vscode", "gemini", "zed"])
 def test_idempotent_second_install_no_writes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
 ) -> None:
@@ -491,6 +507,12 @@ _ROUND_TRIP_CASES: list[tuple[str, str, bool, set[str], set[str]]] = [
     ("gemini", "project", True, {"GEMINI.md", ".gemini/settings.json"}, set()),
     # gemini user-mcp: empty GEMINI.md in root + empty ~/.gemini/settings.json persist
     ("gemini", "user", True, {"GEMINI.md"}, {".gemini/settings.json"}),
+    # zed guidance-only: empty AGENTS.md persists (shared-file block removed)
+    ("zed", "project", False, {"AGENTS.md"}, set()),
+    # zed project-mcp: empty AGENTS.md + empty .zed/settings.json persist
+    ("zed", "project", True, {"AGENTS.md", ".zed/settings.json"}, set()),
+    # zed user-mcp: empty AGENTS.md in root + empty ~/.config/zed/settings.json persist
+    ("zed", "user", True, {"AGENTS.md"}, {".config/zed/settings.json"}),
 ]
 
 

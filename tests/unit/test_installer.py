@@ -33,6 +33,7 @@ from seam.installer.markdownfile import (
 )
 from seam.installer.tomlfile import get_server_table, load_toml
 from seam.installer.vscode import VscodeTarget
+from seam.installer.zed import ZedTarget
 
 # ── jsonfile leaf ────────────────────────────────────────────────────────────
 
@@ -590,3 +591,154 @@ def test_gemini_guidance_previews(tmp_path: Path) -> None:
     assert path_str == str(tmp_path / "GEMINI.md")
     assert "<!-- seam:start -->" in content
     assert "Escalation ladder" in content
+
+
+# ── ZedTarget ─────────────────────────────────────────────────────────────────
+
+
+def test_zed_project_config_path(tmp_path: Path) -> None:
+    t = ZedTarget()
+    assert t.config_path(tmp_path, "project") == tmp_path / ".zed" / "settings.json"
+
+
+def test_zed_user_config_path(tmp_path: Path) -> None:
+    t = ZedTarget()
+    assert t.config_path(tmp_path, "user") == Path.home() / ".config" / "zed" / "settings.json"
+
+
+def test_zed_supports_project_and_user() -> None:
+    assert ZedTarget().supported_locations() == ["project", "user"]
+
+
+def test_zed_install_created(tmp_path: Path) -> None:
+    t = ZedTarget()
+    res = t.install(tmp_path, "project", "/abs/seam", ["start", str(tmp_path)])
+    assert res.action == "created"
+    cfg = tmp_path / ".zed" / "settings.json"
+    assert cfg.exists()
+    data = json.loads(cfg.read_text())
+    entry = data["context_servers"]["seam"]
+    assert entry["source"] == "custom"
+    assert entry["command"] == "/abs/seam"
+    assert entry["args"] == ["start", str(tmp_path)]
+
+
+def test_zed_install_is_idempotent(tmp_path: Path) -> None:
+    t = ZedTarget()
+    t.install(tmp_path, "project", "/abs/seam", ["start", str(tmp_path)])
+    res = t.install(tmp_path, "project", "/abs/seam", ["start", str(tmp_path)])
+    assert res.action == "unchanged"
+
+
+def test_zed_install_updated_on_change(tmp_path: Path) -> None:
+    t = ZedTarget()
+    t.install(tmp_path, "project", "/old/seam", ["start", str(tmp_path)])
+    res = t.install(tmp_path, "project", "/new/seam", ["start", str(tmp_path)])
+    assert res.action == "updated"
+
+
+def test_zed_uninstall_removed_then_not_present(tmp_path: Path) -> None:
+    t = ZedTarget()
+    t.install(tmp_path, "project", "/abs/seam", ["start", str(tmp_path)])
+    res = t.uninstall(tmp_path, "project")
+    assert res.action == "removed"
+    data = json.loads((tmp_path / ".zed" / "settings.json").read_text())
+    assert "seam" not in data.get("context_servers", {})
+    res2 = t.uninstall(tmp_path, "project")
+    assert res2.action == "not_present"
+
+
+def test_zed_corrupt_config_backup(tmp_path: Path) -> None:
+    cfg = tmp_path / ".zed" / "settings.json"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text("{ broken json")
+    t = ZedTarget()
+    t.install(tmp_path, "project", "/abs/seam", ["start", str(tmp_path)])
+    assert (tmp_path / ".zed" / "settings.json.backup").read_text() == "{ broken json"
+
+
+def test_zed_render_entry_uses_context_servers_key(tmp_path: Path) -> None:
+    t = ZedTarget()
+    rendered = json.loads(t.render_entry("/abs/seam", ["start", str(tmp_path)]))
+    assert "context_servers" in rendered
+    assert "mcpServers" not in rendered
+    assert "servers" not in rendered
+    entry = rendered["context_servers"]["seam"]
+    assert entry["source"] == "custom"
+    assert entry["command"] == "/abs/seam"
+
+
+def test_zed_guidance_writes_agents_md(tmp_path: Path) -> None:
+    t = ZedTarget()
+    res = t.install_guidance(tmp_path)
+    assert res[0].action == "created"
+    agents_md = tmp_path / "AGENTS.md"
+    assert agents_md.exists()
+    text = agents_md.read_text()
+    assert "<!-- seam:start -->" in text
+    assert "Escalation ladder" in text  # guide body is included
+
+
+def test_zed_guidance_is_idempotent(tmp_path: Path) -> None:
+    t = ZedTarget()
+    t.install_guidance(tmp_path)
+    res = t.install_guidance(tmp_path)
+    assert res[0].action == "unchanged"
+
+
+def test_zed_guidance_preserves_foreign_content(tmp_path: Path) -> None:
+    agents_md = tmp_path / "AGENTS.md"
+    agents_md.write_text("# My Zed config\n\nCustom notes here.\n")
+    t = ZedTarget()
+    t.install_guidance(tmp_path)
+    text = agents_md.read_text()
+    assert "Custom notes here." in text  # foreign content preserved
+    assert "Escalation ladder" in text  # seam block appended
+
+
+def test_zed_guidance_uninstall_removes_block(tmp_path: Path) -> None:
+    t = ZedTarget()
+    t.install_guidance(tmp_path)
+    res = t.uninstall_guidance(tmp_path)
+    assert res[0].action == "removed"
+    agents_md = tmp_path / "AGENTS.md"
+    assert agents_md.exists()
+    assert "<!-- seam:start -->" not in agents_md.read_text()
+
+
+def test_zed_guidance_previews(tmp_path: Path) -> None:
+    previews = ZedTarget().guidance_previews(tmp_path)
+    assert len(previews) == 1
+    path_str, content = previews[0]
+    assert path_str == str(tmp_path / "AGENTS.md")
+    assert "<!-- seam:start -->" in content
+    assert "Escalation ladder" in content
+
+
+def test_codex_then_zed_guidance_shares_single_agents_md_block(tmp_path: Path) -> None:
+    """Codex + Zed both write to AGENTS.md with the same marker — one block, no duplication."""
+    codex = CodexTarget()
+    zed = ZedTarget()
+
+    # Install Codex guidance first, then Zed guidance.
+    codex.install_guidance(tmp_path)
+    res = zed.install_guidance(tmp_path)
+    # Second write should be 'unchanged' (same content, same marker → idempotent).
+    assert res[0].action == "unchanged"
+
+    text = (tmp_path / "AGENTS.md").read_text()
+    # Exactly ONE seam:start sentinel — no duplication.
+    assert text.count("<!-- seam:start -->") == 1
+    assert text.count("<!-- seam:end -->") == 1
+
+    # Reverse order: Zed first, then Codex.
+    agents_md2 = tmp_path / "AGENTS2.md"
+    agents_md2.parent.mkdir(parents=True, exist_ok=True)
+    # Use a fresh directory to test the reverse order.
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    zed.install_guidance(fresh)
+    res2 = codex.install_guidance(fresh)
+    assert res2[0].action == "unchanged"
+    text2 = (fresh / "AGENTS.md").read_text()
+    assert text2.count("<!-- seam:start -->") == 1

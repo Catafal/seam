@@ -33,8 +33,9 @@ Local code intelligence MCP server — indexes codebases with tree-sitter, store
   writes the full result to `.seam/out/` and prints a one-line summary + path (WS5)
 - `uv run seam structure [path]` — whole-repo directory/file/container structure tree; `--json`/`--quiet`
 - `uv run seam install` — CLI-FIRST default: write token-lean CLI guidance into an agent
-  (Claude Code skill / Cursor `.mdc` rule / Codex `AGENTS.md` block); `--with-mcp` ALSO writes
-  the MCP config (`--target claude|cursor|codex|all`, `--location project|user`,
+  (Claude Code skill / Cursor `.mdc` rule / Codex/Zed `AGENTS.md` block / VS Code
+  `.github/copilot-instructions.md` / Gemini `GEMINI.md`); `--with-mcp` ALSO writes
+  the MCP config (`--target claude|cursor|codex|vscode|gemini|zed|all`, `--location project|user`,
   `--print-config`); `uv run seam uninstall` reverses both (guidance + MCP)
 - `uv run seam serve` — Start the local Seam Explorer web server (FastAPI, 127.0.0.1:7420);
   requires `[web]` extra (`pip install 'seam-code[web]'`); `--host`, `--port`, `--no-open`
