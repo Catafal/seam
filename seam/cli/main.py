@@ -75,6 +75,7 @@ from seam.indexer.embedding_index import sync_embeddings
 from seam.indexer.init_index import InitResult, run_init
 from seam.indexer.rebase import rebase_index
 from seam.indexer.sync import sync as sync_project
+from seam.indexer.vec_index import index_vec
 from seam.query.clusters import cluster_members as query_cluster_members
 from seam.query.clusters import list_clusters as query_list_clusters
 from seam.query.comments import why as comments_why
@@ -354,6 +355,7 @@ def init(
     total_synthesis: int | None = init_result.total_synthesis
     total_test_edges: int | None = init_result.total_test_edges
     total_embeddings: int | None = init_result.total_embeddings
+    total_ann: int | None = init_result.total_ann
     llm_naming_summary = init_result.llm_naming_summary
     # Reconstruct the "files found" count from indexed + skipped (walk_project
     # result was inside run_init; the total is always indexed+skipped).
@@ -393,6 +395,19 @@ def init(
     else:
         display_embeddings = f"{total_embeddings} symbols ({config.SEAM_EMBED_MODEL})"
 
+    # ANN display: None = not requested (SEAM_VEC_ANN=off or --semantic not passed);
+    # 0 = skipped (gate not met: probe failed or below MIN_ROWS);
+    # -1 = build failed; >=1 = rows indexed into vec0.
+    ann_failed = total_ann is not None and total_ann < 0
+    if total_ann is None:
+        display_ann: str | None = None  # not shown when ANN was not requested
+    elif total_ann == 0:
+        display_ann = "skipped"
+    elif ann_failed:
+        display_ann = "failed"
+    else:
+        display_ann = f"{total_ann} rows (cosine vec0)"
+
     elapsed = time.monotonic() - start_ts
 
     # Summary table
@@ -413,6 +428,8 @@ def init(
         table.add_row("test edges", display_test_edges)
     if display_embeddings is not None:
         table.add_row("embeddings", display_embeddings)
+    if display_ann is not None:
+        table.add_row("ann", display_ann)
     table.add_row("elapsed", f"{elapsed:.2f}s")
     console.print(table)
 
@@ -443,6 +460,14 @@ def init(
     if embedding_failed and total_symbols > 0:
         console.print(
             "[yellow]embeddings: failed[/yellow] "
+            "[dim](run with SEAM_LOG_LEVEL=DEBUG to see the error; "
+            "run 'seam init --semantic' again to retry)[/dim]"
+        )
+
+    # Visible yellow warning when ANN build failed.
+    if ann_failed and total_symbols > 0:
+        console.print(
+            "[yellow]ann: failed[/yellow] "
             "[dim](run with SEAM_LOG_LEVEL=DEBUG to see the error; "
             "run 'seam init --semantic' again to retry)[/dim]"
         )
@@ -2857,6 +2882,17 @@ def sync_cmd(
                     model=config.SEAM_EMBED_MODEL,
                     batch=32,
                 )
+                # WS2b: rebuild ANN index after incremental re-embed (gated by SEAM_VEC_ANN).
+                # index_vec returns 0 when the gate is not met — never aborts the sync.
+                # WHY after sync_embeddings: the ANN index must reflect the current embedding
+                # table state, which is only stable after sync_embeddings completes.
+                if config.SEAM_VEC_ANN == "on":
+                    _ann_count = index_vec(embed_conn, model=config.SEAM_EMBED_MODEL)
+                    if not quiet and _ann_count < 0:
+                        console.print(
+                            "[yellow]ann: failed[/yellow] "
+                            "[dim](run with SEAM_LOG_LEVEL=DEBUG to see the error)[/dim]"
+                        )
             finally:
                 embed_conn.close()
             # _embed_count: 0 = skipped (fastembed absent) or nothing new, -1 = failed, >=1 = new symbols

@@ -427,6 +427,31 @@ SEAM_RRF_K: int = int(os.getenv("SEAM_RRF_K", "60"))
 # No schema change, no migration. The artifact lives in .seam/ which is already gitignored.
 SEAM_VECTOR_STORE: str = os.getenv("SEAM_VECTOR_STORE", "on")
 
+# ── WS2b: ANN (Approximate Nearest Neighbour) acceleration via sqlite-vec ────
+
+# Master switch for the ANN index tier backed by sqlite-vec's vec0 virtual table.
+# "off" (default) — byte-identical to pre-WS2b: no probe, no vec0 table, no overhead.
+# "on"  — after `seam init --semantic` / `seam sync --semantic`, index_vec() is called
+#   after index_embeddings(). It probes sqlite-vec availability, checks the minimum-row
+#   threshold, then (re)builds the vec0 virtual table `vec_embeddings` with cosine distance
+#   and a companion `vec_meta` table storing the staleness token. The S3 read path can then
+#   issue KNN queries directly against vec0 for sub-millisecond ANN lookup at large scale.
+# Requires: [semantic-ann] extra (pip install 'seam-code[semantic-ann]') AND SEAM_SEMANTIC=on
+#   AND at least SEAM_VEC_ANN_MIN_ROWS embeddings indexed.
+# No schema migration — vec_embeddings and vec_meta are created on demand by the bridge.
+# Toggling requires rerunning `seam init --semantic` / `seam sync --semantic` to populate.
+SEAM_VEC_ANN: str = os.getenv("SEAM_VEC_ANN", "off")
+
+# Minimum number of embedding rows (for the current model) that must exist before
+# index_vec() builds the ANN index. Below this threshold the brute-force cosine scan
+# (mmap path or SQL path) is fast enough that the ANN build overhead is not justified.
+# Rationale: with numpy on modern hardware, cosine scan over ~50k rows (384-dim float32)
+#   approaches the 10ms latency bar. Below that the mmap/SQL brute-force is sub-10ms.
+#   Above 50k rows, ANN KNN queries drop to sub-millisecond regardless of corpus size.
+# Default 50000. Set lower (e.g. SEAM_VEC_ANN_MIN_ROWS=10000) on older hardware where
+#   brute-force becomes noticeably slow at smaller corpora.
+SEAM_VEC_ANN_MIN_ROWS: int = int(os.getenv("SEAM_VEC_ANN_MIN_ROWS", "50000"))
+
 # ── WS1-A: Richer embedding input — body-slice enrichment ────────────────────
 
 # Gate for including a leading slice of each symbol's implementation body in its

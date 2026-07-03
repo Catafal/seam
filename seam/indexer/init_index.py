@@ -44,6 +44,7 @@ from seam.indexer.embedding_index import index_embeddings
 from seam.indexer.pipeline import index_one_file, walk_project
 from seam.indexer.synthesis_index import index_synthesis
 from seam.indexer.test_edges import index_test_edges
+from seam.indexer.vec_index import index_vec
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,9 @@ class InitResult:
       total_test_edges: -1 = failed; 0 = nothing produced; >=1 = count
       total_embeddings: None = not requested; 0 = skipped (fastembed absent);
                         -1 = failed; >=1 = count
+      total_ann       : None = not requested (--semantic not passed or SEAM_VEC_ANN=off);
+                        0 = skipped (gate not met: probe failed or below MIN_ROWS);
+                        -1 = failed; >=1 = rows indexed into vec0
 
     llm_naming_summary is only populated when SEAM_CLUSTER_NAMING="llm" and
     clustering produced at least one cluster.
@@ -78,6 +82,7 @@ class InitResult:
     total_synthesis: int
     total_test_edges: int
     total_embeddings: int | None  # None = semantic not requested
+    total_ann: int | None         # None = ANN not requested; 0 = skipped; -1 = failed; >=1 = rows
     llm_naming_summary: str | None
 
 
@@ -198,8 +203,9 @@ def run_init(
         _notify(progress_cb, "Materializing test edges...")
         total_test_edges = index_test_edges(conn)
 
-        # Step 6 (optional): semantic embeddings.
+        # Step 6 (optional): semantic embeddings + ANN index.
         total_embeddings: int | None = None
+        total_ann: int | None = None
         if semantic:
             _notify(progress_cb, "Computing symbol embeddings...")
             total_embeddings = index_embeddings(
@@ -207,6 +213,13 @@ def run_init(
                 model=config.SEAM_EMBED_MODEL,
                 batch=32,
             )
+            # Step 6b (optional, gated by SEAM_VEC_ANN=on): build the ANN index.
+            # Called after index_embeddings so the embeddings table is fully populated.
+            # index_vec returns 0 when the gate is not met (ANN off, probe failed, or
+            # below MIN_ROWS) — never aborts the init run.
+            if config.SEAM_VEC_ANN == "on":
+                _notify(progress_cb, "Building ANN index...")
+                total_ann = index_vec(conn, model=config.SEAM_EMBED_MODEL)
 
     finally:
         conn.close()
@@ -221,5 +234,6 @@ def run_init(
         total_synthesis=total_synthesis,
         total_test_edges=total_test_edges,
         total_embeddings=total_embeddings,
+        total_ann=total_ann,
         llm_naming_summary=llm_naming_summary,
     )
