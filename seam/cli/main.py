@@ -68,6 +68,7 @@ from seam.cli.read import context_command, query_command, search_command
 from seam.cli.schema import schema_command
 from seam.cli.serve import serve_command
 from seam.cli.snippet import snippet_command
+from seam.indexer.artifact import pack_index as _pack_index_artifact
 from seam.indexer.db import connect
 from seam.indexer.embedding_index import sync_embeddings
 from seam.indexer.init_index import InitResult, run_init
@@ -2416,11 +2417,14 @@ def affected_cmd(
     console.print(f"\n[dim]Run with:[/dim] [bold]pytest {' '.join(affected_tests)}[/bold]")
 
 
-# ── seam pack ─────────────────────────────────────────────────────────────────
+# ── seam context-pack ─────────────────────────────────────────────────────────
+# NOTE: renamed from "pack" to "context-pack" in WS4 S2 so the bare "pack" name
+# is claimed by the artifact-pack command (seam pack → canonical .tar.gz archive).
+# Users of `seam pack <symbol>` must update to `seam context-pack <symbol>`.
 
 
-@app.command(name="pack")
-def pack_cmd(
+@app.command(name="context-pack")
+def context_pack_cmd(
     symbol: str = typer.Argument(..., help="Symbol name to build context pack for."),
     path: str = typer.Option(".", "--path", help="Project root (default: current directory)"),
     db_dir: str = typer.Option("", "--db-dir", help="Override DB directory"),
@@ -2596,6 +2600,108 @@ def pack_cmd(
             f"\n  [bold]cluster peers[/bold]: {', '.join(peers[:8])}"
             + (f" +{len(peers) - 8} more" if len(peers) > 8 else "")
         )
+
+
+# ── seam pack (artifact) ──────────────────────────────────────────────────────
+
+
+@app.command(name="pack")
+def pack_cmd(
+    path: str = typer.Argument(
+        ".", help="Project root whose .seam/ index will be packed (default: current directory)"
+    ),
+    db_dir: str = typer.Option(
+        "",
+        "--db-dir",
+        help="Override DB directory (default: same as project root)",
+    ),
+    dest: str = typer.Option(
+        "",
+        "--dest",
+        help=(
+            "Directory to write the archive and checksum into. "
+            "Default: project root (same as path)."
+        ),
+    ),
+    json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        help="Print only the archive path and checksum (terse one-liner).",
+    ),
+) -> None:
+    """Pack the .seam/ index into a portable archive for sharing or CI caching.
+
+    Produces a canonical .tar.gz archive + a sha256 checksum sidecar inside the
+    destination directory (default: project root). The archive contains seam.db
+    and, when present, the WS2a vector-store files (vectors.f32 / .ids.i64 / .meta.json).
+
+    The archive can be unpacked by a downstream consumer (e.g. `seam fetch`) so
+    agents on a new machine or in CI can skip running `seam init` from scratch.
+
+    Examples:
+      seam pack                               -- pack .seam/ from current directory
+      seam pack /path/to/project              -- pack from explicit root
+      seam pack --dest /tmp/artifacts         -- write archive to /tmp/artifacts/
+      seam pack --json                        -- structured output for CI scripts
+      seam pack --quiet                       -- terse: print only archive path + checksum
+    """
+    try:
+        check_mutual_exclusion(json_=json_, quiet=quiet)
+    except ValueError as exc:
+        emit_json_error("INVALID_INPUT", str(exc))
+
+    project_root = Path(path).resolve()
+    db_root = Path(db_dir).resolve() if db_dir else project_root
+    seam_dir = db_root / ".seam"
+
+    # Resolve destination directory for the archive.
+    # Default: project root (alongside .seam/, not inside it).
+    dest_dir = Path(dest).resolve() if dest else project_root
+
+    # Guard: seam.db must already exist (pack is a read operation on an existing index).
+    db_path = seam_dir / "seam.db"
+    if not db_path.exists():
+        if json_:
+            emit_json_error("NO_INDEX", "No index found. Run 'seam init' first.")
+        console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
+        raise typer.Exit(code=1)
+
+    # Call the artifact leaf (never raises; returns None on failure).
+    result = _pack_index_artifact(seam_dir, dest_dir=dest_dir)
+
+    if result is None:
+        if json_:
+            emit_json_error("DB_ERROR", "Failed to pack the index. See logs for details.")
+        console.print("[red]Failed to pack the index.[/red] See logs for details.")
+        raise typer.Exit(code=1)
+
+    # ── JSON mode ─────────────────────────────────────────────────────────────
+    if json_:
+        emit_json(
+            {
+                "archive": str(result.archive_path),
+                "checksum": result.checksum,
+                "checksum_file": str(result.checksum_path),
+                "size_bytes": result.size_bytes,
+            }
+        )
+        return
+
+    # ── Quiet mode — terse one-liner ──────────────────────────────────────────
+    if quiet:
+        print_quiet(f"{result.archive_path}  sha256:{result.checksum}")
+        return
+
+    # ── Rich (default) mode ───────────────────────────────────────────────────
+    table = Table(title="seam pack — complete", show_header=False, box=None)
+    table.add_column("key", style="dim", width=14)
+    table.add_column("value")
+    table.add_row("archive", str(result.archive_path))
+    table.add_row("size", f"{result.size_bytes:,} bytes")
+    table.add_row("sha256", result.checksum)
+    table.add_row("sidecar", str(result.checksum_path))
+    console.print(table)
 
 
 # ── seam sync ─────────────────────────────────────────────────────────────────
