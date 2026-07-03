@@ -75,6 +75,7 @@ from seam.indexer.embedding_index import sync_embeddings
 from seam.indexer.init_index import InitResult, run_init
 from seam.indexer.rebase import rebase_index
 from seam.indexer.sync import sync as sync_project
+from seam.indexer.vec_index import VEC_META_TABLE, index_vec
 from seam.query.clusters import cluster_members as query_cluster_members
 from seam.query.clusters import list_clusters as query_list_clusters
 from seam.query.comments import why as comments_why
@@ -83,6 +84,7 @@ from seam.query.comments import why as comments_why
 # `start` command — see _load_create_server(). This keeps the entire CLI usable with the
 # `mcp` extra UNINSTALLED (pure-CLI install): only `seam start` requires it.
 from seam.query.structure import StructureNode
+from seam.query.vector_store import compute_index_version
 from seam.server.tools import (
     handle_seam_affected,
     handle_seam_changes,
@@ -354,6 +356,7 @@ def init(
     total_synthesis: int | None = init_result.total_synthesis
     total_test_edges: int | None = init_result.total_test_edges
     total_embeddings: int | None = init_result.total_embeddings
+    total_ann: int | None = init_result.total_ann
     llm_naming_summary = init_result.llm_naming_summary
     # Reconstruct the "files found" count from indexed + skipped (walk_project
     # result was inside run_init; the total is always indexed+skipped).
@@ -393,6 +396,19 @@ def init(
     else:
         display_embeddings = f"{total_embeddings} symbols ({config.SEAM_EMBED_MODEL})"
 
+    # ANN display: None = not requested (SEAM_VEC_ANN=off or --semantic not passed);
+    # 0 = skipped (gate not met: probe failed or below MIN_ROWS);
+    # -1 = build failed; >=1 = rows indexed into vec0.
+    ann_failed = total_ann is not None and total_ann < 0
+    if total_ann is None:
+        display_ann: str | None = None  # not shown when ANN was not requested
+    elif total_ann == 0:
+        display_ann = "skipped"
+    elif ann_failed:
+        display_ann = "failed"
+    else:
+        display_ann = f"{total_ann} rows (cosine vec0)"
+
     elapsed = time.monotonic() - start_ts
 
     # Summary table
@@ -413,6 +429,8 @@ def init(
         table.add_row("test edges", display_test_edges)
     if display_embeddings is not None:
         table.add_row("embeddings", display_embeddings)
+    if display_ann is not None:
+        table.add_row("ann", display_ann)
     table.add_row("elapsed", f"{elapsed:.2f}s")
     console.print(table)
 
@@ -443,6 +461,14 @@ def init(
     if embedding_failed and total_symbols > 0:
         console.print(
             "[yellow]embeddings: failed[/yellow] "
+            "[dim](run with SEAM_LOG_LEVEL=DEBUG to see the error; "
+            "run 'seam init --semantic' again to retry)[/dim]"
+        )
+
+    # Visible yellow warning when ANN build failed.
+    if ann_failed and total_symbols > 0:
+        console.print(
+            "[yellow]ann: failed[/yellow] "
             "[dim](run with SEAM_LOG_LEVEL=DEBUG to see the error; "
             "run 'seam init --semantic' again to retry)[/dim]"
         )
@@ -555,6 +581,34 @@ def status(
             embedding_count = 0
             embedding_model_counts = {}
 
+        # ANN index status (WS2b S3). vec_meta is an ordinary table (no extension needed).
+        # Only queried when SEAM_VEC_ANN=on — when off, the table may not exist at all.
+        # WHY derive row-count from index_version: counting rows in vec_embeddings (a vec0
+        # virtual table) requires the sqlite-vec extension to be loaded. vec_meta stores the
+        # staleness token "count:max_symbol_id" — we parse the count from it for free.
+        ann_built: bool = False    # True when vec_meta has a row for the configured model
+        ann_fresh: bool = False    # True when the stored token matches current DB state
+        ann_row_count: int = 0     # Embedding rows that were in the ANN index at build time
+        if config.SEAM_VEC_ANN == "on":
+            try:
+                ann_meta = conn.execute(
+                    f"SELECT index_version FROM {VEC_META_TABLE} WHERE model = ?",
+                    (config.SEAM_EMBED_MODEL,),
+                ).fetchone()
+                if ann_meta is not None:
+                    ann_built = True
+                    stored_ver = str(ann_meta["index_version"])
+                    # index_version format: "count:max_symbol_id"
+                    try:
+                        ann_row_count = int(stored_ver.split(":")[0])
+                    except (ValueError, IndexError):
+                        ann_row_count = 0
+                    current_ver = compute_index_version(conn, config.SEAM_EMBED_MODEL)
+                    ann_fresh = stored_ver == current_ver
+            except Exception:  # noqa: BLE001
+                # vec_meta absent (ANN never built) or unreadable — not an error.
+                pass
+
         # Most recent indexed_at across all files
         last_indexed_row = conn.execute("SELECT MAX(indexed_at) FROM files").fetchone()[0]
         last_indexed_str = (
@@ -608,6 +662,12 @@ def status(
             "embedding_models": embedding_model_counts,
             # True when stored model != configured model (embeddings stale/wrong model).
             "embedding_model_mismatch": model_mismatch,
+            # ANN index status (WS2b S3); only meaningful when SEAM_VEC_ANN=on.
+            # ann_built=False when vec_meta has no row for the configured model.
+            "vec_ann": config.SEAM_VEC_ANN,
+            "ann_built": ann_built,
+            "ann_fresh": ann_fresh,
+            "ann_row_count": ann_row_count,
         }
         emit_json(stats)
         return
@@ -647,6 +707,20 @@ def status(
             "— run 'seam init --semantic' to rebuild"
         )
     table.add_row("embeddings", embeddings_display)
+
+    # ANN row — shown only when SEAM_VEC_ANN=on so the default status stays compact.
+    # Reads only from vec_meta (ordinary table); no extension load required here.
+    if config.SEAM_VEC_ANN == "on":
+        if not ann_built:
+            ann_display = "not built (run 'seam init --semantic' with SEAM_VEC_ANN=on)"
+        elif not ann_fresh:
+            ann_display = (
+                f"{ann_row_count} rows (stale) — run 'seam sync --semantic' to rebuild"
+            )
+        else:
+            ann_display = f"{ann_row_count} rows (cosine vec0, fresh)"
+        table.add_row("ann", ann_display)
+
     table.add_row("last indexed", last_indexed_str)
     table.add_row("watcher", watcher_status)
     table.add_row("freshness", freshness)
@@ -2857,6 +2931,17 @@ def sync_cmd(
                     model=config.SEAM_EMBED_MODEL,
                     batch=32,
                 )
+                # WS2b: rebuild ANN index after incremental re-embed (gated by SEAM_VEC_ANN).
+                # index_vec returns 0 when the gate is not met — never aborts the sync.
+                # WHY after sync_embeddings: the ANN index must reflect the current embedding
+                # table state, which is only stable after sync_embeddings completes.
+                if config.SEAM_VEC_ANN == "on":
+                    _ann_count = index_vec(embed_conn, model=config.SEAM_EMBED_MODEL)
+                    if not quiet and _ann_count < 0:
+                        console.print(
+                            "[yellow]ann: failed[/yellow] "
+                            "[dim](run with SEAM_LOG_LEVEL=DEBUG to see the error)[/dim]"
+                        )
             finally:
                 embed_conn.close()
             # _embed_count: 0 = skipped (fastembed absent) or nothing new, -1 = failed, >=1 = new symbols

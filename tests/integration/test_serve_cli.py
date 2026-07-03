@@ -169,6 +169,7 @@ def test_serve_auto_init_creates_index_and_starts_server(
             total_synthesis=0,
             total_test_edges=0,
             total_embeddings=None,
+            total_ann=None,
             llm_naming_summary=None,
         )
 

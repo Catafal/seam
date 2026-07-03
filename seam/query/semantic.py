@@ -51,6 +51,8 @@ import struct
 
 import seam.config as config
 from seam.analysis.embeddings import embed_query, is_available
+from seam.indexer.vec_index import VEC_META_TABLE, VEC_TABLE
+from seam.query.vec_extension import load_vec_extension, probe_vec_extension
 from seam.query.vector_store import (
     compute_index_version,
     get_artifact_dir,
@@ -61,6 +63,16 @@ from seam.query.vector_store import (
 )
 
 logger = logging.getLogger(__name__)
+
+# ── Per-process ANN capability cache ─────────────────────────────────────────
+# probe_vec_extension opens a :memory: connection and runs a CREATE/DROP dance
+# each time it is called.  That overhead is acceptable at init/sync time (called
+# once) but NOT for every semantic query (called per-request).
+#
+# WHY per-process (not per-call): SQLite extension-loading capability is a
+# compile-time property of the Python build — it cannot change within a process
+# lifetime.  None = not yet probed; True/False = cached verdict.
+_vec_probe_cache: bool | None = None
 
 
 # ── rrf_merge ─────────────────────────────────────────────────────────────────
@@ -275,7 +287,19 @@ def _semantic_candidates_impl(
             )
         return []
 
-    # Step 4: WS2a — prefer the mmap vector store when SEAM_VECTOR_STORE=on.
+    # Step 4a: WS2b S3 — vec0 KNN tier (FIRST in the three-tier cascade: vec0 → mmap → SQL).
+    # SCAFFOLD NOTE: sqlite-vec v0.1.9 is exact brute-force KNN (~5× slower than numpy mmap).
+    # SEAM_VEC_ANN defaults to "off"; this path is for forward-compat with future sqlite-vec
+    # approximate indexing. Returns None (not []) on any structural issue — falls through to
+    # the faster mmap tier transparently. When SEAM_VEC_ANN is off (default), _try_vec_path
+    # returns None immediately → byte-identical to pre-WS2b behaviour.
+    if config.SEAM_VEC_ANN == "on":
+        vec_result = _try_vec_path(conn, query_vec, model=model, limit=limit)
+        if vec_result is not None:
+            return vec_result
+        # vec_result is None → ANN unavailable/stale/error → fall to mmap/SQL
+
+    # Step 4b: WS2a — prefer the mmap vector store when SEAM_VECTOR_STORE=on.
     # The mmap path is faster (no per-query blob decode) and recall-complete (no
     # SEAM_SEMANTIC_SCAN_CAP truncation — the artifact was written from ALL rows at
     # embed time). Falls back transparently to the SQL path on any issue.
@@ -371,6 +395,142 @@ def _semantic_candidates_impl(
     # Step 7: Sort by score descending, return top-k
     scored.sort(key=lambda t: t[1], reverse=True)
     return scored[:limit]
+
+
+def _try_vec_path(
+    conn: sqlite3.Connection,
+    query_vec: bytes,
+    *,
+    model: str,
+    limit: int,
+) -> list[tuple[int, float]] | None:
+    """Attempt to serve semantic candidates from the sqlite-vec vec0 KNN table.
+
+    This is the FIRST tier in the three-tier cascade (vec0 KNN → mmap → SQL).
+    Returns a list on success (may be empty — a valid "searched, found nothing" result).
+    Returns None on any structural issue so the caller falls through to the next tier.
+
+    WHY this is a forward-compatible scaffold (not a performance feature today):
+        sqlite-vec v0.1.9 performs EXACT brute-force KNN — no HNSW/IVF. The vec0
+        tier is currently ~5× SLOWER than the mmap numpy path. When sqlite-vec ships
+        a true approximate index, this function will transparently serve fast ANN
+        results without any code change. SEAM_VEC_ANN defaults to "off" for this
+        reason; the mmap tier (which is faster) is tried next when vec0 returns None.
+
+    WHY None vs []:
+        None = "vec0 tier structurally unavailable; please try the next fallback".
+        []   = "vec0 tier searched successfully; no close neighbours found".
+        This matches the same contract as _try_mmap_path — both tiers use it.
+
+    Failure modes that return None (NOT []):
+        - SEAM_VEC_ANN != "on"  (master switch off → full bypass)
+        - sqlite-vec probe fails (extension not loadable on this platform/build)
+        - vec_meta table absent  (vec0 index not yet built)
+        - no vec_meta row for the requested model  (model never indexed)
+        - staleness: stored index_version != current compute_index_version()
+        - extension load fails on the caller's conn
+        - any sqlite3.Error during the KNN query
+
+    Score semantics:
+        vec0 uses cosine DISTANCE (0 = identical, 2 = opposite).
+        fastembed outputs normalised embeddings, so:
+            cosine_distance = 1 - cosine_similarity
+            → score = 1.0 - distance  maps vec0 results to [−1, 1] similarity.
+        This matches the scale returned by the mmap and SQL tiers.
+    """
+    global _vec_probe_cache  # noqa: PLW0603 (intentional per-process cache)
+
+    # ── Gate 1: master switch ─────────────────────────────────────────────────
+    if config.SEAM_VEC_ANN != "on":
+        return None
+
+    # ── Gate 2: capability probe (cached per process) ─────────────────────────
+    # probe_vec_extension is expensive (CREATE/DROP on a :memory: connection).
+    # Cache the result: the capability cannot change within a process lifetime.
+    if _vec_probe_cache is None:
+        _vec_probe_cache = probe_vec_extension(conn)
+    if not _vec_probe_cache:
+        logger.debug("_try_vec_path: sqlite-vec probe failed — using mmap/SQL fallback")
+        return None
+
+    # ── Gate 3: vec_meta freshness check (no extension required for this read) ─
+    # vec_meta is an ordinary SQLite table written by S2 index_vec().
+    # Reading it does NOT require the extension to be loaded — safe on all platforms.
+    try:
+        meta_row = conn.execute(
+            f"SELECT index_version FROM {VEC_META_TABLE} WHERE model = ?",
+            (model,),
+        ).fetchone()
+    except sqlite3.Error:
+        # Table absent (ANN index never built) or schema issue → fall through.
+        logger.debug(
+            "_try_vec_path: vec_meta table absent or unreadable for model=%r "
+            "— using mmap/SQL fallback",
+            model,
+        )
+        return None
+
+    if meta_row is None:
+        # Table exists but has no row for this model — ANN not built for it yet.
+        logger.debug(
+            "_try_vec_path: no vec_meta row for model=%r — using mmap/SQL fallback",
+            model,
+        )
+        return None
+
+    # ── Gate 4: staleness check ───────────────────────────────────────────────
+    # compute_index_version returns "count:max_symbol_id" — the same token stored
+    # at ANN build time.  A mismatch means embeddings changed since the ANN index
+    # was last built → it is stale → fall through to mmap/SQL (always correct).
+    stored_version = str(meta_row[0])
+    current_version = compute_index_version(conn, model)
+    if stored_version != current_version:
+        logger.debug(
+            "_try_vec_path: stale ANN index for model=%r "
+            "(stored=%r, current=%r) — using mmap/SQL fallback",
+            model,
+            stored_version,
+            current_version,
+        )
+        return None
+
+    # ── Load extension onto conn for KNN query ────────────────────────────────
+    # load_vec_extension is idempotent (safe to call even if already loaded).
+    # It enables → loads → disables extension loading in one guarded sequence.
+    if not load_vec_extension(conn):
+        # load_vec_extension already logged a WARNING.
+        logger.debug("_try_vec_path: extension load failed — using mmap/SQL fallback")
+        return None
+
+    # ── KNN query via vec0 MATCH syntax ──────────────────────────────────────
+    # vec0 returns rows ordered by cosine distance ascending (nearest first).
+    # rowid == symbol_id (S2 stored it that way).
+    try:
+        knn_rows = conn.execute(
+            f"SELECT rowid, distance FROM {VEC_TABLE} "
+            f"WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
+            (query_vec, limit),
+        ).fetchall()
+    except sqlite3.Error as exc:
+        logger.warning(
+            "_try_vec_path: KNN query failed (%s: %s) — using mmap/SQL fallback",
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+    # ── Convert distance → cosine similarity ─────────────────────────────────
+    # vec0 cosine distance = 1 - cosine_similarity (for normalised vectors).
+    # Invert to get the same similarity scale as the mmap/SQL paths.
+    # Result is already ordered best-first (lowest distance = highest similarity).
+    result = [(int(row[0]), 1.0 - float(row[1])) for row in knn_rows]
+
+    logger.debug(
+        "_try_vec_path: ANN path returned %d result(s) for model=%r",
+        len(result),
+        model,
+    )
+    return result
 
 
 def _try_mmap_path(

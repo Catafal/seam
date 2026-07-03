@@ -62,10 +62,11 @@ Three properties define it:
 Published on PyPI as **`seam-code`** — the PyPI name `seam` belongs to an unrelated package, so the *distribution* is `seam-code` while the import package and the `seam` command keep the short name.
 
 ```bash
-pip install seam-code              # CLI only
-pip install 'seam-code[server]'    # + the MCP server (seam start)
-pip install 'seam-code[semantic]'  # + semantic search (fastembed, ONNX/CPU, ~67 MB model on first run)
-pip install 'seam-code[web]'       # + the Seam Explorer web UI (FastAPI)
+pip install seam-code                    # CLI only
+pip install 'seam-code[server]'          # + the MCP server (seam start)
+pip install 'seam-code[semantic]'        # + semantic search (fastembed, ONNX/CPU, ~67 MB model on first run)
+pip install 'seam-code[semantic-ann]'    # + ANN acceleration for semantic search (sqlite-vec KNN)
+pip install 'seam-code[web]'             # + the Seam Explorer web UI (FastAPI)
 ```
 
 Or with **npx** (JS/TS projects, no Python toolchain required):
@@ -297,6 +298,33 @@ Edges are keyed by **symbol name**, not row id — this is what lets the watcher
 
 **Semantic search.** Opt-in local embeddings (fastembed, ONNX on CPU) merge with FTS5 via Reciprocal Rank Fusion, so `"retry logic"` can surface `_backoff_with_jitter` even with no shared token. The model downloads once, then runs 100% locally.
 
+**KNN scaffold via sqlite-vec (WS2b).** The optional `[semantic-ann]` extra wires in `sqlite-vec` as a third tier in the read path (**vec0 KNN → mmap → SQL brute-force**), each falling through to the next on any structural issue. This tier is **off by default** (`SEAM_VEC_ANN=off`) and ships as a **forward-compatible scaffold**, not a performance improvement today.
+
+> **Benchmark reality (sqlite-vec v0.1.9):** sqlite-vec's `vec0` virtual table performs **exact** brute-force KNN — it has no approximate-nearest-neighbour index (no HNSW, no IVF). Measured on synthetic 384-dim float32 embeddings it is **~5× slower** than the built-in numpy matmul path at every scale tested (10k–250k rows), with perfect recall@10 = 1.000. Enable `SEAM_VEC_ANN=on` only if you are testing the scaffold or waiting for sqlite-vec to ship a true approximate index.
+>
+> | N rows | numpy BF ms | sqlite-vec ms | speedup | recall@10 |
+> |-------:|------------:|--------------:|--------:|----------:|
+> | 10,000 | 0.588 | 3.919 | 0.2× | 1.000 |
+> | 50,000 | 5.903 | 20.496 | 0.3× | 1.000 |
+> | 100,000 | 7.053 | 41.609 | 0.2× | 1.000 |
+> | 250,000 | 19.740 | 109.373 | 0.2× | 1.000 |
+
+When sqlite-vec ships a true approximate index (HNSW/IVF), enabling `SEAM_VEC_ANN=on` will transparently upgrade from exact to approximate without any re-index of the embeddings table — the scaffold is there, waiting. To opt in:
+
+```bash
+pip install 'seam-code[semantic-ann]'
+SEAM_VEC_ANN=on seam init --semantic   # builds embeddings + vec0 KNN table
+```
+
+Two knobs govern the vec0 tier:
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `SEAM_VEC_ANN` | `off` | Master switch. `on` enables the vec0 KNN tier (off = byte-identical to pre-WS2b). **Leave `off` until sqlite-vec ships approximate indexing.** |
+| `SEAM_VEC_ANN_MIN_ROWS` | `50000` | Minimum embedding count before the vec0 table is built. Forward-compat gate; does not indicate a performance crossover today (vec0 is currently slower at all scales). |
+
+**Packaging caveat.** `sqlite-vec` is a native C extension. Some Python builds — notably the **macOS system Python** — disable `conn.enable_load_extension()` at compile time. On those builds Seam detects the failure, logs a single clear notice, and falls back to the mmap/brute-force path automatically. Nothing crashes; no results are lost. To use the vec0 tier on macOS, install Python via [python.org](https://www.python.org/downloads/) or `brew install python` (both enable extension loading), or run via `uv` (which uses its own Python build that supports extension loading).
+
 **Staleness banner.** Graph-traversal tools attach an `index_status` banner when the index has drifted from disk — so an agent is never silently handed wrong blast-radius answers.
 
 ---
@@ -379,12 +407,15 @@ These are the non-negotiables — and they are guarantees to the user, not just 
 ## Development
 
 ```bash
-uv sync --dev      # install dev dependencies
-make gate          # lint (ruff) + typecheck (mypy) + tests — must be green before every commit
-make fmt           # format + autofix (not part of the gate)
-make build-web     # build the Explorer SPA into seam/_web/ (requires Node.js — build-time only)
-make eval          # run the recall-regression harness
-make test-npm      # run the npm shim vitest suite (requires Node.js ≥18)
+uv sync --dev              # install dev dependencies
+make gate                  # lint (ruff) + typecheck (mypy) + tests — must be green before every commit
+make fmt                   # format + autofix (not part of the gate)
+make build-web             # build the Explorer SPA into seam/_web/ (requires Node.js — build-time only)
+make eval                  # run the recall-regression harness
+make test-npm              # run the npm shim vitest suite (requires Node.js ≥18)
+make bench-semantic        # semantic recall benchmark — needs [semantic] extra + seam init --semantic
+make bench-semantic-ann    # ANN scale benchmark (brute-force vs KNN latency + recall) — needs [semantic-ann] extra
+make soak                  # sustained mixed read load (P5.5 diagnostics harness)
 ```
 
 ### Publishing the npm shim

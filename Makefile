@@ -1,4 +1,4 @@
-.PHONY: gate lint typecheck test install install-dev build-web bench-semantic eval eval-generate soak clean
+.PHONY: gate lint typecheck test install install-dev build-web bench-semantic bench-semantic-ann eval eval-generate soak clean
 
 # Gate — must pass before every commit (no exceptions)
 gate: lint typecheck test
@@ -63,6 +63,14 @@ test-npm:
 	# node_modules is gitignored, so `npm test` alone fails with "vitest: not found".
 	# `npm ci` uses the committed package-lock.json (reproducible, no lockfile drift).
 	cd pkg/npm && npm ci --silent && npm test
+
+# ANN scale benchmark — brute-force vs sqlite-vec KNN latency + recall@K on synthetic embeddings.
+# Prerequisites: pip install 'seam-code[semantic-ann]'  (adds sqlite_vec + numpy)
+# Runs on SYNTHETIC data — no existing index, no model download needed.
+# NOT part of `make gate` (mirrors bench-semantic / soak — local/optional-CI only).
+# Pass --sizes to measure larger scales: make bench-semantic-ann ARGS="--sizes 10000 50000 100000"
+bench-semantic-ann:
+	uv run python benchmarks/semantic_ann_scale.py $(ARGS)
 
 # Sustained mixed read-load soak against the current index (P5.5).
 # Surfaces leaks / slow-query paths locally. Run with diagnostics on to also
