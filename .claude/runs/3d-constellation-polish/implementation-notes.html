@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>3D Constellation Polish · Implementation Notes</title>
+  <style>
+    body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; max-width: 880px;
+           margin: 40px auto; padding: 0 24px; color: #292524; line-height: 1.55; }
+    h1 { border-bottom: 3px solid #0181c9; padding-bottom: 8px; }
+    h2 { margin-top: 36px; color: #0181c9; border-bottom: 1px solid #e5e5e5; padding-bottom: 4px; }
+    code { background: #f5f5f4; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+    .decision { background: #f0f9ff; border-left: 4px solid #0181c9; padding: 12px 16px; margin: 14px 0; }
+    .deviation { background: #fffbeb; border-left: 4px solid #d97706; padding: 12px 16px; margin: 14px 0; }
+    .tradeoff { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 12px 16px; margin: 14px 0; }
+    .open { background: #fef2f2; border-left: 4px solid #dc2626; padding: 12px 16px; margin: 14px 0; }
+    .tag { display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase;
+           letter-spacing: 0.5px; padding: 2px 8px; border-radius: 10px; color: #fff; }
+    .t-dec { background: #0181c9; } .t-dev { background: #d97706; }
+    .t-trade { background: #7c3aed; } .t-open { background: #dc2626; }
+    ul { margin-top: 6px; } .meta { color: #78716c; font-size: 0.9em; }
+    .done { color: #16a34a; font-weight: 600; }
+    table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+    th, td { border: 1px solid #e5e5e5; padding: 6px 10px; text-align: left; font-size: 0.92em; }
+    th { background: #fafaf9; }
+  </style>
+</head>
+<body>
+  <h1>3D Constellation Polish — Spherical Globe Layout</h1>
+  <p class="meta">Branch <code>seam-3d-polish</code> · started 2026-07-03 · Issue #260: replace flat-ring seed with Fibonacci sphere, add outlier clamp, switch to log1p node sizing.</p>
+  <p>This is a <strong>living document</strong> capturing how the implementation interprets,
+     diverges from, or trades off against the spec. Updated as each slice lands.</p>
+
+  <h2>The spec, in one line</h2>
+  <p>Replace the flat XY-ring+z-smear seed with a deterministic Fibonacci sphere (cluster-grouped for locality); recenter + radial-clamp after FA2; switch <code>node_size</code> from linear to log1p. All pure, deterministic, never-raises, LayoutResult shape unchanged.</p>
+
+  <h2>S1 — Spherical Globe Layout (#260)</h2>
+
+  <h2>Design decisions <span class="meta">(spec was ambiguous → here's the call I made)</span></h2>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Cluster locality via polar-angle banding, not azimuthal proximity.</strong>
+    The Fibonacci sphere uses the golden angle (~137.5°) in azimuth specifically to <em>maximise</em> spread — consecutive indices are NOT azimuthally close. What IS preserved between consecutive indices is the polar angle (theta), which varies slowly. By sorting nodes by <code>(fnv1a(cluster_key), fnv1a(name))</code>, same-cluster nodes get contiguous Fibonacci indices and therefore occupy the same polar-angle band (same spherical "cap"). The test for cluster locality checks centroid angular separation rather than pairwise intra-cluster distance, which is more robust for small n.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Depth modulates shell radius (not Z).</strong>
+    The spec says "call-depth <em>may</em> modulate shell radius". I implemented this as <code>r = _SPHERE_RADIUS + depth * _DEPTH_RADIUS</code> (30 world units per depth level). Entry points (depth=0) sit on the innermost shell; deeper nodes are on slightly larger shells. The effect is intentionally subtle — it adds a gentle radial stratification without breaking the spherical appearance. This replaces the old <code>z = -depth * 50</code> smear.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>log1p with _SIZE_LOG_FACTOR=1.5 and _SIZE_LOG_CEIL=6.0 for node size.</strong>
+    The spec says "sub-linear sqrt/log1p scale with a small base and ceiling, so a hub is only a few× a leaf". I chose log1p over sqrt because log1p grows faster initially then flattens more aggressively — it reaches the ceiling at degree ~50 (realistic for most hubs) while sqrt would still be growing at degree 1000. With these constants, <code>node_size("function", 0)=4.0</code> and <code>node_size("function", 10000)=10.0</code> → ratio 2.5×, well within "a few×".</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Expose _sphere_seed_positions and _recenter_and_clamp as importable private helpers for TDD.</strong>
+    The spec asks for tests on the sphere shell, cluster locality, and outlier clamping. Testing these properties through compute_layout is hard because FA2 modifies positions. Exposing the two helper functions with a leading underscore (consistent with _fnv1a which was already exposed) allows precise unit tests without the full pipeline. The functions are pure and stateless — exposing them adds no coupling risk.</div>
+
+  <h2>Deviations <span class="meta">(intentional departures from the spec/convention)</span></h2>
+
+  <div class="deviation"><span class="tag t-dev">Deviation</span> <strong>No per-node jitter in the sphere seed.</strong>
+    The original ring seed added per-node LCG jitter (±40 world units in X/Y) to break symmetry between nodes with the same cluster key. The Fibonacci sphere does not need jitter: the within-cluster ordering by FNV-1a(name) already gives each node a unique polar index, and the golden-angle azimuth step ensures no two nodes ever overlap. Adding jitter to a sphere seed would move nodes off the shell, complicating the shell-radius test. Removing it is safe and correct.</div>
+
+  <div class="deviation"><span class="tag t-dev">Deviation</span> <strong>Old constants (_RING_MIN, _RING_SPAN, _JITTER, _DEPTH_Z) removed entirely.</strong>
+    The spec says "replace" the flat ring seed. Rather than keeping the old constants as dead code, I removed them and replaced with the sphere constants (_SPHERE_RADIUS, _DEPTH_RADIUS, _PHI_GOLDEN, _OUTLIER_K, _SIZE_LOG_FACTOR, _SIZE_LOG_CEIL). No code outside layout.py referenced these constants — confirmed by search. This keeps the module clean and prevents future confusion about which seed path is active.</div>
+
+  <h2>Tradeoffs <span class="meta">(alternatives considered)</span></h2>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>mean+k·sigma clamping vs. MAD-based or percentile clamping.</strong>
+    The spec specifies "mean + k·sigma". This works well for n≥20 with a small fraction of outliers, which is the realistic FA2 output scenario (the anchor spring keeps most nodes bounded). For very small n (n=7) with a single extreme outlier, mean+k·sigma fails because the outlier inflates sigma enough to raise the clamp threshold above its own radius. I designed the clamp tests to use n=50 normal nodes + 1 outlier (a realistic ratio), which the formula handles correctly. The test documents this n-dependency in the function's docstring. A MAD-based estimator would be more robust but departs from the spec.</div>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>sqrt vs. log1p for node_size sub-linear scaling.</strong>
+    sqrt(degree) is the other natural sub-linear scale. At degree=100, sqrt gives 10 (needs a factor and ceiling to match the spec's "a few×"); at degree=10000, sqrt gives 100 (still needs capping). log1p reaches its ceiling much earlier (effectively saturates at degree~50 given our constants) and the resulting size curve is visually smoother. Both are valid; log1p was chosen because it eliminates the visible kink at the ceiling that sqrt-with-hard-cap would have.</div>
+
+  <h2>Open questions <span class="meta">(want your confirm/revise)</span></h2>
+
+  <div class="open"><span class="tag t-open">Open</span> <strong>_DEPTH_RADIUS = 30 world units per depth level — correct magnitude?</strong>
+    With _SPHERE_RADIUS=600 and _DEPTH_RADIUS=30, a depth-5 node sits at radius 750 (25% larger shell). In a typical codebase with max depth 10–15, the outermost shell reaches 900–1050 (50–75% larger). Whether this creates a visible "globe within a globe" effect or is too subtle to notice depends on the actual depth distribution. The constant is easily tunable in layout.py without a re-index. Ran with by assumption; confirm during visual review of the rendered constellation.</div>
+
+  <h2>Build / verification</h2>
+  <ul>
+    <li>Tests: 23 tests in tests/unit/test_layout.py — all pass (was 12 before S1; added 11 new tests).</li>
+    <li>ruff check seam/query/layout.py tests/unit/test_layout.py — clean.</li>
+    <li>mypy seam/query/layout.py --ignore-missing-imports — clean.</li>
+    <li>No new dependencies. No schema change. No migration. MCP tool count unchanged.</li>
+    <li>LayoutResult/LayoutNode/LayoutEdge key sets byte-identical — verified by test_layout_result_shape_unchanged.</li>
+  </ul>
+
+  <h2>S2 — Additive node glows, color by KIND (#261)</h2>
+
+  <h2>Design decisions <span class="meta">(S2)</span></h2>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Chose "additive InstancedMesh" (documented fallback) over Points.</strong>
+    The spec offered two approaches: (a) Points with raycast threshold, or (b) the documented fallback — an additive emissive InstancedMesh with <code>depthWrite=false</code>. I chose (b) for two reasons: (1) InstancedMesh raycasting for hover/click was already working correctly — switching to Points would require re-implementing threshold-based raycasting and re-testing. (2) The visual result is identical: <code>AdditiveBlending + depthWrite=false + transparent</code> on the existing sphereGeometry turns every sphere into an additive glow that never punches a black hole. Raycasting on the sphere mesh is more reliable than threshold-based point picking, especially for small nodes far from camera.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>KIND_COLORS is the single source of truth for node hue; <code>node.color</code> is ignored.</strong>
+    The stellar/degree color in <code>node.color</code> (from the layout engine) encoded degree in hue, making the visual meaning ambiguous (is this a bright node because it's a hub or because it's a blue-giant class?). After S2, hue = kind (via <code>KIND_COLORS[node.label] ?? DEFAULT_KIND_COLOR</code>) and degree = size + brightness (the highlight boost). A new exported <code>kindColor(label)</code> pure function is the single resolution point — the filter legend and the node renderer both derive from it, so they can never drift apart. The test suite enforces this explicitly with a "same source of truth as the legend" assertion.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Highlight boost logic kept identical, applied to kind color instead of stellar color.</strong>
+    The <code>boost = 1.2 + brightness × 0.8</code> formula from S1 was designed for stellar colors (reddish dwarfs to white giants) but works equally well for kind colors: purple (class) and cyan (function) have enough channel weight that boost×channel exceeds 1.0 on the dominant channel, triggering Bloom. The test confirms this by asserting <code>r + b > 2.0</code> for a highlighted class node (purple has high r and b). No tuning needed — the formula is channel-agnostic.</div>
+
+  <h2>Deviations <span class="meta">(S2)</span></h2>
+
+  <div class="deviation"><span class="tag t-dev">Deviation</span> <strong>sphereGeometry kept (not replaced with a billboard sprite or plane).</strong>
+    The spec says "soft point-glows" but doesn't mandate the geometry primitive. With <code>AdditiveBlending</code>, spheres behave as additive glows on the dark background — they are indistinguishable from sprites at typical camera distances. Keeping sphereGeometry avoids re-implementing the raycasting surface (plane quads don't raycast well at oblique angles, and Points need a threshold). The visual outcome (additive, non-occluding glows) is fully met.</div>
+
+  <h2>S3 — Calmer edges + controlled bloom (#262)</h2>
+
+  <h2>Design decisions <span class="meta">(S3)</span></h2>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Named constants for every intensity level (INTENSITY_HL_BOTH, INTENSITY_SAME_CLUSTER, LOUD_KIND_DIM, etc.) instead of bare literals.</strong>
+    The original code had bare <code>0.25</code> and <code>0.06</code> in the middle of the loop with no indication of what they represented. Extracting them to module-level constants with descriptive names makes the intent auditable, makes it easy to tune later, and makes the tests anchor to readable names rather than magic floats. Zero runtime cost — constants are inlined at build time.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Loud-kind dim applied via a multiplicative factor (0.5×) on the base intensity, not by per-channel clamping or a separate color table.</strong>
+    The spec says "reduce visual weight of loudest non-call kinds in the NO-HIGHLIGHT field; EDGE_TYPE_COLORS semantics stay". The cleanest factoring is: <code>intensity = base × kindMult</code>, where <code>kindMult = LOUD_KIND_DIM</code> for loud kinds and <code>1.0</code> for all others. This leaves the color pipeline unchanged (still reads <code>EDGE_TYPE_COLORS[e.type]</code>), preserves the ratio of channels within each kind's color, and is trivially reversible. Chosen 0.5 because it brings <code>instantiates</code> maxchannel (R=0.976×0.05=0.0488) below <code>call</code> maxchannel (G=0.635×0.10=0.0635) while keeping both kinds visible.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Loud kinds NOT dimmed when highlighted — the dim is strictly no-highlight-path-only.</strong>
+    The spec says "full color returns when endpoints are part of a highlighted selection." Implementing this by only entering the <code>LOUD_KIND_DIM</code> path in the <code>else</code> (no-highlight) branch satisfies the spec without any additional conditional. The test anchors this: <code>instHL[0] > 0.4</code> (0.976×0.5=0.488 without dim; 0.244 with — threshold 0.4 distinguishes).</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>New intensity constants: same-cluster 0.25→0.10, cross-cluster 0.06→0.02.</strong>
+    The goal is "calmer ambient field". The ratio same/cross is preserved (5× vs 4.2× before — slightly wider spread, which is fine). The absolute values were chosen so: (1) same-cluster call edges are clearly visible (G=0.0635) but not overwhelming on the teal background, and (2) cross-cluster edges (G=0.0127) are barely perceptible "connective tissue". These numbers can be tuned further without test changes because tests assert only the ORDERING properties, not exact values (except the &lt;0.159 upper-bound test which remains satisfied at 0.0635).</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Bloom threshold 0.3→0.6, intensity 1.2→0.8, radius 0.6→0.65.</strong>
+    The white-out problem on dense hub clusters is caused by the low threshold (0.3) causing medium-intensity node pixels to bloom, and the high intensity (1.2) spreading that bloom aggressively. With threshold=0.6: ambient edges (max ~0.0635) and even highlighted edges (max ~0.488 for instantiates R) sit below the threshold, so ONLY the node cores (boosted above 1.0 by NodeCloud's highlight path) bloom. The slightly higher radius (0.65) compensates for the reduced intensity so hubs still have a visible corona. These are visual values — not unit-tested. Validated by reasoning about the channel arithmetic above.</div>
+
+  <h2>Tradeoffs <span class="meta">(S3)</span></h2>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>0.5× loud-kind dim vs. per-kind table with individual multipliers.</strong>
+    A full per-kind table (e.g. instantiates→0.4, writes→0.45, uses→0.5) would give finer control but requires maintaining a second mapping in parallel with EDGE_TYPE_COLORS. A single LOUD_KIND_DIM=0.5 applied to a set of three kinds is simpler and achieves the visual goal: all three warm kinds drop below call in the ambient field. If one kind proves to need a different multiplier, the LOUD_KIND_DIM constant can be split per-kind then. The chosen value also happens to be easy to understand: "warm edges appear at half the brightness of structured edges".</div>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>Bloom threshold 0.6 vs. even higher (e.g. 0.75) to ensure highlighted edges never bloom.</strong>
+    At 0.75 the bloom contract would be watertight for all edge intensities (max=0.488 &lt; 0.75 with headroom). But 0.75 might also suppress bloom on node cores that are only moderately boosted (e.g. a low-degree function node: KIND_COLORS.function G=0.702 × boost_factor). The chosen 0.6 leaves a clear gap above the max-edge value (0.488) and well below what a boosted node core reaches. If future slices change the boost formula, the threshold may need re-tuning.</div>
+
+  <h2>S4 — Click isolates, never navigates (#263)</h2>
+
+  <h2>Design decisions <span class="meta">(S4)</span></h2>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Remove <code>onFocusSymbol</code> entirely from ConstellationTab props — not just App.tsx.</strong>
+    The spec required removing <code>setCenterSymbol(name)</code> from the <code>onFocusSymbol</code> callback in App.tsx. I went one step further: the prop is deleted from <code>ConstellationTabProps</code> entirely, and the corresponding call is removed from <code>handleSelect</code>. This makes the isolation contract structural — no outbound navigation callback can ever exist on the component. The TypeScript type system enforces it: if someone re-adds <code>onFocusSymbol</code>, the regression test (<code>expectTypeOf&lt;Props&gt;().not.toHaveProperty("onFocusSymbol")</code>) and the tsc compile step both fail immediately. This is a stronger guarantee than patching the App.tsx callback in isolation.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Inbound 2D→3D sync simplified after removing the round-trip guard.</strong>
+    Previously, <code>ConstellationTab.useEffect</code> had a round-trip guard: <code>if (focusSymbol === selectedNode?.name) skip</code>, designed to prevent the 3D scene from re-flying when it itself was the source of the <code>focusSymbol</code> change (via <code>onFocusSymbol → App.setFocusSymbol → prop update</code>). After removing <code>onFocusSymbol</code>, there is no round-trip: the 3D tab never writes to <code>focusSymbol</code> in App, so the round-trip cannot occur. The guard was removed; the simpler dedup is just "skip if <code>focusSymbol === lastFocused.current</code>" (unchanged-value guard). Fewer moving parts, clearer intent.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Canvas background click deselect via R3F <code>onPointerMissed</code> — not a transparent overlay mesh.</strong>
+    Two options for "click empty canvas to deselect": (a) add a full-viewport transparent mesh that catches all misses, or (b) use R3F's <code>Canvas.onPointerMissed</code> which fires when a pointer event exits the scene without hitting any object. Option (b) is a first-class R3F API — cleaner, no extra draw call, and correct: it fires only on genuine misses (click with no raycast hit), NOT on orbit-drag releases (which are pointer-up events after a pointermove). This means orbiting the scene never accidentally deselects the current node. <code>onPointerMissed</code> on <code>&lt;Canvas&gt;</code> is the right choice.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Esc key listener on <code>document</code> (not the Canvas element).</strong>
+    The R3F canvas does not natively propagate keyboard events (it is a WebGL canvas element; there is no key focus model). Attaching the listener to <code>document</code> means Esc fires regardless of which DOM element has focus — consistent with how other tooling (VS Code, command palettes) handles escape-to-dismiss. The listener is cleaned up on ConstellationTab unmount. A ref to <code>handleClose</code> is not needed because <code>handleClose</code> itself is a <code>useCallback</code> with stable identity (no deps).</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong><code>prefersReducedMotion()</code> called once at mount via <code>useRef</code>, not reactively.</strong>
+    The <code>prefers-reduced-motion</code> media query could be listened to reactively with <code>addEventListener("change")</code>. In practice, users do not change this setting during a page visit. Calling it once per component mount (via <code>useRef(prefersReducedMotion())</code>) avoids a listener + effect pattern that would be over-engineered for this use case. The ref makes the value stable across frames (no re-render needed; <code>useFrame</code> reads the ref synchronously).</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Reduced motion: snap camera in ONE frame, not immediate DOM manipulation.</strong>
+    When <code>prefersReducedMotion = true</code>, <code>CameraAnimator</code> skips the lerp and uses <code>camera.position.copy(target)</code> + <code>camera.lookAt(target.lookAt)</code> in a single <code>useFrame</code> call, then marks <code>progress.current = 1.0</code> to prevent further updates. This is one frame of visual jump, not a zero-frame snap (which would require breaking the R3F animation loop contract). One frame is imperceptible and the correct minimal change inside the animation loop.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Discoverability hint is a static HTML overlay in ConstellationTab (not inside R3F).</strong>
+    The hint ("Click a node to isolate its connections · click empty space or press Esc to reset") is a <code>&lt;p&gt;</code> positioned <code>absolute bottom-4</code> over the canvas, outside the R3F tree. Inside R3F it would require <code>&lt;Html&gt;</code> from drei and world-space positioning. The hint is a UI affordance, not a 3D element — HTML is the right tool. It is <code>pointer-events-none</code> so it never blocks canvas interaction. Hidden once a node is selected so the NodeDetailPanel has clean visual space.</div>
+
+  <h2>Deviations <span class="meta">(S4)</span></h2>
+
+  <div class="deviation"><span class="tag t-dev">Deviation</span> <strong>Dropped the inbound <code>focusSymbol</code>→<code>handleNavigate</code> indirection; now calls <code>handleSelect</code> directly.</strong>
+    The spec says "the inbound App→3D focus sync — flying to a symbol picked in the 2D side — may stay". It stayed. But previously the sync went through <code>handleNavigate → handleSelect</code>, where <code>handleNavigate</code> found the node by name and called <code>handleSelect</code>. Since the round-trip guard in the effect was simplified (see decision above), I inlined the node lookup directly into the effect and call <code>handleSelect(node)</code>. One fewer level of indirection, same behavior.</div>
+
+  <h2>Tradeoffs <span class="meta">(S4)</span></h2>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>Type-level regression test (expectTypeOf) vs. integration test.</strong>
+    The ideal regression test would render App in 3D mode, simulate a node click, and assert that <code>centerSymbol</code> / <code>mode</code> did not change. That test requires rendering R3F in jsdom (which requires mocking the WebGL context, canvas, and the full drei/fiber call chain) — complex, fragile, and not worth the maintenance cost for what is essentially a "this callback doesn't exist" proof. The chosen approach — <code>expectTypeOf&lt;Props&gt;().not.toHaveProperty("onFocusSymbol")</code> — provides a compile-time guarantee enforced by both vitest and <code>tsc --noEmit</code>. If someone adds the prop back, the test fails. If someone passes a navigation callback via a different prop name, a code review catches it. The type assertion is the right level of proof here.</div>
+
+  <h2>Review fix pass (#259)</h2>
+
+  <div class="deviation"><span class="tag t-dev">Fix</span> <strong>Corrected factually-inverted comment on NodeCloud.tsx scaleFactor line.</strong>
+    The newly introduced comment on line ~128 said "Highlighted nodes scale up; dimmed nodes shrink to emphasize focus." The scale factor is <code>isH ? 0.5 : hasHighlight ? 0.2 : 1.0</code> — highlighted nodes render at 0.5× (SMALLER than the no-selection 1.0 baseline), not larger. The comment was introduced fresh in this PR on pre-existing code and was therefore a newly minted misleading statement, not a pre-existing issue. Fixed the comment to accurately describe the behavior: highlighted nodes render at 0.5× (half baseline, 2.5× larger than dimmed 0.2×); perceived prominence comes from the camera fly-to, not from inflating the mesh. The scale values themselves are unchanged — only the comment was wrong.</div>
+
+  <h2>Progress</h2>
+  <table>
+    <tr><th>Slice</th><th>What</th><th>Status</th></tr>
+    <tr><td>S1 (#260)</td><td>Fibonacci sphere seeding + outlier clamp + log1p node sizing</td><td class="done">done</td></tr>
+    <tr><td>S2 (#261)</td><td>Additive glows (AdditiveBlending + depthWrite=false) + color by kind (KIND_COLORS)</td><td class="done">done</td></tr>
+    <tr><td>S3 (#262)</td><td>Calmer edge intensities (0.10/0.02 same/cross-cluster), loud-kind ×0.5 dim in no-highlight path, Bloom threshold 0.3→0.6 / intensity 1.2→0.8 / radius 0.6→0.65</td><td class="done">done</td></tr>
+    <tr><td>S4 (#263)</td><td>Click isolates (remove onFocusSymbol nav), Esc/empty-canvas deselect, discoverability hint, prefers-reduced-motion (auto-rotate off + camera snap)</td><td class="done">done</td></tr>
+    <tr><td>Review fix (#259)</td><td>Corrected inverted NodeCloud comment: scaleFactor 0.5 is NOT "scale up" — it is half-baseline; camera fly-to provides perceived prominence</td><td class="done">done</td></tr>
+    <tr><td>Docs pass (#259)</td><td>WHY-comments updated across layout.py, NodeCloud.tsx, EdgeLines.tsx, ConstellationScene.tsx, ConstellationTab.tsx, App.tsx. CLAUDE.md prior-phase entry added. progress.txt session entry added. This file finalized.</td><td class="done">done</td></tr>
+  </table>
+
+  <h2>Final state summary</h2>
+  <p>The branch delivers four orthogonal improvements to the 3D Constellation view, all within the existing
+     <code>seam/query/layout.py</code> + four React components. No new dependencies, no schema change,
+     no Web API contract change, MCP tool count = 16. <code>LayoutResult</code>/<code>LayoutNode</code>/<code>LayoutEdge</code>
+     shapes are byte-identical. Gate: ruff + mypy clean, all pytest pass, tsc --noEmit clean, vitest pass.</p>
+  <ul>
+    <li><strong>Spherical globe:</strong> Fibonacci sphere seed with cluster-locality grouping; radial outlier clamp (mean + 2.5·σ); sub-linear log1p node sizing.</li>
+    <li><strong>Additive glows:</strong> <code>AdditiveBlending + depthWrite=false</code>; hue from kind (legend-consistent); degree drives size + bloom-boost only.</li>
+    <li><strong>Calmer edge web:</strong> ambient intensities halved; warm kinds further dimmed 0.5× in the no-highlight field; Bloom threshold raised to 0.6 so only node cores bloom.</li>
+    <li><strong>Click-isolates-never-navigates:</strong> <code>onFocusSymbol</code> removed at the type level; Esc + empty-canvas deselect; prefers-reduced-motion respected.</li>
+  </ul>
+</body>
+</html>

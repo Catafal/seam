@@ -191,7 +191,7 @@ export function NodeCloud({ nodes, highlightedIds, onHover, onSelect }: NodeClou
       {/*
         AdditiveBlending + depthWrite=false + transparent:
         - Colors accumulate (ADD) on the dark background → no black holes.
-        - depthWrite=false: the sphere sphere leaves the depth buffer clean so
+        - depthWrite=false: the sphere leaves the depth buffer clean so
           other primitives (edges, labels) always render on top correctly.
         - transparent=true: required by Three.js to actually apply blending.
         - toneMapped=false: HDR values > 1.0 on highlighted nodes reach the

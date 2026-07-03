@@ -112,3 +112,62 @@
 #     No schema change, no migration, no re-index, no new config knobs, zero new deps.
 #
 # NEXT: Phase D — Coherent flow + tab model (explicit tab bar, breadcrumbs, status strip).
+
+# Phase 11 #259 — 3D Constellation polish (issues #260/#261/#262/#263)
+# ─────────────────────────────────────────────────────────────────────────────
+# Session: 2026-07-03 · worktree seam-3d-polish
+#
+#   WHY this phase exists:
+#     The 3D constellation Explorer had three visual/UX problems:
+#     (1) Flat-ring + z-smear seed → disc-cloud with "orange spike" artefact (high-
+#         degree hubs flung far from the cluster by repulsion force dominance).
+#     (2) Solid sphere nodes with stellar/degree colors occluded each other; any
+#         overlap created a black hole in the depth buffer.
+#     (3) Clicking a 3D node triggered 2D neighborhood navigation — unintended and
+#         disorienting (3D is a spectacle/spatial view, not a drill path).
+#
+#   S1 (#260) — Spherical globe layout + outlier clamp + log1p sizing (layout.py):
+#     - Replaced flat XY-ring + z-smear with a Fibonacci (golden-spiral) sphere seed.
+#       Nodes sorted by (fnv1a(cluster_key), fnv1a(name)) before Fibonacci index
+#       assignment → same-cluster nodes occupy the same polar-angle band (locality).
+#     - Added _recenter_and_clamp: recenters to centroid after FA2, then pulls
+#       radial outliers beyond mean + 2.5·sigma inward (eliminates orange spike
+#       without flattening the normal spread). Deterministic, never raises.
+#     - node_size: linear `base + min(deg*0.3, 10)` → sub-linear
+#       `base + min(log1p(deg)*1.5, 6)` (hub/leaf ratio ≈ 2.5×, smooth).
+#     - _sphere_seed_positions and _recenter_and_clamp exported for TDD.
+#       LayoutResult/LayoutNode/LayoutEdge shapes byte-identical.
+#
+#   S2 (#261) — Additive node glows, color by kind (NodeCloud.tsx):
+#     - Material: AdditiveBlending + depthWrite=false + transparent.
+#       Nodes glow (colors ADD) instead of occluding — no black holes.
+#     - Color authority: KIND_COLORS[node.label] shared with filter legend.
+#       kindColor(label) is the single resolution point; node.color ignored.
+#     - Highlight boost (above 1.0 → Bloom corona) applied to kind color.
+#
+#   S3 (#262) — Calmer edges + controlled Bloom (EdgeLines.tsx + ConstellationScene.tsx):
+#     - Same-cluster ambient intensity 0.25→0.10; cross-cluster 0.06→0.02.
+#     - LOUD_KIND_DIM=0.5× for instantiates/uses/writes in no-highlight path only
+#       (warm hues dominated the field at equal intensity — halved to equalize).
+#     - Bloom: luminanceThreshold 0.3→0.6 (only node cores bloom; edges stay below
+#       threshold at max ~0.488), intensity 1.2→0.8, radius 0.6→0.65.
+#
+#   S4 (#263) — Click isolates, never navigates (ConstellationTab.tsx + App.tsx):
+#     - onFocusSymbol removed from ConstellationTabProps entirely.
+#       3D click → isolate only (dim + camera fly); no 2D navigation.
+#     - Inbound 2D→3D sync (focusSymbol prop) kept.
+#     - Esc key deselect (document-level listener).
+#     - Canvas.onPointerMissed → deselect on empty-space click.
+#     - prefers-reduced-motion: auto-rotate off + camera snap (no lerp).
+#     - Discoverability hint overlay when no node selected.
+#
+#   Documentation pass (#259 docs):
+#     - Code comments updated in layout.py, NodeCloud.tsx, EdgeLines.tsx,
+#       ConstellationScene.tsx, ConstellationTab.tsx, App.tsx — WHY intent
+#       expressed, stale ring-seed references replaced with sphere-seed.
+#     - CLAUDE.md: "Prior phase" entry added for #259.
+#     - progress.txt: this entry.
+#     - .claude/runs/3d-constellation-polish/implementation-notes.html: finalized.
+#
+#   Gate: ruff + mypy clean, all Python tests pass, tsc --noEmit clean,
+#     vitest tests pass. No schema change, no new deps, MCP tool count = 16.
