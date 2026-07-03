@@ -37,10 +37,10 @@ describe("App scaffold", () => {
     expect(screen.getByText(/explore the codebase/i)).toBeInTheDocument();
   });
 
-  // C3: "Constellation" was renamed to "Topology" (2D leads, 3D is opt-in toggle).
-  it("shows the Topology tab button (renamed from Constellation in C3)", () => {
+  // #273: Topology is now an explicit tab (role="tab") in the TabBar, not a standalone button.
+  it("shows the Topology tab (renamed from Constellation in C3, now a TabBar tab)", () => {
     renderWithQuery(<App />);
-    expect(screen.getByRole("button", { name: /topology/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /topology/i })).toBeInTheDocument();
   });
 
   // The "Seam Explorer" brand is a home button: it is a clickable control and

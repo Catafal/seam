@@ -24,12 +24,14 @@ import { ChangesDrawer } from "./components/ChangesDrawer";
 import { StructureOverview } from "./components/StructureOverview";
 import { FileSidebar } from "./components/FileSidebar";
 import { ClusterGraph2D } from "./components/ClusterGraph2D";
+import { TabBar } from "./components/TabBar";
+import type { ViewMode } from "./lib/tabs";
 import { ResizeHandle, clampPanelWidth, readPanelWidth } from "./components/ResizeHandle";
 import { useStatus, useSearch, useHubs, useAreas } from "./api/hooks";
 import { resolveClusterHandoff } from "./lib/resolveClusterHandoff";
 import type { SearchResultItem, HubSymbol, ConstellationCluster } from "./api/schema-types";
 import type { Area } from "./lib/deriveAreas";
-import { GitBranch, Orbit, Network, Route } from "lucide-react";
+import { GitBranch, Route } from "lucide-react";
 
 // ── 2D detail-panel resize constants ─────────────────────────────────────────
 
@@ -411,8 +413,7 @@ function LandingPage({ onSelect, onOpenOverview, onOpenScopedOverview }: Landing
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
-/** App view mode: per-symbol neighborhood, whole-repo cluster overview, or topology (2D/3D). */
-type ViewMode = "neighborhood" | "overview" | "topology";
+/** App view mode — defined in lib/tabs.ts and imported above; documented here for readers. */
 
 /**
  * Sub-mode within the Topology surface.
@@ -420,34 +421,6 @@ type ViewMode = "neighborhood" | "overview" | "topology";
  * "3d" = lazy ConstellationTab (the "wow" opt-in).
  */
 type TopologySubMode = "2d" | "3d";
-
-/** A small header toggle pill (mode switch, drawer toggle). */
-function HeaderToggle({
-  active,
-  onClick,
-  icon,
-  label,
-}: {
-  active: boolean;
-  onClick: () => void;
-  icon: React.ReactNode;
-  label: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      aria-pressed={active}
-      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs transition-colors border ${
-        active
-          ? "bg-sky-500/15 border-sky-500/50 text-sky-300"
-          : "bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500"
-      }`}
-    >
-      {icon}
-      {label}
-    </button>
-  );
-}
 
 /**
  * App root: assembles the header, search, mode toggle, and the main area.
@@ -587,41 +560,26 @@ function App() {
           <h1 className="text-sm font-semibold tracking-tight text-zinc-100">Seam Explorer</h1>
         </button>
 
-        {/* Mode toggle: overview ⇄ neighborhood.
-            B1: when switching TO overview via the header (not from a landing card),
-            reset preselectedArea so the full area-cards list shows first. */}
-        <HeaderToggle
-          active={mode === "overview"}
-          onClick={() =>
-            setMode((m) => {
-              if (m !== "overview") setPreselectedArea(null); // entering overview fresh
-              return m === "overview" ? "neighborhood" : "overview";
-            })
-          }
-          icon={mode === "overview" ? <Network className="w-3.5 h-3.5" /> : <Orbit className="w-3.5 h-3.5" />}
-          label={mode === "overview" ? "Neighborhood" : "Overview"}
+        {/* ── Explicit tab bar (#273) ────────────────────────────────────────
+            Overview · Symbol · Topology — the three questions a developer has.
+            "Symbol" is the user-facing label for the "neighborhood" ViewMode.
+            The tab bar replaces the old contextual HeaderToggle (which relabelled
+            itself with the OTHER mode's name — the anti-pattern killed here).
+            B1 note: switching to Overview from the TabBar always resets preselectedArea
+            so the full area-cards list shows first; landing-card clicks set it again. */}
+        <TabBar
+          mode={mode}
+          onSetMode={(next) => {
+            // Entering Overview fresh (not from a landing card) → clear preselectedArea
+            if (next === "overview" && mode !== "overview") setPreselectedArea(null);
+            setMode(next);
+          }}
         />
 
-        {/* Topology tab: 2D cluster graph (default) or 3D constellation (opt-in).
-            The outer button toggles topology mode on/off; the 2D/3D sub-toggle
-            appears inline when topology is active.
-            Anti-pattern avoided: the button label is always "Topology" — it does
-            NOT relabel itself with the OTHER mode's name. */}
-        <button
-          onClick={() => setMode((m) => (m === "topology" ? "neighborhood" : "topology"))}
-          aria-pressed={mode === "topology"}
-          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs transition-colors border ${
-            mode === "topology"
-              ? "bg-sky-500/15 border-sky-500/50 text-sky-300"
-              : "bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500"
-          }`}
-        >
-          <Orbit className="w-3.5 h-3.5" />
-          Topology
-        </button>
-
         {/* 2D/3D sub-toggle — only visible while topology mode is active.
-            Quiet pill buttons; neither relabels itself with the other mode's name. */}
+            Quiet pill buttons; neither relabels itself with the other mode's name.
+            Sits immediately after the TabBar so it reads as a refinement of the
+            active Topology tab (same horizontal row, no separator needed). */}
         {mode === "topology" && (
           <div className="flex items-center gap-1 bg-zinc-800 border border-zinc-700 rounded-md p-0.5">
             <button
@@ -674,13 +632,22 @@ function App() {
           )}
         </div>
 
-        {/* Changes drawer toggle */}
-        <HeaderToggle
-          active={changesOpen}
+        {/* Changes drawer toggle — a simple pill button, not a tab (it does not switch the
+            main content area, it slides in a drawer overlay). Kept as a standalone control
+            so it doesn't compete visually with the TabBar's sky-accent active-tab highlight.
+            aria-pressed because it's a toggle, not a navigation tab. */}
+        <button
           onClick={() => setChangesOpen((o) => !o)}
-          icon={<GitBranch className="w-3.5 h-3.5" />}
-          label="Changes"
-        />
+          aria-pressed={changesOpen}
+          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs transition-colors border ${
+            changesOpen
+              ? "bg-sky-500/15 border-sky-500/50 text-sky-300"
+              : "bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500"
+          }`}
+        >
+          <GitBranch className="w-3.5 h-3.5" />
+          Changes
+        </button>
 
         {/* Index status */}
         <StatusBadge />
