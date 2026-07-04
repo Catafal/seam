@@ -74,6 +74,7 @@ from seam.cli.read import context_command, query_command, search_command
 from seam.cli.schema import schema_command
 from seam.cli.serve import serve_command
 from seam.cli.snippet import snippet_command
+from seam.cli.workspace import workspace_app
 from seam.indexer.artifact import pack_index as _pack_index_artifact
 from seam.indexer.db import connect
 from seam.indexer.embedding_index import sync_embeddings
@@ -154,6 +155,7 @@ app.command(name="snippet")(snippet_command)
 app.command(name="graph-search")(graph_search_command)
 # serve starts the local Seam Explorer (FastAPI + uvicorn) — requires [web] extra.
 app.command(name="serve")(serve_command)
+app.add_typer(workspace_app, name="workspace")
 
 # Top-level keys in a handle_seam_impact response that are NOT direction groups.
 # Every consumer that iterates the impact result to find tier groups (quiet output,

@@ -191,6 +191,39 @@ dedicated extractor persists only declaration-level evidence: service names, ima
 Dockerfile/stage names, static ports, env-file references, named volumes, networks, and config key
 names. Dynamic/interpolated values and raw config values are not written to SQLite.
 
+### Cross-repo workspace federation
+
+Cross-repo analysis is implemented as a CLI-first read layer over multiple existing Seam indexes,
+not as a merged workspace database. A workspace root owns `.seam/workspace.json`, a small explicit
+registry of repo aliases, repo roots, index paths, observed git identity, root fingerprint, and
+registration time. Registration is intentionally user-selected: Seam never scans sibling folders
+or guesses that nearby repos should be trusted together.
+
+Workspace commands validate each registered repo before querying it:
+
+- `ready` / `stale` repos can be queried with read-only SQLite connections.
+- `missing_index`, `unreadable_index`, `schema_too_new`, `path_moved`, and `identity_changed`
+  repos are skipped with structured warnings.
+
+The federation layer qualifies every symbol result at the workspace boundary. Single-repo UIDs
+remain unchanged inside each index; workspace results expose `local_uid` plus a repo-qualified
+`uid` formatted as `repo_alias:local_uid`. Snippet follow-ups split that workspace UID back into
+the target repo alias and local UID, then delegate to the normal single-repo snippet resolver.
+
+The first shipped surfaces are:
+
+- `seam workspace init/add/list/remove/status` for explicit registry lifecycle.
+- `seam workspace graph-search` for flattened, repo-qualified graph search.
+- `seam workspace snippet` for exact source retrieval from one registered repo.
+- `seam workspace route-callers` for route-to-HTTP-call evidence across repos.
+- `seam workspace matches` for no-secret config/resource evidence across repos.
+- `seam workspace impact` for per-repo local impact with an explicit `cross_repo_evidence`
+  channel kept separate from local impact.
+
+Default single-repo commands, the MCP tools, and the Explorer stay single-repo unless a future RFC
+adds a distinct permission and UI model. This keeps cross-repo mutation out of MCP and avoids
+silently changing existing impact semantics.
+
 ---
 
 # Phase History (Appendix)
