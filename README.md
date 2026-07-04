@@ -189,6 +189,32 @@ seam import-index /path/to/seam-index.tar.gz --path /repo --json
 - **Model match**: the embedding model used in CI (set via `SEAM_EMBED_MODEL` in the workflow, defaulting to `BAAI/bge-small-en-v1.5`) must match the model on developer machines. A mismatch is safe — `seam fetch` detects it and the fetched index degrades gracefully to FTS5-only search. Semantic search re-enables automatically after `seam fetch --semantic`.
 - **Staleness banner**: after `seam fetch`, the index reflects the CI commit. If local files have diverged (new code, edited files), `seam_impact` and other graph tools will attach an `index_status: {stale: true, ...}` banner. This is the normal signal to re-run `seam fetch` (for a newer CI build) or `seam sync` (to incorporate local edits into the fetched base).
 
+### Cross-repo workspaces (CLI, opt-in)
+
+`seam workspace` lets you query several already-indexed repos as one explicit local trust
+set. It does not scan sibling directories, does not merge databases, and does not change
+the default single-repo behavior of `seam query`, `seam graph-search`, `seam impact`, MCP
+tools, or the Explorer.
+
+```bash
+seam workspace init /path/to/workspace --json
+seam workspace add api /path/to/api /path/to/workspace --json
+seam workspace add web /path/to/web /path/to/workspace --json
+seam workspace status /path/to/workspace --json
+seam workspace graph-search /path/to/workspace --kind route --json
+seam workspace route-callers /path/to/workspace --method GET --path /api/users --json
+seam workspace matches /path/to/workspace --config-key DATABASE_URL --json
+seam workspace impact /path/to/workspace authenticate_user --json
+```
+
+The workspace registry lives at `.seam/workspace.json` under the selected workspace root.
+Adding a repo writes only that registry; registered child repos are opened read-only during
+status and query commands. Results carry a repo alias plus both `local_uid` and a
+workspace UID formatted as `repo_alias:local_uid`, so follow-up snippets can target the
+right checkout without depending on absolute paths. Config/resource matching keeps the
+existing no-secret contract: key names and redacted value shape are allowed, raw values are
+not returned.
+
 ---
 
 ## The 16 MCP tools

@@ -16,6 +16,16 @@ environment variable before running `seam` (or export it in your shell / agent c
 Most boolean knobs default to `on` and have an `off` that restores **byte-identical**
 pre-feature behavior — a deliberate discipline so upgrades never silently change output.
 
+## Workspace registry
+
+Cross-repo workspace mode has no environment variable. `seam workspace init` creates a
+workspace-owned JSON registry at `.seam/workspace.json` under the selected workspace root.
+That registry stores only explicit repo membership and identity metadata; registered repos keep
+their own `.seam/seam.db` files and are opened read-only by workspace query commands.
+
+Use `seam workspace list --absolute-paths` only when a caller needs full local paths. The default
+list output redacts absolute repo roots while still returning repo aliases and identity metadata.
+
 ---
 
 ## Core / indexing
