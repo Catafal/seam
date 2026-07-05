@@ -287,7 +287,7 @@ Twelve languages, parsed with [tree-sitter](https://tree-sitter.github.io/). All
 
 ## Benchmarks
 
-Two reproducible, deliberately-honest benchmarks back the pitch.
+Three reproducible, deliberately-honest benchmarks back the pitch.
 
 **Token reduction vs. `grep` + read** — [`docs/benchmark.md`](docs/benchmark.md)
 
@@ -309,6 +309,12 @@ Run on an external repo Seam had never seen:
 Both are static *retrieval-context* proxies (chars ÷ 4), not live agent-session A/Bs —
 the docs state their own limitations. The competitive run predates the Phase 8 impact-tool
 fix, so current output is leaner than it shows.
+
+**Agent answerability** — [`docs/agent-answerability-benchmark.md`](docs/agent-answerability-benchmark.md)
+
+Runs 20 natural-language coding-agent questions against the deterministic eval fixture and
+scores answer facts, evidence, caveats, output cost, round trips, latency, freshness, and
+false confidence. Reproduce with `make eval-answerability`.
 
 ---
 
@@ -476,6 +482,7 @@ make fmt                   # format + autofix (not part of the gate)
 make build-web             # build the Explorer SPA into seam/_web/ (requires Node.js — build-time only)
 make test-web-visual       # optional Playwright QA for the Topology/3D canvas
 make eval                  # run the recall-regression harness
+make eval-answerability    # run the agent answerability benchmark
 make test-npm              # run the npm shim vitest suite (requires Node.js ≥18)
 make bench-semantic        # semantic recall benchmark — needs [semantic] extra + seam init --semantic
 make bench-semantic-ann    # ANN scale benchmark (brute-force vs KNN latency + recall) — needs [semantic-ann] extra

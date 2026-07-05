@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Agent Answerability Benchmark · Implementation Notes</title>
+  <style>
+    body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; max-width: 880px;
+           margin: 40px auto; padding: 0 24px; color: #292524; line-height: 1.55; }
+    h1 { border-bottom: 3px solid #0181c9; padding-bottom: 8px; }
+    h2 { margin-top: 36px; color: #0181c9; border-bottom: 1px solid #e5e5e5; padding-bottom: 4px; }
+    code { background: #f5f5f4; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+    .decision { background: #f0f9ff; border-left: 4px solid #0181c9; padding: 12px 16px; margin: 14px 0; }
+    .deviation { background: #fffbeb; border-left: 4px solid #d97706; padding: 12px 16px; margin: 14px 0; }
+    .tradeoff { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 12px 16px; margin: 14px 0; }
+    .open { background: #fef2f2; border-left: 4px solid #dc2626; padding: 12px 16px; margin: 14px 0; }
+    .tag { display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase;
+           letter-spacing: 0.5px; padding: 2px 8px; border-radius: 10px; color: #fff; }
+    .t-dec { background: #0181c9; } .t-dev { background: #d97706; }
+    .t-trade { background: #7c3aed; } .t-open { background: #dc2626; }
+    ul { margin-top: 6px; } .meta { color: #78716c; font-size: 0.9em; }
+    .done { color: #16a34a; font-weight: 600; }
+    table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+    th, td { border: 1px solid #e5e5e5; padding: 6px 10px; text-align: left; font-size: 0.92em; }
+    th { background: #fafaf9; }
+  </style>
+</head>
+<body>
+  <h1>Agent Answerability Benchmark</h1>
+  <p class="meta">Branch <code>feat/agent-answerability-benchmark</code> · started 2026-07-05 · implements GitHub issues #318-#322 from PRD #317.</p>
+  <p>This is a <strong>living document</strong> capturing how the implementation interprets,
+     diverges from, or trades off against the spec. Updated as each slice lands.</p>
+
+  <h2>The spec, in one line</h2>
+  <p>Build a deterministic, local-first benchmark that asks natural-language coding-agent
+     questions, runs current Seam read tools, scores answerability/evidence/caveats/cost,
+     and reports which roadmap bucket should be prioritized next.</p>
+
+  <h2>Design decisions <span class="meta">(spec was ambiguous → here's the call I made)</span></h2>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Benchmark lives under eval tooling, not product CLI.</strong>
+    The PRD says this is an evaluation surface rather than new graph extraction. I followed the
+    existing repo convention by adding <code>tests/eval/answerability_*</code> and
+    <code>make eval-answerability</code>, leaving the runtime <code>seam</code> CLI unchanged.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Scenario truth is authored JSON.</strong>
+    The maintained catalog is structured data in <code>answerability_scenarios.json</code> because
+    future agents need to review question intent and expected evidence without reading Python.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Unsupported capability can still be a passing answer.</strong>
+    Protocol and infra scenarios pass when Seam reports unsupported/empty evidence with an accepted
+    caveat. This prevents the benchmark from rewarding false certainty.</div>
+
+  <h2>Deviations <span class="meta">(intentional departures from the spec/convention)</span></h2>
+
+  <div class="deviation"><span class="tag t-dev">Deviation</span> <strong>No live agent or LLM judge in this phase.</strong>
+    The PRD allowed optional LLM judging later. I kept this first implementation deterministic so
+    it can run in normal local development without network, credentials, or reviewer variance.</div>
+
+  <div class="deviation"><span class="tag t-dev">Deviation</span> <strong>Optional local repos are deferred.</strong>
+    The PRD permits optional external repos that skip cleanly. I kept the first implementation on
+    the deterministic eval fixture so the benchmark has a stable base before adding machine-specific
+    paths.</div>
+
+  <h2>Tradeoffs <span class="meta">(alternatives considered)</span></h2>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>Fixture-sized truth vs. broad realism.</strong>
+    A 20-scenario fixture suite is less realistic than running across multiple private repos, but it
+    gives a stable regression base. Larger repo scenarios can be added once the scoring/report shape
+    is proven.</div>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>Simple evidence normalization over per-tool bespoke parsers.</strong>
+    The normalizer walks JSON-like payloads for common evidence keys. This is deliberately smaller
+    than a custom parser per Seam tool, while still supporting the current scenario set.</div>
+
+  <h2>Open questions <span class="meta">(want your confirm/revise)</span></h2>
+
+  <div class="open"><span class="tag t-open">Open</span> <strong>Which non-Seam repos should become optional scenarios?</strong>
+    The harness can grow to optional local repos, but the first implementation does not choose private
+    repo paths. Adding them later is a scenario-catalog and adapter extension, not a redesign.</div>
+
+  <h2>Build / verification</h2>
+  <ul>
+    <li>Focused tests: <code>uv run pytest tests/eval/test_answerability.py -q</code> passed after review fixes.</li>
+    <li>Benchmark run: <code>make eval-answerability</code> passed with 20 scenarios.</li>
+    <li>Review fixes: scenario status now requires every score axis to be full-credit, and the report runner cleans up its temporary fixture index.</li>
+    <li>Migrations / new deps: none.</li>
+  </ul>
+
+  <h2>Progress</h2>
+  <table>
+    <tr><th>Slice</th><th>What</th><th>Status</th></tr>
+    <tr><td>1</td><td>End-to-end benchmark tracer bullet</td><td class="done">done</td></tr>
+    <tr><td>2</td><td>Evidence normalization and scoring</td><td class="done">done</td></tr>
+    <tr><td>3</td><td>Tool-plan breadth and runtime metrics</td><td class="done">done</td></tr>
+    <tr><td>4</td><td>Maintained scenario suite</td><td class="done">done</td></tr>
+    <tr><td>5</td><td>Reports, docs, and maintainer workflow</td><td class="done">done</td></tr>
+  </table>
+</body>
+</html>

@@ -1,4 +1,4 @@
-.PHONY: gate lint typecheck test install install-dev build-web test-web-visual bench-semantic bench-semantic-ann eval eval-generate soak clean
+.PHONY: gate lint typecheck test install install-dev build-web test-web-visual bench-semantic bench-semantic-ann eval eval-generate eval-answerability soak clean
 
 # Gate — must pass before every commit (no exceptions)
 gate: lint typecheck test
@@ -58,6 +58,13 @@ eval:
 # Run this after changing fixture files to update the SHA-stamp and expected symbols.
 eval-generate:
 	uv run python tests/eval/gen_golden.py
+
+# Optional deterministic answerability benchmark over the eval fixture.
+# It measures whether current Seam outputs answer natural-language agent questions
+# with enough facts, evidence, caveats, and low output cost. Kept out of gate while
+# the scenario set evolves.
+eval-answerability:
+	uv run python -m tests.eval.answerability_report
 
 # Run the vitest unit suite for the npm shim (pkg/npm/lib/invocation.test.js).
 # Node-gated: silently skipped if node is not on PATH.
