@@ -10,6 +10,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:visual": "npm run build && playwright test --config playwright.config.ts",
+    "test:visual:headed": "npm run build && playwright test --config playwright.config.ts --headed",
+    "test:visual:report": "playwright show-report",
     "gen:types": "openapi-typescript http://127.0.0.1:7420/openapi.json -o src/api/types.ts"
   },
   "dependencies": {
@@ -25,9 +28,11 @@
     "three": "^0.183.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.3.0",
     "@types/dagre": "^0.7.52",
+    "@types/pngjs": "^6.0.5",
     "@types/react": "^19.1.6",
     "@types/react-dom": "^19.1.5",
     "@types/three": "^0.183.1",
@@ -35,6 +40,7 @@
     "autoprefixer": "^10.4.21",
     "jsdom": "^26.1.0",
     "openapi-typescript": "^7.8.0",
+    "pngjs": "^7.0.0",
     "postcss": "^8.5.4",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.8.3",

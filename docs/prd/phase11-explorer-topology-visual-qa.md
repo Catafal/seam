@@ -1,6 +1,6 @@
 # PRD - Phase 11: Explorer Topology Visual QA
 
-> Status: ready for agent.
+> Status: implemented in current branch; keep as acceptance record.
 > Created: 2026-07-04.
 > GitHub issue: https://github.com/Catafal/seam/issues/309.
 > Tracker label: `ready-for-agent`.
@@ -27,10 +27,10 @@ because the 3D path depends on lazy-loaded bundles, WebGL availability, canvas s
 layout, animation frames, postprocessing, and real pointer events. Those are exactly the parts that
 unit tests do not execute.
 
-The current roadmap says the 3D visual acceptance item is partially shipped: the surface exists,
-but no browser screenshot or canvas-pixel checks prove nonblank, legible rendering. Since the
-protocol edges, infra graph, graph artifacts, and cross-repo roadmap families have now landed, this
-is the next high-value roadmap slice.
+The current branch closes the roadmap gap that said the 3D visual acceptance item was partially
+shipped. The surface already existed; the missing evidence was browser-level proof that the
+Topology canvas renders, has meaningful pixel variance, handles selection/reset, and fails visibly
+when layout data is unavailable.
 
 The problem is not to redesign the Topology UI. The problem is to make its browser-level quality
 provable, repeatable, and safe to run in CI without introducing network dependencies or brittle
@@ -282,8 +282,9 @@ normal gate only when it is reliable in CI.
 
 - Roadmap status: protocol edges, infra graph, graph artifact lifecycle, and cross-repo analysis have
   merged. The remaining high-signal Phase 11 gap is Explorer visual acceptance.
-- Current evidence: existing tests cover the web API, layout data, helper math, tab state, and
-  error branches, but there is no browser-level Playwright suite and no canvas pixel check.
+- Current evidence: this branch adds Playwright desktop/mobile browser coverage, invariant
+  canvas-pixel checks, selection/reset coverage, layout failure coverage, local commands, and a
+  dedicated GitHub Actions workflow.
 - The original 3D design explicitly deferred Playwright because the surface was new. The later polish
   work made the surface stable enough for a browser QA layer.
 - The acceptance threshold should be practical: catch blank, collapsed, offscreen, overexposed, and

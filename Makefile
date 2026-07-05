@@ -1,4 +1,4 @@
-.PHONY: gate lint typecheck test install install-dev build-web bench-semantic bench-semantic-ann eval eval-generate soak clean
+.PHONY: gate lint typecheck test install install-dev build-web test-web-visual bench-semantic bench-semantic-ann eval eval-generate soak clean
 
 # Gate — must pass before every commit (no exceptions)
 gate: lint typecheck test
@@ -34,6 +34,12 @@ fmt:
 # Release ritual: make build-web → uv build → uv publish
 build-web:
 	cd web && npm ci && npm run build
+
+# Optional browser QA for the Explorer Topology/3D surface. This builds the SPA,
+# starts a loopback Seam server against a deterministic fixture, and checks
+# canvas pixel invariants in Chromium desktop/mobile.
+test-web-visual:
+	cd web && npm ci && npx playwright install chromium && npm run test:visual
 
 # Semantic recall benchmark — requires [semantic] extra + a one-time model download.
 # Prerequisites: pip install 'seam-mcp[semantic]'  &&  seam init --semantic

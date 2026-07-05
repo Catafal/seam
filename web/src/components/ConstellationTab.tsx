@@ -51,6 +51,20 @@ const DEFAULT_RIGHT_W = 280;
 const LS_LEFT_KEY = "seam-left-w";
 const LS_RIGHT_KEY = "seam-right-w";
 
+declare global {
+  interface Window {
+    __SEAM_TOPOLOGY_VISUAL_QA__?: {
+      selectFirstNode: () => string | null;
+      reset: () => void;
+    };
+  }
+}
+
+function visualQaModeEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  return new URLSearchParams(window.location.search).has("seam-visual-qa");
+}
+
 // ── Pure helper ───────────────────────────────────────────────────────────────
 
 /**
@@ -206,6 +220,26 @@ export default function ConstellationTab({
     if (node) handleSelect(node);
   }, [focusSymbol, data, handleSelect]);
 
+  useEffect(() => {
+    if (!visualQaModeEnabled() || !data) return;
+
+    // WHY a URL-gated hook: browser visual QA needs a deterministic node select
+    // without depending on WebGL raycast coordinates that vary across GPU backends.
+    window.__SEAM_TOPOLOGY_VISUAL_QA__ = {
+      selectFirstNode: () => {
+        const node = visibleNodes[0];
+        if (!node) return null;
+        handleSelect(node);
+        return node.name;
+      },
+      reset: handleClose,
+    };
+
+    return () => {
+      delete window.__SEAM_TOPOLOGY_VISUAL_QA__;
+    };
+  }, [data, visibleNodes, handleSelect, handleClose]);
+
   // ── Filter handlers ────────────────────────────────────────────────────────
 
   const toggleKind = useCallback((kind: string) => {
@@ -261,7 +295,12 @@ export default function ConstellationTab({
   // ── Scene ──────────────────────────────────────────────────────────────────
 
   return (
-    <div className="relative w-full h-full flex overflow-hidden">
+    <div
+      className="relative w-full h-full flex overflow-hidden"
+      data-testid="topology-root"
+      data-selected={selectedNode?.name ?? ""}
+      data-highlighted-count={highlightedIds.size}
+    >
       {/* Left: FilterPanel */}
       <div
         className="flex-shrink-0 overflow-hidden bg-zinc-950 border-r border-zinc-800/60"
@@ -284,7 +323,7 @@ export default function ConstellationTab({
       <ResizeHandle side="left" onResize={handleLeftResize} />
 
       {/* Center: 3D WebGL canvas + HUD overlay */}
-      <div className="flex-1 relative min-w-0">
+      <div className="flex-1 relative min-w-0" data-testid="topology-canvas">
         {/* HUD overlay — absolute over the canvas */}
         <ConstellationHUD
           visibleNodes={visibleNodes.length}

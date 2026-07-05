@@ -420,8 +420,21 @@ The layout is computed server-side (ForceAtlas2 + ring seeds in numpy) and cache
 ```bash
 pip install 'seam-code[web]'
 seam init          # index first
-seam serve         # opens http://127.0.0.1:7420 → click the "Constellation" tab
+seam serve         # opens http://127.0.0.1:7420 -> click the "Topology" tab
 ```
+
+Browser visual QA for this surface lives under `web/tests/browser/`. It starts a
+temporary indexed fixture, serves the built Explorer on loopback, and checks
+Chromium desktop/mobile canvas pixels for blank-scene and white-out regressions.
+
+```bash
+make test-web-visual
+# or, from web/: npx playwright install chromium && npm run test:visual
+```
+
+Pull requests touching Explorer, server layout/API code, or this workflow also
+run Explorer Visual QA in GitHub Actions and upload the Playwright report plus
+topology test results as artifacts.
 
 ---
 
@@ -461,6 +474,7 @@ uv sync --dev              # install dev dependencies
 make gate                  # lint (ruff) + typecheck (mypy) + tests — must be green before every commit
 make fmt                   # format + autofix (not part of the gate)
 make build-web             # build the Explorer SPA into seam/_web/ (requires Node.js — build-time only)
+make test-web-visual       # optional Playwright QA for the Topology/3D canvas
 make eval                  # run the recall-regression harness
 make test-npm              # run the npm shim vitest suite (requires Node.js ≥18)
 make bench-semantic        # semantic recall benchmark — needs [semantic] extra + seam init --semantic
