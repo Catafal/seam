@@ -1,5 +1,6 @@
 /// <reference types="vitest" />
 import { defineConfig } from "vite";
+import { configDefaults } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 // Build output goes to seam/_web/ so the Python wheel can include it as a
@@ -28,5 +29,6 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: ["./src/__tests__/setup.ts"],
+    exclude: [...configDefaults.exclude, "tests/browser/**"],
   },
 });

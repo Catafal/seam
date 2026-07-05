@@ -1,6 +1,6 @@
 # PRD — Phase 11: Codebase-Memory-Inspired Status Matrix
 
-> Status: tracking — updated 2026-07-03.
+> Status: tracking — updated 2026-07-05.
 > Original source audit: `DeusData/codebase-memory-mcp` at commit `4a42285`.
 > Refresh audit: `DeusData/codebase-memory-mcp` at commit
 > `9cb3cabf76f5f4ad23caf66f641adff1ef0b67c9`.
@@ -57,7 +57,7 @@ build-out.
 | Config/resource nodes | Shipped key/resource extraction and architecture/schema reporting. | `seam/indexer/config_resources.py`, `tests/unit/test_config_resources.py` | Keep value handling conservative: keys/resources only, not secret values. |
 | Test edges | Shipped static test-to-production evidence with provenance. | `seam/indexer/test_edges.py`, `tests/unit/test_test_edges.py`, `tests/unit/test_architecture_tool.py` | Use for architecture/test-impact confidence without making production impact noisier. |
 | Raises/catches edges | Shipped conservative exception extraction. | `seam/indexer/exceptions.py`, architecture exception section, schema edge counts | Keep builtin/common exception modeling conservative. |
-| 3D constellation | Shipped as a secondary Explorer topology surface with React Three Fiber, node cloud, additive edges, labels, tooltip, selection, filters, HUD, and `/api/constellation`. | `web/src/components/ConstellationScene.tsx`, `web/src/components/ConstellationTab.tsx`, `seam/server/web.py` | Add Playwright screenshot/canvas-pixel QA; keep 3D secondary to 2D navigation. |
+| 3D constellation | Shipped as a secondary Explorer topology surface with React Three Fiber, node cloud, additive edges, labels, tooltip, selection, filters, HUD, and `/api/graph/layout`. Browser visual QA now checks desktop/mobile nonblank rendering, selection reset, and layout-error states. | `web/src/components/ConstellationScene.tsx`, `web/src/components/ConstellationTab.tsx`, `web/tests/browser/topology.visual.spec.ts`, `seam/server/web_layout.py` | Keep 3D secondary to 2D navigation; maintain pixel thresholds as the visual style evolves. |
 | 2D Explorer upgrades | Shipped or superseded by the Phase 11 Explorer redesign stream. | `docs/prd/phase11-explorer-redesign.md`, Phase A/B/C/D PRDs and UI components | Treat `phase11-explorer-redesign.md` as the active UI roadmap. |
 | npm shim | Shipped as a thin pinned `uvx --from seam-code==<version> seam ...` wrapper. | `pkg/npm/bin.js`, `pkg/npm/lib/invocation.js`, `tests/integration/test_npm_shim.py` | Keep this fail-loud and simple; do not copy downloader-heavy postinstall behavior. |
 | Installer write-scope audit | Shipped fake-home/fake-root tests for install/uninstall/preview write boundaries. | `tests/integration/test_installer_write_scope.py`, `tests/unit/test_fs_audit.py` | Add new targets one at a time with matching write-scope tests. |
@@ -73,7 +73,6 @@ complete relative to the refreshed `codebase-memory-mcp` audit.
 | Item | Current state | Gap | Next action |
 |---|---|---|---|
 | `http_calls` / cross-service route matching | Route nodes exist and TS literal HTTP-call tests exist, but this repo snapshot reports `has_http_calls: false`. | Static HTTP call extraction is not broad enough to rely on as an architectural boundary. | Expand only with confidence/provenance and graph-search/schema visibility. |
-| 3D visual acceptance | The 3D surface exists and has unit/component coverage. | No browser screenshot or canvas pixel checks prove nonblank, legible rendering. | Add Playwright visual QA before treating Topology as release-polished. |
 | Semantic search | Optional embedding infrastructure exists, but this repo has no embeddings populated. | No always-on local semantic edge story; semantic behavior must stay explicit about retrieval mode and fallback. | Keep semantic opt-in; do not introduce ambiguous `semantic_query` fallback behavior. |
 | Release trust | Release workflow and audits exist. | No complete signed artifact/checksum/provenance story for every install path. | Add fail-closed verification for any future binary/artifact downloader. |
 | Installer target breadth | Multiple agent targets are supported or planned. | Broad auto-detect write-everywhere behavior remains intentionally absent. | Add explicit targets only after preview/install/uninstall tests exist. |
@@ -129,8 +128,8 @@ These should stay out unless the product direction changes materially.
    - Keep CLI/MCP/Web contracts in sync.
 
 2. **Explorer visual QA.**
-   - Add Playwright screenshots and canvas-pixel checks for the Topology/3D path.
-   - Verify desktop and mobile nonblank rendering.
+   - Maintain Playwright screenshots and canvas-pixel checks for the Topology/3D path.
+   - Keep desktop/mobile nonblank rendering, selection reset, and layout-error checks green.
    - Keep 3D off the critical navigation path.
 
 3. **Release trust hardening.**

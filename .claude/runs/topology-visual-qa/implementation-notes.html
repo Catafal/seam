@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Topology Visual QA Implementation Notes</title>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 2rem; line-height: 1.45; color: #18181b; }
+    code { background: #f4f4f5; padding: 0.1rem 0.25rem; border-radius: 0.25rem; }
+    table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+    th, td { border: 1px solid #d4d4d8; padding: 0.5rem; text-align: left; vertical-align: top; }
+    th { background: #f4f4f5; }
+  </style>
+</head>
+<body>
+  <h1>Topology Visual QA Implementation Notes</h1>
+  <p><strong>Branch:</strong> <code>codex/phase11-topology-visual-qa</code></p>
+  <p><strong>Worktree:</strong> <code>/Users/jordicatafal/Documents/Github/seam-phase11-topology-visual-qa</code></p>
+
+  <h2>Intent</h2>
+  <p>
+    Add release-polish browser coverage for the Topology/3D Explorer path. The checks
+    prove that the real built SPA and Python server can render a nonblank WebGL scene,
+    survive selection/reset, and show a visible error when layout data fails.
+  </p>
+
+  <h2>Decisions</h2>
+  <ul>
+    <li><strong>Real server harness:</strong> Playwright starts <code>seam serve</code> on a deterministic temporary fixture instead of mocking API responses.</li>
+    <li><strong>Pixel invariants over snapshots:</strong> PNG metrics catch blank/white-out canvases without brittle GPU-specific image diffs.</li>
+    <li><strong>URL-gated visual QA hook:</strong> node selection uses <code>?seam-visual-qa=1</code> so tests do not depend on raycast coordinates that vary by GPU backend.</li>
+    <li><strong>Optional workflow:</strong> visual QA runs in a dedicated workflow for web/layout changes rather than slowing the core Python gate.</li>
+  </ul>
+
+  <h2>Issue Progress</h2>
+  <table>
+    <thead>
+      <tr><th>Issue</th><th>Status</th><th>Notes</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>#310 Harness</td><td>Implemented</td><td><code>web/playwright.config.ts</code> and <code>serverHarness.ts</code>.</td></tr>
+      <tr><td>#311 Pixel analyzer</td><td>Implemented</td><td><code>pixelAnalyzer.ts</code> plus analyzer unit coverage.</td></tr>
+      <tr><td>#312 Loaded-scene checks</td><td>Implemented</td><td>Desktop and mobile Chromium projects check visible, nonblank canvas.</td></tr>
+      <tr><td>#313 Selection/error checks</td><td>Implemented</td><td>Selection reset and layout failure are browser-tested.</td></tr>
+      <tr><td>#314 Docs/CI</td><td>Implemented</td><td>README, roadmap, PRD status, Makefile, and workflow updates landed.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Verification</h2>
+  <ul>
+    <li><code>make gate</code> passed: ruff, mypy, pytest.</li>
+    <li><code>cd web &amp;&amp; npm test</code> passed: 43 files, 550 tests.</li>
+    <li><code>cd web &amp;&amp; npm run typecheck</code> passed.</li>
+    <li><code>cd web &amp;&amp; npm run test:visual</code> passed: 10 browser tests, 2 intentional skips.</li>
+  </ul>
+</body>
+</html>
