@@ -13,6 +13,8 @@ Test groups:
     P7 — per-file cap (SEAM_PACK_PER_FILE_CAP) holds before global limit
     P8 — chunked IN() works for name lists larger than _SQLITE_MAX_IN_PARAMS
     P9 — truncated counts ONLY cap drops; unindexed names do NOT bump truncated
+    P10 — direct relationship evidence preserves edge metadata
+    P11 — caveats and recommended next calls explain evidence limits
 """
 
 from pathlib import Path
@@ -113,6 +115,9 @@ class TestBundleShape:
         assert "why" in result
         assert "cluster_peers" in result
         assert "truncated" in result
+        assert "relationship_evidence" in result
+        assert "caveats" in result
+        assert "recommended_next_calls" in result
 
     def test_target_is_full_context_result(self, tmp_path: Path) -> None:
         """target carries the full ContextResult fields (same as engine.context())."""
@@ -494,4 +499,130 @@ class TestTruncatedUnindexedNotCounted:
         assert result["truncated"]["callees"] == 0, (
             "truncated.callees must be 0 because no cap was hit; "
             "the unindexed skip is not a cap drop"
+        )
+
+
+# ── P10: Direct relationship evidence ────────────────────────────────────────
+
+
+class TestRelationshipEvidence:
+    """context_pack() surfaces direct edge evidence for caller/callee claims."""
+
+    def test_relationship_evidence_includes_direct_call_metadata(
+        self, tmp_path: Path
+    ) -> None:
+        conn = _make_db(tmp_path)
+        f = tmp_path / "a.py"
+        f.write_text("def caller(): target()\ndef target(): helper()\ndef helper(): pass\n")
+        upsert_file(
+            conn, f, "python", "h1",
+            [
+                _sym("caller", str(f), line=1),
+                _sym("target", str(f), line=2),
+                _sym("helper", str(f), line=3),
+            ],
+            [
+                Edge(
+                    source="caller",
+                    target="target",
+                    kind="call",
+                    file=str(f),
+                    line=1,
+                    confidence="EXTRACTED",
+                    receiver=None,
+                    provenance="python-call",
+                ),
+                Edge(
+                    source="target",
+                    target="helper",
+                    kind="call",
+                    file=str(f),
+                    line=2,
+                    confidence="EXTRACTED",
+                    receiver=None,
+                    provenance="python-call",
+                ),
+            ],
+        )
+
+        result = context_pack(conn, "target")
+        conn.close()
+
+        assert result is not None
+        evidence = result["relationship_evidence"]
+        assert evidence["truncated"] == {"callers": 0, "callees": 0}
+
+        caller_edge = evidence["callers"][0]
+        assert caller_edge == {
+            "source": "caller",
+            "target": "target",
+            "direction": "incoming",
+            "kind": "call",
+            "file": str(f),
+            "line": 1,
+            "confidence": "EXTRACTED",
+            "receiver": None,
+            "synthesized_by": None,
+            "provenance": "python-call",
+        }
+
+        callee_edge = evidence["callees"][0]
+        assert callee_edge["source"] == "target"
+        assert callee_edge["target"] == "helper"
+        assert callee_edge["direction"] == "outgoing"
+        assert callee_edge["kind"] == "call"
+
+
+# ── P11: Caveats and recommended next calls ──────────────────────────────────
+
+
+class TestEvidenceGuidance:
+    """context_pack() explains static evidence limits and next useful calls."""
+
+    def test_static_caveat_and_snippet_recommendation_are_always_present(
+        self, tmp_path: Path
+    ) -> None:
+        conn = _make_db(tmp_path)
+        f = tmp_path / "a.py"
+        f.write_text("def foo(): pass\n")
+        upsert_file(conn, f, "python", "h1", [_sym("foo", str(f))], [])
+
+        result = context_pack(conn, "foo")
+        conn.close()
+
+        assert result is not None
+        assert any("static" in caveat.lower() for caveat in result["caveats"])
+        assert result["recommended_next_calls"][0] == {
+            "tool": "seam_snippet",
+            "reason": "Read bounded source for the selected symbol before editing.",
+            "params": {"symbol": "foo"},
+        }
+
+    def test_truncated_evidence_recommends_impact(self, tmp_path: Path) -> None:
+        import seam.config as config
+
+        conn = _make_db(tmp_path)
+        target_file = tmp_path / "target.py"
+        target_file.write_text("# target\n")
+        upsert_file(conn, target_file, "python", "h_tgt",
+                    [_sym("target", str(target_file), line=1)], [])
+        for i in range(config.SEAM_PACK_NEIGHBOR_LIMIT + 1):
+            caller_file = tmp_path / f"caller_{i}.py"
+            caller_file.write_text("# caller\n")
+            caller_name = f"user_{i}"
+            upsert_file(
+                conn, caller_file, "python", f"h_{i}",
+                [_sym(caller_name, str(caller_file), line=1)],
+                [_edge(caller_name, "target", str(caller_file))],
+            )
+
+        result = context_pack(conn, "target")
+        conn.close()
+
+        assert result is not None
+        assert result["relationship_evidence"]["truncated"]["callers"] > 0
+        assert any("truncated" in caveat.lower() for caveat in result["caveats"])
+        assert any(
+            call["tool"] == "seam_impact" and call["params"] == {"symbol": "target"}
+            for call in result["recommended_next_calls"]
         )

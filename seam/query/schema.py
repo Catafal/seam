@@ -190,9 +190,12 @@ def _tool_registry() -> list[dict[str, Any]]:
         },
         {
             "name": "seam_context_pack",
-            "transports": ["mcp"],
+            "transports": ["cli", "mcp"],
             "read_only": True,
-            "use_when": "You need one enriched bundle for a symbol and its neighbors.",
+            "use_when": (
+                "You need one enriched bundle for a symbol, its neighbors, direct relationship "
+                "evidence, caveats, and recommended follow-up calls."
+            ),
         },
         {
             "name": "seam_structure",

@@ -76,6 +76,9 @@ class TestHandlerBasic:
         assert "why" in result
         assert "cluster_peers" in result
         assert "truncated" in result
+        assert "relationship_evidence" in result
+        assert "caveats" in result
+        assert "recommended_next_calls" in result
 
     def test_handler_relativizes_file_paths(self, tmp_path: Path) -> None:
         """File paths in enriched neighbors are relative to root."""
@@ -89,6 +92,17 @@ class TestHandlerBasic:
         assert not Path(target_file).is_absolute(), (
             f"Expected relative path, got absolute: {target_file!r}"
         )
+
+    def test_handler_relativizes_relationship_evidence_paths(self, tmp_path: Path) -> None:
+        conn, root, src = _make_indexed_db(tmp_path)
+        result = handle_seam_context_pack(conn, "foo", root)
+        conn.close()
+
+        assert result is not None
+        evidence = result["relationship_evidence"]
+        assert evidence["callees"]
+        evidence_file = evidence["callees"][0]["file"]
+        assert evidence_file == "src.py"
 
         # Callees should also be relativized
         for nb in result["callees"]:
@@ -168,6 +182,22 @@ class TestHandlerVsPackParity:
 
         assert raw_pack["truncated"] == handler_result["truncated"]
 
+    def test_relationship_evidence_counts_same_in_handler_and_pack(self, tmp_path: Path) -> None:
+        conn, root, src = _make_indexed_db(tmp_path)
+
+        raw_pack = context_pack(conn, "foo")
+        handler_result = handle_seam_context_pack(conn, "foo", root)
+        conn.close()
+
+        assert raw_pack is not None
+        assert handler_result is not None
+        assert len(raw_pack["relationship_evidence"]["callees"]) == len(
+            handler_result["relationship_evidence"]["callees"]
+        )
+        assert raw_pack["relationship_evidence"]["truncated"] == (
+            handler_result["relationship_evidence"]["truncated"]
+        )
+
 
 # ── PP7: JSON envelope shape ──────────────────────────────────────────────────
 
@@ -190,6 +220,9 @@ class TestJsonEnvelopeShape:
         assert "target" in data
         assert "callers" in data
         assert "callees" in data
+        assert "relationship_evidence" in data
+        assert "caveats" in data
+        assert "recommended_next_calls" in data
 
         # Must be JSON-serializable (no non-serializable types)
         serialized = json.dumps(envelope)

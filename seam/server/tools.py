@@ -42,6 +42,7 @@ from seam.query.comments import why as comments_why
 from seam.query.graph_search import graph_search as run_graph_search
 from seam.query.pack import ContextPack, NeighborRef
 from seam.query.pack import context_pack as run_context_pack
+from seam.query.pack_evidence import RelationshipEvidence
 from seam.query.schema import describe_schema
 from seam.query.snippet import snippet as run_snippet
 from seam.query.structure import StructureResult
@@ -566,14 +567,20 @@ def handle_seam_context_pack(
         why           — WHY/HACK/NOTE/TODO/FIXME comments (capped)
         cluster_peers — functional-area peers from target
         truncated     — {callers, callees, comments} counts of dropped entries
+        relationship_evidence
+                     — direct edge metadata supporting caller/callee claims
+        caveats      — static-analysis and truncation limits agents must respect
+        recommended_next_calls
+                     — concrete follow-up Seam tool calls for verification
 
     Mirrors handle_seam_context's contract:
         - blank/whitespace → INVALID_INPUT error dict
         - unknown symbol   → None
         - found symbol     → serialized ContextPack with paths relativized
 
-    verbose=True (default): output byte-identical to pre-Phase-8.
-    verbose=False: heavy fields stripped from target and each neighbor.
+    verbose=True (default): keeps target/neighbor enrichment fields.
+    verbose=False: strips heavy fields from target and each neighbor. Compact
+    relationship evidence remains present so the pack's claims stay auditable.
     """
     # Validate: symbol must not be empty or whitespace-only
     if not symbol or not symbol.strip():
@@ -634,6 +641,22 @@ def handle_seam_context_pack(
             verbose,
         )
 
+    def _serialize_relationship_edge(edge: RelationshipEvidence) -> dict[str, Any]:
+        return {
+            "source": edge["source"],
+            "target": edge["target"],
+            "direction": edge["direction"],
+            "kind": edge["kind"],
+            "file": _relativize(edge["file"], root),
+            "line": edge["line"],
+            "confidence": edge["confidence"],
+            "receiver": edge["receiver"],
+            "synthesized_by": edge["synthesized_by"],
+            "provenance": edge["provenance"],
+        }
+
+    relationship_evidence = pack["relationship_evidence"]
+
     return {
         "target": serialized_target,
         "callers": [_serialize_neighbor(nb) for nb in pack["callers"]],
@@ -649,6 +672,19 @@ def handle_seam_context_pack(
         ],
         "cluster_peers": pack["cluster_peers"],
         "truncated": pack["truncated"],
+        "relationship_evidence": {
+            "callers": [
+                _serialize_relationship_edge(edge)
+                for edge in relationship_evidence["callers"]
+            ],
+            "callees": [
+                _serialize_relationship_edge(edge)
+                for edge in relationship_evidence["callees"]
+            ],
+            "truncated": relationship_evidence["truncated"],
+        },
+        "caveats": pack["caveats"],
+        "recommended_next_calls": pack["recommended_next_calls"],
     }
 
 

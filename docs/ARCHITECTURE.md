@@ -814,6 +814,8 @@ context_pack(conn, symbol_name) -> ContextPack | None
   why           ← comments.why(conn, symbol=symbol_name)        (capped)
   cluster_peers ← target["cluster_peers"]                       (no extra query)
   truncated     ← {callers, callees, comments} dropped BY CAPS
+  relationship_evidence ← direct edge rows around the target     (bounded)
+  caveats/recommended_next_calls ← static-analysis limits + follow-up tools
 ```
 
 ### Neighbor Enrichment (`_enrich_neighbors`)
@@ -834,6 +836,26 @@ context_pack(conn, symbol_name) -> ContextPack | None
 The `decorators` JSON + `is_exported` 0/1/NULL decode is shared with `engine.context()` via the
 extracted `engine.decode_enrichment_fields(row)` helper — one decode contract, two callers.
 
+### Direct Relationship Evidence (`pack_evidence`)
+
+`seam/query/pack_evidence.py` reads direct `edges` rows for the target's
+`edge_match_names()` and returns two bounded lists:
+
+- `callers`: incoming edges where `target_name` matches the target.
+- `callees`: outgoing edges where `source_name` matches the target.
+
+Each record carries `source`, `target`, `direction`, `kind`, `file`, `line`,
+`confidence`, `receiver`, `synthesized_by`, and `provenance`. Optional edge columns are
+selected as `NULL` when an older index lacks them, so the pack degrades instead of
+failing. This helper intentionally does not traverse, infer new edges, or include source
+text; it only explains the direct relationships already stored in the index.
+
+`context_pack()` also emits:
+
+- `caveats`: static-analysis, ambiguity, provenance, and truncation warnings.
+- `recommended_next_calls`: concrete follow-ups such as `seam_snippet`, `seam_trace`,
+  `seam_impact`, or `seam_context`.
+
 ### Contract Parity
 
 `context_pack` returns `None` for an unknown symbol — the same contract as `engine.context()`.
@@ -845,6 +867,7 @@ is byte-identical between MCP and CLI.
 ### New Leaf Module + 10th Tool
 
 - `seam/query/pack.py` — `context_pack()`, `ContextPack`/`NeighborRef`/`TruncatedCounts` TypedDicts.
+- `seam/query/pack_evidence.py` — bounded direct edge evidence for caller/callee claims.
 - `seam_context_pack` registered in `seam/server/mcp.py` — the 10th MCP tool.
 - `seam pack <symbol>` CLI command in `seam/cli/main.py` (`--json` / `--quiet`).
 
@@ -852,7 +875,7 @@ is byte-identical between MCP and CLI.
 
 | Knob | Default | Purpose |
 |------|---------|---------|
-| `SEAM_PACK_NEIGHBOR_LIMIT` | `10` | Max enriched callers and max enriched callees per bundle |
+| `SEAM_PACK_NEIGHBOR_LIMIT` | `10` | Max enriched callers, enriched callees, and direct relationship-evidence rows per direction |
 | `SEAM_PACK_PER_FILE_CAP` | `3` | Max neighbor entries from any single file (homonym diversity) |
 | `SEAM_PACK_MAX_COMMENTS` | `10` | Max WHY comments included in the bundle |
 

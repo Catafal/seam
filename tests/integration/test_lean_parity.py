@@ -301,6 +301,17 @@ class TestPackLeanParity:
             for field in {"decorators", "is_exported", "visibility", "qualified_name"}:
                 assert field not in nb
 
+    def test_pack_lean_keeps_relationship_evidence(self, tmp_path: Path) -> None:
+        """Lean pack keeps compact provenance for relationship claims."""
+        conn, root, db_path, _ = _make_db(tmp_path)
+        verbose_pack = handle_seam_context_pack(conn, "foo", root, verbose=True)
+        lean_pack = handle_seam_context_pack(conn, "foo", root, verbose=False)
+        conn.close()
+
+        assert verbose_pack is not None
+        assert lean_pack is not None
+        assert lean_pack["relationship_evidence"] == verbose_pack["relationship_evidence"]
+
 
 # ── LP6: seam query is enrichment-free (no verbose flag) ─────────────────────
 

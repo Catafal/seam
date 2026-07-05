@@ -17,7 +17,7 @@ Tools registered (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3 + Phase 6 + T
     seam_why          — semantic comments (WHY/HACK/NOTE/TODO/FIXME) near a location (Phase 1b)
     seam_clusters     — list clusters or members of a cluster (Phase 2)
     seam_affected     — changed files → impacted test files via reverse-dependency BFS (Phase 3)
-    seam_context_pack — enriched context bundle: target + neighbors + WHY + peers (Phase 6)
+    seam_context_pack — enriched context bundle + relationship evidence + caveats (Phase 6)
     seam_flows        — execution flows: entry points + forward call-chain expansion
     seam_structure    — whole-repo directory/file/container structure tree (Tier D11)
     seam_schema       — read-only index capability and freshness map (Phase 11)
@@ -674,6 +674,14 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
                           Capped at SEAM_PACK_MAX_COMMENTS.
           cluster_peers — the symbol's functional-area peers (from seam_clusters).
           truncated     — {callers, callees, comments} counts of entries dropped by caps.
+          relationship_evidence
+                        — bounded direct edge records supporting caller/callee claims:
+                          source, target, direction, kind, file, line, confidence,
+                          receiver, synthesized_by, provenance.
+          caveats       — static-analysis, ambiguity, provenance, and truncation limits.
+          recommended_next_calls
+                        — concrete follow-up Seam calls such as seam_snippet,
+                          seam_trace, seam_impact, or seam_context.
 
         When a neighbor name has no indexed declaration (external/unindexed symbol),
         it is silently skipped in callers/callees — not an error.
@@ -684,7 +692,8 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
 
         Set verbose=false to omit heavy enrichment fields (decorators, is_exported,
         visibility, qualified_name) from target and every neighbor. signature and core
-        fields are always kept. verbose=true (default) is byte-identical to pre-Phase-8.
+        fields are always kept. relationship_evidence is already bounded and remains
+        present in lean output so provenance for the pack's claims is not lost.
 
         Returns {found: false} when the symbol is not in the index (same contract as
         seam_context). Fails (isError) with INVALID_INPUT when symbol is blank/whitespace.

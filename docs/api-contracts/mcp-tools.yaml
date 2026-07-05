@@ -1527,8 +1527,8 @@ tools:
         callers:
           type: array
           description: |
-            Direct 1-hop callers, enriched and capped. Ordered by lowest symbol id within
-            each file (deterministic). Per-file capped then globally capped.
+            Direct 1-hop callers, enriched and capped. Ranked by personalized PageRank
+            relevance when enabled, then per-file capped and globally capped.
           items:
             name:
               type: string
@@ -1591,6 +1591,71 @@ tools:
               type: integer
             comments:
               type: integer
+        relationship_evidence:
+          type: object
+          description: |
+            Bounded direct edge records that support the caller/callee claims in this
+            pack. This is static index evidence, not runtime execution proof. Paths are
+            relative to the project root.
+          fields:
+            callers:
+              type: array
+              description: Incoming direct edges where source calls or references the target.
+              items: &relationship_evidence_item
+                source:
+                  type: string
+                target:
+                  type: string
+                direction:
+                  type: string
+                  enum: [incoming, outgoing]
+                kind:
+                  type: string
+                file:
+                  type: string
+                  description: Relative path from project root
+                line:
+                  type: integer
+                confidence:
+                  type: string
+                  enum: [EXTRACTED, INFERRED, AMBIGUOUS]
+                receiver:
+                  type: string
+                  nullable: true
+                  description: Raw receiver expression when captured by the extractor.
+                synthesized_by:
+                  type: string
+                  nullable: true
+                  description: Post-pass synthesis channel, or null for parser/direct edges.
+                provenance:
+                  type: string
+                  nullable: true
+                  description: Direct extractor provenance channel when available.
+            callees:
+              type: array
+              description: Outgoing direct edges where the target calls or references another symbol.
+              items: *relationship_evidence_item
+            truncated:
+              type: object
+              fields:
+                callers:
+                  type: integer
+                callees:
+                  type: integer
+        caveats:
+          type: array
+          items: string
+          description: Static-analysis, ambiguity, provenance, and truncation limits.
+        recommended_next_calls:
+          type: array
+          description: Concrete follow-up Seam calls an agent can run to verify or expand the pack.
+          items:
+            tool:
+              type: string
+            reason:
+              type: string
+            params:
+              type: object
     errors:
       - code: INVALID_INPUT
         condition: symbol is empty string or whitespace-only
