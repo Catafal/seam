@@ -33,7 +33,7 @@ from seam.analysis.traversal import CONFIDENCE_EXTRACTED
 from seam.cli.main import app
 from seam.indexer.db import init_db, upsert_file
 from seam.indexer.graph import Edge, Symbol
-from seam.server.tools import handle_seam_impact
+from seam.server.tools import handle_seam_context_pack, handle_seam_impact
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -399,3 +399,28 @@ def test_impact_json_payload_matches_handler(seeded_db: tuple[Path, Path]) -> No
     assert cli_data["target"] == handler_data["target"]
     # Upstream tier structure must match
     assert set(cli_data["upstream"].keys()) == set(handler_data["upstream"].keys())
+
+
+def test_pack_json_payload_includes_evidence_and_matches_handler(
+    seeded_db: tuple[Path, Path]
+) -> None:
+    """CLI pack --json data payload must match handle_seam_context_pack output."""
+    db_dir, project = seeded_db
+    result = runner.invoke(
+        app, ["pack", "B", "--json", "--db-dir", str(db_dir), "--path", str(project)]
+    )
+    assert result.exit_code == 0, f"CLI failed: {result.output}"
+    cli_data = json.loads(result.output)["data"]
+
+    db_path = db_dir / ".seam" / "seam.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    handler_data = handle_seam_context_pack(conn, "B", project)
+    conn.close()
+
+    assert handler_data is not None
+    assert cli_data == handler_data
+    assert cli_data["relationship_evidence"]["callers"]
+    assert cli_data["relationship_evidence"]["callees"]
+    assert cli_data["caveats"]
+    assert cli_data["recommended_next_calls"]

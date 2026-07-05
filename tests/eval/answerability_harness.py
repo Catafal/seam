@@ -163,6 +163,7 @@ class SeamFixtureAdapter:
         from seam.server.impact_handler import handle_seam_impact
         from seam.server.tools import (
             handle_seam_context,
+            handle_seam_context_pack,
             handle_seam_graph_search,
             handle_seam_query,
             handle_seam_schema,
@@ -211,6 +212,13 @@ class SeamFixtureAdapter:
                 "context_field_writers": "field_writers",
             }[tool]
             return {"symbols": [{"symbol": item} for item in (ctx or {}).get(field, [])]}
+        if tool == "context_pack":
+            return handle_seam_context_pack(
+                self._conn,
+                str(args["symbol"]),
+                fixture_dir,
+                verbose=bool(args.get("verbose", True)),
+            )
         if tool == "impact":
             return handle_seam_impact(
                 self._conn,

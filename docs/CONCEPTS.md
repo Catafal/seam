@@ -348,7 +348,10 @@ Seam treats output size as a first-class concern:
 `seam_context_pack` applies the same philosophy to neighbor lists, ranking callers/callees
 by **personalized PageRank (random-walk-with-restart)** relevance to the seed before
 capping — so a capped bundle keeps the neighbors most woven into the seed's local
-neighborhood, not the lowest-id ones.
+neighborhood, not the lowest-id ones. The pack also includes bounded
+`relationship_evidence` records for direct caller/callee claims, plus `caveats` and
+`recommended_next_calls`, so an agent can distinguish "indexed static evidence says this"
+from "runtime behavior is proven."
 
 ---
 

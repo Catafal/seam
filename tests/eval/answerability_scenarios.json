@@ -34,12 +34,12 @@
       "question": "Who calls format_result before I change its return shape?",
       "target": {"kind": "fixture", "name": "eval-fixture"},
       "expected_facts": [{"kind": "symbol", "value": "render_output"}, {"kind": "symbol", "value": "log_result"}],
-      "required_evidence": [{"kind": "symbol", "value": "render_output"}],
-      "acceptable_caveats": ["Only indexed static call edges are considered."],
-      "tool_plan": [{"tool": "context_callers", "args": {"symbol": "format_result"}}],
+      "required_evidence": [{"kind": "symbol", "value": "render_output"}, {"kind": "edge_kind", "value": "call"}],
+      "acceptable_caveats": ["Relationship evidence is static index evidence, not runtime execution proof."],
+      "tool_plan": [{"tool": "context_pack", "args": {"symbol": "format_result", "verbose": false}}],
       "fallback_plan": [{"tool": "grep", "args": {"query": "format_result("}}],
-      "capability_tags": ["context", "callers"],
-      "product_gap_tags": ["context-pack upgrade"]
+      "capability_tags": ["context-pack", "callers", "relationship-evidence"],
+      "product_gap_tags": []
     },
     {
       "id": "change-safety-payment-process-implementations",
@@ -177,12 +177,12 @@
       "question": "What does render_output call when producing formatted output?",
       "target": {"kind": "fixture", "name": "eval-fixture"},
       "expected_facts": [{"kind": "symbol", "value": "format_result"}],
-      "required_evidence": [{"kind": "symbol", "value": "format_result"}],
-      "acceptable_caveats": ["Only indexed static call edges are considered."],
-      "tool_plan": [{"tool": "context_callees", "args": {"symbol": "render_output"}}],
+      "required_evidence": [{"kind": "symbol", "value": "format_result"}, {"kind": "edge_kind", "value": "call"}],
+      "acceptable_caveats": ["Relationship evidence is static index evidence, not runtime execution proof."],
+      "tool_plan": [{"tool": "context_pack", "args": {"symbol": "render_output", "verbose": false}}],
       "fallback_plan": [{"tool": "grep", "args": {"query": "format_result"}}],
-      "capability_tags": ["context", "callees"],
-      "product_gap_tags": ["context-pack upgrade"]
+      "capability_tags": ["context-pack", "callees", "relationship-evidence"],
+      "product_gap_tags": []
     },
     {
       "id": "navigation-render-to-format-trace",
@@ -195,7 +195,7 @@
       "tool_plan": [{"tool": "trace", "args": {"source": "render_output", "target": "format_result"}}],
       "fallback_plan": [{"tool": "grep", "args": {"query": "format_result"}}],
       "capability_tags": ["trace"],
-      "product_gap_tags": ["context-pack upgrade"]
+      "product_gap_tags": []
     },
     {
       "id": "protocol-http-call-capability-honesty",
@@ -255,12 +255,12 @@
       "question": "What validation does EventBus.process_data call?",
       "target": {"kind": "fixture", "name": "eval-fixture"},
       "expected_facts": [{"kind": "symbol", "value": "validate_data"}],
-      "required_evidence": [{"kind": "symbol", "value": "validate_data"}],
-      "acceptable_caveats": ["Only indexed static call edges are considered."],
-      "tool_plan": [{"tool": "context_callees", "args": {"symbol": "EventBus.process_data"}}],
+      "required_evidence": [{"kind": "symbol", "value": "validate_data"}, {"kind": "edge_kind", "value": "call"}],
+      "acceptable_caveats": ["Relationship evidence is static index evidence, not runtime execution proof."],
+      "tool_plan": [{"tool": "context_pack", "args": {"symbol": "EventBus.process_data", "verbose": false}}],
       "fallback_plan": [{"tool": "grep", "args": {"query": "validate_data"}}],
-      "capability_tags": ["context", "callees"],
-      "product_gap_tags": ["context-pack upgrade"]
+      "capability_tags": ["context-pack", "callees", "relationship-evidence"],
+      "product_gap_tags": []
     }
   ]
 }

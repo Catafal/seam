@@ -196,7 +196,7 @@ Requires the `semantic` extra and `seam init --semantic`.
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `SEAM_PACK_NEIGHBOR_LIMIT` | `10` | Max enriched callers and max enriched callees per bundle. |
+| `SEAM_PACK_NEIGHBOR_LIMIT` | `10` | Max enriched callers, enriched callees, and direct relationship-evidence rows per direction. |
 | `SEAM_PACK_PER_FILE_CAP` | `3` | Max neighbor entries from any single file (homonym diversity). |
 | `SEAM_PACK_MAX_COMMENTS` | `10` | Max WHY/HACK/NOTE comments in the bundle. |
 | `SEAM_PACK_RELEVANCE_RANK` | `on` | Rank neighbors by personalized-PageRank relevance to the seed before the caps. `off` = min_id order. |

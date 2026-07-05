@@ -238,7 +238,7 @@ Grouped by the question an agent is asking. Every tool is **read-only**; the ser
 | Tool | Answers | Key args |
 |------|---------|----------|
 | `seam_context` | "Show me everything about symbol X." — callers, callees, signature, cluster, `field_readers`/`field_writers`, and static `test_callers`/`tested_symbols`. Resolves bare/qualified/class names and merges homonyms. | `symbol` or `uid` |
-| `seam_context_pack` | "Give me a paste-ready bundle for X." — `seam_context` + WHY comments + enriched neighbors + cluster peers in one call; neighbors ranked by relevance to the seed. | `symbol` |
+| `seam_context_pack` | "Give me a paste-ready bundle for X." — `seam_context` + WHY comments + enriched neighbors + direct relationship evidence + caveats + next calls in one call; neighbors ranked by relevance to the seed. | `symbol` |
 | `seam_why` | "Why is this code like this?" — the `WHY`/`HACK`/`NOTE`/`TODO`/`FIXME` comments. | `symbol`, `path` |
 
 ### Assess change risk
@@ -263,7 +263,7 @@ Grouped by the question an agent is asking. Every tool is **read-only**; the ser
 | `seam_clusters` | "What are the functional areas?" — Louvain communities (semantic coupling), or the members of one. | `cluster_id` (optional) |
 | `seam_structure` | "How is the repo laid out?" — the filesystem → directory → file → container tree with symbol counts and area labels. | `path`, `depth`, `nodes` |
 
-> **Lean mode.** The enrichment-carrying tools (`seam_context`, `seam_trace`, `seam_impact`, `seam_context_pack`) accept `verbose=false` (CLI `--lean`) to drop heavy provenance fields and shrink the response for tight token budgets. `seam_impact` additionally supports a hard `max_bytes` ceiling and emits `next_actions` hints when results are trimmed.
+> **Lean mode.** The enrichment-carrying tools (`seam_context`, `seam_trace`, `seam_impact`, `seam_context_pack`) accept `verbose=false` (CLI `--lean`) to drop heavy enrichment fields and shrink the response for tight token budgets. `seam_context_pack` keeps compact relationship evidence in lean mode so agents still see why caller/callee claims are believed. `seam_impact` additionally supports a hard `max_bytes` ceiling and emits `next_actions` hints when results are trimmed.
 
 ---
 

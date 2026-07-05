@@ -10,6 +10,11 @@ Orchestrates EXISTING read primitives into one ready-to-paste bundle:
   - why:           comments.why(symbol=...) results, capped
   - cluster_peers: taken directly from target (no extra query)
   - truncated:     {callers, callees, comments} counts of entries dropped by caps
+  - relationship_evidence:
+                   direct edge metadata supporting caller/callee claims, capped
+  - caveats:       static-analysis, ambiguity, provenance, and truncation limits
+  - recommended_next_calls:
+                   concrete follow-up Seam calls an agent can run next
 
 WHY a new module instead of extending engine.py:
   pack.py is deliberately thin orchestration. Keeping it separate makes it clear
@@ -18,14 +23,14 @@ WHY a new module instead of extending engine.py:
   core search/query/context path.
 
 Caps are config-driven from seam/config.py:
-  SEAM_PACK_NEIGHBOR_LIMIT  — global max per list (callers, callees)
+  SEAM_PACK_NEIGHBOR_LIMIT  — global max per list (callers, callees, evidence)
   SEAM_PACK_PER_FILE_CAP    — max entries from any single file (diversity)
   SEAM_PACK_MAX_COMMENTS    — max WHY comments included
 """
 
 import logging
 import sqlite3
-from typing import TypedDict
+from typing import Any, TypedDict
 
 import seam.config as config
 from seam.analysis.rwr import personalized_pagerank
@@ -35,6 +40,7 @@ from seam.query.comments import why as comments_why
 from seam.query.engine import ContextResult, decode_enrichment_fields
 from seam.query.engine import context as engine_context
 from seam.query.names import edge_match_names as _edge_match_names
+from seam.query.pack_evidence import RelationshipEvidenceGroup, relationship_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +95,11 @@ class ContextPack(TypedDict):
         why:           WHY/HACK/NOTE/TODO/FIXME comments attached to the symbol (capped).
         cluster_peers: Functional-area peers taken directly from target.cluster_peers.
         truncated:     Counts of entries dropped by caps (callers, callees, comments).
+        relationship_evidence:
+                       Bounded direct edge metadata supporting caller/callee claims.
+        caveats:       Static-analysis, ambiguity, provenance, and truncation limits.
+        recommended_next_calls:
+                       Concrete follow-up Seam calls an agent can run next.
     """
 
     target: ContextResult
@@ -97,6 +108,9 @@ class ContextPack(TypedDict):
     why: list[CommentHit]
     cluster_peers: list[str]
     truncated: TruncatedCounts
+    relationship_evidence: RelationshipEvidenceGroup
+    caveats: list[str]
+    recommended_next_calls: list[dict[str, Any]]
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -338,6 +352,109 @@ def _enrich_neighbors(
     return final, truncated
 
 
+def _build_caveats(
+    target: ContextResult,
+    evidence: RelationshipEvidenceGroup,
+    truncated: TruncatedCounts,
+) -> list[str]:
+    """Explain evidence limits in terms an agent can act on."""
+    caveats = [
+        "Relationship evidence is static index evidence, not runtime execution proof.",
+    ]
+
+    if target.get("ambiguous"):
+        caveats.append(
+            "The requested symbol name is ambiguous; verify the selected declaration with seam_snippet.",
+        )
+
+    all_edges = evidence["callers"] + evidence["callees"]
+    if any(
+        edge["confidence"] != "EXTRACTED"
+        or edge["synthesized_by"] is not None
+        or edge["provenance"] is None
+        for edge in all_edges
+    ):
+        caveats.append(
+            "Some relationship evidence is inferred, ambiguous, synthesized, or lacks extractor provenance.",
+        )
+
+    evidence_truncated = evidence["truncated"]
+    if (
+        truncated["callers"] > 0
+        or truncated["callees"] > 0
+        or truncated["comments"] > 0
+        or evidence_truncated["callers"] > 0
+        or evidence_truncated["callees"] > 0
+    ):
+        caveats.append(
+            "Context-pack output was truncated; use seam_impact or a narrower graph search for full blast radius.",
+        )
+
+    return caveats
+
+
+def _build_recommended_next_calls(
+    target: ContextResult,
+    evidence: RelationshipEvidenceGroup,
+    truncated: TruncatedCounts,
+) -> list[dict[str, Any]]:
+    """Return concrete follow-up calls for the most common next agent steps."""
+    symbol = target["symbol"]
+    calls: list[dict[str, Any]] = [
+        {
+            "tool": "seam_snippet",
+            "reason": "Read bounded source for the selected symbol before editing.",
+            "params": {"symbol": symbol},
+        },
+    ]
+
+    first_caller = evidence["callers"][0] if evidence["callers"] else None
+    if first_caller is not None:
+        calls.append(
+            {
+                "tool": "seam_trace",
+                "reason": "Explain a direct caller relationship before changing shared behavior.",
+                "params": {"source": first_caller["source"], "target": symbol},
+            }
+        )
+
+    first_callee = evidence["callees"][0] if evidence["callees"] else None
+    if first_callee is not None:
+        calls.append(
+            {
+                "tool": "seam_trace",
+                "reason": "Explain a direct callee relationship before changing downstream behavior.",
+                "params": {"source": symbol, "target": first_callee["target"]},
+            }
+        )
+
+    evidence_truncated = evidence["truncated"]
+    if (
+        truncated["callers"] > 0
+        or truncated["callees"] > 0
+        or evidence_truncated["callers"] > 0
+        or evidence_truncated["callees"] > 0
+    ):
+        calls.append(
+            {
+                "tool": "seam_impact",
+                "reason": "Compute the broader blast radius because context-pack output was truncated.",
+                "params": {"symbol": symbol},
+            }
+        )
+
+    if target.get("ambiguous"):
+        calls.append(
+            {
+                "tool": "seam_context",
+                "reason": "Inspect the selected ambiguous symbol before relying on neighbor evidence.",
+                "params": {"symbol": symbol},
+            }
+        )
+
+    return calls
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
@@ -419,6 +536,20 @@ def context_pack(
     # Step 5: Cluster peers come directly from target (no extra query needed).
     cluster_peers: list[str] = target.get("cluster_peers") or []
 
+    try:
+        evidence = relationship_evidence(
+            conn,
+            target["symbol"],
+            limit=neighbor_limit,
+        )
+    except Exception:
+        logger.warning("context_pack: relationship evidence failed for %r", symbol_name, exc_info=True)
+        evidence = RelationshipEvidenceGroup(
+            callers=[],
+            callees=[],
+            truncated={"callers": 0, "callees": 0},
+        )
+
     return ContextPack(
         target=target,
         callers=enriched_callers,
@@ -429,5 +560,24 @@ def context_pack(
             callers=callers_dropped,
             callees=callees_dropped,
             comments=comments_dropped,
+        ),
+        relationship_evidence=evidence,
+        caveats=_build_caveats(
+            target,
+            evidence,
+            TruncatedCounts(
+                callers=callers_dropped,
+                callees=callees_dropped,
+                comments=comments_dropped,
+            ),
+        ),
+        recommended_next_calls=_build_recommended_next_calls(
+            target,
+            evidence,
+            TruncatedCounts(
+                callers=callers_dropped,
+                callees=callees_dropped,
+                comments=comments_dropped,
+            ),
         ),
     )

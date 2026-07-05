@@ -83,8 +83,10 @@ The current score axes are:
 - false confidence.
 
 Reports also aggregate product-gap labels. These labels point to roadmap buckets
-such as context-pack upgrade, change-planning surface, protocol-edge quality,
-infra graph, graph-search recipes, and graph-quality coherence.
+such as change-planning surface, protocol-edge quality, infra graph, graph-search
+recipes, and graph-quality coherence. The earlier context-pack upgrade bucket is now
+represented by `context_pack` scenarios with direct relationship evidence, caveats,
+and follow-up calls; covered scenarios should keep an empty `product_gap_tags` list.
 
 The graph-search recipe bucket is expected to shrink as scenarios are converted
 from generic search/query plans to explicit `graph_search` recipe plans. A recipe-covered
