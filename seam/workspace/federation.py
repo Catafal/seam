@@ -29,6 +29,7 @@ def workspace_graph_search(
     kind: str | None = None,
     name_pattern: str | None = None,
     edge_kind: str | None = None,
+    recipe: str | None = None,
     limit: int = 20,
     include_preview: bool = False,
     preview_limit: int = 3,
@@ -51,6 +52,7 @@ def workspace_graph_search(
                 kind=kind,
                 name_pattern=name_pattern,
                 edge_kind=edge_kind,
+                recipe=recipe,
                 limit=per_repo_limit,
                 include_preview=include_preview,
                 preview_limit=preview_limit,
@@ -77,6 +79,7 @@ def workspace_graph_search(
             "truncated": bool(result_payload.get("has_more")),
             "items": items,
             "warnings": status.get("warnings", []) + result_payload.get("warnings", []),
+            "recipe": result_payload.get("recipe"),
         })
     total_flat_items = len(flat_items)
     flat_items = flat_items[:limit]
@@ -87,6 +90,7 @@ def workspace_graph_search(
         "limit": limit,
         "truncated": any(bool(repo.get("truncated")) for repo in repo_results) or total_flat_items > limit,
         "warnings": warnings,
+        "recipe": next((repo.get("recipe") for repo in repo_results if repo.get("recipe")), None),
     }
 
 

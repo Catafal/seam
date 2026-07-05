@@ -398,6 +398,11 @@ tools:
         type: string
         default: any
         enum: [any, test, source]
+      recipe:
+        type: string
+        required: false
+        nullable: true
+        description: Stable graph-search recipe id. Recipes compile into typed filters and surface caveats/follow-up calls.
       preset:
         type: string
         required: false
@@ -443,6 +448,10 @@ tools:
         warnings:
           Structured {code, message, hint}; includes missing enrichment/provenance
           and preview/result cap warnings.
+        recipe:
+          Present when a recipe id is supplied. Includes id, title, use_when,
+          applied_defaults, overrides, required_capabilities, caveats,
+          follow_up_calls, and tags.
         preview:
           Present per item only when include_preview=true. One-hop metadata only:
           connected symbol, uid when resolvable, file/line, edge_kind, confidence,

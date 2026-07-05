@@ -316,6 +316,79 @@ def test_graph_search_handler_and_mcp_registration(tmp_path: Path) -> None:
     assert len(tool_names) == 16
 
 
+def test_graph_search_recipe_adds_transparent_metadata(tmp_path: Path) -> None:
+    from seam.server.tools import handle_seam_graph_search
+
+    conn, root = _make_graph_repo(tmp_path)
+
+    result = handle_seam_graph_search(
+        conn,
+        root,
+        recipe="production-hotspots",
+        min_in_degree=1,
+        limit=5,
+    )
+
+    assert result["query"]["recipe"] == "production-hotspots"
+    assert result["query"]["preset"] == "hotspot"
+    assert result["query"]["test_scope"] == "source"
+    assert result["recipe"]["id"] == "production-hotspots"
+    assert result["recipe"]["applied_defaults"]["test_scope"] == "source"
+    assert result["recipe"]["overrides"]["min_in_degree"] == 1
+    assert result["recipe"]["caveats"]
+    assert any(call["tool"] == "seam_snippet" for call in result["recipe"]["follow_up_calls"])
+    assert all(item["is_test"] is False for item in result["items"])
+    assert "entry" in {item["symbol"] for item in result["items"]}
+
+
+def test_graph_search_recipe_catalog_covers_daily_agent_questions() -> None:
+    from seam.query.graph_recipes import list_graph_search_recipes
+
+    recipes = list_graph_search_recipes()
+    recipe_by_id = {recipe["id"]: recipe for recipe in recipes}
+
+    assert list(recipe_by_id) == [
+        "production-hotspots",
+        "fan-out-orchestrators",
+        "dead-code-suspects",
+        "isolated-symbols",
+        "field-access",
+        "inheritance-families",
+        "route-entrypoints",
+        "http-callers",
+        "config-readers",
+        "resource-config-links",
+        "test-evidence",
+        "exception-flow",
+        "path-structure",
+        "class-family",
+        "function-family",
+    ]
+    assert recipe_by_id["dead-code-suspects"]["defaults"] == {
+        "kind": "function",
+        "preset": "dead-code",
+        "test_scope": "source",
+        "sort": "name",
+    }
+    assert "deletion proof" in " ".join(recipe_by_id["dead-code-suspects"]["caveats"])
+    assert recipe_by_id["test-evidence"]["defaults"]["edge_kind"] == "tests"
+    assert recipe_by_id["http-callers"]["required_capabilities"] == ["has_http_calls"]
+    assert recipe_by_id["class-family"]["defaults"]["kind"] == "class"
+
+
+def test_graph_search_recipe_rejects_unknown_id(tmp_path: Path) -> None:
+    from seam.query.graph_search import graph_search
+
+    conn, root = _make_graph_repo(tmp_path)
+
+    result = graph_search(conn, root=root, recipe="cypher-but-magic")
+
+    assert result == {
+        "error": "INVALID_INPUT",
+        "message": "unknown graph-search recipe: cypher-but-magic",
+    }
+
+
 def test_graph_search_cli_json_and_quiet(tmp_path: Path) -> None:
     from seam.cli.main import app
 
@@ -339,6 +412,29 @@ def test_graph_search_cli_json_and_quiet(tmp_path: Path) -> None:
     payload = json.loads(json_result.output)
     assert payload["ok"] is True
     assert [item["symbol"] for item in payload["data"]["items"]] == ["helper", "writer"]
+
+    recipe_result = runner.invoke(
+        app,
+        [
+            "graph-search",
+            str(root),
+            "--recipe",
+            "production-hotspots",
+            "--min-in-degree",
+            "1",
+            "--json",
+        ],
+    )
+    assert recipe_result.exit_code == 0, recipe_result.output
+    recipe_payload = json.loads(recipe_result.output)
+    assert recipe_payload["data"]["recipe"]["id"] == "production-hotspots"
+    assert recipe_payload["data"]["query"]["test_scope"] == "source"
+
+    list_result = runner.invoke(app, ["graph-search", "--list-recipes", "--json"])
+    assert list_result.exit_code == 0, list_result.output
+    list_payload = json.loads(list_result.output)
+    recipe_ids = [recipe["id"] for recipe in list_payload["data"]["recipes"]]
+    assert "dead-code-suspects" in recipe_ids
 
     quiet_result = runner.invoke(
         app,

@@ -13,6 +13,7 @@ from rich.table import Table
 import seam.config as config
 from seam.cli.output import check_mutual_exclusion, emit_json, emit_json_error
 from seam.indexer.readonly import open_readonly_connection
+from seam.query.graph_recipes import list_graph_search_recipes
 from seam.server.tools import handle_seam_graph_search
 
 console = Console()
@@ -48,6 +49,9 @@ def _emit_error_dict(result: dict, json_: bool) -> NoReturn:
 
 def _render_graph_search(result: dict) -> None:
     items = result.get("items", [])
+    recipe = result.get("recipe")
+    if recipe:
+        console.print(f"[bold cyan]Recipe:[/bold cyan] {recipe['id']} — {recipe['title']}")
     if not items:
         console.print("[dim]No matches.[/dim]")
         return
@@ -105,6 +109,8 @@ def graph_search_command(
     visibility: str | None = typer.Option(None, "--visibility", help="Visibility filter."),
     is_exported: bool | None = typer.Option(None, "--exported/--not-exported", help="Export filter."),
     test_scope: str = typer.Option("any", "--test-scope", help="any | test | source."),
+    recipe: str | None = typer.Option(None, "--recipe", help="Named graph-search recipe id."),
+    list_recipes: bool = typer.Option(False, "--list-recipes", help="List graph-search recipes and exit."),
     preset: str | None = typer.Option(
         None,
         "--preset",
@@ -125,6 +131,19 @@ def graph_search_command(
         check_mutual_exclusion(json_=json_, quiet=quiet)
     except ValueError as exc:
         emit_json_error("INVALID_INPUT", str(exc))
+
+    if list_recipes:
+        recipes = list_graph_search_recipes()
+        if json_:
+            emit_json({"recipes": recipes})
+            return
+        if quiet:
+            for recipe_item in recipes:
+                console.print(recipe_item["id"])
+            return
+        for recipe_item in recipes:
+            console.print(f"[bold]{recipe_item['id']}[/bold] — {recipe_item['use_when']}")
+        return
 
     conn, project_root = _open_index(path, db_dir, json_)
     try:
@@ -157,6 +176,7 @@ def graph_search_command(
             include_preview=include_preview,
             preview_limit=preview_limit,
             regex=regex,
+            recipe=recipe,
         )
     finally:
         conn.close()

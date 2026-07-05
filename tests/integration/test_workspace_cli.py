@@ -110,6 +110,8 @@ def test_workspace_graph_search_and_snippet_are_repo_qualified(tmp_path: Path) -
                 "function",
                 "--name",
                 "*_symbol",
+                "--recipe",
+                "function-family",
                 "--preview",
                 "--json",
             ],
@@ -117,6 +119,7 @@ def test_workspace_graph_search_and_snippet_are_repo_qualified(tmp_path: Path) -
     )
 
     assert {repo["alias"] for repo in search["repos"]} == {"api", "web"}
+    assert search["recipe"]["id"] == "function-family"
     assert {item["repo"]["alias"] for item in search["items"]} == {"api", "web"}
     api_item = next(item for item in search["items"] if item["symbol"] == "api_symbol")
     assert api_item["uid"].startswith("api:")

@@ -21,6 +21,8 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, Literal, TypedDict, cast
 
+from seam.query.graph_recipes import compile_graph_search_recipe
+
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
 DEFAULT_PREVIEW_LIMIT = 3
@@ -679,8 +681,72 @@ def graph_search(
     include_preview: bool = False,
     preview_limit: int = DEFAULT_PREVIEW_LIMIT,
     regex: bool = False,
+    recipe: str | None = None,
 ) -> GraphSearchResult | dict[str, str]:
     """Return a bounded structural search page using typed filters only."""
+    recipe_metadata: dict[str, Any] | None = None
+    if recipe is not None:
+        recipe_result = compile_graph_search_recipe(
+            recipe,
+            {
+                "kind": kind,
+                "name_pattern": name_pattern,
+                "qualified_name_pattern": qualified_name_pattern,
+                "file_pattern": file_pattern,
+                "language": language,
+                "edge_kind": edge_kind,
+                "direction": direction,
+                "min_degree": min_degree,
+                "max_degree": max_degree,
+                "min_in_degree": min_in_degree,
+                "max_in_degree": max_in_degree,
+                "min_out_degree": min_out_degree,
+                "max_out_degree": max_out_degree,
+                "confidence": confidence,
+                "synthesized": synthesized,
+                "cluster_id": cluster_id,
+                "visibility": visibility,
+                "is_exported": is_exported,
+                "test_scope": test_scope,
+                "preset": preset,
+                "sort": sort,
+                "limit": limit,
+                "offset": offset,
+                "include_preview": include_preview,
+                "preview_limit": preview_limit,
+                "regex": regex,
+            },
+        )
+        if isinstance(recipe_result, dict):
+            return recipe_result
+        compiled, recipe_metadata = recipe_result
+        kind = compiled["kind"]
+        name_pattern = compiled["name_pattern"]
+        qualified_name_pattern = compiled["qualified_name_pattern"]
+        file_pattern = compiled["file_pattern"]
+        language = compiled["language"]
+        edge_kind = compiled["edge_kind"]
+        direction = cast(Literal["incoming", "outgoing", "both"], compiled["direction"])
+        min_degree = compiled["min_degree"]
+        max_degree = compiled["max_degree"]
+        min_in_degree = compiled["min_in_degree"]
+        max_in_degree = compiled["max_in_degree"]
+        min_out_degree = compiled["min_out_degree"]
+        max_out_degree = compiled["max_out_degree"]
+        confidence = compiled["confidence"]
+        synthesized = cast(Literal["any", "parser", "synthesized"], compiled["synthesized"])
+        cluster_id = compiled["cluster_id"]
+        visibility = compiled["visibility"]
+        is_exported = compiled["is_exported"]
+        test_scope = cast(Literal["any", "test", "source"], compiled["test_scope"])
+        preset = compiled["preset"]
+        sort = compiled["sort"]
+        limit = compiled["limit"]
+        offset = compiled["offset"]
+        include_preview = compiled["include_preview"]
+        preview_limit = compiled["preview_limit"]
+        regex = compiled["regex"]
+
     invalid = _validate_graph_search_inputs(
         kind=kind,
         direction=direction,
@@ -827,8 +893,9 @@ def graph_search(
         "include_preview": include_preview,
         "preview_limit": safe_preview_limit,
         "regex": regex,
+        "recipe": recipe,
     }
-    return cast(GraphSearchResult, {
+    result = {
         "query": query,
         "items": page,
         "total": total,
@@ -836,4 +903,7 @@ def graph_search(
         "offset": offset,
         "has_more": offset + safe_limit < total,
         "warnings": warnings,
-    })
+    }
+    if recipe_metadata is not None:
+        result["recipe"] = recipe_metadata
+    return cast(GraphSearchResult, result)

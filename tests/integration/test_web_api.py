@@ -271,6 +271,18 @@ def test_graph_search_accepts_exception_edges(client: TestClient) -> None:
     assert data["items"][0]["degrees"]["outgoing"] == 1
 
 
+def test_graph_search_accepts_recipe_input(client: TestClient) -> None:
+    resp = client.get(
+        "/api/graph/search",
+        params={"recipe": "production-hotspots", "min_in_degree": 1},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["recipe"]["id"] == "production-hotspots"
+    assert data["query"]["test_scope"] == "source"
+    assert data["recipe"]["overrides"]["min_in_degree"] == 1
+
+
 def test_graph_search_no_index(no_index_client: TestClient) -> None:
     """Graph search returns 503 NO_INDEX when no index exists."""
     resp = no_index_client.get("/api/graph/search", params={"kind": "function"})

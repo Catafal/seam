@@ -86,6 +86,10 @@ Reports also aggregate product-gap labels. These labels point to roadmap buckets
 such as context-pack upgrade, change-planning surface, protocol-edge quality,
 infra graph, graph-search recipes, and graph-quality coherence.
 
+The graph-search recipe bucket is expected to shrink as scenarios are converted
+from generic search/query plans to explicit `graph_search` recipe plans. A recipe-covered
+scenario should keep an empty `product_gap_tags` list unless another product gap remains.
+
 ## Reproduce
 
 ```bash
