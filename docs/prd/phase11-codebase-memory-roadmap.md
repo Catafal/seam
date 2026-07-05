@@ -52,6 +52,7 @@ build-out.
 | `seam_schema` | Shipped across CLI/MCP/Web. Reports freshness, counts, optional tables, capabilities, warnings, and tool guidance. | `seam/query/schema.py`, `seam/cli/schema.py`, `seam/server/tools.py`, `docs/api-contracts/mcp-tools.yaml`, `tests/unit/test_schema_tool.py` | Keep schema, architecture, and graph-search capability language aligned. |
 | `seam_snippet` | Shipped exact bounded source retrieval by UID/symbol/file+line, including ambiguity handling and root containment. | `seam/query/snippet.py`, `seam/cli/snippet.py`, `tests/unit/test_snippet_tool.py` | Continue using as the source panel primitive in Explorer. |
 | Structural graph search | Shipped typed search with kind, edge kind, degree, path, confidence, synthesized, preset, pagination, and previews. | `seam/query/graph_search.py`, `seam/cli/graph_search.py`, `tests/unit/test_graph_search.py` | Prefer extending typed filters over adding a general Cypher parser. |
+| Graph-search recipes | Shipped named intent presets for recurring agent questions such as production hotspots, dead-code suspects, test evidence, exception flow, route entrypoints, config/resource links, and class/function families. Recipes compile into typed graph-search filters and return transparent caveats/follow-ups. | `seam/query/graph_recipes.py`, `docs/graph-search-recipes.md`, `tests/unit/test_graph_search.py` | Keep recipes transparent; add new ones only when answerability scenarios show repeated agent friction. |
 | `seam_architecture` | Shipped bounded architecture summary with sections, scope, byte budget, routes/config/resources/exceptions/tests, hotspots, boundaries, next calls. | `seam/query/architecture.py`, `seam/cli/architecture.py`, `tests/unit/test_architecture_tool.py` | Fixed stale `NO_TEST_EDGES` warning on 2026-07-03; keep warnings tied to actual evidence. |
 | Route nodes and route summaries | Shipped for supported Python/TypeScript route forms. | `seam/indexer/routes.py`, `tests/unit/test_routes.py` | `http_calls` coverage is still partial; expand carefully under protocol-edge work. |
 | Config/resource nodes | Shipped key/resource extraction and architecture/schema reporting. | `seam/indexer/config_resources.py`, `tests/unit/test_config_resources.py` | Keep value handling conservative: keys/resources only, not secret values. |
@@ -126,6 +127,7 @@ These should stay out unless the product direction changes materially.
      capability language aligned.
    - Prevent warnings from contradicting populated evidence.
    - Keep CLI/MCP/Web contracts in sync.
+   - Keep graph-search recipe guidance aligned with answerability scenarios.
 
 2. **Explorer visual QA.**
    - Maintain Playwright screenshots and canvas-pixel checks for the Topology/3D path.

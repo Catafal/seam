@@ -14,6 +14,7 @@ from typing import Any
 import seam
 import seam.config as config
 from seam.analysis.staleness import check_staleness
+from seam.query.graph_recipes import list_graph_search_recipes
 
 _OPTIONAL_TABLES = (
     "comments",
@@ -154,6 +155,7 @@ def _tool_registry() -> list[dict[str, Any]]:
             "read_only": True,
             "use_when": "You need structural discovery by kind, edge, degree, route, config/resource, path, or preset.",
             "depends_on": ["edges"],
+            "recipes": list_graph_search_recipes(),
         },
         {
             "name": "seam_architecture",
@@ -395,7 +397,9 @@ def describe_schema(
             "Call seam_schema first to inspect index capability and freshness.",
             "Use seam_search for keyword discovery.",
             "Use seam_architecture for a repo-level briefing with physical areas, clusters, hotspots, boundaries, and follow-up calls.",
-            "Use seam_graph_search for dead-code suspects, hotspots, field access, and inheritance.",
+            "Use seam_graph_search recipe=production-hotspots for shared source hotspots.",
+            "Use seam_graph_search recipe=dead-code-suspects for cleanup candidates, then verify with context/snippet.",
+            "Use seam_graph_search recipes for field access, inheritance, routes, config/resources, tests, and exceptions before hand-writing filter combinations.",
             "Use seam_graph_search with kind=route or edge_kind=http_calls for HTTP boundary discovery when route data is populated.",
             "Use seam_graph_search with kind=config/resource or edge_kind=reads_config/configures for operational dependency discovery when config data is populated.",
             "Use seam_graph_search with edge_kind=raises,catches for explicit exception-flow discovery when exception edges are populated.",

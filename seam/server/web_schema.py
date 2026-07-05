@@ -237,6 +237,7 @@ class GraphSearchResponse(BaseModel):
     """Response for GET /api/graph/search."""
 
     query: dict[str, Any]
+    recipe: dict[str, Any] | None = None
     items: list[GraphSearchItem]
     total: int
     limit: int

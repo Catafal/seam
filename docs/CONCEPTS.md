@@ -112,6 +112,13 @@ file updates. Absence of a `tests` edge means "not statically observed", not "un
 `field_writers` and static test evidence as `test_callers` / `tested_symbols`,
 complementing the inclusive `callers` view.
 
+`seam_graph_search` also exposes named recipes for recurring agent questions.
+Recipes are transparent intent labels, not a second query engine: each recipe
+compiles into typed filters such as `kind`, `edge_kind`, degree thresholds,
+`test_scope`, preview settings, and sort mode, then returns the applied defaults,
+caller overrides, caveats, required capabilities, and suggested follow-up calls.
+See [`graph-search-recipes.md`](graph-search-recipes.md).
+
 ### Why composition and field edges are conservative
 
 `holds`, `uses`, `reads`, and `writes` all follow the same **conservatism contract**: emit

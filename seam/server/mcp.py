@@ -327,6 +327,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         include_preview: bool = False,
         preview_limit: int = 3,
         regex: bool = False,
+        recipe: str | None = None,
     ) -> Any:
         """Find symbols by graph shape before you know the exact symbol name.
 
@@ -366,6 +367,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
                 include_preview=include_preview,
                 preview_limit=preview_limit,
                 regex=regex,
+                recipe=recipe,
             )
         )
 

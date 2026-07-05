@@ -221,9 +221,10 @@ def test_describe_schema_summary_reports_capabilities(schema_repo, monkeypatch) 
     assert any(t["name"] == "seam_schema" for t in result["tools"])
     assert any(t["name"] == "seam_architecture" for t in result["tools"])
     assert any(t["name"] == "seam_snippet" for t in result["tools"])
-    assert any(t["name"] == "seam_graph_search" for t in result["tools"])
+    graph_tool = next(t for t in result["tools"] if t["name"] == "seam_graph_search")
+    assert any(recipe["id"] == "production-hotspots" for recipe in graph_tool["recipes"])
     assert any("seam_architecture" in call for call in result["recommended_next_calls"])
-    assert any("seam_graph_search" in call for call in result["recommended_next_calls"])
+    assert any("recipe=production-hotspots" in call for call in result["recommended_next_calls"])
     assert any("seam_snippet" in call for call in result["recommended_next_calls"])
     assert result["recommended_next_calls"]
     assert "tables" not in result

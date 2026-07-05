@@ -70,6 +70,7 @@ def register_graph_search_routes(app: FastAPI, *, db_path: Path, root: Path) -> 
         include_preview: bool = Query(False),
         preview_limit: int = Query(3, ge=0, le=10),
         regex: bool = Query(False),
+        recipe: str | None = Query(None, description="Named graph-search recipe id."),
     ) -> GraphSearchResponse:
         """Return typed structural graph-search results without source text."""
         conn = _get_readonly_conn(db_path)
@@ -103,6 +104,7 @@ def register_graph_search_routes(app: FastAPI, *, db_path: Path, root: Path) -> 
                 include_preview=include_preview,
                 preview_limit=preview_limit,
                 regex=regex,
+                recipe=recipe,
             )
         finally:
             conn.close()

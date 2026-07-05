@@ -195,7 +195,11 @@ def test_architecture_summary_reports_counts_edge_mix_and_next_calls(tmp_path: P
     assert result["sections"]["edge_mix"]["synthesized"]["interface-override"] == 1
     assert result["sections"]["routes"]["status"] == "empty"
     assert "routes" not in result["sections"]["optional_surfaces"]
-    assert any(call["tool"] == "seam_graph_search" for call in result["next_calls"])
+    assert any(
+        call["tool"] == "seam_graph_search"
+        and call["params"].get("recipe") == "production-hotspots"
+        for call in result["next_calls"]
+    )
     assert not any(w["code"] == "NO_ROUTE_EDGES" for w in result["warnings"])
     assert not _contains_key(result, "source_text")
     assert not _contains_key(result, "source_code")

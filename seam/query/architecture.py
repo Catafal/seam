@@ -1181,7 +1181,7 @@ def _next_calls() -> list[dict[str, Any]]:
         {
             "tool": "seam_graph_search",
             "reason": "Find concrete hotspots, dead-code suspects, field access, or inheritance relationships from the architecture overview.",
-            "params": {"preset": "hotspot", "limit": 10},
+            "params": {"recipe": "production-hotspots", "preset": "hotspot", "limit": 10},
         },
         {
             "tool": "seam_context",
@@ -1233,7 +1233,7 @@ def _next_calls_for_sections(sections: dict[str, Any]) -> list[dict[str, Any]]:
             {
                 "tool": "seam_graph_search",
                 "reason": "Review explicit failure paths using exception-flow edges.",
-                "params": {"edge_kind": "raises,catches", "limit": 10},
+                "params": {"recipe": "exception-flow", "edge_kind": "raises,catches", "limit": 10},
             },
         )
         heavy_symbols = exceptions.get("heavy_symbols", [])
@@ -1254,7 +1254,7 @@ def _next_calls_for_sections(sections: dict[str, Any]) -> list[dict[str, Any]]:
             {
                 "tool": "seam_graph_search",
                 "reason": "Review static test-to-production evidence.",
-                "params": {"edge_kind": "tests", "limit": 10},
+                "params": {"recipe": "test-evidence", "edge_kind": "tests", "limit": 10},
             },
         )
     http_calls = sections.get("http_calls")
@@ -1264,7 +1264,7 @@ def _next_calls_for_sections(sections: dict[str, Any]) -> list[dict[str, Any]]:
             {
                 "tool": "seam_graph_search",
                 "reason": "Review static HTTP caller-to-route evidence.",
-                "params": {"edge_kind": "http_calls", "direction": "outgoing", "limit": 10},
+                "params": {"recipe": "http-callers", "edge_kind": "http_calls", "direction": "outgoing", "limit": 10},
             },
         )
     return calls

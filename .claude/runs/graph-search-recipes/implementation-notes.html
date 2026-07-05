@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Graph-Search Recipes · Implementation Notes</title>
+  <style>
+    body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; max-width: 880px;
+           margin: 40px auto; padding: 0 24px; color: #292524; line-height: 1.55; }
+    h1 { border-bottom: 3px solid #0181c9; padding-bottom: 8px; }
+    h2 { margin-top: 36px; color: #0181c9; border-bottom: 1px solid #e5e5e5; padding-bottom: 4px; }
+    code { background: #f5f5f4; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+    .decision { background: #f0f9ff; border-left: 4px solid #0181c9; padding: 12px 16px; margin: 14px 0; }
+    .deviation { background: #fffbeb; border-left: 4px solid #d97706; padding: 12px 16px; margin: 14px 0; }
+    .tradeoff { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 12px 16px; margin: 14px 0; }
+    .open { background: #fef2f2; border-left: 4px solid #dc2626; padding: 12px 16px; margin: 14px 0; }
+    .tag { display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase;
+           letter-spacing: 0.5px; padding: 2px 8px; border-radius: 10px; color: #fff; }
+    .t-dec { background: #0181c9; } .t-dev { background: #d97706; }
+    .t-trade { background: #7c3aed; } .t-open { background: #dc2626; }
+    ul { margin-top: 6px; } .meta { color: #78716c; font-size: 0.9em; }
+    .done { color: #16a34a; font-weight: 600; }
+    table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+    th, td { border: 1px solid #e5e5e5; padding: 6px 10px; text-align: left; font-size: 0.92em; }
+    th { background: #fafaf9; }
+  </style>
+</head>
+<body>
+  <h1>Graph-Search Recipes</h1>
+  <p class="meta">Branch <code>feat/graph-search-recipes</code> · started 2026-07-05 · PRD #324, issues #325-#329.</p>
+  <p>This is a <strong>living document</strong> capturing how the implementation interprets,
+     diverges from, or trades off against the spec. Updated as each slice lands.</p>
+
+  <h2>The spec, in one line</h2>
+  <p>Add a transparent, deterministic recipe layer over existing typed graph-search so agents can choose safe structural queries by intent, with caveats, follow-up calls, transport parity, docs, and benchmark coverage.</p>
+
+  <h2>Design decisions <span class="meta">(spec was ambiguous → here's the call I made)</span></h2>
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Start with one deep catalog module.</strong>
+    Recipes will compile into existing graph-search parameters before any DB work happens, because the PRD explicitly wants recipes to be product logic rather than a second graph engine.</div>
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Recipe overrides are inferred from non-default graph-search arguments.</strong>
+    Existing CLI/MCP signatures pass default values eagerly, so recipe compilation treats graph-search's generic defaults as omitted values and records only non-default values as overrides.</div>
+
+  <h2>Deviations <span class="meta">(intentional departures from the spec/convention)</span></h2>
+  <div class="deviation"><span class="tag t-dev">Deviation</span> <strong>No material deviations.</strong>
+    The implementation follows the PRD boundary: no schema migration, no new extraction,
+    no LLM planner, no arbitrary graph language. Workspace graph-search was included in
+    the parity slice because it already exposes the same typed graph-search surface.</div>
+
+  <h2>Tradeoffs <span class="meta">(alternatives considered)</span></h2>
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>Recipe ids vs. broader natural-language parsing.</strong>
+    Stable ids are less magical, but they are deterministic, testable, MCP-friendly, and preserve Seam's local read-only trust boundary.</div>
+
+  <h2>Open questions <span class="meta">(want your confirm/revise)</span></h2>
+  <div class="open"><span class="tag t-open">Open</span> <strong>None blocking.</strong>
+    Future catalog growth should be driven by recurring answerability scenarios, not by
+    making the first recipe set exhaustive.</div>
+
+  <h2>Build / verification</h2>
+  <ul>
+    <li>Started from a clean worktree at <code>origin/main</code>; <code>uv run seam init</code> completed with a fresh index.</li>
+    <li><code>uv run pytest tests/unit/test_graph_search.py tests/integration/test_web_api.py::test_graph_search_accepts_recipe_input tests/unit/test_schema_tool.py::test_describe_schema_summary_reports_capabilities tests/unit/test_architecture_tool.py::test_architecture_summary_reports_counts_edge_mix_and_next_calls tests/integration/test_workspace_cli.py::test_workspace_graph_search_and_snippet_are_repo_qualified tests/eval/test_answerability.py -q</code> passed.</li>
+    <li><code>make eval-answerability</code> passed with 20 scenarios, average score 1.988.</li>
+    <li><code>uv run ruff check ...</code> passed on touched Python files.</li>
+    <li><code>uv run mypy seam/ --ignore-missing-imports</code> passed.</li>
+    <li><code>make gate</code> passed after implementation.</li>
+    <li><code>uv run seam graph-search --recipe class-family --name '*Processor' --json</code> returned valid JSON after review caught stale docs that used <code>--name-pattern</code>.</li>
+    <li>No migrations, new dependencies, network calls, or new extraction domains added.</li>
+  </ul>
+
+  <h2>Review pass</h2>
+  <ul>
+    <li>Code/backend/QA agent found no code, API contract, validation, safety, or behavioral regressions beyond the stale docs example.</li>
+    <li>Docs/comments agent found the same stale CLI example, stale architecture wording ("fifteen" tools and "four" query families), and a missing <code>use_when</code> mention in the MCP YAML recipe output contract.</li>
+    <li>All review findings were patched.</li>
+  </ul>
+
+  <h2>Progress</h2>
+  <table>
+    <tr><th>Slice</th><th>What</th><th>Status</th></tr>
+    <tr><td>#325</td><td>Recipe catalog tracer bullet</td><td class="done">✓ done</td></tr>
+    <tr><td>#326</td><td>Daily agent recipe set</td><td class="done">✓ done</td></tr>
+    <tr><td>#327</td><td>CLI/MCP/Web/schema parity</td><td class="done">✓ done</td></tr>
+    <tr><td>#328</td><td>Answerability scenarios and docs</td><td class="done">✓ done</td></tr>
+    <tr><td>#329</td><td>Hardening, review, release readiness</td><td class="done">✓ done</td></tr>
+  </table>
+</body>
+</html>

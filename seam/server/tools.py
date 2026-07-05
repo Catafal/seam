@@ -743,6 +743,7 @@ def handle_seam_graph_search(
     include_preview: bool = False,
     preview_limit: int = 3,
     regex: bool = False,
+    recipe: str | None = None,
 ) -> dict[str, Any]:
     """Delegate typed structural discovery to the transport-neutral query module."""
     return cast(dict[str, Any], run_graph_search(
@@ -774,6 +775,7 @@ def handle_seam_graph_search(
         include_preview=include_preview,
         preview_limit=preview_limit,
         regex=regex,
+        recipe=recipe,
     ))
 
 

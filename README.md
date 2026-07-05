@@ -101,7 +101,8 @@ cd /path/to/your/project
 uv run seam init                       # index the project (writes .seam/seam.db)
 uv run seam search "auth token"        # full-text (hybrid semantic when enabled)
 uv run seam query "verify user login"  # concept search + 1-hop graph expansion
-uv run seam graph-search --preset hotspot --json  # structural graph search
+uv run seam graph-search --recipe production-hotspots --json  # structural graph search
+uv run seam graph-search --list-recipes  # named recipes for common agent questions
 uv run seam architecture --json        # bounded repo architecture briefing
 uv run seam context authenticate_user  # 360° view: callers, callees, cluster, signature
 uv run seam impact  authenticate_user  # blast radius by risk tier
@@ -201,7 +202,7 @@ seam workspace init /path/to/workspace --json
 seam workspace add api /path/to/api /path/to/workspace --json
 seam workspace add web /path/to/web /path/to/workspace --json
 seam workspace status /path/to/workspace --json
-seam workspace graph-search /path/to/workspace --kind route --json
+seam workspace graph-search /path/to/workspace --recipe route-entrypoints --json
 seam workspace route-callers /path/to/workspace --method GET --path /api/users --json
 seam workspace matches /path/to/workspace --config-key DATABASE_URL --json
 seam workspace impact /path/to/workspace authenticate_user --json

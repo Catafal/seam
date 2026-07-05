@@ -127,10 +127,10 @@
       "expected_facts": [{"kind": "symbol", "value": "PaymentProcessor"}, {"kind": "symbol", "value": "StripeProcessor"}],
       "required_evidence": [{"kind": "file", "value": "interfaces.py"}],
       "acceptable_caveats": ["Search does not prove every runtime implementation is registered."],
-      "tool_plan": [{"tool": "search", "args": {"query": "payment processor", "limit": 10}}],
+      "tool_plan": [{"tool": "graph_search", "args": {"recipe": "class-family", "name_pattern": "*Processor", "limit": 10}}],
       "fallback_plan": [{"tool": "grep", "args": {"query": "PaymentProcessor"}}],
-      "capability_tags": ["search"],
-      "product_gap_tags": ["graph-search recipe"]
+      "capability_tags": ["graph-search", "recipe"],
+      "product_gap_tags": []
     },
     {
       "id": "discovery-pipeline-stage",
@@ -153,10 +153,10 @@
       "expected_facts": [{"kind": "symbol", "value": "validate_data"}],
       "required_evidence": [{"kind": "file", "value": "dispatcher.py"}],
       "acceptable_caveats": ["Search ranks static symbols, not runtime validation completeness."],
-      "tool_plan": [{"tool": "search", "args": {"query": "validate data", "limit": 10}}],
+      "tool_plan": [{"tool": "graph_search", "args": {"recipe": "function-family", "name_pattern": "validate*", "limit": 10}}],
       "fallback_plan": [{"tool": "grep", "args": {"query": "validate_data"}}],
-      "capability_tags": ["search"],
-      "product_gap_tags": ["graph-search recipe"]
+      "capability_tags": ["graph-search", "recipe"],
+      "product_gap_tags": []
     },
     {
       "id": "infra-kubernetes-capability-honesty",
@@ -231,10 +231,10 @@
       "expected_facts": [{"kind": "symbol", "value": "PaymentProcessor"}, {"kind": "symbol", "value": "StripeProcessor"}],
       "required_evidence": [{"kind": "file", "value": "interfaces.py"}],
       "acceptable_caveats": ["Structural search is static and does not prove registration."],
-      "tool_plan": [{"tool": "graph_search", "args": {"kind": "class", "name_pattern": "Processor", "regex": true, "limit": 10}}],
+      "tool_plan": [{"tool": "graph_search", "args": {"recipe": "class-family", "name_pattern": "*Processor", "limit": 10}}],
       "fallback_plan": [{"tool": "grep", "args": {"query": "class .*Processor"}}],
-      "capability_tags": ["graph-search", "architecture"],
-      "product_gap_tags": ["graph-search recipe"]
+      "capability_tags": ["graph-search", "architecture", "recipe"],
+      "product_gap_tags": []
     },
     {
       "id": "architecture-event-coupling",
