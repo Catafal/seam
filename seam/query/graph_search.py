@@ -71,6 +71,11 @@ DEFAULT_EDGE_KINDS = {
     "catches",
     "tests",
 }
+EXACT_RECEIVER_PROVENANCE = {
+    "python-receiver-type",
+    "typescript-receiver-type",
+    "javascript-receiver-type",
+}
 
 
 class GraphSearchResult(TypedDict):
@@ -289,6 +294,42 @@ def _fetch_edges(conn: sqlite3.Connection) -> tuple[list[dict[str, Any]], list[d
         }
         for row in rows
     ], warnings
+
+
+def _apply_exact_receiver_confidence(
+    edges: list[dict[str, Any]],
+    symbols: Iterable[dict[str, Any]],
+    *,
+    test_scope: str,
+) -> list[dict[str, Any]]:
+    """Promote exact receiver-qualified edges using the current symbol table.
+
+    Stored edge confidence is intentionally conservative because individual files
+    are re-indexed independently. Graph search has whole-index visibility, so it
+    can safely expose exact receiver provenance as EXTRACTED when the qualified
+    target exists once, or AMBIGUOUS when duplicate target symbols exist.
+    """
+    name_counts: dict[str, int] = defaultdict(int)
+    for symbol in symbols:
+        if test_scope == "test" and not _is_test_path(symbol["file"]):
+            continue
+        if test_scope == "source" and _is_test_path(symbol["file"]):
+            continue
+        name_counts[symbol["symbol"]] += 1
+
+    normalized: list[dict[str, Any]] = []
+    for edge in edges:
+        if edge["kind"] != "call" or edge["provenance"] not in EXACT_RECEIVER_PROVENANCE:
+            normalized.append(edge)
+            continue
+        target_count = name_counts.get(edge["target"], 0)
+        if target_count == 0:
+            normalized.append(edge)
+            continue
+        updated = dict(edge)
+        updated["confidence"] = "EXTRACTED" if target_count == 1 else "AMBIGUOUS"
+        normalized.append(updated)
+    return normalized
 
 
 def _edge_matches(
@@ -809,6 +850,7 @@ def graph_search(
     root = root.resolve()
     symbols, symbol_warnings = _fetch_symbols(conn, root)
     edges, edge_warnings = _fetch_edges(conn)
+    edges = _apply_exact_receiver_confidence(edges, symbols, test_scope=test_scope)
     warnings = [*symbol_warnings, *edge_warnings]
     incoming, outgoing, incoming_edges, outgoing_edges = _degree_maps(
         symbols,

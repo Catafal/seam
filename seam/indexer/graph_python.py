@@ -44,6 +44,7 @@ from seam.indexer.graph_scope_infer import (
     _PY_SELF_NAMES,
     collect_composition_types_python,
     collect_param_types_python,
+    collect_python_type_aliases,
     record_py_local_types,
     record_py_param_types,
     resolve_receiver_type,
@@ -277,6 +278,7 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
     composition_on = config.SEAM_COMPOSITION_EDGES == "on"
     field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
     param_edges_on = config.SEAM_PARAM_EDGES == "on"
+    type_aliases = collect_python_type_aliases(root) if type_inference_on else {}
 
     def _emit_import_edges(node: Node) -> None:
         if node.type == "import_statement":
@@ -414,6 +416,7 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
             line=node.start_point[0] + 1,
             confidence="INFERRED",
             receiver=receiver_text,
+            provenance="python-receiver-type" if target != method_name else None,
         ))
 
     def _walk_function_body(func_node: Node, class_name: str | None, class_fields: dict[str, str]) -> None:
@@ -422,7 +425,7 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
         # independent scope). class_fields is the order-independent Layer 1 pre-scan;
         # var_types is the per-function Layer 2 scope that adds params and locals on top.
         var_types: dict[str, str] = dict(class_fields)
-        record_py_param_types(func_node, var_types)
+        record_py_param_types(func_node, var_types, type_aliases)
 
         # 'uses' edges: this function references plain user types as parameters.
         # Hooked here (not in the body walk) because the function node carries the
@@ -447,7 +450,7 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
         if body is None:
             return
         for stmt in body.children:
-            record_py_local_types(stmt, var_types)
+            record_py_local_types(stmt, var_types, type_aliases)
             _walk_stmt(stmt, class_name, var_types, class_fields)
 
         # A3: Emit reads/writes edges for field accesses in this function body.
@@ -533,7 +536,7 @@ def _extract_edges_python(root: Node, filepath: Path) -> list[Edge]:
         # entirely, producing the same bare-target edges as pre-Tier-B.
         class_fields: dict[str, str] = {}
         if type_inference_on and cls_name:
-            class_fields = scan_class_fields_python(class_node)
+            class_fields = scan_class_fields_python(class_node, type_aliases)
 
         # Slice #77: emit composition (holds) edges.
         # WHY here: this is the single natural place where we have both the class name

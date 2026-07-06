@@ -97,14 +97,15 @@ tools:
           (object) — files, symbols, edges, clusters, comments, import_mappings, embeddings, routes, config_keys, resources.
         breakdowns:
           (object) — grouped maps for languages, symbol_kinds, edge_kinds,
-          edge_confidence, synthesized_edges, comment_markers, embedding_models,
-          resource_categories.
+          edge_confidence, edge_provenance, synthesized_edges, comment_markers,
+          embedding_models, resource_categories.
         capabilities:
           (object) — derived booleans for optional features and important columns:
           has_clusters, has_comments, has_import_mappings, has_embeddings,
           embedding_model_matches, has_synthesized_edges, has_field_symbols,
           has_receiver_column, has_search_text, has_signature_column,
           has_synthesized_by_column, has_edge_provenance_column,
+          has_exact_receiver_provenance, has_exact_receiver_edges,
           has_routes_table, has_route_nodes,
           has_http_calls, has_config_keys_table, has_resources_table,
           has_config_nodes, has_resource_nodes, has_infra_graph, has_reads_config,
@@ -461,6 +462,11 @@ tools:
           Direct extractor evidence such as http_calls may put its extraction channel
           in provenance while synthesized_by remains null. http_calls previews also include
           route_resolved so unresolved local literals are not confused with declared routes.
+          Exact receiver-qualified calls put python-receiver-type,
+          typescript-receiver-type, or javascript-receiver-type in provenance; graph
+          search normalizes preview/filter confidence at query time: unique qualified
+          target in the selected test_scope -> EXTRACTED, duplicate qualified target
+          -> AMBIGUOUS, missing target -> stored conservative confidence.
       found_false_ok: false
     errors:
       - INVALID_INPUT
@@ -1083,7 +1089,9 @@ tools:
       edge resolution: when a call's receiver type was
       inferred at index time, the target is already qualified ('Type.method') so it
       resolves with EXTRACTED confidence when unique — no Tier A bridging needed for
-      that hop.
+      that hop. Python and TypeScript/JavaScript canonicalize local import aliases
+      syntactically first and include constructor-owned fields/parameter properties
+      as receiver evidence; optional/generic/container/union/chained evidence is refused.
 
       E4 edge provenance: when SEAM_EDGE_PROVENANCE=on (default), each hop carries
       'synthesized_by' (post-pass provenance channel for derived edges, null when no

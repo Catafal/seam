@@ -46,6 +46,18 @@ mitigates it three ways: receiver-type inference promotes bare names to qualifie
 `EXTRACTED` at read time; and the stable `uid` handle (`sha1(abs_path)[:8]:line`) lets a
 caller pin one exact homonym when it matters.
 
+For Python and TypeScript/JavaScript, receiver inference also canonicalizes same-file
+import aliases before qualification. `from client import Client as C` and
+`import { Client as C }` can therefore turn `self.client.send()` / `this.client.send()`
+into `Client.send`, not a fake `C.send` node. That alias step is syntactic; the
+query-time confidence pass is what decides whether the resulting qualified target is
+unique in the visible index. Constructor-owned dependencies count as receiver evidence
+when the type is plain and non-nullable: Python `self.client: Client` or
+`self.client = Client()` inside `__init__`, and TypeScript constructor parameter
+properties or `this.client = new Client()` inside `constructor`. Optional, union,
+generic, container, dotted, chained, and unknown receiver evidence is refused so Seam
+keeps the bare method target instead of inventing precision.
+
 ---
 
 ## 2. The fifteen edge kinds
@@ -192,7 +204,12 @@ unambiguous `call` from a heuristic, synthesized one — and weight its trust ac
 `edges.provenance` is different: it stores direct extractor evidence channels without
 turning the edge into a synthesized edge. HTTP call edges use it for literal client
 evidence such as `typescript-fetch-literal` or `python-httpx-literal` while
-`synthesized_by` stays `null`.
+`synthesized_by` stays `null`. Exact receiver-qualified call edges use
+`python-receiver-type`, `typescript-receiver-type`, or `javascript-receiver-type`.
+Graph search applies query-visible symbol counts to those provenance tags at read time:
+when the qualified target exists once in the selected `test_scope`, confidence is
+surfaced as `EXTRACTED`; duplicate qualified targets are surfaced as `AMBIGUOUS`;
+missing targets stay at the stored conservative confidence.
 
 ---
 
