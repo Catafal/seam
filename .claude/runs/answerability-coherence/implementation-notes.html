@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Agent Answerability Coherence · Implementation Notes</title>
+  <style>
+    body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; max-width: 880px;
+           margin: 40px auto; padding: 0 24px; color: #292524; line-height: 1.55; }
+    h1 { border-bottom: 3px solid #0181c9; padding-bottom: 8px; }
+    h2 { margin-top: 36px; color: #0181c9; border-bottom: 1px solid #e5e5e5; padding-bottom: 4px; }
+    code { background: #f5f5f4; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+    .decision { background: #f0f9ff; border-left: 4px solid #0181c9; padding: 12px 16px; margin: 14px 0; }
+    .deviation { background: #fffbeb; border-left: 4px solid #d97706; padding: 12px 16px; margin: 14px 0; }
+    .tradeoff { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 12px 16px; margin: 14px 0; }
+    .open { background: #fef2f2; border-left: 4px solid #dc2626; padding: 12px 16px; margin: 14px 0; }
+    .tag { display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase;
+           letter-spacing: 0.5px; padding: 2px 8px; border-radius: 10px; color: #fff; }
+    .t-dec { background: #0181c9; } .t-dev { background: #d97706; }
+    .t-trade { background: #7c3aed; } .t-open { background: #dc2626; }
+    ul { margin-top: 6px; } .meta { color: #78716c; font-size: 0.9em; }
+    .done { color: #16a34a; font-weight: 600; }
+    table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+    th, td { border: 1px solid #e5e5e5; padding: 6px 10px; text-align: left; font-size: 0.92em; }
+    th { background: #fafaf9; }
+  </style>
+</head>
+<body>
+  <h1>Agent Answerability Coherence</h1>
+  <p class="meta">Branch <code>codex/answerability-coherence</code> · started 2026-07-06 · parent issue #412.</p>
+  <p>This is a <strong>living document</strong> capturing how the implementation interprets,
+     diverges from, or trades off against the spec. Updated as each slice lands.</p>
+
+  <h2>The spec, in one line</h2>
+  <p>Make Seam's answerability benchmark, docs, capability language, and roadmap signals separate real
+     failing agent questions from deferred roadmap pressure and stale metadata.</p>
+
+  <h2>Design decisions <span class="meta">(spec was ambiguous → here's the call I made)</span></h2>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Keep coherence under eval support first.</strong>
+    The PRD asks for graph-quality coherence, but the concrete current drift is in the answerability
+    benchmark/report path. The implementation keeps coherence in deterministic eval modules and
+    leaves product CLI surfaces unchanged because no test required a public command.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Legacy product_gap_tags compatibility.</strong>
+    Existing scenario records may still use <code>product_gap_tags</code>. For compatibility, those tags
+    now count as failure gaps only when a scenario is non-passing; if the scenario passes, they count
+    as roadmap pressure so old metadata cannot dominate the failure recommendation.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Regression coverage fails closed.</strong>
+    Review found that a non-passing scenario with only <code>regression_tags</code> could stay classified
+    as coverage. The classifier now treats regression tags as coverage only while the scenario passes;
+    when it fails, the tag becomes a failure gap and can drive the recommendation.</div>
+
+  <h2>Deviations <span class="meta">(intentional departures from the spec/convention)</span></h2>
+
+  <div class="deviation"><span class="tag t-dev">Deviation</span> <strong>No interactive issue-breakdown gate.</strong>
+    The to-issues skill normally asks for approval before publishing slice issues. The user explicitly
+    requested issue creation and full implementation in the same turn, so I published four AFK slices
+    (#413-#416) and proceeded.</div>
+
+  <h2>Tradeoffs <span class="meta">(alternatives considered)</span></h2>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>New metadata vs. reusing product_gap_tags.</strong>
+    Reusing the old field would be smaller, but it preserves the ambiguity that caused stale roadmap
+    pressure. The implementation migrates to explicit failure/pressure/regression semantics while keeping a
+    compatibility path for older scenario records.</div>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>Coherence checks live in eval support.</strong>
+    A product CLI command would be more discoverable, but the current need is PR-time deterministic
+    validation. Keeping the module under <code>tests/eval</code> avoids expanding Seam's shipped MCP
+    surface while still making the check available through <code>answerability_report --coherence</code>.</div>
+
+  <h2>Open questions <span class="meta">(want your confirm/revise)</span></h2>
+
+  <div class="open"><span class="tag t-open">Open</span> <strong>Tracker audit application policy.</strong>
+    The PRD says optional tracker audit should not mutate by default. I implemented dry-run
+    classification only; issue closing at the end of this implementation will be limited to the four
+    slice issues created for this PR.</div>
+
+  <h2>Build / verification</h2>
+  <ul>
+    <li>Started from a fresh worktree and ran <code>uv run seam init</code>.</li>
+    <li>Checked impact for <code>summarize_results</code> and <code>render_markdown_report</code>.</li>
+    <li>Slice 1/2: focused answerability tests passed (<code>uv run pytest tests/eval/test_answerability.py -q</code>).</li>
+    <li>Slice 3/4: coherence tests passed (<code>uv run pytest tests/eval/test_answerability_coherence.py -q</code>), and <code>--coherence --json</code> returns no local docs findings.</li>
+    <li>Review fix: added regression coverage fail-closed test and reran focused eval/coherence, ruff, and mypy.</li>
+    <li>No migrations, new env vars, or new runtime dependencies planned.</li>
+  </ul>
+
+  <h2>Progress</h2>
+  <table>
+    <tr><th>Slice</th><th>What</th><th>Status</th></tr>
+    <tr><td>1</td><td>Failure gap classification</td><td class="done">✓ done</td></tr>
+    <tr><td>2</td><td>Report recommendation output</td><td class="done">✓ done</td></tr>
+    <tr><td>3</td><td>Local coherence checks</td><td class="done">✓ done</td></tr>
+    <tr><td>4</td><td>Tracker audit and docs</td><td class="done">✓ done</td></tr>
+  </table>
+</body>
+</html>

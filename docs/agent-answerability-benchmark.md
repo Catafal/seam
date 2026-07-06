@@ -1,8 +1,8 @@
 # Agent Answerability Benchmark
 
 > Reproduce with `make eval-answerability`.
-> Scenario set: `2026-07-05`.
-> Current fixture: `tests/eval/fixtures` with SHA `0f11955b3b5b277a`.
+> Scenario set: `2026-07-06`.
+> Current fixture: `tests/eval/fixtures` with SHA `3207085f908caad8`.
 
 ## The Claim Under Test
 
@@ -27,7 +27,8 @@ The benchmark is a deterministic static proxy. Each scenario declares:
 - acceptable caveats for unsupported or static-only evidence;
 - the ideal Seam tool plan;
 - a grep/read fallback plan for future comparison;
-- capability and product-gap tags.
+- capability tags plus explicit failure-gap, roadmap-pressure, or regression
+  tags.
 
 The runner executes the tool plan against the deterministic eval fixture, normalizes
 the returned evidence, scores the scenario on a 0-2 rubric, and emits a Markdown
@@ -48,7 +49,7 @@ roadmap decisions from drifting into speculation.
 
 ## Scenario Coverage
 
-The maintained scenario set contains 25 natural-language questions across:
+The maintained scenario set contains 26 natural-language questions across:
 
 - discovery;
 - docs/spec grounding;
@@ -83,15 +84,19 @@ The current score axes are:
 - freshness;
 - false confidence.
 
-Reports also aggregate product-gap labels. These labels point to roadmap buckets
-such as change-planning surface, protocol-edge quality, infra graph, graph-search
-recipes, and graph-quality coherence. The earlier context-pack upgrade bucket is now
-represented by `context_pack` scenarios with direct relationship evidence, caveats,
-and follow-up calls; covered scenarios should keep an empty `product_gap_tags` list.
+Reports separate three roadmap signals:
 
-The graph-search recipe bucket is expected to shrink as scenarios are converted
-from generic search/query plans to explicit `graph_search` recipe plans. A recipe-covered
-scenario should keep an empty `product_gap_tags` list unless another product gap remains.
+- failure gaps: labels from non-passing scenarios with missing facts, missing
+  evidence, high output cost, poor caveats, freshness issues, or false confidence;
+- roadmap pressure: demand-gated ideas that pass today because Seam is honest
+  about unsupported or empty evidence;
+- regression coverage: passing scenarios that protect shipped behavior without
+  recommending new product work.
+
+Legacy `product_gap_tags` are still accepted for compatibility. They count as
+failure gaps only when a scenario is not passing. Passing scenarios should use
+`roadmap_pressure_tags` or `regression_tags` explicitly so future agents do not
+mistake a regression label for the next product feature.
 
 ## Reproduce
 
@@ -112,6 +117,12 @@ uv run python -m tests.eval.answerability_report \
   --markdown-out .claude/eval/agent-answerability-report.md
 ```
 
+To include local docs/scenario coherence checks:
+
+```bash
+uv run python -m tests.eval.answerability_report --coherence --json
+```
+
 ## Adding Scenarios
 
 Edit `tests/eval/answerability_scenarios.json`.
@@ -124,6 +135,11 @@ Keep these rules:
 - add acceptable caveats when static evidence cannot prove runtime behavior;
 - use optional/unsupported capability scenarios to test honesty, not to force
   false certainty;
+- use `failure_gap_tags` only for scenarios whose current result should drive
+  implementation work;
+- use `roadmap_pressure_tags` for demand-gated ideas that are visible but not
+  justified by a failing scenario;
+- use `regression_tags` for passing scenarios that protect shipped behavior;
 - update the fixture hash only after intentionally changing the fixture and
   reviewing the scenario ground truth.
 
@@ -132,6 +148,7 @@ Keep these rules:
 The first run is deliberately fixture-sized. A perfect fixture score does not mean
 Seam is done; it means the benchmark harness is now able to measure future gaps.
 When scores are low, those failures should drive the next implementation PRD.
-When scores are high, recurring product-gap labels are still useful roadmap
-pressure because they show which unsupported or under-modeled questions keep
-appearing across representative repos.
+When scores are high, roadmap-pressure labels remain visible but do not outrank
+real failing answerability gaps. This keeps Kubernetes/Kustomize and similar
+competitor-inspired ideas demand-gated until the benchmark shows that agents are
+actually failing those daily questions.

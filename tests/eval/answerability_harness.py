@@ -11,6 +11,7 @@ import math
 import sqlite3
 import tempfile
 import time
+from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -63,6 +64,9 @@ class Scenario:
     fallback_plan: list[ToolStep]
     capability_tags: list[str]
     product_gap_tags: list[str]
+    failure_gap_tags: list[str]
+    roadmap_pressure_tags: list[str]
+    regression_tags: list[str]
 
 
 @dataclass(frozen=True)
@@ -125,6 +129,9 @@ class ScenarioScore:
     missing_facts: list[str]
     missing_evidence: list[str]
     product_gaps: list[str]
+    failure_gap_tags: list[str]
+    roadmap_pressure_tags: list[str]
+    regression_tags: list[str]
     notes: list[str]
     round_trips: int
     byte_count: int
@@ -397,6 +404,9 @@ def score_scenario(scenario: Scenario, tool_results: list[ToolStepResult]) -> Sc
         missing_facts=missing_facts,
         missing_evidence=missing_evidence,
         product_gaps=list(scenario.product_gap_tags),
+        failure_gap_tags=list(scenario.failure_gap_tags),
+        roadmap_pressure_tags=list(scenario.roadmap_pressure_tags),
+        regression_tags=list(scenario.regression_tags),
         notes=notes,
         round_trips=len(tool_results),
         byte_count=byte_count,
@@ -420,7 +430,10 @@ def summarize_results(
     fixture_hash: str | None = None,
 ) -> dict[str, Any]:
     categories: dict[str, dict[str, Any]] = {}
-    gap_counts: dict[str, int] = {}
+    failure_counts: Counter[str] = Counter()
+    pressure_counts: Counter[str] = Counter()
+    regression_counts: Counter[str] = Counter()
+    axis_totals: dict[str, float] = {}
     for result in results:
         category = categories.setdefault(
             result.category,
@@ -429,11 +442,37 @@ def summarize_results(
         category["scenarios"] += 1
         category["passed" if result.status == "passed" else "partial"] += 1
         category["average_score"] += _mean_score(result)
-        for gap in result.product_gaps:
-            gap_counts[gap] = gap_counts.get(gap, 0) + 1
+        for axis, score in result.scores.items():
+            axis_totals[axis] = axis_totals.get(axis, 0.0) + score
+        failure_counts.update(_failure_gap_tags(result))
+        pressure_counts.update(_roadmap_pressure_tags(result))
+        if result.status == "passed":
+            regression_counts.update(result.regression_tags)
 
     for category in categories.values():
         category["average_score"] = round(category["average_score"] / category["scenarios"], 3)
+
+    axis_averages = {
+        axis: round(total / len(results), 3) for axis, total in sorted(axis_totals.items())
+    } if results else {}
+    lowest_scoring = sorted(
+        (
+            {
+                "scenario_id": result.scenario_id,
+                "category": result.category,
+                "status": result.status,
+                "average_score": round(_mean_score(result), 3),
+                "low_axes": sorted(axis for axis, score in result.scores.items() if score < 2),
+            }
+            for result in results
+            if result.status != "passed"
+        ),
+        key=lambda item: (item["average_score"], item["scenario_id"]),
+    )[:5]
+    top_failure_gaps = _rank_counts(failure_counts)
+    roadmap_pressure = _rank_counts(pressure_counts)
+    regression_coverage = _rank_counts(regression_counts)
+    recommendation = _recommend_next_prd(top_failure_gaps, roadmap_pressure)
 
     return {
         "scenario_set_version": scenario_set_version,
@@ -451,9 +490,19 @@ def summarize_results(
             "round_trips": sum(result.round_trips for result in results),
         },
         "categories": categories,
-        "top_product_gaps": [
-            gap for gap, _count in sorted(gap_counts.items(), key=lambda item: (-item[1], item[0]))
-        ],
+        "axis_averages": axis_averages,
+        "lowest_scoring_scenarios": lowest_scoring,
+        "top_failure_gaps": top_failure_gaps,
+        "roadmap_pressure": roadmap_pressure,
+        "regression_coverage": regression_coverage,
+        "top_product_gaps": top_failure_gaps,
+        "recommendation": recommendation,
+        "roadmap_signal": {
+            "top_failure_gaps": top_failure_gaps,
+            "top_roadmap_pressure": roadmap_pressure,
+            "regression_coverage": regression_coverage,
+            "recommended_next_prd": recommendation,
+        },
     }
 
 
@@ -483,7 +532,7 @@ def render_markdown_report(summary: dict[str, Any], results: list[ScenarioScore]
             f"{result.estimated_tokens} | {gaps} |"
         )
 
-    recommended = summary["top_product_gaps"][0] if summary["top_product_gaps"] else "none"
+    recommendation = summary.get("recommendation", {})
     lines.extend(
         [
             "",
@@ -500,11 +549,24 @@ def render_markdown_report(summary: dict[str, Any], results: list[ScenarioScore]
             "",
             "## Roadmap Signal",
             "",
-            f"Most recurring product-gap label: `{recommended}`.",
-            "Use low scores as the failing-answerability signal; use recurring product-gap labels as roadmap pressure.",
+            f"Top failing answerability gaps: {_format_tags(summary.get('top_failure_gaps', []))}.",
+            f"Top roadmap pressure: {_format_tags(summary.get('roadmap_pressure', []))}.",
+            f"Regression coverage: {_format_tags(summary.get('regression_coverage', []))}.",
+            f"Recommended next PRD: `{recommendation.get('tag', 'none')}` ({recommendation.get('kind', 'none')}).",
+            recommendation.get("reason", "No recommendation available."),
+            "",
+            "## Low-Score Axes",
             "",
         ]
     )
+    for axis, score in summary.get("axis_averages", {}).items():
+        lines.append(f"- `{axis}`: average score {score}")
+    lines.extend(["", "## Lowest Scoring Scenarios", ""])
+    for item in summary.get("lowest_scoring_scenarios", []):
+        axes = ", ".join(item["low_axes"]) if item["low_axes"] else "none"
+        lines.append(
+            f"- `{item['scenario_id']}`: average {item['average_score']} ({axes})"
+        )
     return "\n".join(lines)
 
 
@@ -539,7 +601,10 @@ def _scenario_from_dict(raw: dict[str, Any]) -> Scenario:
         tool_plan=[_tool_step(item) for item in raw["tool_plan"]],
         fallback_plan=[_tool_step(item) for item in raw["fallback_plan"]],
         capability_tags=[str(item) for item in raw["capability_tags"]],
-        product_gap_tags=[str(item) for item in raw["product_gap_tags"]],
+        product_gap_tags=[str(item) for item in raw.get("product_gap_tags", [])],
+        failure_gap_tags=[str(item) for item in raw.get("failure_gap_tags", [])],
+        roadmap_pressure_tags=[str(item) for item in raw.get("roadmap_pressure_tags", [])],
+        regression_tags=[str(item) for item in raw.get("regression_tags", [])],
     )
 
 
@@ -549,6 +614,51 @@ def _expected(raw: dict[str, Any]) -> ExpectedItem:
 
 def _tool_step(raw: dict[str, Any]) -> ToolStep:
     return ToolStep(tool=str(raw["tool"]), args=dict(raw.get("args", {})))
+
+
+def _failure_gap_tags(result: ScenarioScore) -> list[str]:
+    if result.status == "passed":
+        return []
+    return result.failure_gap_tags or result.product_gaps or result.regression_tags
+
+
+def _roadmap_pressure_tags(result: ScenarioScore) -> list[str]:
+    tags = list(result.roadmap_pressure_tags)
+    if result.status == "passed":
+        tags.extend(result.product_gaps)
+    return tags
+
+
+def _rank_counts(counts: Counter[str]) -> list[str]:
+    return [tag for tag, _count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))]
+
+
+def _recommend_next_prd(
+    top_failure_gaps: list[str], roadmap_pressure: list[str]
+) -> dict[str, str | None]:
+    if top_failure_gaps:
+        tag = top_failure_gaps[0]
+        return {
+            "kind": "failure_gap",
+            "tag": tag,
+            "reason": f"`{tag}` is backed by non-passing answerability scenarios.",
+        }
+    if roadmap_pressure:
+        tag = roadmap_pressure[0]
+        return {
+            "kind": "roadmap_pressure",
+            "tag": tag,
+            "reason": f"`{tag}` is demand-gated pressure from passing scenarios.",
+        }
+    return {
+        "kind": "none",
+        "tag": None,
+        "reason": "No failing answerability gap or demand-gated roadmap pressure was found.",
+    }
+
+
+def _format_tags(tags: list[str]) -> str:
+    return ", ".join(f"`{tag}`" for tag in tags) if tags else "`none`"
 
 
 def _walk_evidence(value: Any, items: list[EvidenceItem]) -> None:
