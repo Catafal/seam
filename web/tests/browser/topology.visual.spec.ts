@@ -129,12 +129,16 @@ test("Topology selection and reset stay inside the 3D surface", async ({ page },
 
   const root = page.getByTestId("topology-root");
   await expect(root).toHaveAttribute("data-selected", selected as string);
-  await expect(page.getByLabel("Symbol detail panel")).toBeVisible();
+  // #361: selecting a node opens the lightweight NodeIdentityCard (aria-label
+  // "Node identity") — the crash-proof replacement for the old fetching
+  // "Symbol detail panel". The invariant is unchanged: a panel appears on
+  // select and disappears on deselect; only the panel's identity changed.
+  await expect(page.getByLabel("Node identity")).toBeVisible();
   await expect(page).toHaveURL(/seam-visual-qa=1/);
 
   await page.keyboard.press("Escape");
   await expect(root).toHaveAttribute("data-selected", "");
-  await expect(page.getByLabel("Symbol detail panel")).toHaveCount(0);
+  await expect(page.getByLabel("Node identity")).toHaveCount(0);
 
   await assertCanvasPixels(page, testInfo);
   expect(failures).toEqual([]);
