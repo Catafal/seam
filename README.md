@@ -333,7 +333,7 @@ fix, so current output is leaner than it shows.
 
 **Agent answerability** — [`docs/agent-answerability-benchmark.md`](docs/agent-answerability-benchmark.md)
 
-Runs 20 natural-language coding-agent questions against the deterministic eval fixture and
+Runs 26 natural-language coding-agent questions against the deterministic eval fixture and
 scores answer facts, evidence, caveats, output cost, round trips, latency, freshness, and
 false confidence. Reproduce with `make eval-answerability`.
 

@@ -202,9 +202,90 @@ def test_report_summarizes_categories_gaps_and_roadmap_signal(tmp_path: Path) ->
     assert summary["scenario_set_version"] == "test"
     assert summary["totals"]["scenarios"] == 1
     assert summary["categories"]["discovery"]["scenarios"] == 1
-    assert "graph-quality coherence" in summary["top_product_gaps"]
+    assert "graph-quality coherence" not in summary["top_failure_gaps"]
+    assert "graph-quality coherence" in summary["roadmap_pressure"]
     assert "Roadmap Signal" in markdown
     assert "discovery-validate-data" in markdown
+
+
+def test_report_prefers_partial_failure_gaps_over_passing_roadmap_pressure() -> None:
+    passing = score_scenario(
+        load_scenarios_from_dict(
+            {
+                "version": "test",
+                "scenarios": [
+                    _scenario(
+                        id="infra-pressure",
+                        expected_facts=[{"kind": "warning", "value": "UNSUPPORTED"}],
+                        required_evidence=[{"kind": "warning", "value": "UNSUPPORTED"}],
+                        product_gap_tags=[],
+                        roadmap_pressure_tags=["infra graph"],
+                    )
+                ],
+            }
+        )[0],
+        [
+            ToolStepResult.from_payload(
+                "fake_symbol",
+                {},
+                {
+                    "warnings": [{"code": "UNSUPPORTED"}],
+                    "caveats": ["No runtime behavior is inspected."],
+                },
+                elapsed_ms=1.0,
+            )
+        ],
+    )
+    partial = score_scenario(
+        load_scenarios_from_dict(
+            {
+                "version": "test",
+                "scenarios": [
+                    _scenario(
+                        id="protocol-failure",
+                        expected_facts=[{"kind": "symbol", "value": "missing"}],
+                        required_evidence=[{"kind": "edge_kind", "value": "http_calls"}],
+                        product_gap_tags=[],
+                        failure_gap_tags=["protocol-edge quality"],
+                    )
+                ],
+            }
+        )[0],
+        [ToolStepResult.from_payload("fake_symbol", {}, {"symbol": "other"}, elapsed_ms=1.0)],
+    )
+
+    summary = summarize_results([passing, partial], scenario_set_version="test")
+
+    assert summary["top_failure_gaps"] == ["protocol-edge quality"]
+    assert summary["roadmap_pressure"] == ["infra graph"]
+    assert summary["recommendation"]["kind"] == "failure_gap"
+    assert summary["recommendation"]["tag"] == "protocol-edge quality"
+
+
+def test_report_treats_failing_regression_coverage_as_failure_gap() -> None:
+    partial = score_scenario(
+        load_scenarios_from_dict(
+            {
+                "version": "test",
+                "scenarios": [
+                    _scenario(
+                        id="regression-now-failing",
+                        expected_facts=[{"kind": "symbol", "value": "missing"}],
+                        required_evidence=[{"kind": "file", "value": "missing.py"}],
+                        product_gap_tags=[],
+                        regression_tags=["graph-quality coherence"],
+                    )
+                ],
+            }
+        )[0],
+        [ToolStepResult.from_payload("fake_symbol", {}, {"symbol": "other"}, elapsed_ms=1.0)],
+    )
+
+    summary = summarize_results([partial], scenario_set_version="test")
+
+    assert summary["top_failure_gaps"] == ["graph-quality coherence"]
+    assert summary["regression_coverage"] == []
+    assert summary["recommendation"]["kind"] == "failure_gap"
 
 
 def test_maintained_scenario_suite_runs_against_fixture() -> None:
@@ -216,5 +297,5 @@ def test_maintained_scenario_suite_runs_against_fixture() -> None:
     assert summary["fixture_hash"] == "3207085f908caad8"
     assert summary["totals"]["scenarios"] == 26
     assert summary["totals"]["average_score"] >= 1.8
-    assert "protocol-edge quality" in summary["top_product_gaps"]
+    assert "protocol-edge quality" in summary["top_failure_gaps"]
     assert "infra-kubernetes-capability-honesty" in markdown

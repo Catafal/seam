@@ -13,7 +13,8 @@
       "tool_plan": [{"tool": "schema_capability", "args": {"capability": "has_test_edges"}}],
       "fallback_plan": [{"tool": "grep", "args": {"query": "test_"}}],
       "capability_tags": ["schema"],
-      "product_gap_tags": ["graph-quality coherence"]
+      "product_gap_tags": [],
+      "regression_tags": ["graph-quality coherence"]
     },
     {
       "id": "architecture-semantic-readiness-honesty",
@@ -91,7 +92,8 @@
       "tool_plan": [{"tool": "impact", "args": {"symbol": "PaymentProcessor.process_payment", "direction": "downstream", "include_tests": true, "limit": 0}}],
       "fallback_plan": [{"tool": "grep", "args": {"query": "process_payment"}}],
       "capability_tags": ["impact", "synthesized-edges"],
-      "product_gap_tags": ["graph-quality coherence"]
+      "product_gap_tags": [],
+      "regression_tags": ["graph-quality coherence"]
     },
     {
       "id": "change-safety-payment-refund-implementations",
@@ -104,7 +106,8 @@
       "tool_plan": [{"tool": "impact", "args": {"symbol": "PaymentProcessor.refund", "direction": "downstream", "include_tests": true, "limit": 0}}],
       "fallback_plan": [{"tool": "grep", "args": {"query": "refund"}}],
       "capability_tags": ["impact", "synthesized-edges"],
-      "product_gap_tags": ["graph-quality coherence"]
+      "product_gap_tags": [],
+      "regression_tags": ["graph-quality coherence"]
     },
     {
       "id": "cleanup-risk-field-readers",
@@ -247,7 +250,8 @@
       "tool_plan": [{"tool": "schema_capability", "args": {"capability": "has_infra_graph"}}],
       "fallback_plan": [{"tool": "grep", "args": {"query": "kind: Deployment"}}],
       "capability_tags": ["schema", "infra"],
-      "product_gap_tags": ["infra graph"]
+      "product_gap_tags": [],
+      "roadmap_pressure_tags": ["infra graph"]
     },
     {
       "id": "navigation-format-result-callees",
@@ -316,7 +320,8 @@
       "tool_plan": [{"tool": "schema_capability", "args": {"capability": "has_route_nodes"}}],
       "fallback_plan": [{"tool": "grep", "args": {"query": "@app.get"}}],
       "capability_tags": ["schema", "routes"],
-      "product_gap_tags": ["protocol-edge quality"]
+      "product_gap_tags": [],
+      "failure_gap_tags": ["protocol-edge quality"]
     },
     {
       "id": "architecture-hotspot-processor-classes",
@@ -342,7 +347,8 @@
       "tool_plan": [{"tool": "impact", "args": {"symbol": "data_received", "direction": "downstream", "include_tests": true, "limit": 0}}],
       "fallback_plan": [{"tool": "grep", "args": {"query": "data_received"}}],
       "capability_tags": ["impact", "synthesized-edges"],
-      "product_gap_tags": ["graph-quality coherence"]
+      "product_gap_tags": [],
+      "regression_tags": ["graph-quality coherence"]
     },
     {
       "id": "navigation-process-data-callees",

@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from tests.eval.answerability_coherence import check_answerability_docs_coherence
 from tests.eval.answerability_harness import (
     AnswerabilityRunner,
     SeamFixtureAdapter,
@@ -24,6 +25,7 @@ from tests.eval.recall_harness import compute_fixture_hash
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 SCENARIO_PATH = Path(__file__).parent / "answerability_scenarios.json"
+DOCS_PATH = Path(__file__).parents[2] / "docs" / "agent-answerability-benchmark.md"
 
 
 def run_answerability_benchmark(
@@ -56,6 +58,23 @@ def run_answerability_benchmark(
     return summary, render_markdown_report(summary, results)
 
 
+def run_answerability_coherence(
+    *,
+    scenario_path: Path = SCENARIO_PATH,
+    docs_path: Path = DOCS_PATH,
+) -> list[dict[str, str]]:
+    findings = check_answerability_docs_coherence(scenario_path, docs_path)
+    return [
+        {
+            "severity": finding.severity,
+            "code": finding.code,
+            "evidence": finding.evidence,
+            "suggested_fix": finding.suggested_fix,
+        }
+        for finding in findings
+    ]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
@@ -64,9 +83,26 @@ def main() -> None:
         type=Path,
         help="write the Markdown report to this path while still printing a summary",
     )
+    parser.add_argument(
+        "--coherence",
+        action="store_true",
+        help="include local answerability docs/scenario coherence findings",
+    )
     args = parser.parse_args()
 
     summary, markdown = run_answerability_benchmark()
+    if args.coherence:
+        findings = run_answerability_coherence()
+        summary["coherence_findings"] = findings
+        if findings:
+            markdown += "\n## Coherence Findings\n\n"
+            for finding in findings:
+                markdown += (
+                    f"- `{finding['severity']}` `{finding['code']}`: "
+                    f"{finding['evidence']} -> {finding['suggested_fix']}\n"
+                )
+        else:
+            markdown += "\n## Coherence Findings\n\n- No local coherence findings.\n"
     if args.markdown_out:
         args.markdown_out.parent.mkdir(parents=True, exist_ok=True)
         args.markdown_out.write_text(markdown + "\n", encoding="utf-8")
