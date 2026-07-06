@@ -24,7 +24,7 @@ WHY not ``sys.executable -m seam.cli.main``:
   different from what ``seam install`` wires into Claude / Cursor.
 
 USAGE:
-  uv run --extra server python -m tests.support.mcp_smoke <indexed-root>
+  uv run --extra server python -m tests.support.mcp_smoke <root>
 
   Optional second argument overrides the seam command:
   python -m tests.support.mcp_smoke <root> /path/to/seam
@@ -93,7 +93,7 @@ async def _run_handshake(root: str, seam_cmd: str) -> int:
     This is the inner coroutine wrapped by ``asyncio.wait_for`` in ``main()``.
 
     Args:
-        root:     Absolute path to an already-indexed project root.
+        root:     Absolute path to a project root; `seam start` may auto-init it.
         seam_cmd: Command used to spawn the ``seam start`` stdio server.
 
     Returns:
@@ -127,7 +127,7 @@ def main(argv: list[str]) -> int:
 
     Args:
         argv: ``[<root>]`` or ``[<root>, <seam-command>]``.
-              root          — path to an already-indexed project directory.
+              root          — path to a project directory.
               seam-command  — optional override for the seam executable.
 
     Returns:
@@ -136,7 +136,7 @@ def main(argv: list[str]) -> int:
     """
     if not argv:
         print(
-            "usage: python -m tests.support.mcp_smoke <indexed-root> [seam-cmd]",
+            "usage: python -m tests.support.mcp_smoke <root> [seam-cmd]",
             file=sys.stderr,
         )
         return 1

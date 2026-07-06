@@ -423,8 +423,11 @@ Three mechanisms keep the index aligned with the source:
 - **`seam init`** — full re-index from scratch. Runs the whole pipeline plus the clustering
   and synthesis post-passes. The escape hatch for any staleness.
 - **The watcher** (`seam start`) — a debounced `watchdog` daemon that re-indexes individual
-  files on save. Keeps symbols/edges fresh in real time, but does **not** recompute clusters
-  or synthesized edges (both are global post-passes).
+  files on save. On a missing index, `seam start` first performs one graph-only local init,
+  then launches MCP; on a stale index, it does not rebuild silently, and freshness guidance
+  remains surfaced by schema/status/read-tool staleness banners. The watcher keeps
+  symbols/edges fresh in real time, but does **not** recompute clusters or synthesized
+  edges (both are global post-passes).
 - **`seam sync`** — one-shot filesystem reconcile (mtime pre-filter → SHA-1 confirm). Indexes
   added files, re-indexes changed ones, removes vanished ones (guarded so a transient walk
   hiccup can't wipe the index), then recomputes clusters/synthesis **gated** on whether the
