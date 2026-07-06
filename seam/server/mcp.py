@@ -154,7 +154,7 @@ def _make_instrument(
                     duration_ms = (time.perf_counter() - start) * 1000.0
                     if diag_on:
                         recorder.record_query(tool_name, duration_ms, result_chars(result))
-                    if trace_on and trace_rec is not None:
+                    if trace_on and trace_rec is not None:  # None-check is for mypy narrowing; trace_on already implies non-None
                         symbols = extract_symbol_names(result)
                         trace_rec.record_tool_call(
                             tool=tool_name,

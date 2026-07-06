@@ -180,16 +180,16 @@ class TestNoGap:
         candidates = derive_goldens(records, outcome)
         assert candidates[0].gap is False
 
-    def test_gap_false_when_outcome_is_superset_of_result(self) -> None:
-        """When SOME outcome symbols appear in the result, gap=False
-        (the result contained at least one outcome symbol)."""
+    def test_gap_true_when_not_all_outcome_symbols_present(self) -> None:
+        """When SOME but not ALL outcome symbols appear in the result, gap=True.
+        gap requires ALL outcome symbols to be in the result — any miss = gap."""
         from seam.eval.trace_derive import derive_goldens  # noqa: PLC0415
 
         records = [_make_trace_record(symbol_names=["A"])]
-        # Outcome has A (found) and B (not found) — still gap=True because B is missing
+        # Outcome has A (found) and B (not found) — gap=True because B is missing
         outcome = {"A", "B"}
         candidates = derive_goldens(records, outcome)
-        # gap=True because NOT ALL outcome symbols were found
+        # gap=True because NOT ALL outcome symbols were found (B is absent)
         assert candidates[0].gap is True
 
 

@@ -50,6 +50,11 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+# WHY top-level: trace_derive is always available (no optional extra, no circular import).
+# Imported here rather than inside derive_from_trace to satisfy the project convention
+# (all imports at top of file) and to make the dependency explicit.
+from seam.eval.trace_derive import derive_goldens
+
 logger = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -88,7 +93,6 @@ def derive_from_trace(
 
     try:
         records = _load_trace_records(trace_path)
-        from seam.eval.trace_derive import derive_goldens  # noqa: PLC0415
         candidates = derive_goldens(records, outcome)
 
         # Build review payload: candidates with approved=False by default.
@@ -196,7 +200,11 @@ def _assert_not_fixture(path: Path) -> None:
                 "The trace loop must use a SEPARATE live golden set."
             )
     except OSError:
-        pass  # path may not exist yet; that's fine
+        # Path.resolve() without strict=True does not raise for non-existent paths on
+        # Python 3.6+. An OSError here means a genuine system-level failure (symlink
+        # loop, permission error, etc.) — in that case we cannot verify safety, so log
+        # a warning rather than silently passing.
+        logger.warning("trace_loop: _assert_not_fixture could not resolve path %s", path)
 
 
 def _load_trace_records(trace_path: Path) -> list[dict[str, Any]]:
