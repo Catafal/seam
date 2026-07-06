@@ -153,6 +153,11 @@ Cluster recompute runs in `seam init` / `seam sync` (gated), never the watcher.
 
 Requires the `semantic` extra and `seam init --semantic`.
 
+Readiness is visible through `seam schema --json` and `/api/status`. Search/query callers can
+also pass `semantic=false` to force keyword-only retrieval for comparisons or strict lexical
+workflows. Semantic-only results include a caveat because they are retrieval leads, not graph
+dependencies.
+
 | Variable | Default | Effect | Re-index? |
 |----------|---------|--------|-----------|
 | `SEAM_SEMANTIC` | `off` | Master switch for hybrid FTS5 + embedding search. | read-time |

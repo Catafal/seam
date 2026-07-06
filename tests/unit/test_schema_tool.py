@@ -222,6 +222,11 @@ def test_describe_schema_summary_reports_capabilities(schema_repo, monkeypatch) 
     assert result["capabilities"]["has_clusters"] is True
     assert result["capabilities"]["has_embeddings"] is True
     assert result["capabilities"]["embedding_model_matches"] is True
+    assert result["semantic"]["readiness"]["status"] == "disabled"
+    assert result["semantic"]["readiness"]["reason"] == "config_off"
+    assert result["semantic"]["index"]["embedding_count"] == 1
+    assert result["semantic"]["index"]["embedding_models"] == {"test-model": 1}
+    assert result["semantic"]["retrieval"]["available_modes"] == ["keyword"]
     assert result["capabilities"]["has_synthesized_edges"] is True
     assert result["capabilities"]["has_routes_table"] is True
     assert result["capabilities"]["has_route_nodes"] is True
@@ -242,6 +247,22 @@ def test_describe_schema_summary_reports_capabilities(schema_repo, monkeypatch) 
     assert any("seam_snippet" in call for call in result["recommended_next_calls"])
     assert result["recommended_next_calls"]
     assert "tables" not in result
+
+
+def test_describe_schema_reports_semantic_usable_when_config_on(schema_repo, monkeypatch) -> None:
+    """Schema exposes semantic readiness as a structured contract, not only warnings."""
+    from seam.query.schema import describe_schema
+
+    conn, root, _ = schema_repo
+    monkeypatch.setattr("seam.config.SEAM_EMBED_MODEL", "test-model")
+    monkeypatch.setattr("seam.config.SEAM_SEMANTIC", "on")
+    monkeypatch.setattr("seam.query.semantic_contract.is_available", lambda: True)
+
+    result = describe_schema(conn, root=root)
+
+    assert result["semantic"]["readiness"]["status"] == "usable"
+    assert result["semantic"]["readiness"]["usable"] is True
+    assert result["semantic"]["retrieval"]["available_modes"] == ["keyword", "hybrid"]
 
 
 def test_describe_schema_distinguishes_exact_receiver_support_from_population(

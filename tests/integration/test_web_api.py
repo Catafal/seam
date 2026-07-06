@@ -12,8 +12,10 @@ Coverage:
   - GET /api/clusters — happy path + NO_INDEX
 """
 
+import struct
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -302,6 +304,11 @@ def test_status_happy_path(client: TestClient) -> None:
     assert isinstance(data["edge_count"], int)
     assert isinstance(data["cluster_count"], int)
     assert isinstance(data["languages"], list)
+    assert data["semantic"]["readiness"]["status"] in {
+        "disabled",
+        "unavailable",
+        "usable",
+    }
     assert data["symbol_count"] > 0  # we indexed authenticate_user and check
 
 
@@ -350,12 +357,69 @@ def test_status_no_index(no_index_client: TestClient) -> None:
 
 def test_search_happy_path(client: TestClient) -> None:
     """Search returns matching symbols."""
-    resp = client.get("/api/search", params={"q": "authenticate"})
+    resp = client.get("/api/search", params={"q": "authenticate", "semantic": False})
     assert resp.status_code == 200
     data = resp.json()
     assert "results" in data
     names = [r["name"] for r in data["results"]]
     assert "authenticate_user" in names
+    hit = next(r for r in data["results"] if r["name"] == "authenticate_user")
+    assert hit["uid"]
+    assert isinstance(hit["snippet"], str)
+    assert isinstance(hit["score"], float)
+    assert hit["retrieval_mode"] == "lexical"
+    assert hit["retrieval"]["sources"] == ["lexical"]
+    assert hit["caveats"] == []
+
+
+def test_search_semantic_hit_preserves_retrieval_metadata(tmp_path: Path) -> None:
+    """Semantic-only search evidence survives FastAPI serialization."""
+    from seam.indexer.db import init_db
+
+    root = tmp_path.resolve()
+    db_path = root / ".seam" / "seam.db"
+    db_path.parent.mkdir(parents=True)
+    conn = init_db(db_path)
+    src = root / "jobs.py"
+    src.write_text("def retry_delay():\n    return 1\n", encoding="utf-8")
+    conn.execute(
+        "INSERT INTO files (path, language, file_hash, mtime, indexed_at) "
+        "VALUES (?, 'python', 'hash', 1.0, 1.0)",
+        (str(src),),
+    )
+    file_id = conn.execute("SELECT id FROM files WHERE path = ?", (str(src),)).fetchone()["id"]
+    conn.execute(
+        "INSERT INTO symbols (file_id, name, kind, start_line, end_line, docstring) "
+        "VALUES (?, 'retry_delay', 'function', 1, 2, 'Delay policy with jitter.')",
+        (file_id,),
+    )
+    conn.execute("INSERT INTO symbols_fts(symbols_fts) VALUES('rebuild')")
+    symbol_id = conn.execute("SELECT id FROM symbols WHERE name = 'retry_delay'").fetchone()["id"]
+    conn.execute(
+        "INSERT OR REPLACE INTO embeddings (symbol_id, model, dim, vector) VALUES (?, ?, 2, ?)",
+        (symbol_id, "test-model", struct.pack("2f", 1.0, 0.0)),
+    )
+    conn.commit()
+    conn.close()
+
+    client = TestClient(create_web_app(db_path=db_path, root=root))
+    query_vec = struct.pack("2f", 1.0, 0.0)
+    with patch("seam.config.SEAM_SEMANTIC", "on"):
+        with patch("seam.config.SEAM_EMBED_MODEL", "test-model"):
+            with patch("seam.query.semantic.is_available", return_value=True):
+                with patch("seam.query.semantic.embed_query", return_value=query_vec):
+                    resp = client.get(
+                        "/api/search",
+                        params={"q": "backoff retries", "semantic": True},
+                    )
+
+    assert resp.status_code == 200
+    hit = resp.json()["results"][0]
+    assert hit["name"] == "retry_delay"
+    assert hit["retrieval_mode"] == "semantic-only"
+    assert hit["retrieval"]["semantic_score"] == 1.0
+    assert any("discovery lead" in caveat for caveat in hit["caveats"])
+    assert "seam_context" in hit["recommended_next_calls"]
 
 
 def test_search_empty_q_returns_400(client: TestClient) -> None:
@@ -593,9 +657,7 @@ def test_impact_no_index(no_index_client: TestClient) -> None:
 
 def test_trace_happy_path(client: TestClient) -> None:
     """trace(authenticate_user → check) finds a path (the direct call edge)."""
-    resp = client.get(
-        "/api/trace", params={"source": "authenticate_user", "target": "check"}
-    )
+    resp = client.get("/api/trace", params={"source": "authenticate_user", "target": "check"})
     assert resp.status_code == 200
     data = resp.json()
     assert data["found"] is True
@@ -609,9 +671,7 @@ def test_trace_happy_path(client: TestClient) -> None:
 
 def test_trace_unconnected_returns_empty(client: TestClient) -> None:
     """No reverse path: check does not call authenticate_user."""
-    resp = client.get(
-        "/api/trace", params={"source": "check", "target": "authenticate_user"}
-    )
+    resp = client.get("/api/trace", params={"source": "check", "target": "authenticate_user"})
     assert resp.status_code == 200
     data = resp.json()
     assert data["found"] is False
@@ -749,7 +809,9 @@ def test_constellation_representative_matches_clusters_endpoint(indexed_repo: Pa
 
     # For every cluster in constellation, the representative must match /api/clusters.
     for cid_key, rep in const_by_id.items():
-        assert cid_key in cluster_by_id, f"cluster {cid_key} present in constellation but not /api/clusters"
+        assert cid_key in cluster_by_id, (
+            f"cluster {cid_key} present in constellation but not /api/clusters"
+        )
         assert rep == cluster_by_id[cid_key], (
             f"representative mismatch for cluster {cid_key}: "
             f"constellation={rep!r} vs /api/clusters={cluster_by_id[cid_key]!r}"

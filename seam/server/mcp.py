@@ -156,7 +156,9 @@ def _make_instrument(
                     duration_ms = (time.perf_counter() - start) * 1000.0
                     if diag_on:
                         recorder.record_query(tool_name, duration_ms, result_chars(result))
-                    if trace_on and trace_rec is not None:  # None-check is for mypy narrowing; trace_on already implies non-None
+                    if (
+                        trace_on and trace_rec is not None
+                    ):  # None-check is for mypy narrowing; trace_on already implies non-None
                         symbols = extract_symbol_names(result)
                         trace_rec.record_tool_call(
                             tool=tool_name,
@@ -226,7 +228,11 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
 
     @mcp.tool()
     @_instrument("seam_query")
-    def seam_query(concept: str, limit: int = _QUERY_LIMIT_DEFAULT) -> Any:
+    def seam_query(
+        concept: str,
+        limit: int = _QUERY_LIMIT_DEFAULT,
+        semantic: bool = True,
+    ) -> Any:
         """Find all code related to a concept using hybrid search (FTS5 + 1-hop graph expansion).
 
         Use this when you need to find where a concept lives across the codebase.
@@ -234,7 +240,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         No `verbose` flag: query results carry no Phase 4/5 enrichment fields, so lean
         mode would be a no-op — query is enrichment-free, like seam_search.
         """
-        return _finalize(handle_seam_query(conn, concept, root, limit=limit))
+        return _finalize(handle_seam_query(conn, concept, root, limit=limit, semantic=semantic))
 
     @mcp.tool()
     @_instrument("seam_context")
@@ -258,13 +264,17 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
 
     @mcp.tool()
     @_instrument("seam_search")
-    def seam_search(text: str, limit: int = _SEARCH_LIMIT_DEFAULT) -> Any:
+    def seam_search(
+        text: str,
+        limit: int = _SEARCH_LIMIT_DEFAULT,
+        semantic: bool = True,
+    ) -> Any:
         """Full-text search across all indexed symbol names and docstrings (FTS5 BM25).
 
         Use when you know a keyword but not the exact symbol name.
         Supports FTS5 operators: AND, OR, NOT, phrase search in quotes.
         """
-        return _finalize(handle_seam_search(conn, text, root, limit=limit))
+        return _finalize(handle_seam_search(conn, text, root, limit=limit, semantic=semantic))
 
     @mcp.tool()
     @_instrument("seam_schema")

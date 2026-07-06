@@ -14,6 +14,7 @@ from typing import Any
 import seam
 import seam.config as config
 from seam.analysis.staleness import check_staleness
+from seam.query import semantic_contract
 from seam.query.graph_recipes import list_graph_search_recipes
 
 _OPTIONAL_TABLES = (
@@ -442,6 +443,14 @@ def describe_schema(
         "has_exact_receiver_provenance": "provenance" in edges_columns,
         "has_exact_receiver_edges": exact_receiver_edges,
     }
+    semantic_readiness = semantic_contract.semantic_readiness(
+        conn,
+        requested=True,
+        availability_check=semantic_contract.is_available,
+    )
+    semantic_retrieval_modes = (
+        ["keyword", "hybrid"] if semantic_readiness["usable"] else ["keyword"]
+    )
 
     result: dict[str, Any] = {
         "schema_version": schema_version,
@@ -451,6 +460,27 @@ def describe_schema(
         "counts": counts,
         "breakdowns": breakdowns,
         "capabilities": capabilities,
+        "semantic": {
+            "readiness": semantic_readiness,
+            "config": {
+                "enabled": config.SEAM_SEMANTIC == "on",
+                "model": config.SEAM_EMBED_MODEL,
+                "vector_store": config.SEAM_VECTOR_STORE,
+                "ann": config.SEAM_VEC_ANN,
+                "scan_cap": config.SEAM_SEMANTIC_SCAN_CAP,
+            },
+            "index": {
+                "embedding_count": counts["embeddings"],
+                "matching_embedding_count": configured_embedding_count,
+                "embedding_models": embedding_model_counts,
+                "embedding_model_matches": capabilities["embedding_model_matches"],
+            },
+            "retrieval": {
+                "available_modes": semantic_retrieval_modes,
+                "degraded_reason": semantic_readiness["reason"],
+                "caveat": semantic_contract.SEMANTIC_DISCOVERY_CAVEAT,
+            },
+        },
         "tools": _tool_registry(),
         "recommended_next_calls": [
             "Call seam_schema first to inspect index capability and freshness.",

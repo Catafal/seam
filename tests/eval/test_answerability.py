@@ -12,6 +12,7 @@ from tests.eval.answerability_harness import (
     ToolStepResult,
     load_scenarios,
     load_scenarios_from_dict,
+    normalize_evidence,
     render_markdown_report,
     score_scenario,
     summarize_results,
@@ -160,6 +161,23 @@ def test_status_requires_caveats_and_false_confidence_to_pass() -> None:
     assert result.status == "partial"
 
 
+def test_normalize_evidence_includes_semantic_retrieval_contract() -> None:
+    evidence = normalize_evidence(
+        {
+            "symbol": "parse_config",
+            "retrieval_mode": "keyword-fallback",
+            "retrieval": {"sources": ["lexical"]},
+            "caveats": ["Semantic similarity is a discovery lead."],
+            "recommended_next_calls": ["seam_context"],
+        }
+    )
+
+    keys = {item.key for item in evidence}
+    assert "retrieval_mode:keyword-fallback" in keys
+    assert "caveat:Semantic similarity is a discovery lead." in keys
+    assert "next_call:seam_context" in keys
+
+
 def test_runner_executes_tool_plan_and_records_costs(tmp_path: Path) -> None:
     scenario = load_scenarios_from_dict({"version": "test", "scenarios": [_scenario()]})[0]
     runner = AnswerabilityRunner(FakeAdapter(), tmp_path)
@@ -192,11 +210,11 @@ def test_report_summarizes_categories_gaps_and_roadmap_signal(tmp_path: Path) ->
 def test_maintained_scenario_suite_runs_against_fixture() -> None:
     summary, markdown = run_answerability_benchmark()
 
-    assert summary["scenario_set_version"] == "2026-07-05"
+    assert summary["scenario_set_version"] == "2026-07-06"
     assert summary["schema_version"] >= 1
     assert summary["seam_version"]
     assert summary["fixture_hash"] == "0f11955b3b5b277a"
-    assert summary["totals"]["scenarios"] == 23
+    assert summary["totals"]["scenarios"] == 25
     assert summary["totals"]["average_score"] >= 1.8
     assert "protocol-edge quality" in summary["top_product_gaps"]
     assert "infra-kubernetes-capability-honesty" in markdown

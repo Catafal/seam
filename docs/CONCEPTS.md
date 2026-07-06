@@ -328,6 +328,14 @@ to pre-semantic), and a **model-mismatch guard** detects when the stored vectors
 different model than is configured and falls back to FTS-only rather than silently mixing
 incompatible vector spaces.
 
+Agent contract: semantic similarity is a **discovery lead**, not dependency proof.
+`seam_schema` reports semantic readiness (`disabled`, `unavailable`, or `usable`) with the
+exact fallback reason before an agent spends a search round trip. `seam_search` and
+`seam_query` expose `retrieval_mode`, `retrieval`, `caveats`, and
+`recommended_next_calls` on each result. Semantic-only hits carry a verification caveat and
+point to `seam_snippet`, `seam_context`, and `seam_plan`; graph/risk/doc tools do not consume
+embeddings and do not treat semantic similarity as an edge.
+
 ---
 
 ## 8. Staleness detection — never silently wrong

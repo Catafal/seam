@@ -1,5 +1,5 @@
 {
-  "version": "2026-07-05",
+  "version": "2026-07-06",
   "fixture_hash": "0f11955b3b5b277a",
   "scenarios": [
     {
@@ -14,6 +14,19 @@
       "fallback_plan": [{"tool": "grep", "args": {"query": "test_"}}],
       "capability_tags": ["schema"],
       "product_gap_tags": ["graph-quality coherence"]
+    },
+    {
+      "id": "architecture-semantic-readiness-honesty",
+      "category": "architecture",
+      "question": "Can Seam tell an agent whether semantic discovery is usable before searching?",
+      "target": {"kind": "fixture", "name": "eval-fixture"},
+      "expected_facts": [{"kind": "status", "value": "disabled"}],
+      "required_evidence": [{"kind": "reason", "value": "config_off"}],
+      "acceptable_caveats": ["Semantic discovery is disabled unless SEAM_SEMANTIC=on and embeddings are indexed."],
+      "tool_plan": [{"tool": "schema", "args": {}}],
+      "fallback_plan": [{"tool": "grep", "args": {"query": "SEAM_SEMANTIC"}}],
+      "capability_tags": ["schema", "semantic-readiness"],
+      "product_gap_tags": []
     },
     {
       "id": "change-safety-field-blast-radius",
@@ -143,6 +156,19 @@
       "tool_plan": [{"tool": "query", "args": {"query": "event emitter subscribe", "limit": 10}}],
       "fallback_plan": [{"tool": "grep", "args": {"query": "subscribe"}}],
       "capability_tags": ["query", "search"],
+      "product_gap_tags": []
+    },
+    {
+      "id": "discovery-keyword-only-retrieval-contract",
+      "category": "discovery",
+      "question": "Can an agent force keyword-only discovery and see how a hit was retrieved?",
+      "target": {"kind": "fixture", "name": "eval-fixture"},
+      "expected_facts": [{"kind": "symbol", "value": "EventBus.subscribe"}],
+      "required_evidence": [{"kind": "retrieval_mode", "value": "lexical"}],
+      "acceptable_caveats": ["Keyword-only retrieval is lexical evidence, not dependency evidence."],
+      "tool_plan": [{"tool": "search", "args": {"query": "subscribe", "limit": 10, "semantic": false}}],
+      "fallback_plan": [{"tool": "grep", "args": {"query": "subscribe"}}],
+      "capability_tags": ["search", "retrieval-contract"],
       "product_gap_tags": []
     },
     {

@@ -149,6 +149,10 @@ def handle_seam_query(
             "score": r["score"],
             "callers_count": r["callers_count"],
             "callees_count": r["callees_count"],
+            "retrieval_mode": r.get("retrieval_mode"),
+            "retrieval": r.get("retrieval", {}),
+            "caveats": r.get("caveats", []),
+            "recommended_next_calls": r.get("recommended_next_calls", []),
         }
         for r in results
     ]
@@ -269,6 +273,10 @@ def handle_seam_search(
             "line": r["line"],
             "snippet": r["snippet"],
             "score": r["score"],
+            "retrieval_mode": r.get("retrieval_mode"),
+            "retrieval": r.get("retrieval", {}),
+            "caveats": r.get("caveats", []),
+            "recommended_next_calls": r.get("recommended_next_calls", []),
         }
         for r in results
     ]
@@ -677,12 +685,10 @@ def handle_seam_context_pack(
         "truncated": pack["truncated"],
         "relationship_evidence": {
             "callers": [
-                _serialize_relationship_edge(edge)
-                for edge in relationship_evidence["callers"]
+                _serialize_relationship_edge(edge) for edge in relationship_evidence["callers"]
             ],
             "callees": [
-                _serialize_relationship_edge(edge)
-                for edge in relationship_evidence["callees"]
+                _serialize_relationship_edge(edge) for edge in relationship_evidence["callees"]
             ],
             "truncated": relationship_evidence["truncated"],
         },
@@ -774,9 +780,7 @@ def _serialize_plan_result(plan: PlanResult, root: Path) -> dict[str, Any]:
     test_files = [rel(path) for path in cast(list[str], test_plan["test_files"])]
     test_plan["test_files"] = test_files
     test_plan["commands"] = (
-        [f"pytest {' '.join(path for path in test_files if path)}"]
-        if test_files
-        else []
+        [f"pytest {' '.join(path for path in test_files if path)}"] if test_files else []
     )
 
     result = {
@@ -890,37 +894,40 @@ def handle_seam_graph_search(
     recipe: str | None = None,
 ) -> dict[str, Any]:
     """Delegate typed structural discovery to the transport-neutral query module."""
-    return cast(dict[str, Any], run_graph_search(
-        conn,
-        root=root,
-        kind=kind,
-        name_pattern=name_pattern,
-        qualified_name_pattern=qualified_name_pattern,
-        file_pattern=file_pattern,
-        language=language,
-        edge_kind=edge_kind,
-        direction=direction,  # type: ignore[arg-type]
-        min_degree=min_degree,
-        max_degree=max_degree,
-        min_in_degree=min_in_degree,
-        max_in_degree=max_in_degree,
-        min_out_degree=min_out_degree,
-        max_out_degree=max_out_degree,
-        confidence=confidence,
-        synthesized=synthesized,  # type: ignore[arg-type]
-        cluster_id=cluster_id,
-        visibility=visibility,
-        is_exported=is_exported,
-        test_scope=test_scope,  # type: ignore[arg-type]
-        preset=preset,
-        sort=sort,
-        limit=limit,
-        offset=offset,
-        include_preview=include_preview,
-        preview_limit=preview_limit,
-        regex=regex,
-        recipe=recipe,
-    ))
+    return cast(
+        dict[str, Any],
+        run_graph_search(
+            conn,
+            root=root,
+            kind=kind,
+            name_pattern=name_pattern,
+            qualified_name_pattern=qualified_name_pattern,
+            file_pattern=file_pattern,
+            language=language,
+            edge_kind=edge_kind,
+            direction=direction,  # type: ignore[arg-type]
+            min_degree=min_degree,
+            max_degree=max_degree,
+            min_in_degree=min_in_degree,
+            max_in_degree=max_in_degree,
+            min_out_degree=min_out_degree,
+            max_out_degree=max_out_degree,
+            confidence=confidence,
+            synthesized=synthesized,  # type: ignore[arg-type]
+            cluster_id=cluster_id,
+            visibility=visibility,
+            is_exported=is_exported,
+            test_scope=test_scope,  # type: ignore[arg-type]
+            preset=preset,
+            sort=sort,
+            limit=limit,
+            offset=offset,
+            include_preview=include_preview,
+            preview_limit=preview_limit,
+            regex=regex,
+            recipe=recipe,
+        ),
+    )
 
 
 def handle_seam_structure(
