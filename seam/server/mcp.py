@@ -1,4 +1,4 @@
-"""MCP server setup — FastMCP stdio transport, sixteen tools registered.
+"""MCP server setup — FastMCP stdio transport, seventeen tools registered.
 
 Creates and configures the MCP server instance.
 Tool handlers in tools.py are thin adapters; this module wires them to FastMCP.
@@ -24,6 +24,7 @@ Tools registered (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3 + Phase 6 + T
     seam_architecture — bounded repository architecture briefing (Phase 11)
     seam_snippet      — exact bounded source retrieval for one indexed symbol (Phase 11)
     seam_graph_search — typed structural graph discovery over symbols/edges (Phase 11)
+    seam_plan         — bounded inspect-and-test plan for a symbol or diff (Phase 11)
 
 Design:
 - One FastMCP instance per process; connection is injected at creation time.
@@ -57,6 +58,7 @@ from seam.server.tools import (
     handle_seam_flows,
     handle_seam_graph_search,
     handle_seam_impact,
+    handle_seam_plan,
     handle_seam_query,
     handle_seam_schema,
     handle_seam_search,
@@ -147,7 +149,7 @@ def _make_instrument(recorder: DiagnosticsRecorder) -> Callable[[str], Callable[
 
 
 def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
-    """Configure and return a FastMCP server with all sixteen Seam tools registered.
+    """Configure and return a FastMCP server with all seventeen Seam tools registered.
 
     Phase 0:  seam_query, seam_context, seam_search
     Phase 1:  seam_impact, seam_trace, seam_changes
@@ -155,6 +157,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
     Phase 2:  seam_clusters
     Phase 3:  seam_affected
     Phase 6:  seam_context_pack
+    Phase 11: seam_plan
     Flows:    seam_flows
     Tier D11: seam_structure
     Phase 11: seam_schema, seam_architecture, seam_snippet, seam_graph_search
@@ -580,6 +583,41 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
         Fails (isError) with NOT_A_GIT_REPO when run outside a git repository.
         """
         return _finalize(handle_seam_changes(conn, root, base_ref=base_ref, scope=scope))
+
+    @mcp.tool()
+    @_instrument("seam_plan")
+    def seam_plan(
+        symbol: str | None = None,
+        mode: str = "target",
+        max_depth: int = _IMPACT_DEPTH_DEFAULT,
+        scope: str = _CHANGES_SCOPE_DEFAULT,
+        base_ref: str = _CHANGES_BASE_REF_DEFAULT,
+    ) -> Any:
+        """Create a bounded inspect-and-test plan before or after edits.
+
+        Modes:
+          target — requires symbol; combines context_pack + upstream impact + indexed tests.
+          diff   — inspects the current git diff; combines seam_changes + seam_affected.
+
+        The result is a static planning artifact, not an executor. It ranks symbols to
+        inspect, identifies likely impacted test files, reports omitted counts when
+        caps apply, and includes caveats when the index or diff evidence is partial.
+
+        Use this when an agent asks "what should I inspect and test before I edit or
+        commit?" Then follow the recommended_next_calls for exact source snippets or
+        deeper impact checks.
+        """
+        return _finalize(
+            handle_seam_plan(
+                conn,
+                root,
+                symbol=symbol,
+                mode=mode,
+                max_depth=max_depth,
+                scope=scope,
+                base_ref=base_ref,
+            )
+        )
 
     @mcp.tool()
     @_instrument("seam_why")

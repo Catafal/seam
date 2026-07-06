@@ -221,6 +221,7 @@ def test_describe_schema_summary_reports_capabilities(schema_repo, monkeypatch) 
     assert any(t["name"] == "seam_schema" for t in result["tools"])
     assert any(t["name"] == "seam_architecture" for t in result["tools"])
     assert any(t["name"] == "seam_snippet" for t in result["tools"])
+    assert any(t["name"] == "seam_plan" for t in result["tools"])
     graph_tool = next(t for t in result["tools"] if t["name"] == "seam_graph_search")
     assert any(recipe["id"] == "production-hotspots" for recipe in graph_tool["recipes"])
     assert any("seam_architecture" in call for call in result["recommended_next_calls"])
@@ -349,7 +350,7 @@ def test_schema_mcp_registration(schema_repo) -> None:
     assert "seam_architecture" in tool_names
     assert "seam_snippet" in tool_names
     assert "seam_graph_search" in tool_names
-    assert len(tool_names) == 16
+    assert len(tool_names) == 17
 
 
 def test_schema_web_endpoint(schema_repo) -> None:

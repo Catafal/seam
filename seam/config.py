@@ -322,6 +322,20 @@ SEAM_RWR_MAX_NODES: int = int(os.getenv("SEAM_RWR_MAX_NODES", "500"))
 # Max BFS depth (hops from the seed) when collecting the local subgraph for the RWR walk.
 SEAM_RWR_MAX_DEPTH: int = int(os.getenv("SEAM_RWR_MAX_DEPTH", "3"))
 
+
+# ── Agent change planning configuration ──────────────────────────────────────
+
+# Maximum inspection rows returned by seam_plan. The planner composes context,
+# impact, and test evidence, so the cap prevents it from becoming a full dump of
+# every lower-level tool. Risk summaries and caveats still report what was omitted.
+SEAM_PLAN_MAX_INSPECTION_ITEMS: int = int(os.getenv("SEAM_PLAN_MAX_INSPECTION_ITEMS", "20"))
+
+# Maximum test files returned by seam_plan before reporting omitted counts.
+SEAM_PLAN_MAX_TEST_FILES: int = int(os.getenv("SEAM_PLAN_MAX_TEST_FILES", "20"))
+
+# Maximum changed symbols enriched with target-style context in diff mode.
+SEAM_PLAN_MAX_ENRICHED_TARGETS: int = int(os.getenv("SEAM_PLAN_MAX_ENRICHED_TARGETS", "5"))
+
 # ── Execution flows configuration (seam_flows) ───────────────────────────────
 
 # Max entry points returned by seam_flows in list mode.

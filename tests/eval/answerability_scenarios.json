@@ -42,6 +42,19 @@
       "product_gap_tags": []
     },
     {
+      "id": "change-safety-format-result-plan",
+      "category": "change-safety",
+      "question": "What should I inspect before changing format_result?",
+      "target": {"kind": "fixture", "name": "eval-fixture"},
+      "expected_facts": [{"kind": "symbol", "value": "format_result"}, {"kind": "symbol", "value": "render_output"}, {"kind": "symbol", "value": "log_result"}],
+      "required_evidence": [{"kind": "edge_kind", "value": "call"}],
+      "acceptable_caveats": ["Static analysis is not runtime execution proof."],
+      "tool_plan": [{"tool": "plan", "args": {"symbol": "format_result", "mode": "target", "max_depth": 3}}],
+      "fallback_plan": [{"tool": "context_pack", "args": {"symbol": "format_result", "verbose": false}}, {"tool": "impact", "args": {"symbol": "format_result", "direction": "upstream", "include_tests": true, "limit": 0}}],
+      "capability_tags": ["plan", "change-safety", "relationship-evidence"],
+      "product_gap_tags": []
+    },
+    {
       "id": "change-safety-payment-process-implementations",
       "category": "change-safety",
       "question": "Which implementations are affected if PaymentProcessor.process_payment changes?",

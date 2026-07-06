@@ -196,7 +196,7 @@ def test_maintained_scenario_suite_runs_against_fixture() -> None:
     assert summary["schema_version"] >= 1
     assert summary["seam_version"]
     assert summary["fixture_hash"] == "0f11955b3b5b277a"
-    assert summary["totals"]["scenarios"] == 20
+    assert summary["totals"]["scenarios"] == 21
     assert summary["totals"]["average_score"] >= 1.8
     assert "protocol-edge quality" in summary["top_product_gaps"]
     assert "infra-kubernetes-capability-honesty" in markdown

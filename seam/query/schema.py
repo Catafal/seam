@@ -198,6 +198,16 @@ def _tool_registry() -> list[dict[str, Any]]:
             ),
         },
         {
+            "name": "seam_plan",
+            "transports": ["cli", "mcp"],
+            "read_only": True,
+            "use_when": (
+                "You need a bounded inspect-and-test plan for a target symbol or current diff "
+                "before editing, committing, or handing work to another agent."
+            ),
+            "depends_on": ["edges"],
+        },
+        {
             "name": "seam_structure",
             "transports": ["cli", "mcp", "web"],
             "read_only": True,

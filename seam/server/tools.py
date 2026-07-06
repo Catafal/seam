@@ -43,6 +43,7 @@ from seam.query.graph_search import graph_search as run_graph_search
 from seam.query.pack import ContextPack, NeighborRef
 from seam.query.pack import context_pack as run_context_pack
 from seam.query.pack_evidence import RelationshipEvidence
+from seam.query.plan import EvidenceRef, InspectionItem, PlanResult, plan_diff, plan_target
 from seam.query.schema import describe_schema
 from seam.query.snippet import snippet as run_snippet
 from seam.query.structure import StructureResult
@@ -686,6 +687,111 @@ def handle_seam_context_pack(
         "caveats": pack["caveats"],
         "recommended_next_calls": pack["recommended_next_calls"],
     }
+
+
+def handle_seam_plan(
+    conn: sqlite3.Connection,
+    root: Path,
+    *,
+    symbol: str | None = None,
+    mode: str = "target",
+    max_depth: int = 3,
+    scope: str = _CHANGES_SCOPE_DEFAULT,
+    base_ref: str = _CHANGES_BASE_REF_DEFAULT,
+) -> dict[str, Any]:
+    """Handler for the seam_plan tool.
+
+    The planner composes existing static evidence into an inspect-and-test plan.
+    It stays read-only and does not run tests, mutate git, or add graph evidence.
+    """
+    if mode == "target":
+        if symbol is None or not symbol.strip():
+            return _invalid_input("symbol must not be empty or whitespace-only")
+        raw_plan = plan_target(conn, symbol.strip(), max_depth=max_depth)
+    elif mode == "diff":
+        if scope not in VALID_SCOPES:
+            return _invalid_input(f"scope must be one of {sorted(VALID_SCOPES)}; got {scope!r}")
+        if not base_ref or not base_ref.strip():
+            return _invalid_input("base_ref must not be empty or whitespace-only")
+        try:
+            raw_plan = plan_diff(conn, repo_root=root, scope=scope, base_ref=base_ref.strip())
+        except NotAGitRepoError as exc:
+            return {"error": "NOT_A_GIT_REPO", "message": str(exc)}
+    else:
+        return _invalid_input("mode must be 'target' or 'diff'")
+
+    result = _serialize_plan_result(raw_plan, root)
+    result = _maybe_attach_staleness(result, conn, root)
+    if result.get("index_status", {}).get("stale"):
+        result.setdefault("caveats", []).append(
+            "Index is stale; run seam sync before treating this plan as current."
+        )
+    return result
+
+
+def _serialize_plan_result(plan: PlanResult, root: Path) -> dict[str, Any]:
+    """Relativize DB-native planner paths at the transport boundary."""
+
+    def rel(path: str | None) -> str | None:
+        return _relativize(path, root) if path is not None else None
+
+    def serialize_evidence(evidence: EvidenceRef) -> dict[str, Any]:
+        item = dict(evidence)
+        if "file" in item:
+            item["file"] = rel(cast(str | None, item["file"]))
+        return item
+
+    def serialize_item(item: InspectionItem) -> dict[str, Any]:
+        return {
+            "symbol": item["symbol"],
+            "file": rel(item["file"]),
+            "line": item["line"],
+            "kind": item["kind"],
+            "reasons": item["reasons"],
+            "tier": item["tier"],
+            "confidence": item["confidence"],
+            "evidence": [serialize_evidence(ev) for ev in item["evidence"]],
+        }
+
+    target = dict(plan.get("target", {}))
+    if "file" in target:
+        target["file"] = rel(target["file"])
+
+    diff = dict(plan.get("diff", {}))
+    if diff:
+        diff["changed_symbols"] = [
+            {
+                **changed,
+                "file": rel(changed.get("file")),
+            }
+            for changed in diff.get("changed_symbols", [])
+        ]
+        diff["new_files"] = [rel(path) for path in diff.get("new_files", [])]
+
+    test_plan = dict(plan["test_plan"])
+    test_files = [rel(path) for path in cast(list[str], test_plan["test_files"])]
+    test_plan["test_files"] = test_files
+    test_plan["commands"] = (
+        [f"pytest {' '.join(path for path in test_files if path)}"]
+        if test_files
+        else []
+    )
+
+    result = {
+        "mode": plan["mode"],
+        "found": plan["found"],
+        "risk": plan["risk"],
+        "inspection_plan": [serialize_item(item) for item in plan["inspection_plan"]],
+        "test_plan": test_plan,
+        "caveats": plan["caveats"],
+        "recommended_next_calls": plan["recommended_next_calls"],
+        "omitted": plan["omitted"],
+    }
+    if target:
+        result["target"] = target
+    if diff:
+        result["diff"] = diff
+    return result
 
 
 def handle_seam_schema(
