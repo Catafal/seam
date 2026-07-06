@@ -220,7 +220,7 @@ class SeamWatcher(FileSystemEventHandler):
         # die silently and leave the index stale without warning. Log it.
         try:
             logger.debug("Indexing file: %s", path)
-            result = index_one_file(conn, path)
+            result = index_one_file(conn, path, root=self._root_path)
             if result is None:
                 logger.debug("Skipped %s (unsupported/binary/error)", path)
             else:

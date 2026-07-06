@@ -902,6 +902,118 @@ def _run_migration_v14_to_v15(conn: sqlite3.Connection) -> None:
         ) from exc
 
 
+def _run_migration_v15_to_v16(conn: sqlite3.Connection) -> None:
+    """Guarded migration: add document grounding tables (v15 -> v16).
+
+    Additive-only and intentionally separate from `edges`: document references
+    are intent/provenance evidence, not code reachability. Existing indexes need
+    a re-index to populate docs, but read paths can discover the capability once
+    the tables exist.
+    """
+    try:
+        row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
+        version = int(row["value"]) if row else 0
+
+        if version >= 16:
+            return
+
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS document_files (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    file_id     INTEGER NOT NULL UNIQUE REFERENCES files(id) ON DELETE CASCADE,
+                    path        TEXT NOT NULL,
+                    doc_kind    TEXT NOT NULL,
+                    status      TEXT NOT NULL DEFAULT 'unknown',
+                    title       TEXT,
+                    fingerprint TEXT NOT NULL,
+                    indexed_at  REAL NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS document_anchors (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    document_id  INTEGER NOT NULL REFERENCES document_files(id) ON DELETE CASCADE,
+                    heading_path TEXT NOT NULL,
+                    slug         TEXT NOT NULL,
+                    anchor_type  TEXT NOT NULL,
+                    start_line   INTEGER NOT NULL,
+                    end_line     INTEGER NOT NULL,
+                    search_text  TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS document_references (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    anchor_id      INTEGER NOT NULL REFERENCES document_anchors(id) ON DELETE CASCADE,
+                    target_kind    TEXT NOT NULL,
+                    target_value   TEXT NOT NULL,
+                    resolved_kind  TEXT,
+                    resolved_value TEXT,
+                    relation_type  TEXT NOT NULL,
+                    confidence     TEXT NOT NULL,
+                    line           INTEGER NOT NULL,
+                    provenance     TEXT NOT NULL,
+                    caveat         TEXT
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_document_files_kind ON document_files(doc_kind)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_document_files_status ON document_files(status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_document_files_path ON document_files(path)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_document_anchors_document ON document_anchors(document_id)"
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_document_anchors_slug ON document_anchors(slug)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_document_references_anchor ON document_references(anchor_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_document_references_target "
+                "ON document_references(target_kind, target_value)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_document_references_resolved "
+                "ON document_references(resolved_kind, resolved_value)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_document_references_relation "
+                "ON document_references(relation_type)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_document_references_confidence "
+                "ON document_references(confidence)"
+            )
+            conn.execute("UPDATE metadata SET value = '16' WHERE key = 'schema_version'")
+            conn.execute("COMMIT")
+
+            logger.info(
+                "Migrated Seam index v%d->v16 (added document grounding tables). "
+                "Run 'seam init' to populate docs/spec grounding evidence.",
+                version,
+            )
+        except Exception as exc:  # noqa: BLE001
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(
+                "Seam DB migration v15->v16 failed; run 'seam init' to rebuild the index"
+            ) from exc
+    except RuntimeError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "Seam DB migration v15->v16 failed; run 'seam init' to rebuild the index"
+        ) from exc
+
+
 def _run_migration_v10_to_v11(conn: sqlite3.Connection) -> None:
     """Guarded migration: add symbols.search_text + a 4th symbols_fts column (v10 → v11).
 

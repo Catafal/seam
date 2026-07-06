@@ -3,6 +3,8 @@
 > **Current system overview (v0.3.0) is below.** For the conceptual *why* of each
 > subsystem see [`CONCEPTS.md`](CONCEPTS.md); for an illustrated version see
 > [`architecture.html`](architecture.html); for decision rationale see [`adr/`](adr/).
+> For the intent behind the document-grounding layer, see
+> [`docs-grounding-architecture.md`](docs-grounding-architecture.md).
 > The phase-by-phase build history is preserved as an **appendix** further down.
 
 ---
@@ -21,7 +23,7 @@
  │  indexer/pipeline.py ── parser → graph (symbols + 15-kind edges) → db     │
  │        │                                                                  │
  │        ▼                                                                  │
- │  .seam/seam.db  (SQLite + FTS5, schema v15)                               │
+ │  .seam/seam.db  (SQLite + FTS5, schema v16)                               │
  │        │                                                                  │
  │        ├─▶ clustering post-pass   (Louvain communities + labels)          │
  │        └─▶ synthesis post-pass    (dynamic-dispatch edges; gated)         │
@@ -42,14 +44,14 @@
    ┌────────┴───────────────────────────────────────┐
    ▼                          ▼                       ▼
  MCP server (stdio)     CLI read commands        Seam Explorer (web, [web] extra)
- 18 read-only tools     schema/query/impact/…    FastAPI + React SPA, 127.0.0.1
+ 19 read-only tools     schema/query/impact/…    FastAPI + React SPA, 127.0.0.1
    │                          │                       │
    └──────────────────────────┴───────────────────────┘
                               ▼
               AI agent (Claude Code · Cursor · Codex)
 ```
 
-The **18 MCP tools** map to engine functions:
+The **19 MCP tools** map to engine functions:
 
 | Tool | Engine entry point |
 |------|-------------------|
@@ -59,6 +61,7 @@ The **18 MCP tools** map to engine functions:
 | `seam_graph_search` | `query/graph_search.py` |
 | `seam_graph_search` recipes | `query/graph_recipes.py` |
 | `seam_suspects` | `query/suspects.py` |
+| `seam_grounding` | `query/grounding.py` |
 | `seam_query` · `seam_search` · `seam_context` | `query/engine.py` (+ `query/semantic.py` hybrid) |
 | `seam_context_pack` | `query/pack.py` |
 | `seam_plan` | `query/plan.py` composing `query/pack.py`, `analysis/impact.py`, `analysis/changes.py`, and `analysis/affected.py` |
@@ -165,7 +168,7 @@ which defaults were applied and which caller filters overrode the recipe.
 static absence signals, then adds blockers, removal risk, caveats, and follow-up calls
 so agents do not treat "no inbound edge observed" as "safe to delete."
 
-### Storage (SQLite, schema v15)
+### Storage (SQLite, schema v16)
 
 | Table | Holds |
 |-------|-------|
@@ -175,6 +178,7 @@ so agents do not treat "no inbound edge observed" as "safe to delete."
 | `routes` | first-class HTTP route metadata keyed to route symbols: method, path, normalized_path, framework, handler, confidence, provenance |
 | `config_keys` | config/env key metadata keyed to config symbols: normalized key, source family, role, redacted value state/category, confidence, provenance |
 | `resources` | runtime resource metadata keyed to resource symbols: category, normalized name, source family, confidence, provenance |
+| `document_files` · `document_anchors` · `document_references` | local docs/spec grounding evidence: doc kind/status/title, heading anchors, explicit references, resolution confidence, provenance, and caveats |
 | `comments` | WHY / HACK / NOTE / TODO / FIXME markers |
 | `clusters` | Louvain communities: id, label, size, naming_source, cohesion |
 | `import_mappings` | per-file import bindings (powers read-time import promotion) |

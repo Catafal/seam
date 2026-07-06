@@ -168,7 +168,7 @@ def run_init(
             _notify(progress_cb, f"Indexing {file_path.name}...")
             # Returns None when skipped (binary/oversize/parse error);
             # (symbols, edges) when indexed (even if both are 0).
-            result = index_one_file(conn, file_path)
+            result = index_one_file(conn, file_path, root=root)
             if result is None:
                 skipped_files += 1
                 continue

@@ -68,6 +68,7 @@ from seam.cli.artifacts import (
 from seam.cli.fetch import FetchError, fetch_index
 from seam.cli.file_sink import write_output_file
 from seam.cli.graph_search import graph_search_command
+from seam.cli.grounding import grounding_command
 from seam.cli.install import install_command, uninstall_command
 from seam.cli.output import check_mutual_exclusion, emit_json, emit_json_error, print_quiet
 from seam.cli.plan import plan_command
@@ -157,6 +158,7 @@ app.command(name="snippet")(snippet_command)
 app.command(name="graph-search")(graph_search_command)
 app.command(name="plan")(plan_command)
 app.command(name="suspects")(suspects_command)
+app.command(name="grounding")(grounding_command)
 # serve starts the local Seam Explorer (FastAPI + uvicorn) — requires [web] extra.
 app.command(name="serve")(serve_command)
 app.add_typer(workspace_app, name="workspace")

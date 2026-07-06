@@ -499,7 +499,7 @@ def test_architecture_handler_mcp_cli_and_web_surfaces(tmp_path: Path) -> None:
     server = create_server(conn, root)
     tool_names = list(server._tool_manager._tools.keys())
     assert "seam_architecture" in tool_names
-    assert len(tool_names) == 18
+    assert len(tool_names) == 19
     conn.close()
 
     runner = CliRunner()

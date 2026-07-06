@@ -348,6 +348,14 @@ SEAM_SUSPECTS_MAX_EVIDENCE: int = int(os.getenv("SEAM_SUSPECTS_MAX_EVIDENCE", "5
 # Maximum reasons/blockers kept per suspect before reporting omitted counts.
 SEAM_SUSPECTS_MAX_SIGNALS: int = int(os.getenv("SEAM_SUSPECTS_MAX_SIGNALS", "8"))
 
+# ── Docs/spec grounding configuration ───────────────────────────────────────
+# Grounding indexes capped anchor text for ranking; full Markdown bodies stay on disk
+# and are read only for explicit snippet requests.
+SEAM_GROUNDING_DEFAULT_LIMIT: int = int(os.getenv("SEAM_GROUNDING_DEFAULT_LIMIT", "20"))
+SEAM_GROUNDING_MAX_ANCHOR_LINES: int = int(os.getenv("SEAM_GROUNDING_MAX_ANCHOR_LINES", "60"))
+SEAM_GROUNDING_MAX_ANCHOR_CHARS: int = int(os.getenv("SEAM_GROUNDING_MAX_ANCHOR_CHARS", "2400"))
+SEAM_GROUNDING_MAX_SNIPPET_BYTES: int = int(os.getenv("SEAM_GROUNDING_MAX_SNIPPET_BYTES", "1600"))
+
 # ── Execution flows configuration (seam_flows) ───────────────────────────────
 
 # Max entry points returned by seam_flows in list mode.

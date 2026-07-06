@@ -485,7 +485,7 @@ The intended user workflow is:
 - What is next on the roadmap: RFC 1 covered protocol edges, starting with HTTP calls. The next
   logical roadmap item is RFC 2, Infra Graph, starting with Docker Compose and Dockerfile. After
   this PRD, the remaining roadmap RFCs are graph artifact export/import and cross-repo analysis.
-- Current Seam state: schema v15 is fresh in this checkout, config/resource extraction is shipped,
+- Current Seam state: schema v16 is fresh in this checkout, config/resource extraction is shipped,
   route nodes are shipped, and `http_calls` is supported but empty in the current Seam repository
   snapshot.
 - Current Seam gap: Compose extraction currently records service names only. Dockerfile extraction

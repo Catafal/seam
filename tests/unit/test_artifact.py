@@ -248,7 +248,7 @@ def test_inspect_artifact_rejects_unexpected_safe_member(tmp_path: Path) -> None
     manifest = {
         "manifest_version": 1,
         "artifact_format": "seam-index",
-        "schema_version": 15,
+        "schema_version": 16,
         "contents": {"files": ["seam.db"], "has_source_text": False},
     }
     with tarfile.open(archive, "w:gz") as tf:
