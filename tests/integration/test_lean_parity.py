@@ -82,8 +82,8 @@ class TestMcpSchemaVerbose:
 
         # FastMCP stores tools in a dict; get_tool is the official API
         tool_names = list(server._tool_manager._tools.keys())
-        assert len(tool_names) == 16, (
-            f"Expected 16 tools, got {len(tool_names)}: {sorted(tool_names)}"
+        assert len(tool_names) == 17, (
+            f"Expected 17 tools, got {len(tool_names)}: {sorted(tool_names)}"
         )
 
     def test_seam_query_has_no_verbose_param(self, tmp_path: Path) -> None:

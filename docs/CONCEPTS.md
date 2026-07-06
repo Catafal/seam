@@ -209,6 +209,14 @@ bucket upstream dependents by graph distance into action-oriented tiers:
 last-mile answer "given my diff, which tests should I run?" — because upstream dependents
 *are* "who would break", and the impact layer already tags each entry `is_test`.
 
+`seam_plan` is the action-planning layer over those primitives. In target mode, it starts
+from one symbol and combines local context, upstream dependents, relationship evidence, and
+indexed test callers into a ranked list of symbols to inspect. In diff mode, it starts from
+the current git change set and combines changed-symbol risk with affected test files. The
+planner never executes tests and never claims runtime proof; it returns explicit caveats,
+omitted counts, and follow-up calls so an agent can decide what to read next and which test
+command to run.
+
 ---
 
 ## 5. Clusters — functional areas
@@ -352,6 +360,12 @@ neighborhood, not the lowest-id ones. The pack also includes bounded
 `relationship_evidence` records for direct caller/callee claims, plus `caveats` and
 `recommended_next_calls`, so an agent can distinguish "indexed static evidence says this"
 from "runtime behavior is proven."
+
+`seam_plan` carries the same budget discipline into planning: it caps inspection items,
+test files, and enriched target evidence independently, then reports `omitted` counts and a
+caveat when a cap hides lower-ranked work. The planner's output is intentionally smaller
+than chaining `context_pack`, `impact`, and `affected` manually; when an agent needs exact
+source, the plan points to `seam_snippet` rather than embedding implementation bodies.
 
 ---
 

@@ -174,6 +174,16 @@ Requires the `semantic` extra and `seam init --semantic`.
 
 ---
 
+## Agent change planning
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `SEAM_PLAN_MAX_INSPECTION_ITEMS` | `20` | Max ranked symbols returned by `seam_plan.inspection_plan`; omitted entries are counted and caveated. |
+| `SEAM_PLAN_MAX_TEST_FILES` | `20` | Max test files included in the planner's pytest command. |
+| `SEAM_PLAN_MAX_ENRICHED_TARGETS` | `5` | Max target-side context entries promoted before the planner relies on impact/affected evidence. |
+
+---
+
 ## Search fallback (fuzzy)
 
 | Variable | Default | Effect |

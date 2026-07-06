@@ -113,8 +113,8 @@ class TestMcpSchemaLimit:
         conn.close()
 
         tool_names = list(server._tool_manager._tools.keys())
-        assert len(tool_names) == 16, (
-            f"Expected 16 tools, got {len(tool_names)}: {sorted(tool_names)}"
+        assert len(tool_names) == 17, (
+            f"Expected 17 tools, got {len(tool_names)}: {sorted(tool_names)}"
         )
 
 

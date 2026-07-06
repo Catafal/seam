@@ -42,14 +42,14 @@
    ┌────────┴───────────────────────────────────────┐
    ▼                          ▼                       ▼
  MCP server (stdio)     CLI read commands        Seam Explorer (web, [web] extra)
- 16 read-only tools     schema/query/impact/…    FastAPI + React SPA, 127.0.0.1
+ 17 read-only tools     schema/query/impact/…    FastAPI + React SPA, 127.0.0.1
    │                          │                       │
    └──────────────────────────┴───────────────────────┘
                               ▼
               AI agent (Claude Code · Cursor · Codex)
 ```
 
-The **16 MCP tools** map to engine functions:
+The **17 MCP tools** map to engine functions:
 
 | Tool | Engine entry point |
 |------|-------------------|
@@ -60,6 +60,7 @@ The **16 MCP tools** map to engine functions:
 | `seam_graph_search` recipes | `query/graph_recipes.py` |
 | `seam_query` · `seam_search` · `seam_context` | `query/engine.py` (+ `query/semantic.py` hybrid) |
 | `seam_context_pack` | `query/pack.py` |
+| `seam_plan` | `query/plan.py` composing `query/pack.py`, `analysis/impact.py`, `analysis/changes.py`, and `analysis/affected.py` |
 | `seam_why` | `analysis/comments.py` |
 | `seam_clusters` | `query/clusters.py` |
 | `seam_structure` | `query/structure.py` |
@@ -146,6 +147,13 @@ briefing from existing index tables instead of walking a single seed through the
 It returns metadata, ranked sections, warnings, truncation, and next-call guidance, then
 expects callers to switch to `seam_graph_search`, `seam_context`, `seam_snippet`, or
 `seam_impact` for precise follow-up work.
+
+`seam_plan` is a bounded orchestration surface for agent change planning. Target mode
+composes `seam_context_pack`, upstream impact, and indexed test-call evidence into a
+ranked inspection list plus a pytest command. Diff mode composes `seam_changes` and
+`seam_affected` for the current git state. It does not execute tests, read source bodies,
+or introduce new graph facts; its job is to turn existing evidence into the next concrete
+inspection and verification steps.
 
 Graph-search recipes live beside, not inside, the SQLite query algorithm. They compile
 stable intent ids such as `production-hotspots` or `test-evidence` into existing
@@ -315,7 +323,7 @@ Runs as a background thread/process alongside the MCP server. Uses watchdog's `O
 ### MCP Server
 **Files:** `seam/server/mcp.py`, `seam/server/tools.py`
 
-Stdio transport (no HTTP, no ports). The Python MCP SDK handles protocol framing. Sixteen read-only tools are exposed across search/query, context, risk, structure, schema, snippet, and structural graph-search workflows. Tool handlers in `tools.py` validate inputs and delegate to `query/*` or `analysis/*` modules. Since Phase 4, `seam_context`, `seam_search`, and `seam_query` pass through the five enrichment fields from the engine layer unchanged. Since Phase 5, `seam_impact` and `seam_trace` additionally return `resolved_by` (provenance) and `best_candidate` (proximity pick on AMBIGUOUS entries) on each hop/entry.
+Stdio transport (no HTTP, no ports). The Python MCP SDK handles protocol framing. Seventeen read-only tools are exposed across search/query, context, risk, planning, structure, schema, snippet, and structural graph-search workflows. Tool handlers in `tools.py` validate inputs and delegate to `query/*` or `analysis/*` modules. Since Phase 4, `seam_context`, `seam_search`, and `seam_query` pass through the five enrichment fields from the engine layer unchanged. Since Phase 5, `seam_impact` and `seam_trace` additionally return `resolved_by` (provenance) and `best_candidate` (proximity pick on AMBIGUOUS entries) on each hop/entry.
 
 ### Query Engine
 **File:** `seam/query/engine.py`
@@ -527,7 +535,7 @@ same `handle_seam_*` handlers that the MCP server uses (`seam/server/tools.py`).
 the JSON payload inside the `data` envelope is byte-identical to what an MCP tool call would
 return — one code path for agents regardless of whether they invoke Seam via MCP or shell.
 
-**Commands with `--json`/`--quiet`:** `impact`, `trace`, `changes`, `why`, `clusters`, `status`, `affected`, `graph-search`.
+**Commands with `--json`/`--quiet`:** `impact`, `trace`, `changes`, `why`, `clusters`, `status`, `affected`, `graph-search`, `plan`.
 **Commands with `--stdin`:** `affected` (file list), `changes` (file list to narrow changed_symbols/new_files).
 
 Stable error codes (single source in `output.py` docstring):

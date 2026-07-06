@@ -132,8 +132,7 @@ class ScenarioScore:
 
 
 class ToolAdapter(Protocol):
-    def execute(self, tool: str, args: dict[str, Any], fixture_dir: Path) -> ToolStepResult:
-        ...
+    def execute(self, tool: str, args: dict[str, Any], fixture_dir: Path) -> ToolStepResult: ...
 
 
 class SeamFixtureAdapter:
@@ -165,6 +164,7 @@ class SeamFixtureAdapter:
             handle_seam_context,
             handle_seam_context_pack,
             handle_seam_graph_search,
+            handle_seam_plan,
             handle_seam_query,
             handle_seam_schema,
             handle_seam_search,
@@ -203,7 +203,12 @@ class SeamFixtureAdapter:
                 limit=int(args.get("limit", 10)),
                 semantic=False,
             )
-        if tool in {"context_callers", "context_callees", "context_field_readers", "context_field_writers"}:
+        if tool in {
+            "context_callers",
+            "context_callees",
+            "context_field_readers",
+            "context_field_writers",
+        }:
             ctx = handle_seam_context(self._conn, str(args["symbol"]), fixture_dir)
             field = {
                 "context_callers": "callers",
@@ -218,6 +223,16 @@ class SeamFixtureAdapter:
                 str(args["symbol"]),
                 fixture_dir,
                 verbose=bool(args.get("verbose", True)),
+            )
+        if tool == "plan":
+            return handle_seam_plan(
+                self._conn,
+                fixture_dir,
+                symbol=args.get("symbol"),
+                mode=str(args.get("mode", "target")),
+                max_depth=int(args.get("max_depth", 3)),
+                scope=str(args.get("scope", "working")),
+                base_ref=str(args.get("base_ref", "main")),
             )
         if tool == "impact":
             return handle_seam_impact(
@@ -411,9 +426,7 @@ def summarize_results(
             gap_counts[gap] = gap_counts.get(gap, 0) + 1
 
     for category in categories.values():
-        category["average_score"] = round(
-            category["average_score"] / category["scenarios"], 3
-        )
+        category["average_score"] = round(category["average_score"] / category["scenarios"], 3)
 
     return {
         "scenario_set_version": scenario_set_version,

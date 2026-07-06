@@ -6,7 +6,7 @@
 
 **Local code intelligence for AI agents.** Index a codebase once; agents query its structure instead of re-discovering it with `grep` every session.
 
-`v0.3.0` · 12 languages · 16 MCP tools · SQLite-backed · **zero network calls at query time** · gate-green (~3,055 tests)
+`v0.3.0` · 12 languages · 17 MCP tools · SQLite-backed · **zero network calls at query time** · gate-green (~3,055 tests)
 
 [![CI](https://github.com/Catafal/seam/actions/workflows/ci.yml/badge.svg)](https://github.com/Catafal/seam/actions/workflows/ci.yml)
 
@@ -42,7 +42,7 @@ Think of Seam as **a compiler's symbol table and call graph for your whole repos
                                             ┌───────────────┴───────────────┐
                                             ▼                               ▼
                                      MCP server (stdio)              CLI read commands
-                                     16 read-only tools              schema / query / impact …
+                                     17 read-only tools              schema / query / impact …
                                             │                               │
                                             └──────────────┬────────────────┘
                                                            ▼
@@ -105,6 +105,7 @@ uv run seam graph-search --recipe production-hotspots --json  # structural graph
 uv run seam graph-search --list-recipes  # named recipes for common agent questions
 uv run seam architecture --json        # bounded repo architecture briefing
 uv run seam context authenticate_user  # 360° view: callers, callees, cluster, signature
+uv run seam plan authenticate_user     # inspect/test plan before editing a symbol
 uv run seam impact  authenticate_user  # blast radius by risk tier
 uv run seam structure                  # whole-repo directory/container map
 # also: trace · changes · why · clusters · affected · flows · pack · status · sync
@@ -218,7 +219,7 @@ not returned.
 
 ---
 
-## The 16 MCP tools
+## The 17 MCP tools
 
 Grouped by the question an agent is asking. Every tool is **read-only**; the server never writes the index.
 
@@ -246,6 +247,7 @@ Grouped by the question an agent is asking. Every tool is **read-only**; the ser
 | Tool | Answers | Key args |
 |------|---------|----------|
 | `seam_impact` | "What breaks if I change X?" — blast radius bucketed into risk tiers, with provenance, summary counts, and a hard byte/entry budget. | `target`, `direction`, `max_depth`, `limit`, `max_bytes` |
+| `seam_plan` | "What should I inspect and test?" — target-mode composes context, upstream impact, and indexed test evidence; diff-mode composes changed symbols and affected tests. | `symbol`, `mode`, `scope`, `base_ref`, `max_depth` |
 | `seam_changes` | "Is my current diff risky?" — git diff → changed symbols → overall risk level. | `scope`, `base_ref` |
 | `seam_affected` | "Which tests should I run?" — changed files → impacted test files via reverse-dependency traversal. | `changed_files`, `depth` |
 
@@ -347,7 +349,7 @@ For infra evidence, start with `seam architecture --section infra --json`, then 
 
 **Confidence tiers.** Each edge resolves to `EXTRACTED` (target is unambiguous), `AMBIGUOUS` (name collides — verify), or `INFERRED` (heuristic / cross-module). A multi-hop path is only as strong as its weakest hop. Each result carries `resolved_by` provenance explaining *how* the tier was decided.
 
-**Risk tiers.** `seam_impact` and `seam_changes` bucket dependents by distance: `WILL_BREAK` (d=1, must update), `LIKELY_AFFECTED` (d=2, should test), `MAY_NEED_TESTING` (d≥3, test if critical). `seam_changes` rolls these up into `low` → `medium` → `high` → `critical`.
+**Risk tiers.** `seam_impact`, `seam_changes`, and `seam_plan` bucket dependents by distance: `WILL_BREAK` (d=1, must update), `LIKELY_AFFECTED` (d=2, should test), `MAY_NEED_TESTING` (d≥3, test if critical). `seam_changes` rolls these up into `low` → `medium` → `high` → `critical`; `seam_plan` turns the same evidence into ranked inspect items and a bounded pytest command.
 
 **Clusters.** A pure-Python Louvain pass groups symbols into functional areas by coupling. Labels are deterministic by default (`dir/file — top symbol`) or, opt-in, LLM-generated at index time only.
 
