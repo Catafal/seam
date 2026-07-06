@@ -437,6 +437,58 @@ def test_print_config_with_mcp_zero_mutation(
     )
 
 
+def test_auto_print_config_zero_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--auto --print-config is an installer plan only; it must not write files."""
+    root, home, _sib, canary = _setup_dirs(tmp_path)
+    monkeypatch.setenv("HOME", str(home))
+
+    result, changes = _invoke_and_diff(
+        tmp_path, ["install", str(root), "--auto", "--print-config"]
+    )
+
+    assert result.exit_code == 0
+    _assert_safe(changes, root, home, canary)
+    _assert_no_tmp(tmp_path)
+    assert changes == FsChanges(set(), set(), set()), f"--auto --print-config wrote files: {changes}"
+
+
+def test_auto_print_config_with_mcp_zero_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--auto --print-config --with-mcp must only report MCP paths/config."""
+    root, home, _sib, canary = _setup_dirs(tmp_path)
+    monkeypatch.setenv("HOME", str(home))
+
+    result, changes = _invoke_and_diff(
+        tmp_path,
+        ["install", str(root), "--auto", "--print-config", "--with-mcp"],
+    )
+
+    assert result.exit_code == 0
+    _assert_safe(changes, root, home, canary)
+    _assert_no_tmp(tmp_path)
+    assert changes == FsChanges(set(), set(), set()), (
+        f"--auto --print-config --with-mcp wrote files: {changes}"
+    )
+
+
+def test_auto_without_print_config_zero_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail-closed auto mode should reject before any installer write path runs."""
+    root, home, _sib, canary = _setup_dirs(tmp_path)
+    monkeypatch.setenv("HOME", str(home))
+
+    result, changes = _invoke_and_diff(tmp_path, ["install", str(root), "--auto"])
+
+    assert result.exit_code == 1
+    _assert_safe(changes, root, home, canary)
+    _assert_no_tmp(tmp_path)
+    assert changes == FsChanges(set(), set(), set()), f"--auto failure wrote files: {changes}"
+
+
 # ── Corrupt pre-existing vscode MCP config: backup created ───────────────────
 
 

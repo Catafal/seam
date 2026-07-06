@@ -20,6 +20,7 @@ from rich.console import Console
 import seam.config as config
 from seam.cli.output import emit_json, emit_json_error
 from seam.installer import TARGETS, AgentTarget, get_target, resolve_seam_command
+from seam.installer.plan import build_install_plan
 
 console = Console()
 
@@ -81,6 +82,11 @@ def install_command(
     location: str = typer.Option(
         "project", "--location", help="MCP config scope: project | user (codex: user only)."
     ),
+    auto: bool = typer.Option(
+        False,
+        "--auto",
+        help="Preview detected/supported targets only; requires --print-config and writes nothing.",
+    ),
     with_mcp: bool = typer.Option(
         False, "--with-mcp", help="Also write the MCP server config (CLI guidance is the default)."
     ),
@@ -98,6 +104,9 @@ def install_command(
     root = Path(path).resolve()
     if not root.is_dir():
         _fail(json_, "INVALID_INPUT", f"'{root}' is not a directory.")
+
+    if auto and not print_config:
+        _fail(json_, "INVALID_INPUT", "--auto is preview-only; add --print-config or choose explicit --target.")
 
     targets = _select_targets(target)
     if targets is None:
@@ -119,11 +128,14 @@ def install_command(
     index_present = config.get_db_path(root).exists()
 
     results: list[dict[str, Any]] = []
-    for tgt in targets:
-        if print_config:
-            results.append(_preview_target(tgt, root, location, command, args, with_mcp))
-        else:
-            results.append(_install_target(tgt, root, location, command, args, with_mcp))
+    if auto:
+        results = build_install_plan(root, location, command, args, TARGETS, with_mcp=with_mcp)
+    else:
+        for tgt in targets:
+            if print_config:
+                results.append(_preview_target(tgt, root, location, command, args, with_mcp))
+            else:
+                results.append(_install_target(tgt, root, location, command, args, with_mcp))
 
     warnings: list[str] = []
     if with_mcp and not found:
@@ -135,6 +147,7 @@ def install_command(
         warnings.append(f"No index at {root}/.seam — run 'seam init' so the agent has something to query.")
 
     data = {
+        "auto": auto,
         "with_mcp": with_mcp,
         "seam_command": command if with_mcp else None,
         "args": args if with_mcp else None,
@@ -200,6 +213,19 @@ def _fail(json_: bool, code: str, message: str) -> NoReturn:
 
 def _render_install(data: dict[str, Any]) -> None:
     """Human-readable Rich output for `seam install`."""
+    if data["auto"]:
+        console.print("[bold]seam install[/bold]  [dim](auto preview — writes nothing)[/dim]")
+        for entry in data["results"]:
+            console.print(
+                f"  [bold]{entry['target']}[/bold] "
+                f"[dim]{entry['status']}[/dim]  {entry['recommended_next_call']}"
+            )
+            for warning in entry["warnings"]:
+                console.print(f"    [yellow]![/yellow] {warning}")
+        for warning in data["warnings"]:
+            console.print(f"  [yellow]![/yellow] {warning}")
+        return
+
     if data["print_config"]:
         for entry in data["results"]:
             console.print(f"\n[bold]{entry['target']}[/bold]")
