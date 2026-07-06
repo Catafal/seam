@@ -1,4 +1,4 @@
-"""MCP server setup — FastMCP stdio transport, eighteen tools registered.
+"""MCP server setup — FastMCP stdio transport, nineteen tools registered.
 
 Creates and configures the MCP server instance.
 Tool handlers in tools.py are thin adapters; this module wires them to FastMCP.
@@ -26,6 +26,7 @@ Tools registered (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3 + Phase 6 + T
     seam_graph_search — typed structural graph discovery over symbols/edges (Phase 11)
     seam_plan         — bounded inspect-and-test plan for a symbol or diff (Phase 11)
     seam_suspects     — conservative cleanup suspects, not deletion proof (Phase 11)
+    seam_grounding    — local docs/spec grounding for code and roadmap questions (Phase 11)
 
 Design:
 - One FastMCP instance per process; connection is injected at creation time.
@@ -65,6 +66,7 @@ from seam.server.tools import (
     handle_seam_context_pack,
     handle_seam_flows,
     handle_seam_graph_search,
+    handle_seam_grounding,
     handle_seam_impact,
     handle_seam_plan,
     handle_seam_query,
@@ -179,7 +181,7 @@ def _make_instrument(
 
 
 def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
-    """Configure and return a FastMCP server with all eighteen Seam tools registered.
+    """Configure and return a FastMCP server with all nineteen Seam tools registered.
 
     Phase 0:  seam_query, seam_context, seam_search
     Phase 1:  seam_impact, seam_trace, seam_changes
@@ -191,7 +193,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
     Flows:    seam_flows
     Tier D11: seam_structure
     Phase 11: seam_schema, seam_architecture, seam_snippet, seam_graph_search
-    Phase 11: seam_suspects
+    Phase 11: seam_suspects, seam_grounding
 
     Args:
         conn: Open SQLite connection to the Seam index DB.
@@ -442,6 +444,47 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
                 is_exported=is_exported,
                 test_scope=test_scope,
                 limit=limit,
+            )
+        )
+
+    @mcp.tool()
+    @_instrument("seam_grounding")
+    def seam_grounding(
+        symbol: str | None = None,
+        file: str | None = None,
+        route: str | None = None,
+        config_key: str | None = None,
+        resource: str | None = None,
+        doc_path: str | None = None,
+        query: str | None = None,
+        doc_kind: str | None = None,
+        status: str | None = None,
+        relation_type: str | None = None,
+        limit: int | None = None,
+        include_snippets: bool = False,
+    ) -> Any:
+        """Find local docs/spec anchors that explicitly ground code questions.
+
+        Use this before edits that need ADR, PRD, roadmap, task, or implementation-note
+        context. Document references are provenance evidence, not dependency edges
+        and not proof that code conforms to a spec.
+        """
+        return _finalize(
+            handle_seam_grounding(
+                conn,
+                root,
+                symbol=symbol,
+                file=file,
+                route=route,
+                config_key=config_key,
+                resource=resource,
+                doc_path=doc_path,
+                query=query,
+                doc_kind=doc_kind,
+                status=status,
+                relation_type=relation_type,
+                limit=limit,
+                include_snippets=include_snippets,
             )
         )
 

@@ -151,7 +151,7 @@ def test_disabled_is_noop(
 
     server = create_server(conn, root)
     tools = {t.name: t for t in server._tool_manager.list_tools()}
-    assert len(tools) == 18  # instrumentation must not change the tool count
+    assert len(tools) == 19  # instrumentation must not change the tool count
 
     tools["seam_search"].fn(text="authenticate")
     assert not ndjson.exists()  # disabled path writes nothing

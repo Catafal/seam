@@ -70,7 +70,7 @@ def test_export_and_inspect_json_include_manifest_without_mutating_index(tmp_pat
     assert exported.exit_code == 0, exported.output
     export_data = json.loads(exported.output)["data"]
     assert export_data["manifest"]["manifest_version"] == 1
-    assert export_data["manifest"]["schema_version"] == 15
+    assert export_data["manifest"]["schema_version"] == 16
     assert export_data["manifest"]["contents"]["has_source_text"] is False
     before = sorted(p.relative_to(project / ".seam") for p in (project / ".seam").rglob("*"))
 
@@ -79,7 +79,7 @@ def test_export_and_inspect_json_include_manifest_without_mutating_index(tmp_pat
     assert inspected.exit_code == 0, inspected.output
     inspect_data = json.loads(inspected.output)["data"]
     assert inspect_data["checksum"] == export_data["checksum"]
-    assert inspect_data["manifest"]["schema_version"] == 15
+    assert inspect_data["manifest"]["schema_version"] == 16
     after = sorted(p.relative_to(project / ".seam") for p in (project / ".seam").rglob("*"))
     assert after == before
 

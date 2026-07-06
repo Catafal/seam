@@ -184,6 +184,10 @@ Requires the `semantic` extra and `seam init --semantic`.
 | `SEAM_SUSPECTS_MAX_CANDIDATES` | `25` | Max candidates returned by `seam_suspects`; omitted lower-ranked candidates are counted and caveated. |
 | `SEAM_SUSPECTS_MAX_EVIDENCE` | `5` | Max evidence references retained per suspect candidate. |
 | `SEAM_SUSPECTS_MAX_SIGNALS` | `8` | Max reasons/blockers retained per suspect candidate before truncation is caveated. |
+| `SEAM_GROUNDING_DEFAULT_LIMIT` | `20` | Max candidates returned by `seam_grounding` when no explicit limit is provided. |
+| `SEAM_GROUNDING_MAX_ANCHOR_LINES` | `60` | Max Markdown lines considered for one indexed grounding anchor. |
+| `SEAM_GROUNDING_MAX_ANCHOR_CHARS` | `2400` | Max capped anchor text stored for grounding search/ranking. Full Markdown bodies are not stored. |
+| `SEAM_GROUNDING_MAX_SNIPPET_BYTES` | `1600` | Max bytes returned for an opt-in grounding snippet. |
 
 ---
 

@@ -23,6 +23,7 @@ VALID_CATEGORIES = {
     "change-safety",
     "cleanup-risk",
     "discovery",
+    "docs",
     "infra",
     "navigation",
     "protocol",
@@ -164,6 +165,7 @@ class SeamFixtureAdapter:
             handle_seam_context,
             handle_seam_context_pack,
             handle_seam_graph_search,
+            handle_seam_grounding,
             handle_seam_plan,
             handle_seam_query,
             handle_seam_schema,
@@ -237,6 +239,8 @@ class SeamFixtureAdapter:
             )
         if tool == "suspects":
             return handle_seam_suspects(self._conn, fixture_dir, **args)
+        if tool == "grounding":
+            return handle_seam_grounding(self._conn, fixture_dir, **args)
         if tool == "impact":
             return handle_seam_impact(
                 self._conn,
@@ -305,7 +309,7 @@ def build_fixture_index_context(fixture_dir: Path) -> Iterator[FixtureIndex]:
     conn = init_db(Path(temp_dir.name) / "seam.db")
     try:
         for fpath in walk_project(fixture_dir):
-            index_one_file(conn, fpath)
+            index_one_file(conn, fpath, root=fixture_dir)
         index_clusters(
             conn,
             naming_mode="deterministic",
@@ -556,9 +560,14 @@ def _walk_evidence(value: Any, items: list[EvidenceItem]) -> None:
         for key in ("symbol", "name", "handler", "source", "target", "from_name", "to_name"):
             if key in value and value[key] is not None:
                 items.append(EvidenceItem("symbol", str(value[key])))
-        for key in ("file", "path"):
+        for key in ("file", "path", "doc_path"):
             if key in value and value[key] is not None:
                 items.append(EvidenceItem("file", str(value[key])))
+        for key in ("doc_kind", "status", "relation_type"):
+            if key in value and value[key] is not None:
+                items.append(EvidenceItem(key, str(value[key])))
+        if "value" in value and value["value"] is not None:
+            items.append(EvidenceItem("value", str(value["value"])))
         if "line" in value and value["line"] is not None:
             items.append(EvidenceItem("line", str(value["line"])))
         if "kind" in value and value["kind"] is not None:

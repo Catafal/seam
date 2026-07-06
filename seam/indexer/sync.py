@@ -144,7 +144,7 @@ def sync(
         if abs_str not in tracked:
             # New file — not in index at all → index it.
             logger.debug("sync: NEW %s", path)
-            result = index_one_file(conn, path)
+            result = index_one_file(conn, path, root=root)
             if result is None:
                 skipped += 1
                 logger.debug("sync: SKIPPED (index failed) %s", path)
@@ -189,7 +189,7 @@ def sync(
             else:
                 # Content actually changed → re-index.
                 logger.debug("sync: MODIFIED %s", path)
-                result = index_one_file(conn, path)
+                result = index_one_file(conn, path, root=root)
                 if result is None:
                     skipped += 1
                     logger.debug("sync: SKIPPED (re-index failed) %s", path)

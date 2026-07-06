@@ -1,4 +1,4 @@
--- Seam SQLite Schema (v15 — edge extractor provenance)
+-- Seam SQLite Schema (v16 — document grounding)
 -- Run via db.py:init_db() — idempotent (CREATE TABLE IF NOT EXISTS).
 -- FTS5 is required; init_db() verifies availability before proceeding.
 -- Schema v2 adds: edges.confidence (DEFAULT 'INFERRED').
@@ -19,6 +19,8 @@
 -- Schema v13 adds: routes table for first-class route node metadata.
 -- Schema v14 adds: config_keys and resources tables for no-secret config/resource metadata.
 -- Schema v15 adds: edges.provenance for direct extractor evidence channels.
+-- Schema v16 adds: document_files, document_anchors, and document_references
+--                  for local docs/spec grounding evidence.
 -- Migration from v1: db.py:_run_migration_v1_to_v2() (guarded ALTER TABLE).
 -- Migration from v2: db.py:_run_migration_v2_to_v3() (guards schema_version bump).
 -- Migration from v3: db.py:_run_migration_v3_to_v4() (adds clusters table + cluster_id).
@@ -33,6 +35,7 @@
 -- Migration from v12: db.py:_run_migration_v12_to_v13() (adds routes table).
 -- Migration from v13: db.py:_run_migration_v13_to_v14() (adds config/resource tables).
 -- Migration from v14: db.py:_run_migration_v14_to_v15() (adds edges.provenance column).
+-- Migration from v15: db.py:_run_migration_v15_to_v16() (adds document grounding tables).
 
 PRAGMA journal_mode = WAL;      -- Write-ahead logging for concurrent reads
 PRAGMA foreign_keys = ON;
@@ -287,6 +290,58 @@ CREATE INDEX IF NOT EXISTS idx_resources_file_id ON resources(file_id);
 CREATE INDEX IF NOT EXISTS idx_resources_category ON resources(category);
 CREATE INDEX IF NOT EXISTS idx_resources_symbol_name ON resources(symbol_name);
 
+-- ── Document grounding ──────────────────────────────────────────────────────
+-- Local docs/spec evidence is intentionally separate from dependency edges.
+-- Document anchors can ground code intent, but they are never code reachability.
+CREATE TABLE IF NOT EXISTS document_files (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id     INTEGER NOT NULL UNIQUE REFERENCES files(id) ON DELETE CASCADE,
+    path        TEXT NOT NULL,
+    doc_kind    TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'unknown',
+    title       TEXT,
+    fingerprint TEXT NOT NULL,
+    indexed_at  REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_files_kind ON document_files(doc_kind);
+CREATE INDEX IF NOT EXISTS idx_document_files_status ON document_files(status);
+CREATE INDEX IF NOT EXISTS idx_document_files_path ON document_files(path);
+
+CREATE TABLE IF NOT EXISTS document_anchors (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id  INTEGER NOT NULL REFERENCES document_files(id) ON DELETE CASCADE,
+    heading_path TEXT NOT NULL,
+    slug         TEXT NOT NULL,
+    anchor_type  TEXT NOT NULL,
+    start_line   INTEGER NOT NULL,
+    end_line     INTEGER NOT NULL,
+    search_text  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_anchors_document ON document_anchors(document_id);
+CREATE INDEX IF NOT EXISTS idx_document_anchors_slug ON document_anchors(slug);
+
+CREATE TABLE IF NOT EXISTS document_references (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    anchor_id      INTEGER NOT NULL REFERENCES document_anchors(id) ON DELETE CASCADE,
+    target_kind    TEXT NOT NULL,
+    target_value   TEXT NOT NULL,
+    resolved_kind  TEXT,
+    resolved_value TEXT,
+    relation_type  TEXT NOT NULL,
+    confidence     TEXT NOT NULL,
+    line           INTEGER NOT NULL,
+    provenance     TEXT NOT NULL,
+    caveat         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_references_anchor ON document_references(anchor_id);
+CREATE INDEX IF NOT EXISTS idx_document_references_target ON document_references(target_kind, target_value);
+CREATE INDEX IF NOT EXISTS idx_document_references_resolved ON document_references(resolved_kind, resolved_value);
+CREATE INDEX IF NOT EXISTS idx_document_references_relation ON document_references(relation_type);
+CREATE INDEX IF NOT EXISTS idx_document_references_confidence ON document_references(confidence);
+
 -- ── Metadata ─────────────────────────────────────────────────────────────────
 -- Key-value store for index metadata (version, created_at, etc.)
 CREATE TABLE IF NOT EXISTS metadata (
@@ -295,9 +350,9 @@ CREATE TABLE IF NOT EXISTS metadata (
 );
 
 -- NOTE: INSERT OR IGNORE does not update existing rows. Fresh DBs are seeded at
--- the CURRENT schema version ('15') so a brand-new `seam init` is born current and
+-- the CURRENT schema version ('16') so a brand-new `seam init` is born current and
 -- does NOT trigger any migration advisory.
 -- Existing older DBs keep their stored version; db.py migrations bump them in place.
 INSERT OR IGNORE INTO metadata(key, value) VALUES
-    ('schema_version', '15'),
+    ('schema_version', '16'),
     ('seam_version',   '0.2.0');

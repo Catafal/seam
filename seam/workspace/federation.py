@@ -16,7 +16,7 @@ from seam.query.snippet import snippet
 from seam.server.tools import handle_seam_impact
 from seam.workspace.registry import RegisteredRepo
 
-CURRENT_SCHEMA_VERSION = 15
+CURRENT_SCHEMA_VERSION = 16
 
 
 def workspace_status(repos: list[RegisteredRepo]) -> dict[str, Any]:

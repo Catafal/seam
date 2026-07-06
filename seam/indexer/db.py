@@ -13,6 +13,7 @@ Key design decisions:
   v12->v13 (routes table for first-class HTTP route metadata),
   v13->v14 (config/resource metadata tables),
   v14->v15 (direct extractor provenance: edges.provenance column).
+  v15->v16 (document grounding tables).
 - upsert_file is a single transaction: INSERT OR REPLACE the file row,
   DELETE old symbols/edges/comments, then re-insert. Triggers handle FTS sync.
 - delete_file DELETE FROM files cascades to symbols/edges/comments via FK; FTS
@@ -56,11 +57,13 @@ from seam.indexer.migrations import (
     _run_migration_v12_to_v13,
     _run_migration_v13_to_v14,
     _run_migration_v14_to_v15,
+    _run_migration_v15_to_v16,
 )
 from seam.indexer.tokenize import build_search_text
 
 if TYPE_CHECKING:
     from seam.analysis.imports import ImportMapping
+    from seam.indexer.docs import DocumentIndex
     from seam.indexer.graph import (
         Comment,
         ConfigMetadata,
@@ -136,7 +139,7 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
     Guard: only run when:
       1. The metadata table EXISTS (i.e. this is an initialized DB, not a fresh
          empty file with no schema yet).
-      2. schema_version < current version (15).
+      2. schema_version < current version (16).
 
     Fresh-DB safety: a brand-new empty file (no metadata table yet) is left alone —
     init_db() will create the schema and run all migrations in the correct order.
@@ -165,7 +168,7 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
         row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
         version = int(row["value"]) if row else 0
 
-        if version >= 15:
+        if version >= 16:
             return  # Already up to date — no-op.
 
         # Version is < 13: run pending migrations in order.
@@ -210,6 +213,9 @@ def _run_pending_migrations_if_needed(conn: sqlite3.Connection) -> None:
         # v14→v15: direct extractor provenance column.
         if version < 15:
             _run_migration_v14_to_v15(conn)
+        # v15→v16: document grounding tables.
+        if version < 16:
+            _run_migration_v15_to_v16(conn)
 
     except Exception as exc:  # noqa: BLE001
         # Do NOT raise here — failing to auto-migrate should not crash a read-only
@@ -294,6 +300,9 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     # Run v14->v15 migration guard (adds edges.provenance for direct extractor detail).
     _run_migration_v14_to_v15(conn)
 
+    # Run v15->v16 migration guard (adds document grounding tables).
+    _run_migration_v15_to_v16(conn)
+
     return conn
 
 
@@ -361,6 +370,10 @@ def upsert_file(
         conn.execute("DELETE FROM routes WHERE file_id = ?", (file_id,))
         conn.execute("DELETE FROM config_keys WHERE file_id = ?", (file_id,))
         conn.execute("DELETE FROM resources WHERE file_id = ?", (file_id,))
+        conn.execute(
+            "DELETE FROM document_files WHERE file_id = ?",
+            (file_id,),
+        )
 
         # 4. Insert symbols — includes Phase 4 enrichment fields (schema v5) and the
         #    P6b framework entry_score (schema v9, computed at index time from the
@@ -532,6 +545,117 @@ def upsert_file(
                     )
                     for resource in resources
                 ],
+            )
+
+
+def upsert_document_file(
+    conn: sqlite3.Connection,
+    filepath: Path,
+    file_hash: str,
+    document: "DocumentIndex",
+) -> None:
+    """Atomically replace all grounding data for one Markdown document.
+
+    Document files reuse the `files` table for staleness/sync bookkeeping, but
+    store anchors and references in document-specific child tables. Code graph
+    child rows are cleared because a path can change language across edits.
+    """
+    mtime = filepath.stat().st_mtime
+    indexed_at = time.time()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO files (path, language, file_hash, mtime, indexed_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(path) DO UPDATE SET
+                language   = excluded.language,
+                file_hash  = excluded.file_hash,
+                mtime      = excluded.mtime,
+                indexed_at = excluded.indexed_at
+            """,
+            (str(filepath), "markdown", file_hash, mtime, indexed_at),
+        )
+        row = conn.execute("SELECT id FROM files WHERE path = ?", (str(filepath),)).fetchone()
+        file_id: int = row["id"]
+
+        # Clear every child surface for this file. A Markdown file should not
+        # retain stale code/config rows if it was previously indexed differently.
+        conn.execute("DELETE FROM edges WHERE file_id = ?", (file_id,))
+        conn.execute("DELETE FROM symbols WHERE file_id = ?", (file_id,))
+        conn.execute("DELETE FROM comments WHERE file_id = ?", (file_id,))
+        conn.execute("DELETE FROM routes WHERE file_id = ?", (file_id,))
+        conn.execute("DELETE FROM config_keys WHERE file_id = ?", (file_id,))
+        conn.execute("DELETE FROM resources WHERE file_id = ?", (file_id,))
+        conn.execute("DELETE FROM import_mappings WHERE file_id = ?", (file_id,))
+        conn.execute("DELETE FROM document_files WHERE file_id = ?", (file_id,))
+
+        rel_path = document["path"].as_posix()
+        cursor = conn.execute(
+            """
+            INSERT INTO document_files (
+                file_id, path, doc_kind, status, title, fingerprint, indexed_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                file_id,
+                rel_path,
+                document["doc_kind"],
+                document["status"],
+                document["title"],
+                file_hash,
+                indexed_at,
+            ),
+        )
+        assert cursor.lastrowid is not None
+        document_id = int(cursor.lastrowid)
+        anchor_ids: dict[str, int] = {}
+        for anchor in document["anchors"]:
+            cursor = conn.execute(
+                """
+                INSERT INTO document_anchors (
+                    document_id, heading_path, slug, anchor_type,
+                    start_line, end_line, search_text
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    document_id,
+                    anchor["heading_path"],
+                    anchor["slug"],
+                    anchor["anchor_type"],
+                    anchor["start_line"],
+                    anchor["end_line"],
+                    anchor["search_text"],
+                ),
+            )
+            assert cursor.lastrowid is not None
+            anchor_ids[anchor["heading_path"]] = int(cursor.lastrowid)
+
+        for ref in document["references"]:
+            anchor_id = anchor_ids.get(ref["heading_path"])
+            if anchor_id is None:
+                continue
+            conn.execute(
+                """
+                INSERT INTO document_references (
+                    anchor_id, target_kind, target_value, resolved_kind,
+                    resolved_value, relation_type, confidence, line, provenance, caveat
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    anchor_id,
+                    ref["target_kind"],
+                    ref["target_value"],
+                    ref["resolved_kind"],
+                    ref["resolved_value"],
+                    ref["relation_type"],
+                    ref["confidence"],
+                    ref["line"],
+                    ref["provenance"],
+                    ref["caveat"],
+                ),
             )
 
 

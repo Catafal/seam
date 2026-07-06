@@ -48,9 +48,10 @@ roadmap decisions from drifting into speculation.
 
 ## Scenario Coverage
 
-The first maintained scenario set contains 20 natural-language questions across:
+The maintained scenario set contains 23 natural-language questions across:
 
 - discovery;
+- docs/spec grounding;
 - navigation;
 - change-safety;
 - cleanup and risk;

@@ -4,7 +4,7 @@
 > Original source audit: `DeusData/codebase-memory-mcp` at commit `4a42285`.
 > Refresh audit: `DeusData/codebase-memory-mcp` at commit
 > `9cb3cabf76f5f4ad23caf66f641adff1ef0b67c9`.
-> Current Seam snapshot: schema v15, Seam `0.4.0`, fresh index after `uv run seam sync`.
+> Current Seam snapshot: schema v16, Seam `0.4.0`, fresh index after `uv run seam sync`.
 
 ## Why This Document Changed
 

@@ -626,7 +626,7 @@ class TestJsonOutput:
         assert "files_rebased" in data
         assert "sync" in data
         assert data["artifact"]["verified"] is True
-        assert data["artifact"]["manifest"]["schema_version"] == 15
+        assert data["artifact"]["manifest"]["schema_version"] == 16
 
     def test_json_error_on_missing_url(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
