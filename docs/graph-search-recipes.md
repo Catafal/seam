@@ -9,6 +9,10 @@ caveats, required capabilities, and recommended follow-up calls.
 Use them when the agent knows the intent but not the exact combination of graph
 filters.
 
+For cleanup decisions, prefer `seam suspects` / `seam_suspects` after discovery.
+The `dead-code-suspects` and `isolated-symbols` recipes expose structural absence;
+the suspects tool adds blockers, removal risk, caveats, and follow-up calls.
+
 ```bash
 seam graph-search --list-recipes
 seam graph-search --recipe production-hotspots --json
@@ -53,6 +57,9 @@ inputs overrode the recipe, and what caveats still apply.
 
 - Recipes are discovery aids, not proof. For example, `dead-code-suspects` means
   "no inbound static calls were observed", not "safe to delete".
+- Use `seam_suspects` for deletion review. It treats raw absence as one signal and
+  checks blockers such as tests, public APIs, imports, routes, resources, fields,
+  inheritance, and contained-symbol usage before assigning suspect strength.
 - Required capabilities are surfaced in recipe metadata, but unsupported
   capabilities still need normal schema and warning handling. For example,
   `http-callers` depends on `has_http_calls`.

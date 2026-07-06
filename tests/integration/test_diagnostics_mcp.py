@@ -143,7 +143,7 @@ def test_no_source_text_leaks(
 def test_disabled_is_noop(
     seeded_db: tuple[sqlite3.Connection, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With SEAM_DIAGNOSTICS=0, no file is written and tool count stays 16."""
+    """With SEAM_DIAGNOSTICS=0, no file is written and tool count stays stable."""
     conn, root = seeded_db
     ndjson = tmp_path / "diag.ndjson"
     monkeypatch.setattr(config, "SEAM_DIAGNOSTICS", "0")
@@ -151,7 +151,7 @@ def test_disabled_is_noop(
 
     server = create_server(conn, root)
     tools = {t.name: t for t in server._tool_manager.list_tools()}
-    assert len(tools) == 17  # instrumentation must not change the tool count
+    assert len(tools) == 18  # instrumentation must not change the tool count
 
     tools["seam_search"].fn(text="authenticate")
     assert not ndjson.exists()  # disabled path writes nothing

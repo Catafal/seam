@@ -90,6 +90,7 @@ from seam.server.impact_handler import (  # noqa: F401 — re-exported as public
     _shape_tier_group,
     handle_seam_impact,
 )
+from seam.server.suspects_handler import handle_seam_suspects  # noqa: F401 — re-exported
 from seam.server.trace_handler import handle_seam_trace  # noqa: F401 — re-exported
 
 logger = logging.getLogger(__name__)

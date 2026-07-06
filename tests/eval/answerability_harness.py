@@ -168,6 +168,7 @@ class SeamFixtureAdapter:
             handle_seam_query,
             handle_seam_schema,
             handle_seam_search,
+            handle_seam_suspects,
         )
         from seam.server.trace_handler import handle_seam_trace
 
@@ -234,6 +235,8 @@ class SeamFixtureAdapter:
                 scope=str(args.get("scope", "working")),
                 base_ref=str(args.get("base_ref", "main")),
             )
+        if tool == "suspects":
+            return handle_seam_suspects(self._conn, fixture_dir, **args)
         if tool == "impact":
             return handle_seam_impact(
                 self._conn,
@@ -564,6 +567,15 @@ def _walk_evidence(value: Any, items: list[EvidenceItem]) -> None:
             items.append(EvidenceItem("confidence", str(value["confidence"])))
         if "provenance" in value and value["provenance"] is not None:
             items.append(EvidenceItem("provenance", str(value["provenance"])))
+        if "suspect_strength" in value and value["suspect_strength"] is not None:
+            items.append(EvidenceItem("suspect_strength", str(value["suspect_strength"])))
+        if "removal_risk" in value and value["removal_risk"] is not None:
+            items.append(EvidenceItem("removal_risk", str(value["removal_risk"])))
+        for key in ("reasons", "blockers"):
+            values = value.get(key)
+            if isinstance(values, list):
+                item_kind = "reason" if key == "reasons" else "blocker"
+                items.extend(EvidenceItem(item_kind, str(item)) for item in values)
         for child in value.values():
             _walk_evidence(child, items)
     elif isinstance(value, list):

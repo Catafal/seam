@@ -75,6 +75,7 @@ from seam.cli.read import context_command, query_command, search_command
 from seam.cli.schema import schema_command
 from seam.cli.serve import serve_command
 from seam.cli.snippet import snippet_command
+from seam.cli.suspects import suspects_command
 from seam.cli.workspace import workspace_app
 from seam.indexer.artifact import pack_index as _pack_index_artifact
 from seam.indexer.db import connect
@@ -155,6 +156,7 @@ app.command(name="architecture")(architecture_command)
 app.command(name="snippet")(snippet_command)
 app.command(name="graph-search")(graph_search_command)
 app.command(name="plan")(plan_command)
+app.command(name="suspects")(suspects_command)
 # serve starts the local Seam Explorer (FastAPI + uvicorn) — requires [web] extra.
 app.command(name="serve")(serve_command)
 app.add_typer(workspace_app, name="workspace")

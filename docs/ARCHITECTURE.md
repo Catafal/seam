@@ -42,14 +42,14 @@
    ┌────────┴───────────────────────────────────────┐
    ▼                          ▼                       ▼
  MCP server (stdio)     CLI read commands        Seam Explorer (web, [web] extra)
- 17 read-only tools     schema/query/impact/…    FastAPI + React SPA, 127.0.0.1
+ 18 read-only tools     schema/query/impact/…    FastAPI + React SPA, 127.0.0.1
    │                          │                       │
    └──────────────────────────┴───────────────────────┘
                               ▼
               AI agent (Claude Code · Cursor · Codex)
 ```
 
-The **17 MCP tools** map to engine functions:
+The **18 MCP tools** map to engine functions:
 
 | Tool | Engine entry point |
 |------|-------------------|
@@ -58,6 +58,7 @@ The **17 MCP tools** map to engine functions:
 | `seam_snippet` | `query/snippet.py` |
 | `seam_graph_search` | `query/graph_search.py` |
 | `seam_graph_search` recipes | `query/graph_recipes.py` |
+| `seam_suspects` | `query/suspects.py` |
 | `seam_query` · `seam_search` · `seam_context` | `query/engine.py` (+ `query/semantic.py` hybrid) |
 | `seam_context_pack` | `query/pack.py` |
 | `seam_plan` | `query/plan.py` composing `query/pack.py`, `analysis/impact.py`, `analysis/changes.py`, and `analysis/affected.py` |
@@ -159,6 +160,10 @@ Graph-search recipes live beside, not inside, the SQLite query algorithm. They c
 stable intent ids such as `production-hotspots` or `test-evidence` into existing
 typed graph-search filters before validation, then return metadata that explains
 which defaults were applied and which caller filters overrode the recipe.
+
+`seam_suspects` is the cleanup-review layer above raw graph search. It starts from
+static absence signals, then adds blockers, removal risk, caveats, and follow-up calls
+so agents do not treat "no inbound edge observed" as "safe to delete."
 
 ### Storage (SQLite, schema v15)
 
@@ -323,7 +328,7 @@ Runs as a background thread/process alongside the MCP server. Uses watchdog's `O
 ### MCP Server
 **Files:** `seam/server/mcp.py`, `seam/server/tools.py`
 
-Stdio transport (no HTTP, no ports). The Python MCP SDK handles protocol framing. Seventeen read-only tools are exposed across search/query, context, risk, planning, structure, schema, snippet, and structural graph-search workflows. Tool handlers in `tools.py` validate inputs and delegate to `query/*` or `analysis/*` modules. Since Phase 4, `seam_context`, `seam_search`, and `seam_query` pass through the five enrichment fields from the engine layer unchanged. Since Phase 5, `seam_impact` and `seam_trace` additionally return `resolved_by` (provenance) and `best_candidate` (proximity pick on AMBIGUOUS entries) on each hop/entry.
+Stdio transport (no HTTP, no ports). The Python MCP SDK handles protocol framing. Eighteen read-only tools are exposed across search/query, context, risk, planning, cleanup review, structure, schema, snippet, and structural graph-search workflows. Tool handlers in `tools.py` validate inputs and delegate to `query/*` or `analysis/*` modules. Since Phase 4, `seam_context`, `seam_search`, and `seam_query` pass through the five enrichment fields from the engine layer unchanged. Since Phase 5, `seam_impact` and `seam_trace` additionally return `resolved_by` (provenance) and `best_candidate` (proximity pick on AMBIGUOUS entries) on each hop/entry.
 
 ### Query Engine
 **File:** `seam/query/engine.py`
@@ -337,6 +342,8 @@ The read path. Five query families:
   and bounded one-hop previews
 - **Graph-search recipes** — named intent presets that compile into structural graph-search
   filters while preserving the normalized query and caveats
+- **Cleanup suspects** — conservative symbol/file cleanup candidates with blockers,
+  removal risk, caveats, and recommended follow-up calls
 
 Since Phase 4, the classic engine functions include the five enrichment fields in their output TypedDicts (`ContextResult`, `SearchResult`, `QueryResult`). Pre-v5 rows carry `null` for those fields — callers treat `null` as "unknown". `ContextResult` also separates static test evidence as `test_callers` and `tested_symbols` so agents can see test relationships without treating them as production callers/callees. `seam_graph_search` is a separate structural discovery module and returns compact metadata plus degree summaries instead of source or broad context.
 
@@ -535,7 +542,7 @@ same `handle_seam_*` handlers that the MCP server uses (`seam/server/tools.py`).
 the JSON payload inside the `data` envelope is byte-identical to what an MCP tool call would
 return — one code path for agents regardless of whether they invoke Seam via MCP or shell.
 
-**Commands with `--json`/`--quiet`:** `impact`, `trace`, `changes`, `why`, `clusters`, `status`, `affected`, `graph-search`, `plan`.
+**Commands with `--json`/`--quiet`:** `impact`, `trace`, `changes`, `why`, `clusters`, `status`, `affected`, `graph-search`, `plan`, `suspects`.
 **Commands with `--stdin`:** `affected` (file list), `changes` (file list to narrow changed_symbols/new_files).
 
 Stable error codes (single source in `output.py` docstring):

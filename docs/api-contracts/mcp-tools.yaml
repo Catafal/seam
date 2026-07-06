@@ -42,7 +42,7 @@
 # SEAM_IMPACT_STEER=off = no next_actions key ever.
 #
 # P2 index staleness banner: seam_impact / seam_changes / seam_affected / seam_context /
-# seam_trace / seam_plan each attach a top-level 'index_status' = {stale: true, reason: str, hint: str}
+# seam_trace / seam_plan / seam_suspects each attach a top-level 'index_status' = {stale: true, reason: str, hint: str}
 # when the index is stale, ABSENT when fresh (presence = stale signal). Gated by
 # SEAM_STALENESS_CHECK (default on; off = byte-identical pre-P2). All existing fields in
 # each tool's response are byte-identical to pre-P2 — the banner is purely additive.
@@ -1659,6 +1659,93 @@ tools:
     errors:
       - code: INVALID_INPUT
         condition: symbol is empty string or whitespace-only
+
+  seam_suspects:
+    status: IMPLEMENTED
+    phase: phase-11-dead-code-suspects
+    description: |
+      Conservative cleanup-review surface for possible dead code and orphan files.
+
+      This tool starts from static absence signals, then adds blockers, suspect strength,
+      removal risk, caveats, and recommended follow-up calls. It is intentionally not
+      deletion proof: "no inbound edge observed" means only that Seam did not observe
+      static use in the current index.
+    input:
+      mode:
+        type: string
+        default: symbols
+        enum: [symbols, files]
+        description: Analyze symbol-level or file-level cleanup suspects.
+      target:
+        type: string
+        required: false
+        nullable: true
+        description: Optional symbol name, qualified name, uid, or root-relative file path for focused review.
+      file_pattern:
+        type: string
+        required: false
+        nullable: true
+        description: Optional root-relative file glob for repo-wide filtering.
+      kind:
+        type: string
+        required: false
+        nullable: true
+        description: Optional symbol kind filter in symbols mode.
+      language:
+        type: string
+        required: false
+        nullable: true
+        description: Optional indexed language filter.
+      visibility:
+        type: string
+        required: false
+        nullable: true
+        description: Optional visibility filter, such as public or private.
+      is_exported:
+        type: bool
+        required: false
+        nullable: true
+        description: Optional exported-symbol filter.
+      test_scope:
+        type: string
+        default: source
+        enum: [source, test, any]
+        description: Include source files, test files, or both in candidate selection.
+      limit:
+        type: integer
+        required: false
+        nullable: true
+        min: 0
+        max: 100
+        description: Max candidates returned; defaults to SEAM_SUSPECTS_MAX_CANDIDATES.
+    output:
+      type: object
+      fields:
+        mode:
+          type: string
+          enum: [symbols, files]
+        found:
+          type: boolean
+          description: false only when a focused target cannot be resolved.
+        candidates:
+          type: array
+          description: |
+            Ranked suspect candidates. Each item includes uid, symbol or file, kind,
+            location, reasons, blockers, evidence refs, suspect_strength, removal_risk,
+            evidence[].confidence, omitted evidence/signal counts, and recommended_next_calls.
+        summary:
+          type: object
+          description: Candidate counts by suspect strength and removal risk, plus total/returned/omitted.
+        caveats:
+          type: array
+          items: string
+          description: Static-analysis, capability, stale-index, target, and truncation caveats.
+        recommended_next_calls:
+          type: array
+          description: Follow-up calls such as seam_snippet, seam_context, seam_graph_search, or seam_plan.
+    errors:
+      - code: INVALID_INPUT
+        condition: mode or test_scope is unknown, target cannot be combined with incompatible filters, or limit is invalid
 
   seam_plan:
     status: IMPLEMENTED

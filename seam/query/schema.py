@@ -208,6 +208,16 @@ def _tool_registry() -> list[dict[str, Any]]:
             "depends_on": ["edges"],
         },
         {
+            "name": "seam_suspects",
+            "transports": ["cli", "mcp"],
+            "read_only": True,
+            "use_when": (
+                "You need conservative cleanup review for weakly connected symbols or files. "
+                "Suspects are review leads, not deletion proof."
+            ),
+            "depends_on": ["edges"],
+        },
+        {
             "name": "seam_structure",
             "transports": ["cli", "mcp", "web"],
             "read_only": True,
@@ -412,6 +422,7 @@ def describe_schema(
             "Use seam_architecture for a repo-level briefing with physical areas, clusters, hotspots, boundaries, and follow-up calls.",
             "Use seam_graph_search recipe=production-hotspots for shared source hotspots.",
             "Use seam_graph_search recipe=dead-code-suspects for cleanup candidates, then verify with context/snippet.",
+            "Use seam_suspects for cleanup candidates when you need blockers, caveats, and follow-up calls instead of raw degree filters.",
             "Use seam_graph_search recipes for field access, inheritance, routes, config/resources, tests, and exceptions before hand-writing filter combinations.",
             "Use seam_graph_search with kind=route or edge_kind=http_calls for HTTP boundary discovery when route data is populated.",
             "Use seam_graph_search with kind=config/resource or edge_kind=reads_config/configures for operational dependency discovery when config data is populated.",
