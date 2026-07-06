@@ -111,6 +111,58 @@ def _strip_manifest_from_artifact(out_dir: Path) -> None:
     (out_dir / CHECKSUM_FILENAME).write_text(f"{digest}  {ARCHIVE_FILENAME}\n")
 
 
+def _rewrite_manifest(out_dir: Path, update: dict[str, object]) -> None:
+    archive = out_dir / ARCHIVE_FILENAME
+    members: list[tuple[str, bytes]] = []
+    manifest: dict[str, object] | None = None
+    with tarfile.open(archive, "r:gz") as src:
+        for member in src.getmembers():
+            extracted = src.extractfile(member)
+            assert extracted is not None
+            data = extracted.read()
+            if member.name == MANIFEST_FILENAME:
+                manifest = json.loads(data.decode("utf-8"))
+                manifest.update(update)
+                data = json.dumps(manifest).encode("utf-8")
+            members.append((member.name, data))
+    assert manifest is not None
+
+    with tarfile.open(archive, "w:gz") as dst:
+        for name, data in members:
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            dst.addfile(info, io.BytesIO(data))
+
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    (out_dir / CHECKSUM_FILENAME).write_text(f"{digest}  {ARCHIVE_FILENAME}\n")
+
+
+def _rewrite_manifest_repository(out_dir: Path, update: dict[str, object]) -> None:
+    archive = out_dir / ARCHIVE_FILENAME
+    members: list[tuple[str, bytes]] = []
+    with tarfile.open(archive, "r:gz") as src:
+        for member in src.getmembers():
+            extracted = src.extractfile(member)
+            assert extracted is not None
+            data = extracted.read()
+            if member.name == MANIFEST_FILENAME:
+                manifest = json.loads(data.decode("utf-8"))
+                repository = manifest.setdefault("repository", {})
+                assert isinstance(repository, dict)
+                repository.update(update)
+                data = json.dumps(manifest).encode("utf-8")
+            members.append((member.name, data))
+
+    with tarfile.open(archive, "w:gz") as dst:
+        for name, data in members:
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            dst.addfile(info, io.BytesIO(data))
+
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    (out_dir / CHECKSUM_FILENAME).write_text(f"{digest}  {ARCHIVE_FILENAME}\n")
+
+
 def _artifact_url_template(artifacts_dir: Path) -> str:
     """Return a file:// URL template for serving artifacts from artifacts_dir.
 
@@ -235,6 +287,8 @@ class TestHappyPath:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """FT3b: Result contains the resolved SHA (HEAD)."""
+        from seam.indexer.bootstrap import read_bootstrap_provenance
+
         artifacts_dir = tmp_path / "artifacts"
         repo_dir = tmp_path / "repo"
         sha = _git_init_with_commit(repo_dir, {"module.py": "def greet(): return 'hello'\n"})
@@ -248,6 +302,12 @@ class TestHappyPath:
         result = fetch_index(repo_dir)
 
         assert result["sha"] == sha
+        provenance = read_bootstrap_provenance(repo_dir / ".seam")
+        assert provenance is not None
+        assert provenance["source"] == "fetch"
+        assert provenance["verified"] is True
+        assert provenance["git_sha"] == sha
+        assert result["bootstrap"]["source"] == "fetch"
 
     def test_happy_path_returns_bytes_downloaded(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -558,6 +618,122 @@ class TestAtomicSwapOnFailure:
             ".seam/ created by a failed fetch (should not exist)"
         )
 
+    def test_strict_missing_checksum_leaves_seam_intact(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Strict fetch requires checksum evidence before touching the live index."""
+        artifacts_dir = tmp_path / "artifacts"
+        repo_dir = tmp_path / "repo"
+        sha = _git_init_with_commit(repo_dir, {"module.py": "def greet(): return 'hello'\n"})
+        out_dir = _build_artifact(repo_dir, artifacts_dir, sha)
+        (out_dir / CHECKSUM_FILENAME).unlink()
+
+        existing_seam = repo_dir / ".seam"
+        sentinel = existing_seam / "SENTINEL.txt"
+        sentinel.write_text("must survive")
+        snapshot_before = _sentinel_content(existing_seam)
+
+        monkeypatch.setattr(
+            config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir)
+        )
+
+        with pytest.raises(FetchError) as exc_info:
+            fetch_index(repo_dir, strict=True)
+
+        assert exc_info.value.code == "CHECKSUM_MISSING"
+        assert _sentinel_content(existing_seam) == snapshot_before
+
+    def test_strict_missing_manifest_leaves_seam_intact(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Strict fetch rejects legacy artifacts before landing them."""
+        artifacts_dir = tmp_path / "artifacts"
+        repo_dir = tmp_path / "repo"
+        sha = _git_init_with_commit(repo_dir, {"module.py": "def greet(): return 'hello'\n"})
+        out_dir = _build_artifact(repo_dir, artifacts_dir, sha)
+        _strip_manifest_from_artifact(out_dir)
+
+        existing_seam = repo_dir / ".seam"
+        sentinel = existing_seam / "SENTINEL.txt"
+        sentinel.write_text("must survive")
+        snapshot_before = _sentinel_content(existing_seam)
+
+        monkeypatch.setattr(
+            config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir)
+        )
+
+        with pytest.raises(FetchError) as exc_info:
+            fetch_index(repo_dir, strict=True)
+
+        assert exc_info.value.code == "MANIFEST_MISSING"
+        assert _sentinel_content(existing_seam) == snapshot_before
+
+    def test_strict_schema_too_new_leaves_seam_intact(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Strict fetch rejects unsupported schema before landing."""
+        artifacts_dir = tmp_path / "artifacts"
+        repo_dir = tmp_path / "repo"
+        sha = _git_init_with_commit(repo_dir, {"module.py": "def greet(): return 'hello'\n"})
+        out_dir = _build_artifact(repo_dir, artifacts_dir, sha)
+        _rewrite_manifest(out_dir, {"schema_version": 999})
+        sentinel = repo_dir / ".seam" / "SENTINEL.txt"
+        sentinel.write_text("must survive")
+        snapshot_before = _sentinel_content(repo_dir / ".seam")
+        monkeypatch.setattr(
+            config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir)
+        )
+
+        with pytest.raises(FetchError) as exc_info:
+            fetch_index(repo_dir, strict=True)
+
+        assert exc_info.value.code == "SCHEMA_INCOMPATIBLE"
+        assert _sentinel_content(repo_dir / ".seam") == snapshot_before
+
+    def test_strict_repo_mismatch_leaves_seam_intact(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Strict fetch rejects artifacts whose manifest SHA does not match the resolved SHA."""
+        artifacts_dir = tmp_path / "artifacts"
+        repo_dir = tmp_path / "repo"
+        sha = _git_init_with_commit(repo_dir, {"module.py": "def greet(): return 'hello'\n"})
+        out_dir = _build_artifact(repo_dir, artifacts_dir, sha)
+        _rewrite_manifest_repository(out_dir, {"git_head": "0" * 40})
+        sentinel = repo_dir / ".seam" / "SENTINEL.txt"
+        sentinel.write_text("must survive")
+        snapshot_before = _sentinel_content(repo_dir / ".seam")
+        monkeypatch.setattr(
+            config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir)
+        )
+
+        with pytest.raises(FetchError) as exc_info:
+            fetch_index(repo_dir, strict=True)
+
+        assert exc_info.value.code == "REPO_MISMATCH"
+        assert _sentinel_content(repo_dir / ".seam") == snapshot_before
+
+    def test_strict_missing_repo_identity_leaves_seam_intact(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Strict fetch requires the manifest to identify the git revision it represents."""
+        artifacts_dir = tmp_path / "artifacts"
+        repo_dir = tmp_path / "repo"
+        sha = _git_init_with_commit(repo_dir, {"module.py": "def greet(): return 'hello'\n"})
+        out_dir = _build_artifact(repo_dir, artifacts_dir, sha)
+        _rewrite_manifest(out_dir, {"repository": {}})
+        sentinel = repo_dir / ".seam" / "SENTINEL.txt"
+        sentinel.write_text("must survive")
+        snapshot_before = _sentinel_content(repo_dir / ".seam")
+        monkeypatch.setattr(
+            config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir)
+        )
+
+        with pytest.raises(FetchError) as exc_info:
+            fetch_index(repo_dir, strict=True)
+
+        assert exc_info.value.code == "REPO_MISMATCH"
+        assert _sentinel_content(repo_dir / ".seam") == snapshot_before
+
 
 # ── FT7: Idempotency ─────────────────────────────────────────────────────────
 
@@ -643,6 +819,26 @@ class TestJsonOutput:
         envelope = json.loads(result.output.strip())
         assert envelope["ok"] is False
         assert envelope["error"]["code"] == "INVALID_INPUT"
+
+    def test_cli_strict_missing_checksum_json_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`seam fetch --strict --json` exposes strict failures as stable error codes."""
+        artifacts_dir = tmp_path / "artifacts"
+        repo_dir = tmp_path / "repo"
+        sha = _git_init_with_commit(repo_dir, {"module.py": "def greet(): return 'hello'\n"})
+        out_dir = _build_artifact(repo_dir, artifacts_dir, sha)
+        (out_dir / CHECKSUM_FILENAME).unlink()
+        monkeypatch.setattr(
+            config, "SEAM_INDEX_ARTIFACT_URL", _artifact_url_template(artifacts_dir)
+        )
+
+        result = CliRunner().invoke(app, ["fetch", str(repo_dir), "--strict", "--json"])
+
+        assert result.exit_code != 0
+        envelope = json.loads(result.output)
+        assert envelope["ok"] is False
+        assert envelope["error"]["code"] == "CHECKSUM_MISSING"
 
 
 # ── FT9: --quiet output mode ──────────────────────────────────────────────────

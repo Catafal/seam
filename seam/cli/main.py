@@ -3377,6 +3377,11 @@ def fetch_cmd(
             "Mirrors `seam sync --semantic`. Requires the [semantic] extra."
         ),
     ),
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help="Require checksum, manifest, schema, and repo identity evidence before landing.",
+    ),
     json_: bool = typer.Option(False, "--json", help="Emit structured JSON envelope to stdout."),
     quiet: bool = typer.Option(
         False,
@@ -3421,7 +3426,7 @@ def fetch_cmd(
     db_root = Path(db_dir).resolve() if db_dir else None
 
     try:
-        result = fetch_index(project_root, db_root=db_root, semantic=semantic)
+        result = fetch_index(project_root, db_root=db_root, semantic=semantic, strict=strict)
     except FetchError as exc:
         if json_:
             emit_json_error(exc.code, exc.message)

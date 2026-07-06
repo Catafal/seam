@@ -20,6 +20,7 @@ from seam.indexer.artifact import (
     read_repository_identity,
     unpack_index,
 )
+from seam.indexer.bootstrap import write_artifact_bootstrap
 from seam.indexer.db import connect
 from seam.indexer.rebase import rebase_index
 from seam.indexer.sync import sync as sync_project
@@ -129,11 +130,23 @@ def import_index_artifact(
     finally:
         conn.close()
 
+    bootstrap = write_artifact_bootstrap(
+        db_path.parent,
+        source="import",
+        verified=True,
+        checksum=str(inspected["checksum"]),
+        manifest=manifest,
+        files_rebased=files_rebased,
+        sync=dict(sync_result) if sync_result is not None else None,
+        semantic_sync={"requested": False, "status": "not_requested"},
+    )
+
     return {
         "archive": inspected["archive"],
         "checksum": inspected["checksum"],
         "checksum_file": inspected["checksum_file"],
         "manifest": manifest,
+        "bootstrap": bootstrap,
         "repo_match": repo_match,
         "files_rebased": files_rebased,
         "sync": dict(sync_result) if sync_result is not None else None,

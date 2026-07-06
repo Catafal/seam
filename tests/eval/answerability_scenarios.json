@@ -29,6 +29,19 @@
       "product_gap_tags": []
     },
     {
+      "id": "architecture-shared-index-bootstrap-trust",
+      "category": "architecture",
+      "question": "Can Seam tell an agent whether this index has trusted bootstrap provenance before relying on it?",
+      "target": {"kind": "fixture", "name": "eval-fixture"},
+      "expected_facts": [{"kind": "status", "value": "unknown"}],
+      "required_evidence": [{"kind": "reason", "value": "provenance_missing"}],
+      "acceptable_caveats": ["Bootstrap provenance is absent, so artifact trust is unknown."],
+      "tool_plan": [{"tool": "schema", "args": {}}],
+      "fallback_plan": [{"tool": "grep", "args": {"query": "bootstrap"}}],
+      "capability_tags": ["schema", "bootstrap-trust"],
+      "product_gap_tags": []
+    },
+    {
       "id": "change-safety-field-blast-radius",
       "category": "change-safety",
       "question": "What changes if the DataPipeline.stages field changes?",

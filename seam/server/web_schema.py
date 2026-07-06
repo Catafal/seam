@@ -118,6 +118,8 @@ class SchemaResponse(BaseModel):
     counts: SchemaCounts
     breakdowns: SchemaBreakdowns
     capabilities: SchemaCapabilities
+    semantic: dict[str, Any]
+    bootstrap: dict[str, Any]
     tools: list[SchemaToolGuide]
     recommended_next_calls: list[str]
     warnings: list[SchemaWarning]

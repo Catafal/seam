@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import seam.config as config
+from seam.indexer.bootstrap import mark_local_bootstrap
 from seam.indexer.cluster_index import get_llm_naming_summary, index_clusters
 from seam.indexer.db import init_db
 from seam.indexer.embedding_index import index_embeddings
@@ -223,6 +224,8 @@ def run_init(
 
     finally:
         conn.close()
+
+    mark_local_bootstrap(db_path.parent)
 
     return InitResult(
         db_path=db_path,
