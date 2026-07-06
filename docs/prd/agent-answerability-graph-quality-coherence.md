@@ -32,8 +32,8 @@ already happened in the current repository state:
 - the answerability benchmark exists and runs, but its roadmap signal currently
   counts product-gap labels even when scenarios pass or intentionally test honest
   unsupported capability states;
-- GitHub issue #371 is still open for docs/spec grounding even though docs
-  grounding has implementation evidence in `main`;
+- before the docs-grounding hygiene pass, GitHub issue #371 was still open even
+  though docs grounding had implementation evidence in `main`;
 - GitHub issue #316 for Kubernetes/Kustomize remains open, but the newer
   answerability roadmap explicitly says Kubernetes/Kustomize should stay
   demand-gated rather than become the automatic next phase;
@@ -374,8 +374,9 @@ The current local research points to this as the next phase:
 - The current summary reports top product gaps as graph-quality coherence, infra
   graph, and protocol-edge quality, but the implementation counts labels across
   all scenarios rather than only low-scoring scenarios.
-- GitHub issue #371 remains open for docs/spec grounding even though docs
-  grounding has landed in `main` and schema reports `has_doc_grounding`.
+- GitHub issue #371 was stale tracker context for docs/spec grounding: grounding
+  has landed in `main`, schema reports `has_doc_grounding`, and the architecture
+  doc now records agent-executable validation commands.
 - GitHub issue #316 remains open for Kubernetes/Kustomize, but current roadmap
   text says Kubernetes/Kustomize is deferred until answerability evidence or user
   demand proves it is needed.

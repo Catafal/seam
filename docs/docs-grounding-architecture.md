@@ -1,9 +1,86 @@
+---
+agentic_doc:
+  name: DocsAndSpecGroundingArchitecture
+  type: architecture-reference
+  status: production
+  version: "1.0"
+  issue: "#371"
+  audience:
+    - human-maintainers
+    - coding-agents
+    - roadmap-agents
+purpose:
+  primary: "Explain why docs/spec grounding is evidence, not dependency semantics."
+  agent_question:
+    - "Which local docs explain this symbol, route, config key, resource, or file?"
+    - "Can this document reference be trusted as explicit grounding evidence?"
+    - "Which commands prove docs/spec grounding is populated in this checkout?"
+capabilities:
+  schema_flags:
+    - has_doc_anchors
+    - has_doc_grounding
+  tools:
+    - seam_schema
+    - seam_grounding
+    - seam_plan
+    - seam_context_pack
+execution:
+  local_only: true
+  network_required: false
+  estimated_validation_seconds: 30
+  primary_commands:
+    - "uv run seam schema --json"
+    - "uv run seam grounding --query 'docs/spec grounding' --json"
+    - "uv run pytest tests/unit/test_grounding.py -q"
+security:
+  data_classification: local-source-and-doc-metadata
+  pii_handling: false
+  stores_secret_values: false
+  network_egress: false
+observability:
+  health_signal: "schema capabilities and grounding query warnings"
+  stale_index_signal: "index_status or freshness.stale"
+related:
+  architecture: docs/ARCHITECTURE.md
+  mcp_contract: docs/api-contracts/mcp-tools.yaml
+  tests: tests/unit/test_grounding.py
+  implementation:
+    - seam/indexer/docs.py
+    - seam/query/grounding.py
+    - seam/server/grounding_handler.py
+---
+
 # Docs and Spec Grounding Architecture
 
 This document explains why Seam indexes local Markdown documentation as a first-class
 evidence surface without turning docs into code dependencies. For the schema tables and
 tool list, see [`ARCHITECTURE.md`](ARCHITECTURE.md). For the MCP contract, see
 [`api-contracts/mcp-tools.yaml`](api-contracts/mcp-tools.yaml).
+
+## Agent Quick Start
+
+Use docs/spec grounding when code structure is not enough and the question is about
+intent, provenance, or local specification context.
+
+```bash
+# Confirm the index advertises populated docs/spec grounding.
+uv run seam schema --json
+
+# Find documentation anchors related to a symbol, file, route, config key, resource, or concept.
+uv run seam grounding --query "docs/spec grounding" --json
+
+# Fetch bounded snippets for returned anchors when the first response identifies useful docs.
+uv run seam grounding --query "docs/spec grounding" --include-snippets --json
+```
+
+Interpretation rules for agents:
+
+- Treat grounding candidates as local documentation evidence, not dependency edges.
+- Prefer `EXACT` and `HIGH` confidence references before reading low-confidence textual
+  leads.
+- Check `doc_kind`, `status`, `relation_type`, `confidence`, `provenance`, and caveats
+  before using a document to guide an edit.
+- Run `uv run seam sync` if schema or grounding output reports stale index state.
 
 ## What Problem This Solves
 
@@ -166,6 +243,108 @@ Breaks when: most agent workflows need grounding every time. In that case, add c
 - Add graph artifact export for document evidence when callers need a portable snapshot of
   what the index knew at a specific time.
 
+## Executable Commands
+
+### Test Functionality
+
+```bash
+# Focused docs/spec grounding unit and transport coverage.
+uv run pytest tests/unit/test_grounding.py -q
+
+# Schema registry coverage for seam_grounding tool visibility.
+uv run pytest tests/unit/test_schema_tool.py::test_schema_mcp_registration -q
+```
+
+### Validate Output
+
+```bash
+# Verify populated grounding capability and counts in the current checkout.
+uv run seam schema --json | jq '.data | {
+  has_doc_anchors: .capabilities.has_doc_anchors,
+  has_doc_grounding: .capabilities.has_doc_grounding,
+  document_files: .counts.document_files,
+  document_anchors: .counts.document_anchors,
+  document_references: .counts.document_references
+}'
+
+# Verify that a docs-first grounding query returns bounded candidates and caveats.
+uv run seam grounding --query "docs/spec grounding" --json
+```
+
+### Health Check And Debugging
+
+```bash
+# Refresh document anchors/references after editing docs.
+uv run seam sync
+
+# Inspect stale-index state before trusting grounding output.
+uv run seam schema --json | jq '.data.freshness'
+
+# Inspect a specific symbol or file after grounding identifies the code target.
+uv run seam context <symbol> --json
+```
+
+Expected healthy state for this repository:
+
+- `has_doc_anchors` is `true`.
+- `has_doc_grounding` is `true`.
+- `document_files`, `document_anchors`, and `document_references` are non-zero.
+- `seam_grounding` appears in `seam_schema.tools`.
+
+## Security And Compliance
+
+Docs/spec grounding preserves Seam's local-first trust model:
+
+- It reads local repository documentation only.
+- It does not fetch GitHub issues, pull requests, external links, package registries, or
+  web pages.
+- It keeps document references outside the code dependency graph, so spec evidence does
+  not become impact evidence.
+- It stores bounded anchor search text and reference metadata, not full Markdown bodies.
+- It filters secret-looking assignment lines from searchable anchor text.
+
+Data handling:
+
+| Data | Stored | Rationale |
+|---|---:|---|
+| Document path, title, kind, status | yes | Lets agents rank and filter local docs. |
+| Heading path and anchor line range | yes | Lets agents inspect bounded source evidence. |
+| Explicit reference target and provenance | yes | Explains why a doc is connected to code. |
+| Full document body | no | Prevents the index from becoming a document mirror. |
+| Secret values or environment values | no | Preserves the no-secret indexing contract. |
+
+## Observability And Error Signals
+
+Grounding health is exposed through normal Seam read surfaces instead of telemetry:
+
+| Signal | Where to Check | Meaning |
+|---|---|---|
+| `has_doc_anchors` | `seam schema --json` | Document anchor tables are populated. |
+| `has_doc_grounding` | `seam schema --json` | Resolved document references are populated. |
+| `document_*` counts | `seam schema --json` | Current index volume for docs/spec evidence. |
+| `index_status` / `freshness.stale` | `seam schema`, `seam grounding` | Run `seam sync` before trusting changed docs. |
+| `UNSUPPORTED` warning | `seam grounding --json` | The opened index is too old or lacks grounding tables. |
+
+Common recovery actions:
+
+| Condition | Recovery |
+|---|---|
+| Missing `.seam/` index | Run `uv run seam init`. |
+| Stale docs after local edits | Run `uv run seam sync`. |
+| Grounding tables unsupported | Rebuild with current Seam using `uv run seam init`. |
+| Low-confidence reference only | Verify with `seam snippet`, `seam context`, or direct file read before editing. |
+
+## Related Documentation
+
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) lists the schema tables and tool inventory.
+- [`api-contracts/mcp-tools.yaml`](api-contracts/mcp-tools.yaml) defines the MCP contract
+  for `seam_grounding`.
+- [`CONFIGURATION.md`](CONFIGURATION.md) documents `SEAM_GROUNDING_DEFAULT_LIMIT`.
+- [`agent-answerability-benchmark.md`](agent-answerability-benchmark.md) explains how
+  docs/spec grounding is measured as answerability coverage.
+- [`prd/agent-answerability-graph-quality-coherence.md`](prd/agent-answerability-graph-quality-coherence.md)
+  explains why stale roadmap and tracker signals need deterministic coherence checks.
+
 ## What to Read First
 
 1. [`seam/indexer/docs.py`](../seam/indexer/docs.py) explains the conservative extraction
@@ -179,3 +358,10 @@ Breaks when: most agent workflows need grounding every time. In that case, add c
 5. [`seam/cli/grounding.py`](../seam/cli/grounding.py) shows the user-facing command
    surface and output modes.
 
+---
+
+**Last Updated**: 2026-07-06
+**Agent Status**: Production docs/spec grounding reference
+**Issue Status**: #371 ready to close as shipped
+**AGENTS.md Compliant**: Yes
+**Machine-Readable**: YAML frontmatter plus executable validation commands
