@@ -383,7 +383,7 @@ def test_plan_mcp_registration_exposes_mode_and_symbol(tmp_path: Path) -> None:
         conn.close()
 
     assert "seam_plan" in tool_names
-    assert len(tool_names) == 18
+    assert len(tool_names) == 19
     params = tool.parameters.get("properties", {})
     assert "mode" in params
     assert "symbol" in params

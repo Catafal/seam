@@ -48,6 +48,7 @@ from seam.query.schema import describe_schema
 from seam.query.snippet import snippet as run_snippet
 from seam.query.structure import StructureResult
 from seam.query.structure import build_structure as run_build_structure
+from seam.server.grounding_handler import handle_seam_grounding  # noqa: F401 — re-exported
 
 # ── Re-exports from sibling modules (facade — public surface unchanged) ───────
 # Everything imported by mcp.py / web.py / main.py / tests keeps working.

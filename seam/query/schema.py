@@ -24,6 +24,9 @@ _OPTIONAL_TABLES = (
     "routes",
     "config_keys",
     "resources",
+    "document_files",
+    "document_anchors",
+    "document_references",
 )
 _INTROSPECT_TABLES = (
     "files",
@@ -38,6 +41,9 @@ _INTROSPECT_TABLES = (
     "routes",
     "config_keys",
     "resources",
+    "document_files",
+    "document_anchors",
+    "document_references",
 )
 _INFRA_RESOURCE_CATEGORIES = {
     "service",
@@ -218,6 +224,16 @@ def _tool_registry() -> list[dict[str, Any]]:
             "depends_on": ["edges"],
         },
         {
+            "name": "seam_grounding",
+            "transports": ["cli", "mcp"],
+            "read_only": True,
+            "use_when": (
+                "You need local docs, ADRs, PRDs, roadmaps, or implementation notes that "
+                "explicitly ground a symbol, file, route, config key, resource, or spec question."
+            ),
+            "depends_on": ["document_anchors"],
+        },
+        {
             "name": "seam_structure",
             "transports": ["cli", "mcp", "web"],
             "read_only": True,
@@ -356,6 +372,9 @@ def describe_schema(
         "http_calls": _count(conn, "edges", "kind = 'http_calls'"),
         "config_keys": _count(conn, "config_keys"),
         "resources": _count(conn, "resources"),
+        "document_files": _count(conn, "document_files"),
+        "document_anchors": _count(conn, "document_anchors"),
+        "document_references": _count(conn, "document_references"),
     }
     breakdowns = {
         "languages": _group_counts(conn, "files", "language", "path NOT LIKE ':%'"),
@@ -371,6 +390,10 @@ def describe_schema(
         "comment_markers": _group_counts(conn, "comments", "marker"),
         "embedding_models": embedding_model_counts,
         "resource_categories": _group_counts(conn, "resources", "category"),
+        "document_kinds": _group_counts(conn, "document_files", "doc_kind"),
+        "document_statuses": _group_counts(conn, "document_files", "status"),
+        "document_relation_types": _group_counts(conn, "document_references", "relation_type"),
+        "document_reference_confidence": _group_counts(conn, "document_references", "confidence"),
     }
     symbols_columns = _column_names(conn, "symbols")
     edges_columns = _column_names(conn, "edges")
@@ -388,6 +411,8 @@ def describe_schema(
         "has_resources_table": _table_exists(conn, "resources"),
         "has_config_nodes": breakdowns["symbol_kinds"].get("config", 0) > 0,
         "has_resource_nodes": breakdowns["symbol_kinds"].get("resource", 0) > 0,
+        "has_doc_anchors": counts["document_anchors"] > 0,
+        "has_doc_grounding": counts["document_references"] > 0,
         "has_infra_graph": any(
             breakdowns["resource_categories"].get(category, 0) > 0
             for category in _INFRA_RESOURCE_CATEGORIES
@@ -423,6 +448,7 @@ def describe_schema(
             "Use seam_graph_search recipe=production-hotspots for shared source hotspots.",
             "Use seam_graph_search recipe=dead-code-suspects for cleanup candidates, then verify with context/snippet.",
             "Use seam_suspects for cleanup candidates when you need blockers, caveats, and follow-up calls instead of raw degree filters.",
+            "Use seam_grounding before edits that need local ADR/PRD/docs/spec intent; doc links are not dependency edges.",
             "Use seam_graph_search recipes for field access, inheritance, routes, config/resources, tests, and exceptions before hand-writing filter combinations.",
             "Use seam_graph_search with kind=route or edge_kind=http_calls for HTTP boundary discovery when route data is populated.",
             "Use seam_graph_search with kind=config/resource or edge_kind=reads_config/configures for operational dependency discovery when config data is populated.",

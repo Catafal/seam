@@ -24,7 +24,7 @@ from seam.indexer.db import connect
 from seam.indexer.rebase import rebase_index
 from seam.indexer.sync import sync as sync_project
 
-CURRENT_SCHEMA_VERSION = 15
+CURRENT_SCHEMA_VERSION = 16
 
 
 class ArtifactLifecycleError(Exception):

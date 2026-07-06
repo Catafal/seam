@@ -6,7 +6,7 @@
 
 **Local code intelligence for AI agents.** Index a codebase once; agents query its structure instead of re-discovering it with `grep` every session.
 
-`v0.3.0` · 12 languages · 18 MCP tools · SQLite-backed · **zero network calls at query time** · gate-green (~3,055 tests)
+`v0.3.0` · 12 languages · 19 MCP tools · SQLite-backed · **zero network calls at query time** · gate-green (~3,055 tests)
 
 [![CI](https://github.com/Catafal/seam/actions/workflows/ci.yml/badge.svg)](https://github.com/Catafal/seam/actions/workflows/ci.yml)
 
@@ -42,7 +42,7 @@ Think of Seam as **a compiler's symbol table and call graph for your whole repos
                                             ┌───────────────┴───────────────┐
                                             ▼                               ▼
                                      MCP server (stdio)              CLI read commands
-                                     18 read-only tools              schema / query / impact …
+                                     19 read-only tools              schema / query / impact …
                                             │                               │
                                             └──────────────┬────────────────┘
                                                            ▼
@@ -219,7 +219,7 @@ not returned.
 
 ---
 
-## The 18 MCP tools
+## The 19 MCP tools
 
 Grouped by the question an agent is asking. Every tool is **read-only**; the server never writes the index.
 
@@ -249,6 +249,7 @@ Grouped by the question an agent is asking. Every tool is **read-only**; the ser
 | `seam_impact` | "What breaks if I change X?" — blast radius bucketed into risk tiers, with provenance, summary counts, and a hard byte/entry budget. | `target`, `direction`, `max_depth`, `limit`, `max_bytes` |
 | `seam_plan` | "What should I inspect and test?" — target-mode composes context, upstream impact, and indexed test evidence; diff-mode composes changed symbols and affected tests. | `symbol`, `mode`, `scope`, `base_ref`, `max_depth` |
 | `seam_suspects` | "What should I review before cleanup?" — conservative symbol/file suspect candidates with blockers, risk, caveats, and follow-up calls; never deletion proof. | `mode`, `target`, `file_pattern`, `kind`, `visibility`, `test_scope`, `limit` |
+| `seam_grounding` | "Which docs/specs explain this?" — local ADR/PRD/roadmap/task anchors that explicitly mention a symbol, file, route, config key, resource, or spec question. Doc links are grounding evidence, not dependency edges. | `symbol`, `file`, `route`, `config_key`, `resource`, `query`, `doc_kind`, `status`, `include_snippets` |
 | `seam_changes` | "Is my current diff risky?" — git diff → changed symbols → overall risk level. | `scope`, `base_ref` |
 | `seam_affected` | "Which tests should I run?" — changed files → impacted test files via reverse-dependency traversal. | `changed_files`, `depth` |
 
@@ -353,6 +354,8 @@ For infra evidence, start with `seam architecture --section infra --json`, then 
 **Risk tiers.** `seam_impact`, `seam_changes`, and `seam_plan` bucket dependents by distance: `WILL_BREAK` (d=1, must update), `LIKELY_AFFECTED` (d=2, should test), `MAY_NEED_TESTING` (d≥3, test if critical). `seam_changes` rolls these up into `low` → `medium` → `high` → `critical`; `seam_plan` turns the same evidence into ranked inspect items and a bounded pytest command.
 
 **Cleanup suspects.** `seam_suspects` is the review surface for possible dead code and orphan files. It combines absence signals with blockers such as public/exported API shape, static test evidence, route/config/resource conventions, field access, inheritance, imports, and indexed contained-symbol usage. Its output is deliberately framed as suspect strength and removal risk, not as "unused" proof, because static absence can miss dynamic runtime use.
+
+**Docs/spec grounding.** `seam_grounding` indexes lightweight local Markdown anchors from ADRs, PRDs, roadmaps, tasks, guides, and implementation notes, then resolves explicit references to indexed code evidence when possible. It preserves provenance, confidence, status, and caveats, and it never feeds doc links into impact traversal.
 
 **Clusters.** A pure-Python Louvain pass groups symbols into functional areas by coupling. Labels are deterministic by default (`dir/file — top symbol`) or, opt-in, LLM-generated at index time only.
 

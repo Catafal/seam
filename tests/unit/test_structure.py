@@ -378,8 +378,8 @@ class TestHandleSeamStructure:
 
         tool_names = list(server._tool_manager._tools.keys())
         assert "seam_structure" in tool_names, f"seam_structure not in tools: {sorted(tool_names)}"
-        assert len(tool_names) == 18, (
-            f"Expected 18 tools, got {len(tool_names)}: {sorted(tool_names)}"
+        assert len(tool_names) == 19, (
+            f"Expected 19 tools, got {len(tool_names)}: {sorted(tool_names)}"
         )
 
 

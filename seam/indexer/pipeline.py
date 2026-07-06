@@ -20,7 +20,8 @@ from seam.indexer.config_resources import (
     extract_source_config_reads,
     is_config_resource_file,
 )
-from seam.indexer.db import upsert_file, upsert_import_mappings
+from seam.indexer.db import upsert_document_file, upsert_file, upsert_import_mappings
+from seam.indexer.docs import extract_and_resolve_document, is_document_file
 from seam.indexer.exceptions import extract_exception_edges
 from seam.indexer.graph import extract_comments, extract_edges, extract_symbols
 from seam.indexer.parser import (
@@ -109,7 +110,12 @@ def _dispatch_parser(path: Path, language: str):  # type: ignore[return]
     return None
 
 
-def index_one_file(conn: sqlite3.Connection, path: Path) -> tuple[int, int] | None:
+def index_one_file(
+    conn: sqlite3.Connection,
+    path: Path,
+    *,
+    root: Path | None = None,
+) -> tuple[int, int] | None:
     """Parse, extract, and upsert a single source file.
 
     Returns:
@@ -134,6 +140,22 @@ def index_one_file(conn: sqlite3.Connection, path: Path) -> tuple[int, int] | No
             return None
 
         ext = path.suffix.lower()
+        project_root = (root or path.parent).resolve()
+        if is_document_file(path):
+            try:
+                content = path.read_bytes()
+            except OSError as exc:
+                logger.debug("skip %s: read failed: %s", path, exc)
+                return None
+            file_hash = sha1(content)
+            document = extract_and_resolve_document(conn, project_root, path)
+            try:
+                document["path"] = path.resolve().relative_to(project_root)
+            except ValueError:
+                document["path"] = path.resolve()
+            upsert_document_file(conn, path, file_hash, document)
+            return (0, 0)
+
         language = config.SEAM_LANGUAGE_MAP.get(ext)
         if language is None:
             if not is_config_resource_file(path):
@@ -160,8 +182,8 @@ def index_one_file(conn: sqlite3.Connection, path: Path) -> tuple[int, int] | No
             )
             return len(symbols), len(edges)
 
-        root = _dispatch_parser(path, language)
-        if root is None:
+        tree_root = _dispatch_parser(path, language)
+        if tree_root is None:
             logger.debug("skip %s: parser returned None (binary/unreadable)", path)
             return None
 
@@ -172,18 +194,18 @@ def index_one_file(conn: sqlite3.Connection, path: Path) -> tuple[int, int] | No
             return None
 
         file_hash = sha1(content)
-        symbols = extract_symbols(root, language, path)
+        symbols = extract_symbols(tree_root, language, path)
         # Pass symbols so extract_edges can resolve confidence (EXTRACTED/AMBIGUOUS/INFERRED)
         # against the same-file symbol set. Cross-file ambiguity is handled at query time.
-        edges = extract_edges(root, language, path, symbols=symbols)
-        edges.extend(extract_exception_edges(root, language, path, symbols))
-        route_symbols, route_edges, routes = extract_routes(root, language, path, symbols)
+        edges = extract_edges(tree_root, language, path, symbols=symbols)
+        edges.extend(extract_exception_edges(tree_root, language, path, symbols))
+        route_symbols, route_edges, routes = extract_routes(tree_root, language, path, symbols)
         if route_symbols:
             symbols.extend(route_symbols)
         if route_edges:
             edges.extend(route_edges)
         config_symbols, config_edges, config_keys, resources = extract_source_config_reads(
-            root,
+            tree_root,
             language,
             path,
             symbols,
@@ -234,19 +256,25 @@ def walk_project(root: Path) -> list[Path]:
 
     The dot/skip check uses only the parts BELOW root (root may itself sit under
     a dot-dir, e.g. ~/.config/proj — that must not exclude everything).
+    `.claude` is allowed for Markdown planning/task docs, but other hidden dirs
+    remain skipped.
     """
     files: list[Path] = []
     root_depth = len(root.parts)
     for item in root.rglob("*"):
         if any(
-            part.startswith(".") or part in SKIP_DIRS
+            (part.startswith(".") and part != ".claude") or part in SKIP_DIRS
             for part in item.parts[root_depth:]
         ):
             continue
         if (
             item.is_file()
-            and (item.suffix.lower() in config.SEAM_LANGUAGE_MAP or is_config_resource_file(item))
+            and (
+                item.suffix.lower() in config.SEAM_LANGUAGE_MAP
+                or is_config_resource_file(item)
+                or is_document_file(item)
+            )
             and ".min." not in item.name  # skip minified bundles (foo.min.js, bundle.min.mjs)
         ):
             files.append(item)
-    return files
+    return sorted(files, key=lambda path: (is_document_file(path), str(path)))
