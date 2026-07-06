@@ -648,7 +648,15 @@ function App() {
               </div>
             }
           >
-            <ConstellationTab focusSymbol={focusSymbol} />
+            {/* #361: the identity card's explicit "Open in neighborhood →"
+                hands off to the 2D neighborhood centered on the symbol. This is
+                the ONE deliberate navigation door out of the orientation view —
+                the node click itself still only isolates (#263). Reuses the same
+                center+switch handler the Overview treemap uses. */}
+            <ConstellationTab
+              focusSymbol={focusSymbol}
+              onOpenInNeighborhood={handleOpenFromOverview}
+            />
           </Suspense>
         ) : (
           <>

@@ -7,7 +7,7 @@
  *
  * The parent ConstellationTab persists widths to localStorage:
  *   seam-left-w   — left FilterPanel width (clamped [150, 500])
- *   seam-right-w  — right NodeDetailPanel width (clamped [150, 500])
+ *   seam-right-w  — right NodeIdentityCard width (clamped [150, 500])
  *
  * Usage:
  *   <ResizeHandle side="left" onResize={(delta) => setLeftWidth(w => clamp(w + delta))} />
