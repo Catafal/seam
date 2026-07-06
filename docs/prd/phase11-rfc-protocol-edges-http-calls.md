@@ -6,6 +6,8 @@
 > Tracker label: `ready-for-agent`.
 > Source roadmap: `.claude/tasks/phase11-rfc-roadmap.md`.
 > Parent status matrix: `phase11-codebase-memory-roadmap.md`.
+> Superseded for implementation by `phase11-rfc-http-call-extraction-quality.md`
+> and GitHub issue https://github.com/Catafal/seam/issues/395.
 
 ## Problem Statement
 
