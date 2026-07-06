@@ -42,9 +42,7 @@ def _insert_symbol(
         " VALUES (?, 'python', 'abc', 1.0, 1.0)",
         (file_path,),
     )
-    file_id = conn.execute(
-        "SELECT id FROM files WHERE path = ?", (file_path,)
-    ).fetchone()["id"]
+    file_id = conn.execute("SELECT id FROM files WHERE path = ?", (file_path,)).fetchone()["id"]
 
     conn.execute(
         "INSERT INTO symbols (file_id, name, kind, start_line, end_line, docstring)"
@@ -69,8 +67,7 @@ def _insert_embedding(
     """Insert a synthetic embedding for a symbol."""
     dim = len(vector) // 4
     conn.execute(
-        "INSERT OR REPLACE INTO embeddings (symbol_id, model, dim, vector)"
-        " VALUES (?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO embeddings (symbol_id, model, dim, vector) VALUES (?, ?, ?, ?)",
         (symbol_id, model, dim, vector),
     )
     conn.commit()
@@ -218,7 +215,7 @@ class TestSemanticOnWithEmbeddings:
         sem_id = _insert_symbol(
             conn,
             "_backoff_with_jitter",
-            "Exponential backoff with jitter for retry delays.",
+            "Delay policy with jitter.",
         )
         # Give it a vector that closely matches the query direction
         _insert_embedding(conn, sem_id, _f32([1.0, 0.0, 0.0]), model=test_model)
@@ -236,6 +233,11 @@ class TestSemanticOnWithEmbeddings:
         result_names = [r["symbol"] for r in results]
         # The semantic-only symbol must appear in the hybrid result
         assert "_backoff_with_jitter" in result_names
+        semantic_hit = next(r for r in results if r["symbol"] == "_backoff_with_jitter")
+        assert semantic_hit["retrieval_mode"] == "semantic-only"
+        assert semantic_hit["retrieval"]["semantic_score"] == 1.0
+        assert any("discovery lead" in caveat for caveat in semantic_hit["caveats"])
+        assert "seam_context" in semantic_hit["recommended_next_calls"]
 
     def test_semantic_only_symbol_surfaces_in_query(self, tmp_path: Path) -> None:
         """query() also surfaces semantic-only symbol when hybrid is enabled."""
@@ -247,6 +249,13 @@ class TestSemanticOnWithEmbeddings:
         # This symbol has no keyword overlap with "cache mechanism"
         sem_id = _insert_symbol(conn, "_lru_store", "LRU eviction store for memoization.")
         _insert_embedding(conn, sem_id, _f32([1.0, 0.0, 0.0]), model=test_model)
+        _insert_symbol(conn, "_memoize_helper", "Helper used by the LRU store.")
+        conn.execute(
+            "INSERT INTO edges (source_name, target_name, kind, file_id, line, confidence) "
+            "SELECT '_lru_store', '_memoize_helper', 'call', id, 2, 'EXTRACTED' "
+            "FROM files WHERE path = '/proj/a.py'"
+        )
+        conn.commit()
 
         # Also add a keyword-matching symbol for FTS seed
         _insert_symbol(conn, "cache_get", "Get from cache.")
@@ -262,6 +271,15 @@ class TestSemanticOnWithEmbeddings:
         conn.close()
         result_names = [r["symbol"] for r in results]
         assert "_lru_store" in result_names
+        semantic_seed = next(r for r in results if r["symbol"] == "_lru_store")
+        assert semantic_seed["retrieval_mode"] == "semantic-only"
+        assert semantic_seed["retrieval"]["sources"] == ["semantic"]
+        assert any("discovery lead" in caveat for caveat in semantic_seed["caveats"])
+        semantic_neighbor = next(r for r in results if r["symbol"] == "_memoize_helper")
+        assert semantic_neighbor["retrieval_mode"] == "graph-expanded-from-semantic"
+        assert "semantic" in semantic_neighbor["retrieval"]["sources"]
+        assert "graph" in semantic_neighbor["retrieval"]["sources"]
+        assert any("discovery lead" in caveat for caveat in semantic_neighbor["caveats"])
 
 
 # ── H4: hybrid merge: keyword hits are never dropped ─────────────────────────
@@ -294,6 +312,8 @@ class TestKeywordHitsPreserved:
         result_names = [r["symbol"] for r in results]
         # The keyword match must still be present — hybrid never drops FTS hits
         assert "keyword_sym" in result_names
+        keyword_hit = next(r for r in results if r["symbol"] == "keyword_sym")
+        assert keyword_hit["retrieval_mode"] in {"lexical", "hybrid"}
 
     def test_query_fts_hit_still_present_when_semantic_on(self, tmp_path: Path) -> None:
         """query() FTS hits are preserved when semantic is enabled."""
@@ -315,6 +335,8 @@ class TestKeywordHitsPreserved:
         conn.close()
         result_names = [r["symbol"] for r in results]
         assert "keyword_fn" in result_names
+        keyword_hit = next(r for r in results if r["symbol"] == "keyword_fn")
+        assert keyword_hit["retrieval_mode"] in {"lexical", "hybrid"}
 
 
 # ── H5: model mismatch → falls back to FTS5 ──────────────────────────────────

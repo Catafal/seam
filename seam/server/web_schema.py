@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SchemaFreshness(BaseModel):
@@ -122,6 +122,31 @@ class SchemaResponse(BaseModel):
     recommended_next_calls: list[str]
     warnings: list[SchemaWarning]
     tables: dict[str, SchemaTableInfo] | None = None
+
+
+class SearchResultItem(BaseModel):
+    """One item in a search result list."""
+
+    uid: str | None = None
+    name: str
+    kind: str
+    file: str
+    line: int
+    snippet: str | None = None
+    score: float | None = None
+    signature: str | None
+    cluster_id: int | None
+    cluster_label: str | None
+    retrieval_mode: str | None = None
+    retrieval: dict[str, Any] = Field(default_factory=dict)
+    caveats: list[str] = Field(default_factory=list)
+    recommended_next_calls: list[str] = Field(default_factory=list)
+
+
+class SearchResponse(BaseModel):
+    """Response for GET /api/search."""
+
+    results: list[SearchResultItem]
 
 
 class SnippetWarning(BaseModel):
@@ -420,6 +445,7 @@ class StatusResponse(BaseModel):
     # Additive staleness fields (#272): watcher-aware, derived from staleness.py.
     stale: bool
     stale_reason: str | None
+    semantic: dict[str, Any] | None = None
 
 
 class StructureSymbol(BaseModel):

@@ -563,7 +563,7 @@ def _walk_evidence(value: Any, items: list[EvidenceItem]) -> None:
         for key in ("file", "path", "doc_path"):
             if key in value and value[key] is not None:
                 items.append(EvidenceItem("file", str(value[key])))
-        for key in ("doc_kind", "status", "relation_type"):
+        for key in ("doc_kind", "status", "relation_type", "retrieval_mode", "reason"):
             if key in value and value[key] is not None:
                 items.append(EvidenceItem(key, str(value[key])))
         if "value" in value and value["value"] is not None:
@@ -584,6 +584,11 @@ def _walk_evidence(value: Any, items: list[EvidenceItem]) -> None:
             values = value.get(key)
             if isinstance(values, list):
                 item_kind = "reason" if key == "reasons" else "blocker"
+                items.extend(EvidenceItem(item_kind, str(item)) for item in values)
+        for key in ("caveats", "recommended_next_calls"):
+            values = value.get(key)
+            if isinstance(values, list):
+                item_kind = "caveat" if key == "caveats" else "next_call"
                 items.extend(EvidenceItem(item_kind, str(item)) for item in values)
         for child in value.values():
             _walk_evidence(child, items)

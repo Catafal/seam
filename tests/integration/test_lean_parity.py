@@ -36,8 +36,11 @@ HEAVY_FIELDS = {
 
 def _sym(name: str, file: str, kind: str = "function", line: int = 1) -> Symbol:
     return Symbol(
-        name=name, kind=kind, file=file,
-        start_line=line, end_line=line + 5,
+        name=name,
+        kind=kind,
+        file=file,
+        start_line=line,
+        end_line=line + 5,
         docstring="docstring",
         signature=f"def {name}()",
         decorators=["@classmethod"],
@@ -61,8 +64,15 @@ def _make_db(tmp_path: Path):
     src.write_text("def foo(): bar()\ndef bar(): baz()\ndef baz(): pass\n")
 
     upsert_file(
-        conn, src, "python", "h1",
-        [_sym("foo", str(src), line=1), _sym("bar", str(src), line=2), _sym("baz", str(src), line=3)],
+        conn,
+        src,
+        "python",
+        "h1",
+        [
+            _sym("foo", str(src), line=1),
+            _sym("bar", str(src), line=2),
+            _sym("baz", str(src), line=3),
+        ],
         [_edge("foo", "bar", str(src)), _edge("bar", "baz", str(src))],
     )
     return conn, tmp_path, db_path, src
@@ -157,6 +167,21 @@ class TestMcpSchemaVerbose:
         params = tool.parameters
         assert "verbose" not in params.get("properties", {}), (
             "seam_search must NOT expose 'verbose' — it carries no enrichment fields"
+        )
+        assert "semantic" in params.get("properties", {}), (
+            "seam_search must expose semantic so agents can force keyword-only retrieval"
+        )
+
+    def test_seam_query_has_semantic_param(self, tmp_path: Path) -> None:
+        """seam_query exposes semantic so concept search can be made keyword-only."""
+        conn, root, db_path, _ = _make_db(tmp_path)
+        server = create_server(conn, root)
+        conn.close()
+
+        tool = server._tool_manager._tools["seam_query"]
+        params = tool.parameters
+        assert "semantic" in params.get("properties", {}), (
+            "seam_query must expose semantic so agents can force keyword-only retrieval"
         )
 
 
@@ -328,6 +353,4 @@ class TestQueryEnrichmentFree:
         assert isinstance(results, list)
         for rec in results:
             for field in HEAVY_FIELDS:
-                assert field not in rec, (
-                    f"query result unexpectedly carries heavy field {field!r}"
-                )
+                assert field not in rec, f"query result unexpectedly carries heavy field {field!r}"

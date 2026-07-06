@@ -90,9 +90,7 @@ class TestInitSemanticFastembed:
         # Must not crash — exit 0
         assert result.exit_code == 0, f"init --semantic crashed: {result.output}"
 
-    def test_init_semantic_absent_shows_skipped_message_or_completes(
-        self, tmp_path: Path
-    ) -> None:
+    def test_init_semantic_absent_shows_skipped_message_or_completes(self, tmp_path: Path) -> None:
         """When fastembed absent, output must say 'skipped' or show 0 embeddings."""
         project_root = tmp_path / "proj"
         project_root.mkdir()
@@ -140,9 +138,7 @@ class TestStatusEmbeddings:
         assert result.exit_code == 0, f"status failed: {result.output}"
         data = json.loads(result.output)
         assert data["ok"] is True
-        assert "embedding_count" in data["data"], (
-            "status --json must include embedding_count key"
-        )
+        assert "embedding_count" in data["data"], "status --json must include embedding_count key"
         assert data["data"]["embedding_count"] == 0
 
     def test_status_json_has_embed_model(self, tmp_path: Path) -> None:
@@ -190,8 +186,7 @@ class TestStatusEmbeddings:
         conn = connect(db_path)
         sym_id = conn.execute("SELECT id FROM symbols LIMIT 1").fetchone()["id"]
         conn.execute(
-            "INSERT OR REPLACE INTO embeddings (symbol_id, model, dim, vector)"
-            " VALUES (?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO embeddings (symbol_id, model, dim, vector) VALUES (?, ?, ?, ?)",
             (sym_id, "test-model", 3, _f32([1.0, 0.0, 0.0])),
         )
         conn.commit()
@@ -289,6 +284,34 @@ class TestSearchNoSemantic:
         # Should find hello_world
         symbols = [r["symbol"] for r in data["data"]]
         assert "hello_world" in symbols
+        hit = next(r for r in data["data"] if r["symbol"] == "hello_world")
+        assert hit["retrieval_mode"] == "lexical"
+        assert hit["retrieval"]["sources"] == ["lexical"]
+
+    def test_query_no_semantic_with_json(self, tmp_path: Path) -> None:
+        """`seam query --no-semantic --json` returns explicit lexical retrieval metadata."""
+        project_root, db_path = _make_project_with_index(tmp_path)
+
+        result = runner.invoke(
+            app,
+            [
+                "query",
+                "hello_world",
+                "--path",
+                str(project_root),
+                "--db-dir",
+                str(project_root),
+                "--no-semantic",
+                "--json",
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["ok"] is True
+        hit = next(r for r in data["data"] if r["symbol"] == "hello_world")
+        assert hit["retrieval_mode"] == "lexical"
+        assert hit["retrieval"]["sources"] == ["lexical"]
 
 
 # ── CLI5: seam search without --no-semantic works normally ───────────────────
@@ -316,6 +339,9 @@ class TestSearchNormal:
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["ok"] is True
+        hit = next(r for r in data["data"] if r["symbol"] == "hello_world")
+        assert hit["retrieval_mode"] == "lexical"
+        assert hit["caveats"] == []
 
     def test_search_with_semantic_on_no_embeddings_works(self, tmp_path: Path) -> None:
         """With SEAM_SEMANTIC=on but no embeddings, search degrades gracefully."""
@@ -347,9 +373,7 @@ class TestSearchNormal:
 class TestInitSemanticWithEmbedder:
     """CLI6 — `seam init --semantic` calls index_embeddings when fastembed present."""
 
-    def test_init_semantic_calls_index_embeddings_when_available(
-        self, tmp_path: Path
-    ) -> None:
+    def test_init_semantic_calls_index_embeddings_when_available(self, tmp_path: Path) -> None:
         """With fastembed available (monkeypatched), init --semantic calls embeddings."""
         project_root = tmp_path / "proj"
         project_root.mkdir()
@@ -400,6 +424,7 @@ class TestMcpToolCount:
 
         try:
             from seam.server.mcp import create_server
+
             server = create_server(conn, project_root)
             # FastMCP stores tools in a dict via _tool_manager._tools (same pattern
             # as the existing test_lean_parity.py tests)
@@ -423,6 +448,7 @@ class TestMcpHandlersWithNoEmbeddings:
 
         try:
             from seam.server.tools import handle_seam_search
+
             result = handle_seam_search(conn, "hello_world", project_root, limit=10)
         finally:
             conn.close()
@@ -430,6 +456,9 @@ class TestMcpHandlersWithNoEmbeddings:
         assert isinstance(result, list)
         symbols = [r["symbol"] for r in result]
         assert "hello_world" in symbols
+        hit = next(r for r in result if r["symbol"] == "hello_world")
+        assert hit["retrieval_mode"] == "lexical"
+        assert hit["retrieval"]["sources"] == ["lexical"]
 
     def test_handle_seam_query_no_embeddings(self, tmp_path: Path) -> None:
         """handle_seam_query works with no embeddings (pure FTS fallback)."""
@@ -438,6 +467,7 @@ class TestMcpHandlersWithNoEmbeddings:
 
         try:
             from seam.server.tools import handle_seam_query
+
             result = handle_seam_query(conn, "hello_world", project_root, limit=10)
         finally:
             conn.close()
@@ -445,10 +475,11 @@ class TestMcpHandlersWithNoEmbeddings:
         assert isinstance(result, list)
         symbols = [r["symbol"] for r in result]
         assert "hello_world" in symbols
+        hit = next(r for r in result if r["symbol"] == "hello_world")
+        assert hit["retrieval_mode"] == "lexical"
+        assert hit["retrieval"]["sources"] == ["lexical"]
 
-    def test_handle_seam_search_semantic_on_no_embeddings_degrades(
-        self, tmp_path: Path
-    ) -> None:
+    def test_handle_seam_search_semantic_on_no_embeddings_degrades(self, tmp_path: Path) -> None:
         """handle_seam_search with SEAM_SEMANTIC=on but no embeddings still returns results."""
         project_root, db_path = _make_project_with_index(tmp_path)
         conn = connect(db_path)
@@ -494,9 +525,7 @@ class TestSyncSemanticFlag:
         data = json.loads(result.output)
         assert data["ok"] is True
 
-    def test_sync_semantic_with_embedder_calls_sync_embeddings(
-        self, tmp_path: Path
-    ) -> None:
+    def test_sync_semantic_with_embedder_calls_sync_embeddings(self, tmp_path: Path) -> None:
         """`seam sync --semantic` calls sync_embeddings (WS3: incremental embed path)."""
         project_root, db_path = _make_project_with_index(tmp_path)
 

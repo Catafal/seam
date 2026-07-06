@@ -33,6 +33,12 @@ from seam.query.fts import extract_terms as _extract_terms
 from seam.query.names import edge_match_names as _edge_match_names
 from seam.query.names import resolve_query_to_defs as _resolve_query_to_defs
 from seam.query.semantic import rrf_merge, semantic_candidates
+from seam.query.semantic_contract import (
+    RetrievalContract,
+    RetrievalMode,
+    retrieval_contract,
+    semantic_readiness,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +54,10 @@ class QueryResult(TypedDict):
     score: float
     callers_count: int
     callees_count: int
+    retrieval_mode: str
+    retrieval: dict[str, object]
+    caveats: list[str]
+    recommended_next_calls: list[str]
 
 
 class ContextResult(TypedDict):
@@ -66,7 +76,7 @@ class ContextResult(TypedDict):
     # Phase 4 enrichment fields. All None for pre-v5 rows (no migration yet) or
     # unsupported languages — callers should treat None as "unknown", not as absent.
     signature: str | None
-    decorators: list[str]       # [] when none extracted or for pre-v5 rows
+    decorators: list[str]  # [] when none extracted or for pre-v5 rows
     is_exported: bool | None
     visibility: str | None
     qualified_name: str | None
@@ -89,6 +99,10 @@ class SearchResult(TypedDict):
     line: int
     snippet: str
     score: float
+    retrieval_mode: str
+    retrieval: dict[str, object]
+    caveats: list[str]
+    recommended_next_calls: list[str]
 
 
 # ── Shared Phase 4 enrichment decoder ────────────────────────────────────────
@@ -335,9 +349,7 @@ def _fuzzy_fallback(
 # ── Hybrid search helpers ─────────────────────────────────────────────────────
 
 
-def _hydrate_symbol_rows(
-    conn: sqlite3.Connection, symbol_ids: list[int]
-) -> dict[int, dict]:
+def _hydrate_symbol_rows(conn: sqlite3.Connection, symbol_ids: list[int]) -> dict[int, dict]:
     """Fetch symbol + file data for a list of symbol IDs.
 
     Returns a dict mapping symbol_id → row dict with keys:
@@ -379,24 +391,39 @@ def _is_hybrid_enabled(conn: sqlite3.Connection) -> bool:
     per-query ensures newly indexed embeddings are immediately available without
     requiring a server restart. The check is a single COUNT(*) — negligible cost.
     """
-    if config.SEAM_SEMANTIC != "on":
+    readiness = semantic_readiness(
+        conn,
+        requested=True,
+        availability_check=lambda: True,
+    )
+    if readiness["usable"]:
+        return True
+    if readiness["reason"] != "no_embeddings":
         return False
-    count = conn.execute(
-        "SELECT COUNT(*) FROM embeddings WHERE model = ?",
-        (config.SEAM_EMBED_MODEL,),
-    ).fetchone()[0]
-    if count == 0:
-        # SEAM_SEMANTIC=on but no embeddings — warn once per process.
-        global _hybrid_warned  # noqa: PLW0603
-        if not _hybrid_warned:
-            _hybrid_warned = True
-            logger.warning(
-                "_is_hybrid_enabled: SEAM_SEMANTIC=on but no embeddings found for "
-                "model=%r. Run 'seam init --semantic' to build the embedding index.",
-                config.SEAM_EMBED_MODEL,
-            )
-        return False
-    return True
+    # SEAM_SEMANTIC=on but no embeddings — warn once per process.
+    global _hybrid_warned  # noqa: PLW0603
+    if not _hybrid_warned:
+        _hybrid_warned = True
+        logger.warning(
+            "_is_hybrid_enabled: SEAM_SEMANTIC=on but no embeddings found for "
+            "model=%r. Run 'seam init --semantic' to build the embedding index.",
+            config.SEAM_EMBED_MODEL,
+        )
+    return False
+
+
+def _with_retrieval(row: dict, fields: RetrievalContract) -> dict:
+    """Attach additive retrieval metadata without disturbing existing keys."""
+    out = dict(row)
+    out.update(
+        {
+            "retrieval_mode": fields["retrieval_mode"],
+            "retrieval": fields["retrieval"],
+            "caveats": fields.get("caveats", []),
+            "recommended_next_calls": fields.get("recommended_next_calls", []),
+        }
+    )
+    return out
 
 
 # ── Hybrid search results helper ─────────────────────────────────────────────
@@ -429,6 +456,7 @@ def _hybrid_search_results(
         limit=config.SEAM_SEMANTIC_LIMIT,
     )
     sem_ids = [sid for sid, _score in sem_candidates]
+    sem_score_by_id = {sid: score for sid, score in sem_candidates}
 
     # Check if semantic added any new candidates beyond FTS.
     fts_id_set = set(fts_symbol_ids)
@@ -456,13 +484,33 @@ def _hybrid_search_results(
         rrf_score = 1.0 / (k + rank)
         # Use the real FTS snippet for ids that came from FTS; "" for semantic-only.
         snippet = fts_id_to_snippet.get(sym_id, "")
+        if sym_id in fts_id_set and sym_id in sem_score_by_id:
+            retrieval = retrieval_contract(
+                "hybrid",
+                semantic_score=sem_score_by_id[sym_id],
+                rrf_score=rrf_score,
+            )
+        elif sym_id in sem_score_by_id:
+            retrieval = retrieval_contract(
+                "semantic-only",
+                semantic_score=sem_score_by_id[sym_id],
+                rrf_score=rrf_score,
+            )
+        else:
+            retrieval = retrieval_contract("lexical", rrf_score=rrf_score)
         results.append(
-            SearchResult(
-                symbol=row["symbol"],
-                file=row["file"],
-                line=row["line"],
-                snippet=snippet,
-                score=rrf_score,
+            cast(
+                SearchResult,
+                _with_retrieval(
+                    {
+                        "symbol": row["symbol"],
+                        "file": row["file"],
+                        "line": row["line"],
+                        "snippet": snippet,
+                        "score": rrf_score,
+                    },
+                    retrieval,
+                ),
             )
         )
 
@@ -476,6 +524,49 @@ def _hybrid_search_results(
         )
 
     return results if results else None
+
+
+def _fts_search_rows(
+    conn: sqlite3.Connection,
+    match_expr: str,
+    limit: int,
+) -> tuple[list[dict], list[int]]:
+    """Return FTS rows plus BM25-ordered symbol ids for search/hybrid merge."""
+    sql = """
+        SELECT
+            s.id            AS id,
+            s.name          AS symbol,
+            f.path          AS file,
+            s.start_line    AS line,
+            snippet(symbols_fts, 0, '<b>', '</b>', '...', 8) AS snippet,
+            -- Column weights (name, docstring, signature, search_text): the Tier D #12
+            -- split-token column is weighted LOWEST so it adds camelCase RECALL without
+            -- outranking or evicting real name/doc/signature hits from the LIMIT window.
+            bm25(symbols_fts, 10.0, 2.0, 2.0, 1.0) AS score,
+            s.cluster_id    AS cluster_id,
+            s.signature     AS signature
+        FROM symbols_fts
+        JOIN symbols s ON s.id = symbols_fts.rowid
+        JOIN files   f ON f.id = s.file_id
+        WHERE symbols_fts MATCH ?
+        ORDER BY score
+        LIMIT ?
+    """
+    raw_rows = conn.execute(sql, (match_expr, limit)).fetchall()
+    rows = [
+        {
+            "id": row["id"],
+            "symbol": row["symbol"],
+            "file": row["file"],
+            "line": row["line"],
+            "snippet": row["snippet"] or "",
+            "score": -float(row["score"]),
+            "cluster_id": row["cluster_id"],
+            "signature": row["signature"],
+        }
+        for row in raw_rows
+    ]
+    return rows, [row["id"] for row in rows]
 
 
 # ── search ───────────────────────────────────────────────────────────────────
@@ -527,49 +618,7 @@ def search(
     fts_symbol_ids: list[int] = []
 
     if match_expr:
-        # Let OperationalError (genuinely malformed FTS5) propagate to caller.
-        # With OR-join, this only fires on actual syntax errors, not multi-word queries.
-        # Phase 4: SELECT s.signature so that fts.rescore() Signal-6 (signature boost)
-        # can fire. Without s.signature in the row, rescore() always sees None and the
-        # boost is permanently dead code. This column is nullable — pre-v5 rows have NULL.
-        sql = """
-            SELECT
-                s.id            AS id,
-                s.name          AS symbol,
-                f.path          AS file,
-                s.start_line    AS line,
-                snippet(symbols_fts, 0, '<b>', '</b>', '...', 8) AS snippet,
-                -- Column weights (name, docstring, signature, search_text): the Tier D #12
-                -- split-token column is weighted LOWEST so it adds camelCase RECALL without
-                -- outranking or evicting real name/doc/signature hits from the LIMIT window.
-                bm25(symbols_fts, 10.0, 2.0, 2.0, 1.0) AS score,
-                s.cluster_id    AS cluster_id,
-                s.signature     AS signature
-            FROM symbols_fts
-            JOIN symbols s ON s.id = symbols_fts.rowid
-            JOIN files   f ON f.id = s.file_id
-            WHERE symbols_fts MATCH ?
-            ORDER BY score         -- raw bm25 ascending = most relevant first
-            LIMIT ?
-        """
-        raw_rows = conn.execute(sql, (match_expr, limit)).fetchall()
-        fts_rows = [
-            {
-                "id": row["id"],
-                "symbol": row["symbol"],
-                "file": row["file"],
-                "line": row["line"],
-                "snippet": row["snippet"] or "",
-                # Flip bm25 sign: contract wants higher = better; raw bm25 is lower = better
-                "score": -float(row["score"]),
-                "cluster_id": row["cluster_id"],
-                # Phase 4: include signature so rescore() Signal-6 can fire.
-                "signature": row["signature"],
-            }
-            for row in raw_rows
-        ]
-        # Collect FTS symbol IDs (BM25-order = best first) for RRF merge
-        fts_symbol_ids = [r["id"] for r in fts_rows]
+        fts_rows, fts_symbol_ids = _fts_search_rows(conn, match_expr, limit)
 
     # ── Hybrid path: merge FTS and semantic candidates ────────────────────────
     # When SEAM_SEMANTIC=on AND embeddings exist AND semantic=True (caller opt-in):
@@ -577,9 +626,7 @@ def search(
     # `semantic=False` lets callers (e.g. CLI --no-semantic) bypass hybrid without
     # mutating global config (DRIFT-1 fix).
     if semantic and _is_hybrid_enabled(conn):
-        hybrid_results = _hybrid_search_results(
-            conn, text, fts_rows, fts_symbol_ids, limit
-        )
+        hybrid_results = _hybrid_search_results(conn, text, fts_rows, fts_symbol_ids, limit)
         if hybrid_results is not None:
             return hybrid_results
 
@@ -587,12 +634,18 @@ def search(
         # Rescore and return FTS results (the common happy path)
         rescored = fts.rescore(fts_rows, terms)
         return [
-            SearchResult(
-                symbol=r["symbol"],
-                file=r["file"],
-                line=r["line"],
-                snippet=r.get("snippet", ""),
-                score=r["score"],
+            cast(
+                SearchResult,
+                _with_retrieval(
+                    {
+                        "symbol": r["symbol"],
+                        "file": r["file"],
+                        "line": r["line"],
+                        "snippet": r.get("snippet", ""),
+                        "score": r["score"],
+                    },
+                    retrieval_contract("lexical", lexical_score=r["score"]),
+                ),
             )
             for r in rescored
         ]
@@ -624,12 +677,18 @@ def search(
         logger.debug("search: LIKE fallback found %d rows", len(like_rows))
         rescored = fts.rescore(like_rows, terms)
         return [
-            SearchResult(
-                symbol=r["symbol"],
-                file=r["file"],
-                line=r["line"],
-                snippet=r.get("snippet", ""),
-                score=r["score"],
+            cast(
+                SearchResult,
+                _with_retrieval(
+                    {
+                        "symbol": r["symbol"],
+                        "file": r["file"],
+                        "line": r["line"],
+                        "snippet": r.get("snippet", ""),
+                        "score": r["score"],
+                    },
+                    retrieval_contract("keyword-fallback", lexical_score=r["score"]),
+                ),
             )
             for r in rescored[:limit]
         ]
@@ -656,12 +715,18 @@ def search(
         logger.debug("search: fuzzy fallback found %d rows", len(fuzzy_rows))
         rescored = fts.rescore(fuzzy_rows, terms)
         return [
-            SearchResult(
-                symbol=r["symbol"],
-                file=r["file"],
-                line=r["line"],
-                snippet=r.get("snippet", ""),
-                score=r["score"],
+            cast(
+                SearchResult,
+                _with_retrieval(
+                    {
+                        "symbol": r["symbol"],
+                        "file": r["file"],
+                        "line": r["line"],
+                        "snippet": r.get("snippet", ""),
+                        "score": r["score"],
+                    },
+                    retrieval_contract("keyword-fallback", lexical_score=r["score"]),
+                ),
             )
             for r in rescored[:limit]
         ]
@@ -711,7 +776,7 @@ def query(
     # Step 1+2: FTS5 seed query with OR-join
     match_expr = fts.build_match_query(concept)
 
-    seed_map: dict[str, tuple[str, int, float]] = {}
+    seed_map: dict[str, tuple[str, int, float, RetrievalContract]] = {}
 
     if match_expr:
         # Phase 4: include s.signature so rescore() Signal-6 (signature boost) fires.
@@ -758,7 +823,12 @@ def query(
 
             # Build seed map: name -> (file, line, score)
             for row in rescored_seeds:
-                seed_map[row["symbol"]] = (row["file"], row["line"], row["score"])
+                seed_map[row["symbol"]] = (
+                    row["file"],
+                    row["line"],
+                    row["score"],
+                    retrieval_contract("lexical", lexical_score=row["score"]),
+                )
 
     # ── Hybrid augmentation for query(): inject semantic seeds ───────────────
     # When SEAM_SEMANTIC=on AND embeddings exist, semantic candidates are fetched
@@ -776,7 +846,7 @@ def query(
         if sem_candidates:
             sem_ids = [sid for sid, _s in sem_candidates]
             id_to_row = _hydrate_symbol_rows(conn, sem_ids)
-            for sym_id, _sem_score in sem_candidates:
+            for sym_id, sem_score in sem_candidates:
                 if sym_id not in id_to_row:
                     continue
                 row = id_to_row[sym_id]
@@ -784,7 +854,12 @@ def query(
                 # Add to seed_map only if not already present (FTS seeds take priority)
                 if name not in seed_map:
                     # Score 0.5: above graph neighbors (0.0), below FTS rescored seeds.
-                    seed_map[name] = (row["file"], row["line"], 0.5)
+                    seed_map[name] = (
+                        row["file"],
+                        row["line"],
+                        0.5,
+                        retrieval_contract("semantic-only", semantic_score=sem_score),
+                    )
 
     if not seed_map:
         if not match_expr:
@@ -807,7 +882,7 @@ def query(
     # targeting the class name itself — callers invoke bare member names ("start", "stop").
     # edge_match_names expands container seeds to include those bare member names so
     # the neighbor SQL finds callers-of-members as neighbors of the class.
-    neighbor_map: dict[str, tuple[str, int, float]] = {}
+    neighbor_map: dict[str, tuple[str, int, float, RetrievalContract]] = {}
     seed_names = list(seed_map.keys())
 
     # Build the full set of edge-lookup names: for each seed, expand via edge_match_names
@@ -826,6 +901,12 @@ def query(
     # = 1020 names → 2040 params, exceeding the 999-param limit on Linux/CI.
     # traversal.py uses the same 900-item guard pattern (_SQL_VAR_BATCH).
     neighbor_batch_size = 450  # 450 names × 2 params each = 900 total per query
+    seed_mode_by_edge_name: dict[str, str] = {}
+    for seed_name in seed_names:
+        retrieval_mode = seed_map[seed_name][3]["retrieval_mode"]
+        for match_name in _edge_match_names(conn, seed_name):
+            seed_mode_by_edge_name.setdefault(match_name, retrieval_mode)
+
     neighbor_rows_raw: list[dict] = []
     for batch_start in range(0, max(len(edge_lookup_names), 1), neighbor_batch_size):
         batch = edge_lookup_names[batch_start : batch_start + neighbor_batch_size]
@@ -836,7 +917,9 @@ def query(
             SELECT DISTINCT
                 s.name       AS name,
                 f.path       AS file,
-                s.start_line AS line
+                s.start_line AS line,
+                e.source_name AS edge_source,
+                e.target_name AS edge_target
             FROM edges e
             JOIN symbols s ON (
                 s.name = e.target_name OR s.name = e.source_name
@@ -849,10 +932,22 @@ def query(
     for row in neighbor_rows_raw:
         name = row["name"]
         if name not in seed_map and name not in neighbor_map:
-            neighbor_map[name] = (row["file"], row["line"], 0.0)
+            source_mode = seed_mode_by_edge_name.get(row["edge_source"])
+            target_mode = seed_mode_by_edge_name.get(row["edge_target"])
+            mode: RetrievalMode = (
+                "graph-expanded-from-semantic"
+                if "semantic-only" in {source_mode, target_mode}
+                else "graph-expanded"
+            )
+            neighbor_map[name] = (
+                row["file"],
+                row["line"],
+                0.0,
+                retrieval_contract(mode),
+            )
 
     # Step 4: Combine and deduplicate
-    combined: dict[str, tuple[str, int, float]] = {**neighbor_map, **seed_map}
+    combined: dict[str, tuple[str, int, float, RetrievalContract]] = {**neighbor_map, **seed_map}
 
     # Step 5: Compute callers/callees counts for each symbol in the result set.
     # WHY _collect_edges_for_names instead of exact COUNT(*): a qualified symbol like
@@ -861,17 +956,23 @@ def query(
     # "Parser.parse" → ["Parser.parse", "parse"] before counting, matching the same
     # bridging logic used by context() — consistent, never shows 0 for qualified methods.
     result: list[QueryResult] = []
-    for name, (file, line, score) in combined.items():
+    for name, (file, line, score, retrieval) in combined.items():
         match_names = _edge_match_names(conn, name)
         callers_set, callees_set = _collect_edges_for_names(conn, match_names)
         result.append(
-            QueryResult(
-                symbol=name,
-                file=file,
-                line=line,
-                score=score,
-                callers_count=len(callers_set),
-                callees_count=len(callees_set),
+            cast(
+                QueryResult,
+                _with_retrieval(
+                    {
+                        "symbol": name,
+                        "file": file,
+                        "line": line,
+                        "score": score,
+                        "callers_count": len(callers_set),
+                        "callees_count": len(callees_set),
+                    },
+                    retrieval,
+                ),
             )
         )
 
@@ -908,15 +1009,23 @@ def context(conn: sqlite3.Connection, symbol_name: str) -> ContextResult | None:
         dup_count = conn.execute(
             "SELECT COUNT(*) FROM symbols WHERE name = ?", (symbol_name,)
         ).fetchone()[0]
-        return cast(ContextResult, _build_context_result_fn(conn, def_rows[0], dup_count=dup_count, decode_enrichment_fields_fn=decode_enrichment_fields))
+        return cast(
+            ContextResult,
+            _build_context_result_fn(
+                conn,
+                def_rows[0],
+                dup_count=dup_count,
+                decode_enrichment_fields_fn=decode_enrichment_fields,
+            ),
+        )
 
     # Multi-def path: bare-name homonym or exact-name collision → merge and mark ambiguous.
-    return cast(ContextResult, _build_merged_context_result_fn(conn, def_rows, decode_enrichment_fields))
+    return cast(
+        ContextResult, _build_merged_context_result_fn(conn, def_rows, decode_enrichment_fields)
+    )
 
 
-def context_at(
-    conn: sqlite3.Connection, file_path: str, start_line: int
-) -> ContextResult | None:
+def context_at(conn: sqlite3.Connection, file_path: str, start_line: int) -> ContextResult | None:
     """P6c: resolve the EXACT symbol at (file_path, start_line) — bypasses name lookup.
 
     Returns None when no symbol is at that exact location (unknown/stale UID).
@@ -941,4 +1050,9 @@ def context_at(
         "SELECT COUNT(*) FROM symbols WHERE name = ?", (row["name"],)
     ).fetchone()[0]
 
-    return cast(ContextResult, _build_context_result_fn(conn, row, dup_count=dup_count, decode_enrichment_fields_fn=decode_enrichment_fields))
+    return cast(
+        ContextResult,
+        _build_context_result_fn(
+            conn, row, dup_count=dup_count, decode_enrichment_fields_fn=decode_enrichment_fields
+        ),
+    )

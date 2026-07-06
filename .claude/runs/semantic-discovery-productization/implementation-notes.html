@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Semantic Discovery Productization · Implementation Notes</title>
+  <style>
+    body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; max-width: 880px;
+           margin: 40px auto; padding: 0 24px; color: #292524; line-height: 1.55; }
+    h1 { border-bottom: 3px solid #0181c9; padding-bottom: 8px; }
+    h2 { margin-top: 36px; color: #0181c9; border-bottom: 1px solid #e5e5e5; padding-bottom: 4px; }
+    code { background: #f5f5f4; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+    .decision { background: #f0f9ff; border-left: 4px solid #0181c9; padding: 12px 16px; margin: 14px 0; }
+    .deviation { background: #fffbeb; border-left: 4px solid #d97706; padding: 12px 16px; margin: 14px 0; }
+    .tradeoff { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 12px 16px; margin: 14px 0; }
+    .open { background: #fef2f2; border-left: 4px solid #dc2626; padding: 12px 16px; margin: 14px 0; }
+    .tag { display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase;
+           letter-spacing: 0.5px; padding: 2px 8px; border-radius: 10px; color: #fff; }
+    .t-dec { background: #0181c9; } .t-dev { background: #d97706; }
+    .t-trade { background: #7c3aed; } .t-open { background: #dc2626; }
+    ul { margin-top: 6px; } .meta { color: #78716c; font-size: 0.9em; }
+    .done { color: #16a34a; font-weight: 600; }
+    table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+    th, td { border: 1px solid #e5e5e5; padding: 6px 10px; text-align: left; font-size: 0.92em; }
+    th { background: #fafaf9; }
+  </style>
+</head>
+<body>
+  <h1>Semantic Discovery Productization</h1>
+  <p class="meta">Branch <code>codex/semantic-discovery-productization</code> · started 2026-07-06 · implementing parent issue #382 and slice issues #384-#387.</p>
+  <p>This is a <strong>living document</strong> capturing how the implementation interprets,
+     diverges from, or trades off against the spec. Updated as each slice lands.</p>
+
+  <h2>The spec, in one line</h2>
+  <p>Productize Seam's existing opt-in semantic search as a safe discovery surface: agents must see semantic readiness, retrieval mode, caveats, and follow-up guidance without letting similarity affect dependency, risk, trace, graph-degree, suspect, or docs-grounding semantics.</p>
+
+  <!-- ============================================================= -->
+  <!-- Add a callout block per item. Delete the example, keep the shape. -->
+  <!-- ============================================================= -->
+
+  <h2>Design decisions <span class="meta">(spec was ambiguous → here's the call I made)</span></h2>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Keep semantic productization additive.</strong>
+    Existing CLI/MCP callers already consume search/query payloads, so this implementation will add optional readiness and retrieval metadata instead of replacing current result fields.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Use synthetic/vector fixture tests before any real model dependency.</strong>
+    The PRD requires no query-time network and no default model download; tests will use existing fixture patterns and synthetic embeddings before any live semantic benchmark path.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Centralize semantic vocabulary.</strong>
+    <code>seam/query/semantic_contract.py</code> owns readiness reasons, retrieval modes, caveats, and recommended next calls so schema, engine, MCP, Web, docs, and tests do not drift.</div>
+
+  <h2>Deviations <span class="meta">(intentional departures from the spec/convention)</span></h2>
+
+  <div class="deviation"><span class="tag t-dev">Deviation</span> <strong>Answerability scenarios validate the stable contract, not live semantic recall.</strong>
+    The maintained answerability fixture does not build embeddings, so the shipped scenarios check readiness honesty and keyword-only retrieval metadata. Synthetic embedding tests cover semantic-only and hybrid recall directly.</div>
+
+  <h2>Tradeoffs <span class="meta">(alternatives considered)</span></h2>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>Per-result metadata vs. response-level status.</strong>
+    Per-result retrieval mode is necessary for semantic-only and hybrid leads, but readiness and fallback state should be response-level to avoid bloating every result.</div>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>Schema readiness reuses the optional-extra check.</strong>
+    This gives agents the truth before search, but it may import-check the semantic extra during schema/status calls. It does not load a model or embed a query.</div>
+
+  <h2>Open questions <span class="meta">(want your confirm/revise)</span></h2>
+
+  <div class="open"><span class="tag t-open">Open</span> <strong>None remaining for this implementation.</strong>
+    Future semantic benchmark work can add a fixture that builds synthetic embeddings through the eval harness, but the PRD scope is covered without adding model/network dependencies to the maintained answerability run.</div>
+
+  <h2>Build / verification</h2>
+  <ul>
+    <li>Initial index setup: <code>uv run seam init</code> passed in the new worktree.</li>
+    <li>Focused semantic/API/eval tests: <code>uv run pytest tests/unit/test_semantic_contract.py tests/unit/test_semantic_isolation.py tests/unit/test_schema_tool.py tests/integration/test_semantic_engine.py tests/integration/test_semantic_surfaces.py tests/integration/test_web_api.py::test_status_happy_path tests/integration/test_web_api.py::test_search_happy_path tests/integration/test_lean_parity.py::TestMcpSchemaVerbose::test_seam_search_has_no_verbose_param tests/integration/test_lean_parity.py::TestMcpSchemaVerbose::test_seam_query_has_semantic_param -q</code> passed.</li>
+    <li>Answerability tests: <code>uv run pytest tests/eval/test_answerability.py -q</code> passed.</li>
+    <li>Migrations / new env / new deps: none planned.</li>
+  </ul>
+
+  <h2>Progress</h2>
+  <table>
+    <tr><th>Slice</th><th>What</th><th>Status</th></tr>
+    <tr><td>S1</td><td>Semantic readiness and retrieval-mode contract (#384)</td><td class="done">done</td></tr>
+    <tr><td>S2</td><td>Search/query transport parity (#385)</td><td class="done">done</td></tr>
+    <tr><td>S3</td><td>Semantic isolation hardening (#386)</td><td class="done">done</td></tr>
+    <tr><td>S4</td><td>Answerability scenarios and docs (#387)</td><td class="done">done</td></tr>
+  </table>
+</body>
+</html>

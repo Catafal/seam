@@ -110,6 +110,13 @@ tools:
           has_http_calls, has_config_keys_table, has_resources_table,
           has_config_nodes, has_resource_nodes, has_infra_graph, has_reads_config,
           has_configures, has_exception_edges, has_test_edges.
+        semantic:
+          (object) — readiness/config/index/retrieval contract for semantic discovery.
+          `semantic.readiness.status` is one of disabled, unavailable, keyword_only, or
+          usable; `reason` explains config_off, no_embeddings, model_mismatch,
+          optional_extra_unavailable, or keyword_only_override.
+          `retrieval.available_modes` reports high-level engines (`keyword`, plus
+          `hybrid` when usable); per-result `retrieval_mode` uses the finer modes below.
         tools:
           (list) — read-only tool guide entries with transports, dependencies, and use_when.
         recommended_next_calls:
@@ -537,13 +544,27 @@ tools:
           description: Start line of the symbol definition
         score:
           type: number
-          description: BM25 relevance score (higher = more relevant; includes Phase 4 signature-match boost)
+          description: Overall query rank score; meaning depends on retrieval_mode. Use retrieval.lexical_score, retrieval.semantic_score, or retrieval.rrf_score for source-specific evidence.
         callers_count:
           type: integer
           description: Number of known callers in the index
         callees_count:
           type: integer
           description: Number of known callees in the index
+        retrieval_mode:
+          type: string
+          description: One of lexical, semantic-only, hybrid, keyword-only, keyword-fallback, graph-expanded, graph-expanded-from-semantic.
+        retrieval:
+          type: object
+          description: Compact retrieval evidence, including sources and optional lexical_score, semantic_score, or rrf_score.
+        caveats:
+          type: array
+          items: string
+          description: Semantic-only results warn that similarity is a discovery lead, not dependency evidence.
+        recommended_next_calls:
+          type: array
+          items: string
+          description: Follow-up calls such as seam_snippet, seam_context, or seam_plan for verification.
         signature:
           type: string
           nullable: true
@@ -800,7 +821,21 @@ tools:
           description: Highlighted excerpt from the matching content (FTS5 highlight())
         score:
           type: number
-          description: BM25 rank score (includes Phase 4 signature-match boost of +15/term)
+          description: Overall search rank score; BM25-derived for lexical/fallback rows and RRF-derived for hybrid rows. Use retrieval.lexical_score, retrieval.semantic_score, or retrieval.rrf_score for source-specific evidence.
+        retrieval_mode:
+          type: string
+          description: One of lexical, semantic-only, hybrid, keyword-only, keyword-fallback, graph-expanded, graph-expanded-from-semantic.
+        retrieval:
+          type: object
+          description: Compact retrieval evidence, including sources and optional lexical_score, semantic_score, or rrf_score.
+        caveats:
+          type: array
+          items: string
+          description: Semantic-only results warn that similarity is a discovery lead, not dependency evidence.
+        recommended_next_calls:
+          type: array
+          items: string
+          description: Follow-up calls such as seam_snippet, seam_context, or seam_plan for verification.
         signature:
           type: string
           nullable: true

@@ -39,6 +39,7 @@ from pydantic import BaseModel
 from seam.analysis.staleness import _watcher_is_alive, check_staleness
 from seam.indexer.db import connect
 from seam.indexer.readonly import open_readonly_connection
+from seam.query import semantic_contract
 from seam.server.graph_api import (
     build_constellation,
     build_neighborhood,
@@ -65,6 +66,8 @@ from seam.server.web_graph_search import register_graph_search_routes
 from seam.server.web_layout import register_layout_routes
 from seam.server.web_schema import (
     SchemaResponse,
+    SearchResponse,
+    SearchResultItem,
     SnippetResponse,
     StatusResponse,
     StructureResponse,
@@ -72,23 +75,6 @@ from seam.server.web_schema import (
 )
 
 # Keep field names snake_case — the TS codegen will use them verbatim.
-
-class SearchResultItem(BaseModel):
-    """One item in a search result list."""
-
-    name: str
-    kind: str
-    file: str
-    line: int
-    signature: str | None
-    cluster_id: int | None
-    cluster_label: str | None
-
-
-class SearchResponse(BaseModel):
-    """Response for GET /api/search."""
-
-    results: list[SearchResultItem]
 
 
 class GraphNode(BaseModel):
@@ -454,16 +440,18 @@ def _fetch_all_symbol_definitions(
             except (json.JSONDecodeError, TypeError, ValueError):
                 decorators = []
 
-        result.append({
-            "file": file_rel,
-            "line": row["line"],
-            "signature": row["signature"],
-            "docstring": row["docstring"],
-            "visibility": row["visibility"],
-            "is_exported": is_exported,
-            "qualified_name": row["qualified_name"],
-            "decorators": decorators,
-        })
+        result.append(
+            {
+                "file": file_rel,
+                "line": row["line"],
+                "signature": row["signature"],
+                "docstring": row["docstring"],
+                "visibility": row["visibility"],
+                "is_exported": is_exported,
+                "qualified_name": row["qualified_name"],
+                "decorators": decorators,
+            }
+        )
     return result
 
 
@@ -497,8 +485,6 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
     Returns:
         Configured FastAPI application. Mount and run with uvicorn.
     """
-    # FastAPI instance with metadata for the generated OpenAPI schema.
-    # The schema is consumed by openapi-typescript to generate src/api/types.ts.
     app = FastAPI(
         title="Seam Explorer API",
         description="Local code-intelligence graph explorer for Seam indexes.",
@@ -587,9 +573,7 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
             last_indexed_row = conn.execute("SELECT MAX(indexed_at) FROM files").fetchone()[0]
             last_indexed: str | None = None
             if last_indexed_row is not None:
-                last_indexed = time.strftime(
-                    "%Y-%m-%d %H:%M:%S", time.localtime(last_indexed_row)
-                )
+                last_indexed = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_indexed_row))
 
             languages = _fetch_languages(conn)
 
@@ -605,6 +589,13 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
             verdict = check_staleness(
                 conn, root=root, watcher_alive=watcher_alive, respect_knob=False
             )
+            semantic = {
+                "readiness": semantic_contract.semantic_readiness(
+                    conn,
+                    requested=True,
+                    availability_check=semantic_contract.is_available,
+                )
+            }
         finally:
             conn.close()
 
@@ -617,6 +608,7 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
             languages=languages,
             stale=verdict["stale"],
             stale_reason=verdict["reason"] if verdict["stale"] else None,
+            semantic=semantic,
         )
 
     # ── Route: GET /api/search ────────────────────────────────────────────────
@@ -625,6 +617,10 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
     def get_search(
         q: str = Query(..., description="Search query text"),
         limit: int = Query(20, ge=1, le=100, description="Maximum results to return"),
+        semantic: bool = Query(
+            True,
+            description="Allow semantic hybrid retrieval when the index is ready.",
+        ),
     ) -> SearchResponse:
         """Full-text search over symbol names, docstrings, and signatures.
 
@@ -633,28 +629,37 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
         """
         conn = _get_conn(db_path)
         try:
-            result = handle_seam_search(conn, q, root, limit=limit)
+            result = handle_seam_search(conn, q, root, limit=limit, semantic=semantic)
         finally:
             conn.close()
 
         # Handler returns error dict on invalid input
         _check_handler_error(result)
 
-        # handle_seam_search returns {symbol, file, line, snippet, score} dicts.
-        # kind/signature/cluster are NOT included — the frontend calls /api/symbol/{name}
-        # for full detail on selection. Cast safe after _check_handler_error.
         search_rows = cast(list[dict[str, Any]], result)
         items: list[SearchResultItem] = []
         for r in search_rows:
-            items.append(SearchResultItem(
-                name=str(r["symbol"]),
-                kind="",
-                file=str(r["file"]),
-                line=int(r["line"]),
-                signature=None,
-                cluster_id=None,
-                cluster_label=None,
-            ))
+            items.append(
+                SearchResultItem(
+                    uid=str(r["uid"]) if r.get("uid") is not None else None,
+                    name=str(r["symbol"]),
+                    kind="",
+                    file=str(r["file"]),
+                    line=int(r["line"]),
+                    snippet=str(r["snippet"]) if r.get("snippet") is not None else None,
+                    score=float(r["score"]) if r.get("score") is not None else None,
+                    signature=None,
+                    cluster_id=None,
+                    cluster_label=None,
+                    retrieval_mode=cast(str | None, r.get("retrieval_mode")),
+                    retrieval=cast(dict[str, Any], r.get("retrieval", {})),
+                    caveats=cast(list[str], r.get("caveats", [])),
+                    recommended_next_calls=cast(
+                        list[str],
+                        r.get("recommended_next_calls", []),
+                    ),
+                )
+            )
         return SearchResponse(results=items)
 
     # ── Route: GET /api/graph/neighborhood ────────────────────────────────────
@@ -666,10 +671,6 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
     )
     def get_neighborhood(
         symbol: str = Query(..., description="Symbol name to center the graph on"),
-        # Literal constrains the param at the boundary: FastAPI returns 422 for any
-        # value outside the set, rather than build_neighborhood silently treating a
-        # typo'd direction as "both" (the else branch). Defensive — the SPA only ever
-        # sends valid values, but a public localhost API shouldn't accept garbage.
         direction: Literal["both", "callers", "callees"] = Query(
             "both",
             description="Edge direction: 'both' | 'callers' | 'callees'",
@@ -744,12 +745,14 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
         # Cast: _check_handler_error confirmed why_raw is not an error dict, so it's a list.
         why_comments: list[WhyComment] = []
         for w in cast(list[dict[str, Any]], why_raw or []):
-            why_comments.append(WhyComment(
-                kind=str(w.get("marker", "")),
-                text=str(w.get("text", "")),
-                file=str(w.get("file", "")),
-                line=int(w.get("line", 0)),
-            ))
+            why_comments.append(
+                WhyComment(
+                    kind=str(w.get("marker", "")),
+                    text=str(w.get("text", "")),
+                    file=str(w.get("file", "")),
+                    line=int(w.get("line", 0)),
+                )
+            )
 
         return SymbolResponse(
             name=name,
@@ -782,12 +785,14 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
             conn.close()
         items: list[ClusterItem] = []
         for c in raw:  # type: ignore[union-attr]
-            items.append(ClusterItem(
-                cluster_id=c["id"],
-                label=c.get("label"),
-                size=c.get("size", 0),
-                representative=representatives.get(c["id"]),
-            ))
+            items.append(
+                ClusterItem(
+                    cluster_id=c["id"],
+                    label=c.get("label"),
+                    size=c.get("size", 0),
+                    representative=representatives.get(c["id"]),
+                )
+            )
         return ClustersResponse(clusters=items)
 
     # ── Route: GET /api/impact ────────────────────────────────────────────────
@@ -873,9 +878,7 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
 
     @app.get("/api/changes", response_model=ChangesResponse, tags=["graph"])
     def get_changes(
-        scope: Literal["working", "staged", "branch"] = Query(
-            "working", description="Diff scope"
-        ),
+        scope: Literal["working", "staged", "branch"] = Query("working", description="Diff scope"),
         base_ref: str = Query("HEAD", description="Base ref (branch scope only)"),
     ) -> ChangesResponse:
         """Git diff → changed symbols → risk level.
@@ -905,9 +908,7 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
 
     # ── Route: GET /api/constellation ─────────────────────────────────────────
 
-    @app.get(
-        "/api/constellation", response_model=ConstellationResponse, tags=["graph"]
-    )
+    @app.get("/api/constellation", response_model=ConstellationResponse, tags=["graph"])
     def get_constellation() -> ConstellationResponse:
         """Whole-repo overview: cluster regions + weighted inter-cluster links.
 
@@ -930,7 +931,9 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
     def get_hubs(
         limit: int = Query(60, ge=1, le=200, description="How many hub symbols to return"),
         show_tests: bool = Query(False, description="Include test-path symbols (default: false)"),
-        show_packages: bool = Query(False, description="Include package-plumbing files (default: false)"),
+        show_packages: bool = Query(
+            False, description="Include package-plumbing files (default: false)"
+        ),
     ) -> HubsResponse:
         """Return the most-connected symbols — landing-page entry points.
 
@@ -938,11 +941,11 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
         """
         conn = _get_conn(db_path)
         try:
-            hubs = top_hub_symbols(conn, limit=limit, show_tests=show_tests, show_packages=show_packages)
+            hubs = top_hub_symbols(
+                conn, limit=limit, show_tests=show_tests, show_packages=show_packages
+            )
         finally:
             conn.close()
-        # Relativize each hub's representative path so the UI matches it against
-        # the (already relativized) structure paths when bucketing into areas.
         symbols = [
             HubSymbol(
                 name=h["name"],
@@ -981,9 +984,6 @@ def create_web_app(db_path: Path, root: Path) -> FastAPI:
             for r in rows
         ]
         return StructureResponse(symbols=symbols)
-
-    # ── Static SPA mount ─────────────────────────────────────────────────────
-    # Must come AFTER all /api/* routes. html=True enables SPA fallback routing.
 
     web_dir = Path(__file__).parent.parent / "_web"
     if web_dir.exists() and web_dir.is_dir():

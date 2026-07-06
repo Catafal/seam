@@ -339,9 +339,7 @@ export interface paths {
          * Get Hubs
          * @description Return the most-connected symbols — landing-page entry points.
          *
-         *     Reuses graph_api.top_hub_symbols (degree-ranked, defined-only).
-         *     show_tests=false (default) excludes test-path symbols (real hubs only).
-         *     Pass show_tests=true to include test helpers in the hub list.
+         *     show_tests=false and show_packages=false (defaults) exclude plumbing symbols.
          */
         get: operations["get_hubs_api_hubs_get"];
         put?: never;
@@ -927,6 +925,10 @@ export interface components {
             query: {
                 [key: string]: unknown;
             };
+            /** Recipe */
+            recipe?: {
+                [key: string]: unknown;
+            } | null;
             /** Items */
             items: components["schemas"]["GraphSearchItem"][];
             /** Total */
@@ -1331,6 +1333,8 @@ export interface components {
          * @description One item in a search result list.
          */
         SearchResultItem: {
+            /** Uid */
+            uid?: string | null;
             /** Name */
             name: string;
             /** Kind */
@@ -1339,12 +1343,26 @@ export interface components {
             file: string;
             /** Line */
             line: number;
+            /** Snippet */
+            snippet?: string | null;
+            /** Score */
+            score?: number | null;
             /** Signature */
             signature: string | null;
             /** Cluster Id */
             cluster_id: number | null;
             /** Cluster Label */
             cluster_label: string | null;
+            /** Retrieval Mode */
+            retrieval_mode?: string | null;
+            /** Retrieval */
+            retrieval?: {
+                [key: string]: unknown;
+            };
+            /** Caveats */
+            caveats?: string[];
+            /** Recommended Next Calls */
+            recommended_next_calls?: string[];
         };
         /**
          * SnippetCandidate
@@ -1477,6 +1495,10 @@ export interface components {
             stale: boolean;
             /** Stale Reason */
             stale_reason: string | null;
+            /** Semantic */
+            semantic?: {
+                [key: string]: unknown;
+            } | null;
         };
         /**
          * StructureResponse
@@ -1658,6 +1680,8 @@ export interface operations {
                 include_preview?: boolean;
                 preview_limit?: number;
                 regex?: boolean;
+                /** @description Named graph-search recipe id. */
+                recipe?: string | null;
             };
             header?: never;
             path?: never;
@@ -1858,6 +1882,8 @@ export interface operations {
                 q: string;
                 /** @description Maximum results to return */
                 limit?: number;
+                /** @description Allow semantic hybrid retrieval when the index is ready. */
+                semantic?: boolean;
             };
             header?: never;
             path?: never;
@@ -2116,8 +2142,10 @@ export interface operations {
             query?: {
                 /** @description How many hub symbols to return */
                 limit?: number;
-                /** @description Include symbols from test paths (default: false) */
+                /** @description Include test-path symbols (default: false) */
                 show_tests?: boolean;
+                /** @description Include package-plumbing files (default: false) */
+                show_packages?: boolean;
             };
             header?: never;
             path?: never;
