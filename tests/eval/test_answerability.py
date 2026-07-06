@@ -213,7 +213,7 @@ def test_maintained_scenario_suite_runs_against_fixture() -> None:
     assert summary["scenario_set_version"] == "2026-07-06"
     assert summary["schema_version"] >= 1
     assert summary["seam_version"]
-    assert summary["fixture_hash"] == "0f11955b3b5b277a"
+    assert summary["fixture_hash"] == "3207085f908caad8"
     assert summary["totals"]["scenarios"] == 26
     assert summary["totals"]["average_score"] >= 1.8
     assert "protocol-edge quality" in summary["top_product_gaps"]

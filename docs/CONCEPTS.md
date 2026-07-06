@@ -98,9 +98,16 @@ entirely. `http_calls` connects literal client calls to first-class `route` symb
 the route target can be represented statically. Absence of an `http_calls` edge means
 "not statically observed", not "no runtime HTTP traffic"; Seam deliberately skips dynamic
 URL construction and third-party absolute URLs rather than guessing.
+Supported caller shapes are intentionally narrow: TypeScript/JavaScript `fetch(...)`,
+literal `axios.<method>(...)` or `axios({ method, url })` calls, locally declared or
+locally imported `apiFetch(...)` wrappers by name convention, and Python module-import
+calls through `requests`/`httpx`/`aiohttp` where both the method and route path are
+literal. Python `from httpx import get`-style calls are not treated as protocol evidence
+in this slice.
 HTTP call edges keep `synthesized_by` empty because they are parser/direct extractor
 evidence, not post-pass graph synthesis. The extractor channel is stored on
-`edges.provenance`, for example `typescript-fetch-literal` or `python-httpx-literal`.
+`edges.provenance`, for example `typescript-local-wrapper-literal` or
+`python-requests-request-literal`.
 When a local literal points at a route-shaped target that is not declared in the current
 index, graph-search previews and architecture evidence expose `route_resolved: false`
 and omit route metadata. Treat those as unresolved local HTTP calls, not proof that the

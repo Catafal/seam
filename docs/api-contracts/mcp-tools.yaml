@@ -215,6 +215,9 @@ tools:
           confidence, direct extractor provenance from edges.provenance, source file/line,
           route_resolved, and route metadata when resolvable. route_resolved=false means
           a local literal HTTP call was observed but no matching route node is indexed.
+          Current extractor coverage is literal-only: direct fetch, locally declared/imported
+          apiFetch wrappers by name convention, literal axios calls, and Python module-import
+          requests/httpx/aiohttp calls with literal method/path.
           configs items expose key, normalized_key, role, value_state,
           value_category, and provenance; resources items expose name,
           normalized_name, category, and provenance. infra is the resource subset for
@@ -481,6 +484,8 @@ tools:
           Direct extractor evidence such as http_calls may put its extraction channel
           in provenance while synthesized_by remains null. http_calls previews also include
           route_resolved so unresolved local literals are not confused with declared routes.
+          Dynamic HTTP URLs, third-party absolute URLs, and Python from-import HTTP helpers are
+          omitted rather than represented as speculative local route edges.
           Exact receiver-qualified calls put python-receiver-type,
           typescript-receiver-type, or javascript-receiver-type in provenance; graph
           search normalizes preview/filter confidence at query time: unique qualified

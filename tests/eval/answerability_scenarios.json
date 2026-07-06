@@ -1,6 +1,6 @@
 {
   "version": "2026-07-06",
-  "fixture_hash": "0f11955b3b5b277a",
+  "fixture_hash": "3207085f908caad8",
   "scenarios": [
     {
       "id": "architecture-schema-capabilities",
@@ -276,17 +276,34 @@
       "product_gap_tags": []
     },
     {
-      "id": "protocol-http-call-capability-honesty",
+      "id": "protocol-http-route-caller-discovery",
       "category": "protocol",
-      "question": "Can Seam find client code calling HTTP routes in this fixture?",
-      "target": {"kind": "fixture", "name": "eval-fixture"},
-      "expected_facts": [{"kind": "capability", "value": "has_http_calls:false"}],
-      "required_evidence": [{"kind": "warning", "value": "UNSUPPORTED"}],
-      "acceptable_caveats": ["has_http_calls is unsupported or empty in this fixture."],
-      "tool_plan": [{"tool": "schema_capability", "args": {"capability": "has_http_calls"}}],
-      "fallback_plan": [{"tool": "grep", "args": {"query": "requests."}}],
-      "capability_tags": ["schema", "http-calls"],
-      "product_gap_tags": ["protocol-edge quality"]
+      "question": "Which client function calls the account status route?",
+      "target": {"kind": "route", "name": "ROUTE GET /api/accounts/{param}/status"},
+      "expected_facts": [
+        {"kind": "symbol", "value": "fetch_account_status"},
+        {"kind": "symbol", "value": "ROUTE GET /api/accounts/{param}/status"}
+      ],
+      "required_evidence": [
+        {"kind": "edge_kind", "value": "http_calls"},
+        {"kind": "route_resolved", "value": "true"},
+        {"kind": "provenance", "value": "python-requests-request-literal"}
+      ],
+      "acceptable_caveats": [],
+      "tool_plan": [
+        {
+          "tool": "graph_search",
+          "args": {
+            "recipe": "http-callers",
+            "name_pattern": "fetch_account_status",
+            "limit": 5,
+            "preview_limit": 5
+          }
+        }
+      ],
+      "fallback_plan": [{"tool": "grep", "args": {"query": "requests.request"}}],
+      "capability_tags": ["graph-search", "http-calls", "routes"],
+      "product_gap_tags": []
     },
     {
       "id": "protocol-route-node-capability",
