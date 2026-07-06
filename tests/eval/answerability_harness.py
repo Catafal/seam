@@ -570,8 +570,12 @@ def _walk_evidence(value: Any, items: list[EvidenceItem]) -> None:
             items.append(EvidenceItem("value", str(value["value"])))
         if "line" in value and value["line"] is not None:
             items.append(EvidenceItem("line", str(value["line"])))
+        if "edge_kind" in value and value["edge_kind"] is not None:
+            items.append(EvidenceItem("edge_kind", str(value["edge_kind"])))
         if "kind" in value and value["kind"] is not None:
             items.append(EvidenceItem("edge_kind", str(value["kind"])))
+        if "route_resolved" in value and value["route_resolved"] is not None:
+            items.append(EvidenceItem("route_resolved", str(value["route_resolved"]).lower()))
         if "confidence" in value and value["confidence"] is not None:
             items.append(EvidenceItem("confidence", str(value["confidence"])))
         if "provenance" in value and value["provenance"] is not None:

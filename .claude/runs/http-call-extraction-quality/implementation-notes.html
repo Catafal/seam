@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>HTTP Call Extraction Quality · Implementation Notes</title>
+  <style>
+    body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; max-width: 880px;
+           margin: 40px auto; padding: 0 24px; color: #292524; line-height: 1.55; }
+    h1 { border-bottom: 3px solid #0181c9; padding-bottom: 8px; }
+    h2 { margin-top: 36px; color: #0181c9; border-bottom: 1px solid #e5e5e5; padding-bottom: 4px; }
+    code { background: #f5f5f4; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+    .decision { background: #f0f9ff; border-left: 4px solid #0181c9; padding: 12px 16px; margin: 14px 0; }
+    .deviation { background: #fffbeb; border-left: 4px solid #d97706; padding: 12px 16px; margin: 14px 0; }
+    .tradeoff { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 12px 16px; margin: 14px 0; }
+    .open { background: #fef2f2; border-left: 4px solid #dc2626; padding: 12px 16px; margin: 14px 0; }
+    .resolved { background: #ecfdf5; border-left: 4px solid #16a34a; padding: 12px 16px; margin: 14px 0; }
+    .tag { display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase;
+           letter-spacing: 0.5px; padding: 2px 8px; border-radius: 10px; color: #fff; }
+    .t-dec { background: #0181c9; } .t-dev { background: #d97706; }
+    .t-trade { background: #7c3aed; } .t-open { background: #dc2626; } .t-res { background: #16a34a; }
+    ul { margin-top: 6px; } .meta { color: #78716c; font-size: 0.9em; }
+    .done { color: #16a34a; font-weight: 600; }
+    table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+    th, td { border: 1px solid #e5e5e5; padding: 6px 10px; text-align: left; font-size: 0.92em; }
+    th { background: #fafaf9; }
+  </style>
+</head>
+<body>
+  <h1>HTTP Call Extraction Quality</h1>
+  <p class="meta">Branch <code>codex/http-call-extraction-quality</code> · started 2026-07-06 · implements PRD #395 through child issues #396, #397, and #398.</p>
+  <p>This is a <strong>living document</strong> capturing how the implementation interprets,
+     diverges from, or trades off against the spec. Updated as each slice lands.</p>
+
+  <h2>The spec, in one line</h2>
+  <p>Improve Seam's conservative static HTTP-call extraction so agents can answer
+     "who calls this route?" through existing graph/search/schema/architecture surfaces,
+     without runtime probing, semantic dependency inference, or false local route edges.</p>
+
+  <h2>Design decisions <span class="meta">(spec was ambiguous → here's the call I made)</span></h2>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Use existing route symbols and edge rows.</strong>
+    The PRD allows a new deep matcher but does not require storage changes. The implementation will first keep matched local calls as ordinary <code>http_calls</code> edges to route symbols so schema, graph search, architecture, workspace federation, and artifacts continue to consume one graph model.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Start with supported wrapper names, not arbitrary data flow.</strong>
+    Local wrapper recognition is valuable for Seam's own <code>apiFetch</code> usage, but arbitrary function inference would create false protocol edges. The first pass recognizes supported wrapper names such as <code>apiFetch</code> and direct library calls only when method/path evidence is static.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Keep unresolved same-repo-looking targets as existing compatibility for now.</strong>
+    Current Seam tests and graph-search previews already support <code>route_resolved:false</code> for literal HTTP calls whose route target is not indexed. This build adds resolved wrapper/Python coverage first and will harden the wording/tests around resolved route-caller evidence rather than silently removing the existing unresolved edge behavior mid-slice.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Scope Python client receivers to the enclosing symbol.</strong>
+    A review pass found that file-global receiver tracking could leak a local <code>session</code> from one function into another. The implementation now combines module-level receivers only when a function does not shadow that name, and keeps local client receivers within the function/method that declares them.</div>
+
+  <h2>Deviations <span class="meta">(intentional departures from the spec/convention)</span></h2>
+
+  <div class="deviation"><span class="tag t-dev">Deviation</span> <strong>No unresolved external-call inventory in this PR.</strong>
+    The PRD permits skipping external/dynamic calls. Keeping them out of storage preserves the current graph contract and avoids designing an external dependency model inside this route-caller quality slice.</div>
+
+  <h2>Tradeoffs <span class="meta">(alternatives considered)</span></h2>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>False negatives over broader matching.</strong>
+    A more aggressive extractor could catch more wrapper/base-path cases, but wrong route edges damage impact, architecture, and agent trust. This build will prefer exact or narrowly near-literal evidence with product-facing provenance.</div>
+
+  <h2>Resolved questions</h2>
+
+  <div class="resolved"><span class="tag t-res">Resolved</span> <strong>Impact traversal policy already includes <code>http_calls</code>.</strong>
+    Current impact defaults exclude <code>raises</code>, <code>catches</code>, and <code>tests</code>; protocol edges remain part of production graph traversal. This PR leaves that policy unchanged and documents that dynamic/external HTTP calls are omitted instead of added as speculative graph edges.</div>
+
+  <h2>Build / verification</h2>
+  <ul>
+    <li>Initial setup: child issues #396, #397, #398 created; worktree created from <code>origin/main</code>.</li>
+    <li>TDD: added red tests for TypeScript <code>apiFetch</code> wrapper calls and Python <code>requests.request</code>/<code>aiohttp.ClientSession</code> calls; targeted tests now pass.</li>
+    <li>Answerability: replaced the maintained benchmark's negative HTTP capability scenario with a positive graph-search scenario proving <code>fetch_account_status → ROUTE GET /api/accounts/{param}/status</code> through <code>http_calls</code> evidence.</li>
+    <li>Docs: updated concepts, graph-search recipes, README, and MCP API contract text with the literal-only support boundary and provenance examples.</li>
+    <li>Review fix: added a scoped Python receiver regression so module-level clients still work, but parameter/local assignment shadowing and cross-function local names do not create false route edges.</li>
+    <li>Migrations / new env / new deps: expected none.</li>
+  </ul>
+
+  <h2>Progress</h2>
+  <table>
+    <tr><th>Slice</th><th>What</th><th>Status</th></tr>
+    <tr><td>1</td><td>Shared matcher and TypeScript/JavaScript route callers</td><td class="done">✓ wrapper tracer green</td></tr>
+    <tr><td>2</td><td>Python HTTP client route callers</td><td class="done">✓ generic/aiohttp scoped tracer green</td></tr>
+    <tr><td>3</td><td>Sync, traversal policy, answerability, docs</td><td class="done">✓ answerability/docs green</td></tr>
+  </table>
+</body>
+</html>

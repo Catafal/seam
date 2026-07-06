@@ -18,6 +18,7 @@ from tree_sitter import Node
 from seam.indexer.graph_common import Edge, RouteMetadata, Symbol, _find_enclosing_function, _text
 
 _HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"}
+_TS_LOCAL_HTTP_WRAPPER_NAMES = {"apiFetch"}
 _PY_DECORATOR_RE = re.compile(
     r"^@(?P<receiver>[A-Za-z_][\w.]*)\.(?P<action>get|post|put|patch|delete|options|head|route|api_route)\s*\((?P<args>.*)\)$",
     re.IGNORECASE | re.DOTALL,
@@ -225,29 +226,127 @@ def _python_import_aliases(tree: ast.AST) -> dict[str, str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name in {"requests", "httpx"}:
+                if alias.name in {"requests", "httpx", "aiohttp"}:
                     aliases[alias.asname or alias.name] = alias.name
     return aliases
 
 
-def _python_client_receivers(tree: ast.AST, module_aliases: dict[str, str]) -> dict[str, str]:
-    receivers: dict[str, str] = {}
+def _python_call_receiver_module(call: ast.Call, module_aliases: dict[str, str]) -> str | None:
+    func = call.func
+    if not isinstance(func, ast.Attribute) or not isinstance(func.value, ast.Name):
+        return None
+    receiver_module = module_aliases.get(func.value.id)
+    return receiver_module
+
+
+def _python_call_attr(call: ast.Call) -> str | None:
+    return call.func.attr if isinstance(call.func, ast.Attribute) else None
+
+
+def _python_receiver_target_names(node: ast.Assign | ast.AnnAssign) -> list[str]:
+    if isinstance(node, ast.Assign):
+        return [target.id for target in node.targets if isinstance(target, ast.Name)]
+    if isinstance(node.target, ast.Name):
+        return [node.target.id]
+    return []
+
+
+def _python_client_receiver_from_call(
+    call: ast.Call,
+    module_aliases: dict[str, str],
+) -> str | None:
+    module = _python_call_receiver_module(call, module_aliases)
+    attr = _python_call_attr(call)
+    if module == "requests" and attr == "Session":
+        return "requests"
+    if module == "httpx" and attr in {"Client", "AsyncClient"}:
+        return "httpx"
+    if module == "aiohttp" and attr == "ClientSession":
+        return "aiohttp"
+    return None
+
+
+def _python_arg_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    args = node.args
+    names = {arg.arg for arg in [*args.posonlyargs, *args.args, *args.kwonlyargs]}
+    if args.vararg is not None:
+        names.add(args.vararg.arg)
+    if args.kwarg is not None:
+        names.add(args.kwarg.arg)
+    return names
+
+
+def _python_client_receivers_by_scope(
+    tree: ast.AST,
+    module_aliases: dict[str, str],
+    symbols: list[Symbol],
+) -> tuple[dict[str, str], dict[str, dict[str, str]], dict[str, set[str]]]:
+    module_receivers: dict[str, str] = {}
+    scoped_receivers: dict[str, dict[str, str]] = {}
+    scoped_shadowed: dict[str, set[str]] = {}
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
-            continue
-        call = node.value.func
-        if not isinstance(call, ast.Attribute) or not isinstance(call.value, ast.Name):
-            continue
-        module = module_aliases.get(call.value.id)
-        if module == "requests" and call.attr == "Session":
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    receivers[target.id] = "requests"
-        elif module == "httpx" and call.attr in {"Client", "AsyncClient"}:
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    receivers[target.id] = "httpx"
-    return receivers
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            scope = _python_enclosing_symbol(symbols, int(node.lineno))
+            if scope is not None:
+                scoped_shadowed.setdefault(scope, set()).update(_python_arg_names(node))
+        if isinstance(node, ast.Assign | ast.AnnAssign) and isinstance(node.value, ast.Call):
+            target_names = _python_receiver_target_names(node)
+            scope = _python_enclosing_symbol(symbols, int(node.lineno))
+            if scope is not None:
+                scoped_shadowed.setdefault(scope, set()).update(target_names)
+            module = _python_client_receiver_from_call(node.value, module_aliases)
+            if module is not None:
+                for target_name in target_names:
+                    if scope is None:
+                        module_receivers[target_name] = module
+                    else:
+                        scoped_receivers.setdefault(scope, {})[target_name] = module
+        elif isinstance(node, ast.With | ast.AsyncWith):
+            scope = _python_enclosing_symbol(symbols, int(node.lineno))
+            for item in node.items:
+                if not isinstance(item.context_expr, ast.Call):
+                    continue
+                if not isinstance(item.optional_vars, ast.Name):
+                    continue
+                target_name = item.optional_vars.id
+                if scope is not None:
+                    scoped_shadowed.setdefault(scope, set()).add(target_name)
+                module = _python_client_receiver_from_call(item.context_expr, module_aliases)
+                if module is not None:
+                    if scope is None:
+                        module_receivers[target_name] = module
+                    else:
+                        scoped_receivers.setdefault(scope, {})[target_name] = module
+    return module_receivers, scoped_receivers, scoped_shadowed
+
+
+def _python_client_receivers_for_call(
+    source: str | None,
+    module_receivers: dict[str, str],
+    scoped_receivers: dict[str, dict[str, str]],
+    scoped_shadowed: dict[str, set[str]],
+) -> dict[str, str]:
+    if source is None:
+        return module_receivers
+    visible = {
+        name: module
+        for name, module in module_receivers.items()
+        if name not in scoped_shadowed.get(source, set())
+    }
+    visible.update(scoped_receivers.get(source, {}))
+    return visible
+
+
+def _python_literal_arg(call: ast.Call, index: int, keyword: str | None = None) -> str | None:
+    if len(call.args) > index:
+        value = call.args[index]
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            return value.value
+    if keyword is not None:
+        for kw in call.keywords:
+            if kw.arg == keyword and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                return kw.value.value
+    return None
 
 
 def _python_call_method_and_url(
@@ -261,18 +360,33 @@ def _python_call_method_and_url(
         return None
     if not isinstance(func.value, ast.Name):
         return None
-    method = func.attr.upper()
-    if method not in _HTTP_METHODS:
-        return None
     receiver = func.value.id
     client_module = client_receivers.get(receiver)
     module = module_aliases.get(receiver) or client_module
-    if module not in {"requests", "httpx"}:
+    if module not in {"requests", "httpx", "aiohttp"}:
         return None
-    if not call.args or not isinstance(call.args[0], ast.Constant) or not isinstance(call.args[0].value, str):
+
+    attr = func.attr
+    if attr == "request":
+        method = (_python_literal_arg(call, 0, "method") or "").upper()
+        url = _python_literal_arg(call, 1, "url")
+        if method not in _HTTP_METHODS or url is None:
+            return None
+        channel = (
+            f"python-{module}-client-request-literal"
+            if client_module
+            else f"python-{module}-request-literal"
+        )
+        return method, url, channel
+
+    method = attr.upper()
+    if method not in _HTTP_METHODS:
+        return None
+    url = _python_literal_arg(call, 0, "url")
+    if url is None:
         return None
     channel = f"python-{module}-client-literal" if client_module else f"python-{module}-literal"
-    return method, call.args[0].value, channel
+    return method, url, channel
 
 
 def _python_http_call_edges(
@@ -286,11 +400,22 @@ def _python_http_call_edges(
         return []
     file_str = str(filepath)
     module_aliases = _python_import_aliases(tree)
-    client_receivers = _python_client_receivers(tree, module_aliases)
+    module_receivers, scoped_receivers, scoped_shadowed = _python_client_receivers_by_scope(
+        tree,
+        module_aliases,
+        symbols,
+    )
     edges: list[Edge] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
+        source = _python_enclosing_symbol(symbols, int(node.lineno))
+        client_receivers = _python_client_receivers_for_call(
+            source,
+            module_receivers,
+            scoped_receivers,
+            scoped_shadowed,
+        )
         parsed = _python_call_method_and_url(
             node,
             module_aliases=module_aliases,
@@ -300,7 +425,6 @@ def _python_http_call_edges(
             continue
         method, url, provenance = parsed
         target = _http_call_route_name(method, url)
-        source = _python_enclosing_symbol(symbols, int(node.lineno))
         if target and source:
             edges.append(Edge(
                 source=source,
@@ -400,11 +524,33 @@ def _ts_express_receivers(root: Node) -> set[str]:
     return receivers
 
 
+def _ts_local_http_wrappers(root: Node) -> set[str]:
+    source = _text(root)
+    wrappers: set[str] = set()
+    for name in _TS_LOCAL_HTTP_WRAPPER_NAMES:
+        imported = re.search(
+            rf"import\s*\{{[^}}]*\b{name}\b[^}}]*\}}\s*from\s*['\"]\.",
+            source,
+        )
+        declared = re.search(
+            rf"\b(function|const|let|var)\s+{name}\b",
+            source,
+        )
+        if imported or declared:
+            wrappers.add(name)
+    return wrappers
+
+
 def _handler_arg(arguments: Node | None) -> str | None:
     node = _second_arg(arguments)
     if node is not None and node.type == "identifier":
         return _text(node)
     return None
+
+
+def _ts_http_call_provenance(language: str, family: str) -> str:
+    prefix = "typescript" if language == "typescript" else "javascript"
+    return f"{prefix}-{family}-literal"
 
 
 def _typescript_routes(
@@ -417,6 +563,7 @@ def _typescript_routes(
     route_metadata: list[RouteMetadata] = []
     file_str = str(filepath)
     receivers = _ts_express_receivers(root)
+    local_http_wrappers = _ts_local_http_wrappers(root)
     for node in _walk(root):
         if node.type != "call_expression":
             continue
@@ -486,7 +633,7 @@ def _typescript_routes(
 
         call_name = _identifier_call_name(node)
         arguments = node.child_by_field_name("arguments")
-        if call_name == "fetch":
+        if call_name == "fetch" or call_name in local_http_wrappers:
             path = _ts_literal_string(_first_arg(arguments))
             if not path:
                 continue
@@ -503,10 +650,9 @@ def _typescript_routes(
                     file=file_str,
                     line=node.start_point[0] + 1,
                     confidence="EXTRACTED",
-                    provenance=(
-                        "typescript-fetch-literal"
-                        if language == "typescript"
-                        else "javascript-fetch-literal"
+                    provenance=_ts_http_call_provenance(
+                        language,
+                        "fetch" if call_name == "fetch" else "local-wrapper",
                     ),
                 ))
         elif call_name == "axios":

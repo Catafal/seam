@@ -63,6 +63,10 @@ inputs overrode the recipe, and what caveats still apply.
 - Required capabilities are surfaced in recipe metadata, but unsupported
   capabilities still need normal schema and warning handling. For example,
   `http-callers` depends on `has_http_calls`.
+- `http-callers` is literal-only evidence. It covers direct `fetch`, supported
+  literal Axios calls, local wrappers named `apiFetch`, and literal Python
+  module-import calls through `requests`/`httpx`/`aiohttp`; dynamic URLs, third-party
+  absolute URLs, and `from httpx import get`-style calls are deliberately omitted.
 - Source text is not included. Use the returned `follow_up_calls`, typically
   `seam_snippet` and `seam_context`, before editing.
 - Caller-provided non-default filters remain visible as recipe `overrides`; this
