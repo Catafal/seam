@@ -118,6 +118,51 @@ def check_capability_architecture_coherence(
     return findings
 
 
+def check_protocol_scenario_coherence(
+    catalog: dict[str, Any], schema: dict[str, Any]
+) -> list[CoherenceFinding]:
+    """Catch protocol scenarios whose expected capability state contradicts fixtures.
+
+    This guard protects the roadmap signal rather than runtime behavior: if the
+    fixture has populated protocol evidence, a scenario should not keep expecting
+    an unsupported route state and turn shipped work into a false failure gap.
+    """
+    capabilities = schema.get("capabilities", {})
+    findings: list[CoherenceFinding] = []
+    for scenario in catalog.get("scenarios", []):
+        if not isinstance(scenario, dict) or scenario.get("category") != "protocol":
+            continue
+        scenario_id = str(scenario.get("id", "<unknown>"))
+        expected_items = scenario.get("expected_facts", [])
+        required_items = scenario.get("required_evidence", [])
+        all_items = [
+            item for item in [*expected_items, *required_items] if isinstance(item, dict)
+        ]
+        for item in all_items:
+            if item.get("kind") != "capability":
+                continue
+            value = str(item.get("value", ""))
+            if not value.endswith(":false"):
+                continue
+            capability = value.removesuffix(":false")
+            if capabilities.get(capability):
+                findings.append(
+                    CoherenceFinding(
+                        severity="error",
+                        code="protocol-scenario-capability-contradiction",
+                        evidence=(
+                            f"{scenario_id} expects {value} while fixture schema reports "
+                            f"{capability}:true"
+                        ),
+                        suggested_fix=(
+                            f"Update {scenario_id} to expect {capability}:true or move "
+                            "the negative capability check to a fixture where it is actually absent."
+                        ),
+                    )
+                )
+    return findings
+
+
 def check_tracker_issue_coherence(
     issues: list[dict[str, Any]], evidence: dict[str, list[str]]
 ) -> list[CoherenceFinding]:
