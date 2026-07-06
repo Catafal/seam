@@ -132,13 +132,15 @@ jobs:
             uv run seam impact add
           uv run python -m tests.support.egress_audit /tmp/impact.trace
 
-      - name: Probe — MCP stdio server (via mcp_smoke driver)
+      - name: Probe — MCP stdio server clean checkout (via mcp_smoke driver)
         # The smoke driver spawns ``seam start tests/fixtures/`` as a stdio child,
-        # performs a full MCP handshake (initialize + list_tools), prints the tool
-        # count, and exits 0.  strace -f follows the spawned server child so its
-        # connect() calls are captured in the same tracefile.
+        # lets it auto-init the missing index, performs a full MCP handshake
+        # (initialize + list_tools), prints the tool count, and exits 0. strace -f
+        # follows the spawned server child so its connect() calls are captured in
+        # the same tracefile.
         run: |
           set -euo pipefail
+          rm -rf tests/fixtures/.seam
           strace -f -e trace=connect -o /tmp/start.trace \
             uv run --extra server python -m tests.support.mcp_smoke tests/fixtures/
           uv run python -m tests.support.egress_audit /tmp/start.trace

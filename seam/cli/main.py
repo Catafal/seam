@@ -758,6 +758,62 @@ def _load_create_server() -> Any:
     return create_server
 
 
+def _ensure_start_index(
+    project_root: Path,
+    db_root: Path,
+    db_path: Path,
+    *,
+    no_init: bool,
+) -> None:
+    """Ensure `seam start` has an index before watcher and MCP startup.
+
+    The MCP transport uses stdout for JSON-RPC, so every auto-init status line goes
+    to stderr before the server starts. This keeps first-run feedback visible
+    without risking protocol corruption.
+    """
+    if db_path.exists():
+        return
+
+    err_console = Console(stderr=True)
+    if no_init:
+        err_console.print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
+        raise typer.Exit(code=1)
+
+    err_console.print(
+        f"[yellow]No index found — indexing [bold]{project_root}[/bold] first "
+        "(one-time)…[/yellow]"
+    )
+
+    def _progress(message: str) -> None:
+        err_console.print(f"[dim]{message}[/dim]")
+
+    try:
+        result = run_init(
+            project_root,
+            db_dir=None if db_root == project_root else db_root,
+            semantic=False,
+            progress_cb=_progress,
+        )
+    except Exception as exc:
+        err_console.print(
+            f"[red]Auto-init failed:[/red] {exc}\n"
+            "Fix the error above, then run [bold]seam init[/bold] manually."
+        )
+        raise typer.Exit(code=1) from exc
+
+    if not result.db_path.exists():
+        err_console.print(
+            "[red]Auto-init did not produce an index.[/red] "
+            "Run [bold]seam init[/bold] manually to diagnose."
+        )
+        raise typer.Exit(code=1)
+
+    err_console.print(
+        f"[green]Indexed[/green] {result.indexed_files} file(s), "
+        f"{result.total_symbols} symbol(s) — starting MCP server."
+    )
+
+
 @app.command()
 def start(
     path: str = typer.Argument(".", help="Project root to watch (default: current directory)"),
@@ -765,6 +821,14 @@ def start(
         "",
         "--db-dir",
         help="Override DB directory (default: same as project root)",
+    ),
+    no_init: bool = typer.Option(
+        False,
+        "--no-init",
+        help=(
+            "Do not auto-index when the project has no index; error instead. "
+            "Use this in scripting/CI to fail fast rather than trigger an implicit index build."
+        ),
     ),
 ) -> None:
     """Start the MCP server (stdio) and file watcher daemon.
@@ -775,6 +839,9 @@ def start(
 
     The watcher subprocess writes its own .seam/watcher.pid (single writer).
     The MCP server does not have a separate PID file — it occupies the foreground.
+
+    If no index exists, start runs one graph-only local init before launching MCP.
+    Use --no-init to preserve the fail-fast behavior for scripts and CI.
     """
     project_root = Path(path).resolve()
 
@@ -785,13 +852,13 @@ def start(
     db_root = Path(db_dir).resolve() if db_dir else project_root
     db_path = config.get_db_path(db_root)
 
-    if not db_path.exists():
-        Console(stderr=True).print("[red]No index found.[/red] Run [bold]seam init[/bold] first.")
-        raise typer.Exit(code=1)
-
     # Resolve the optional MCP server factory NOW — before spawning the watcher — so a
-    # pure-CLI install (no `mcp` extra) fails fast with an actionable hint, not mid-startup.
+    # pure-CLI install (no `mcp` extra) fails fast with an actionable hint and never
+    # pays an implicit indexing cost.
     create_server = _load_create_server()
+
+    _ensure_start_index(project_root, db_root, db_path, no_init=no_init)
+    db_path = config.get_db_path(db_root)
 
     # Refuse to spawn a second watcher if a live one is already recorded —
     # two writers on one DB is exactly the corruption we just designed out.

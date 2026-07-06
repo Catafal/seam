@@ -51,7 +51,7 @@ Think of Seam as **a compiler's symbol table and call graph for your whole repos
 
 Three properties define it:
 
-- **Indexed once, fresh forever.** `seam init` builds the graph; an optional `watchdog` daemon re-indexes edited files in the background. The agent never thinks about staleness — and graph-traversal tools surface a banner if the index *is* stale.
+- **Indexed once, kept honest.** `seam init` builds the graph; an optional `watchdog` daemon re-indexes edited files in the background. Graph tools surface freshness guidance when an index is stale, so agents can run `seam sync` instead of trusting old evidence.
 - **100% local.** The index is a per-project SQLite file (`.seam/seam.db`). The read path makes **no network calls** — no API keys, no cloud, no telemetry.
 - **A graph, not a search box.** Symbols are nodes; calls, imports, inheritance, composition, and field access are typed edges. Every answer is graph traversal, not string matching.
 
@@ -134,6 +134,11 @@ Prefer native tool-calling? Add `--with-mcp` (install the `server` extra first).
   }
 }
 ```
+
+On a clean checkout, the first `seam start` performs one local graph-only `seam init`
+before the MCP server starts. Use `seam start --no-init /path/to/project` when
+scripts or CI should fail fast instead. Existing but stale indexes are never rebuilt
+silently; agents still see freshness guidance and should run `seam sync` explicitly.
 
 ### Shared team index — CI publishes, developers fetch or import
 

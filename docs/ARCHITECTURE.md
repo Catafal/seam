@@ -480,7 +480,10 @@ cli / server → analysis → query → indexer / db
 - **No new runtime dependencies** — Phase 2 clustering is pure-Python Louvain with stdlib only; zero new packages added.
 - **No process per project** — MCP server launched with `cwd` = project root; single binary
 - **SQLite file size** — target <50MB for a 100k LOC codebase
-- **Startup time** — `seam start` must be ready in <500ms after first `seam init`
+- **Startup time** — `seam start` must be ready in <500ms after the index exists.
+  If the index is missing, it may perform one graph-only auto-init before MCP
+  startup; stale indexes are reported through freshness guidance instead of being
+  rebuilt silently.
 
 ---
 
