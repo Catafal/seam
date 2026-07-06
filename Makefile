@@ -1,4 +1,4 @@
-.PHONY: gate lint typecheck test install install-dev build-web test-web-visual bench-semantic bench-semantic-ann eval eval-generate eval-answerability soak clean
+.PHONY: gate lint typecheck test install install-dev build-web test-web-visual bench-semantic bench-semantic-ann eval eval-generate eval-answerability soak trace-loop-derive trace-loop-promote clean
 
 # Gate — must pass before every commit (no exceptions)
 gate: lint typecheck test
@@ -91,6 +91,35 @@ bench-semantic-ann:
 # Requires an existing index (`seam init` first). NOT part of `make gate`.
 soak:
 	uv run python benchmarks/soak.py --iterations 200
+
+# WS6.1 trace-capture loop — human-in-the-loop curation pipeline.
+# DERIVE: reads a captured NDJSON trace + outcome symbols → writes a review file.
+#   The human edits the review file to set approved=True on high-quality candidates.
+# PROMOTE: merges approved candidates from the review file into the SEPARATE live golden set.
+#   Never auto-merges; always human-reviewed. NOT part of `make gate`.
+#
+# Usage:
+#   SEAM_TRACE_CAPTURE=1 seam start  ← enable capture during a real agent session
+#   make trace-loop-derive TRACE=.seam/traces/session-xyz.ndjson REVIEW=.seam/review.json OUTCOME="Sym1 Sym2"
+#   # edit .seam/review.json: set approved=true on selected candidates
+#   make trace-loop-promote REVIEW=.seam/review.json LIVE=.seam/live_goldens.json
+#
+TRACE ?= .seam/traces/session-latest.ndjson
+REVIEW ?= .seam/review.json
+LIVE ?= .seam/live_goldens.json
+OUTCOME ?=
+
+trace-loop-derive:
+	uv run python benchmarks/trace_loop.py derive \
+		--trace "$(TRACE)" \
+		--review "$(REVIEW)" \
+		$(if $(OUTCOME),--outcome $(OUTCOME),)
+
+trace-loop-promote:
+	uv run python benchmarks/trace_loop.py promote \
+		--review "$(REVIEW)" \
+		--live-golden "$(LIVE)" \
+		--repo-sha $$(git rev-parse HEAD)
 
 # Remove build artifacts
 clean:
