@@ -1269,6 +1269,14 @@ export interface components {
             counts: components["schemas"]["SchemaCounts"];
             breakdowns: components["schemas"]["SchemaBreakdowns"];
             capabilities: components["schemas"]["SchemaCapabilities"];
+            /** Semantic */
+            semantic: {
+                [key: string]: unknown;
+            };
+            /** Bootstrap */
+            bootstrap: {
+                [key: string]: unknown;
+            };
             /** Tools */
             tools: components["schemas"]["SchemaToolGuide"][];
             /** Recommended Next Calls */

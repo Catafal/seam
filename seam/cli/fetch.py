@@ -43,12 +43,15 @@ from seam.indexer.artifact import (
     unpack_index,
     verify_archive,
 )
+from seam.indexer.bootstrap import write_artifact_bootstrap
 from seam.indexer.db import connect
 from seam.indexer.embedding_index import sync_embeddings
 from seam.indexer.rebase import rebase_index
 from seam.indexer.sync import sync as sync_project
 
 logger = logging.getLogger(__name__)
+
+CURRENT_SCHEMA_VERSION = 16
 
 
 # ── Public exception ──────────────────────────────────────────────────────────
@@ -105,6 +108,23 @@ def _git_head_sha(project_root: Path) -> str:
         )
 
     return result.stdout.strip()
+
+
+def _git_remote(project_root: Path) -> str | None:
+    result = subprocess.run(
+        ["git", "-C", str(project_root), "remote", "get-url", "origin"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        return None
+    remote = result.stdout.strip()
+    return remote or None
+
+
+def _normalize_remote(remote: str) -> str:
+    return remote.removesuffix(".git").rstrip("/")
 
 
 def _git_first_parent_shas(project_root: Path, *, depth: int) -> list[str]:
@@ -249,6 +269,7 @@ def fetch_index(
     *,
     db_root: Path | None = None,
     semantic: bool = False,
+    strict: bool = False,
 ) -> dict[str, Any]:
     """Download, verify, unpack, rebase, and sync a pre-built Seam index.
 
@@ -276,15 +297,11 @@ def fetch_index(
         sequence is: stage in tmp → rename existing → move staged → delete backup.
         On ANY exception after the rename, the backup is restored before re-raising.
 
-    Checksum leniency:
+    Checksum policy:
         The sha256 sidecar (ARCHIVE_FILENAME.sha256) is downloaded alongside the
-        archive.  When it is PRESENT, verification is enforced: a mismatch aborts
-        the fetch with FetchError.  When the sidecar download returns a 404 (or any
-        HTTP/I/O error), a WARNING is logged and the fetch proceeds WITHOUT checksum
-        verification — so a CI setup that publishes archives but not sidecars still
-        works.  This leniency is intentional and documented here so it is not
-        mistaken for an oversight.  If you need mandatory verification, ensure your
-        CI always publishes the sidecar alongside the archive.
+        archive. In strict mode it is mandatory and a missing sidecar aborts before
+        touching the live index. In permissive mode, a missing sidecar logs a
+        warning and fetch proceeds unverified so older artifact stores still work.
     """
     # ── Step 1: Validate URL template ─────────────────────────────────────────
     url_template = config.SEAM_INDEX_ARTIFACT_URL
@@ -323,13 +340,18 @@ def fetch_index(
         bytes_downloaded = len(archive_bytes)
         logger.info("fetch: downloaded %d bytes from %s", bytes_downloaded, archive_url)
 
-        # Download the checksum sidecar (optional — skip verification if absent)
+        # Download the checksum sidecar (optional in permissive mode, mandatory in strict mode).
         has_checksum = False
         try:
             checksum_bytes = _download_bytes(checksum_url)
             checksum_local.write_bytes(checksum_bytes)
             has_checksum = True
         except FetchError:
+            if strict:
+                raise FetchError(
+                    "CHECKSUM_MISSING",
+                    "Strict fetch requires seam-index.sha256 beside the artifact.",
+                )
             logger.warning(
                 "fetch: checksum sidecar not available (%s); skipping verification",
                 checksum_url,
@@ -343,15 +365,31 @@ def fetch_index(
                 raise FetchError("FETCH_FAILED", "Archive checksum verification failed.")
             artifact_verified = True
             artifact_checksum = checksum_local.read_text(encoding="utf-8").split()[0].lower()
-            inspected_artifact = inspect_artifact(archive_local)
+            inspected_artifact = inspect_artifact(archive_local, checksum_path=checksum_local)
             if inspected_artifact is None:
                 has_manifest = artifact_has_manifest(archive_local)
+                if strict and has_manifest is False:
+                    raise FetchError(
+                        "MANIFEST_MISSING",
+                        "Strict fetch requires manifest.json inside the artifact.",
+                    )
                 if has_manifest is not False:
                     raise FetchError(
                         "FETCH_FAILED",
                         "Artifact manifest inspection failed. "
                         "The archive, checksum, or manifest is invalid.",
                     )
+        if strict:
+            if inspected_artifact is None:
+                raise FetchError(
+                    "MANIFEST_MISSING",
+                    "Strict fetch requires a valid artifact manifest.",
+                )
+            _validate_strict_manifest(
+                inspected_artifact["manifest"],
+                resolved_sha=sha,
+                project_root=project_root,
+            )
 
         # ── Step 4: Verify + unpack into a staging dir ──────────────────────
         stage_dir = tmp_dir / "staged"
@@ -460,7 +498,9 @@ def fetch_index(
         sync_conn.close()
 
     # ── Optional: semantic embedding sync ─────────────────────────────────────
+    semantic_sync = {"requested": bool(semantic), "status": "not_requested"}
     if semantic:
+        semantic_sync["status"] = "success"
         # WHY: same pattern as `seam sync --semantic`; only embed missing symbols.
         try:
             embed_conn = connect(db_path)
@@ -470,16 +510,69 @@ def fetch_index(
                 embed_conn.close()
         except Exception as exc:  # noqa: BLE001
             # Non-fatal: semantic embedding failure does not invalidate the index.
+            semantic_sync["status"] = "failed"
             logger.warning("fetch: embeddings sync failed (non-fatal): %s", exc)
+
+    bootstrap = write_artifact_bootstrap(
+        db_path.parent,
+        source="fetch",
+        verified=artifact_verified,
+        checksum=artifact_checksum,
+        manifest=inspected_artifact["manifest"] if inspected_artifact else None,
+        files_rebased=files_rebased,
+        sync=dict(sync_result),
+        semantic_sync=semantic_sync,
+        artifact_url=archive_url,
+    )
 
     return {
         "sha": sha,
         "bytes_downloaded": bytes_downloaded,
         "files_rebased": files_rebased,
+        "bootstrap": bootstrap,
         "artifact": {
             "verified": artifact_verified,
             "checksum": inspected_artifact["checksum"] if inspected_artifact else artifact_checksum,
             "manifest": inspected_artifact["manifest"] if inspected_artifact else None,
+            "mode": "strict" if strict else "permissive",
         },
         "sync": dict(sync_result),
     }
+
+
+def _validate_strict_manifest(
+    manifest: dict[str, Any],
+    *,
+    resolved_sha: str,
+    project_root: Path,
+) -> None:
+    schema_version = manifest.get("schema_version")
+    if not isinstance(schema_version, int) or schema_version > CURRENT_SCHEMA_VERSION:
+        raise FetchError(
+            "SCHEMA_INCOMPATIBLE",
+            "Artifact was produced by an unsupported Seam schema. Upgrade Seam or rebuild locally.",
+        )
+
+    repository = manifest.get("repository")
+    if not isinstance(repository, dict):
+        raise FetchError("REPO_MISMATCH", "Artifact manifest is missing repository identity.")
+
+    artifact_head = repository.get("git_head")
+    if not isinstance(artifact_head, str) or not artifact_head:
+        raise FetchError("REPO_MISMATCH", "Artifact manifest is missing git SHA identity.")
+    if artifact_head != resolved_sha:
+        raise FetchError(
+            "REPO_MISMATCH",
+            "Artifact git SHA does not match the resolved fetch SHA.",
+        )
+
+    artifact_remote = repository.get("git_remote")
+    local_remote = _git_remote(project_root)
+    if isinstance(local_remote, str) and local_remote:
+        if not isinstance(artifact_remote, str) or not artifact_remote:
+            raise FetchError("REPO_MISMATCH", "Artifact manifest is missing git remote identity.")
+        if _normalize_remote(artifact_remote) != _normalize_remote(local_remote):
+            raise FetchError(
+                "REPO_MISMATCH",
+                "Artifact repository remote does not match this checkout.",
+            )

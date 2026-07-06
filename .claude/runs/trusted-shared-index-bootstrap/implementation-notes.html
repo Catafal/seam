@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Trusted Shared Index Bootstrap · Implementation Notes</title>
+  <style>
+    body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; max-width: 880px;
+           margin: 40px auto; padding: 0 24px; color: #292524; line-height: 1.55; }
+    h1 { border-bottom: 3px solid #0181c9; padding-bottom: 8px; }
+    h2 { margin-top: 36px; color: #0181c9; border-bottom: 1px solid #e5e5e5; padding-bottom: 4px; }
+    code { background: #f5f5f4; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+    .decision { background: #f0f9ff; border-left: 4px solid #0181c9; padding: 12px 16px; margin: 14px 0; }
+    .deviation { background: #fffbeb; border-left: 4px solid #d97706; padding: 12px 16px; margin: 14px 0; }
+    .tradeoff { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 12px 16px; margin: 14px 0; }
+    .open { background: #fef2f2; border-left: 4px solid #dc2626; padding: 12px 16px; margin: 14px 0; }
+    .tag { display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase;
+           letter-spacing: 0.5px; padding: 2px 8px; border-radius: 10px; color: #fff; }
+    .t-dec { background: #0181c9; } .t-dev { background: #d97706; }
+    .t-trade { background: #7c3aed; } .t-open { background: #dc2626; }
+    ul { margin-top: 6px; } .meta { color: #78716c; font-size: 0.9em; }
+    .done { color: #16a34a; font-weight: 600; }
+    table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+    th, td { border: 1px solid #e5e5e5; padding: 6px 10px; text-align: left; font-size: 0.92em; }
+    th { background: #fafaf9; }
+  </style>
+</head>
+<body>
+  <h1>Trusted Shared Index Bootstrap</h1>
+  <p class="meta">Branch <code>codex/trusted-shared-index-bootstrap</code> · started 2026-07-06 · PRD #389, issues #390-#393.</p>
+  <p>This is a <strong>living document</strong> capturing how the implementation interprets,
+     diverges from, or trades off against the spec. Updated as each slice lands.</p>
+
+  <h2>The spec, in one line</h2>
+  <p>Make Seam's existing graph artifact bootstrap trustworthy and agent-answerable:
+     persist safe bootstrap provenance, expose artifact readiness through schema/status,
+     add strict fetch failure semantics, and document the trust contract without adding
+     graph edges or MCP mutation.</p>
+
+  <h2>Design decisions <span class="meta">(spec was ambiguous → here's the call I made)</span></h2>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Use a small JSON provenance file under <code>.seam/</code>.</strong>
+    The PRD allowed a metadata file or table. A file keeps bootstrap provenance outside
+    the graph database, avoids migrations, and lets artifact import/fetch update trust
+    metadata even before opening the landed DB.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Make <code>seam fetch --strict</code> additive.</strong>
+    Existing fetch behavior stays available for older artifact stores, while strict mode
+    is the recommended automation path. Strict mode requires checksum + manifest identity
+    before the remote index can replace local <code>.seam/</code>.</div>
+
+  <h2>Deviations <span class="meta">(intentional departures from the spec/convention)</span></h2>
+
+  <div class="deviation"><span class="tag t-dev">Deviation</span> <strong>No standalone doctor/status command in this slice.</strong>
+    The PRD's goal is satisfied through existing schema transports. A future doctor
+    command can consume the same bootstrap block, but this implementation avoids adding
+    a new command surface before the contract proves useful.</div>
+
+  <h2>Tradeoffs <span class="meta">(alternatives considered)</span></h2>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>Status vocabulary first, broader doctor later.</strong>
+    A standalone <code>seam doctor</code> would be useful, but the PRD's highest leverage is
+    one artifact/bootstrap block inside existing schema/status surfaces. The doctor
+    command remains a follow-up, not part of this build.</div>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>Hash raw remotes instead of storing them.</strong>
+    The manifest can contain sensitive repository URLs. The persisted provenance keeps
+    only <code>remote_fingerprint</code>, which is enough to correlate identity without leaking
+    internal URLs or credentials.</div>
+
+  <h2>Open questions <span class="meta">(want your confirm/revise)</span></h2>
+
+  <div class="open"><span class="tag t-open">Open</span> <strong>Should permissive fetch become deprecated later?</strong>
+    This implementation preserves permissive fetch for compatibility but labels it
+    explicitly as permissive/unverified when checksum or manifest evidence is absent.
+    Deprecation can be decided after teams have a migration window for artifact stores.</div>
+
+  <h2>Build / verification</h2>
+  <ul>
+    <li>Worktree index initialized with <code>uv run seam init</code>.</li>
+    <li>Vertical TDD slices landed through schema, import, strict fetch, Web schema, and answerability behavior.</li>
+    <li>Focused Python tests passed: bootstrap provenance, schema, init marker, import lifecycle, fetch strict/permissive behavior, Web schema, and answerability benchmark.</li>
+    <li>Focused mypy passed for changed Python modules.</li>
+    <li>Full <code>make gate</code> passed after final review fixes: Ruff, mypy over <code>seam/</code>, and the full pytest suite.</li>
+    <li>Frontend OpenAPI types regenerated; <code>npm ci</code> installed the worktree dependencies and <code>npm run typecheck</code> passed.</li>
+    <li>Frontend hook test passed: <code>npm test -- --run src/__tests__/hooks.test.tsx</code>.</li>
+    <li><code>uv run seam changes --json</code> returned <code>ok=true</code>, <code>partial=false</code>, and expected <code>risk_level=critical</code> for fetch/init/schema contract changes.</li>
+    <li>New dependencies: none.</li>
+  </ul>
+
+  <h2>Progress</h2>
+  <table>
+    <tr><th>Slice</th><th>What</th><th>Status</th></tr>
+    <tr><td>1</td><td>Issue #390: provenance and readiness contract</td><td class="done">done</td></tr>
+    <tr><td>2</td><td>Issue #391: strict fetch and landing provenance</td><td class="done">done</td></tr>
+    <tr><td>3</td><td>Issue #392: transport parity and answerability</td><td class="done">done</td></tr>
+    <tr><td>4</td><td>Issue #393: docs/comments/trust contract</td><td class="done">done</td></tr>
+  </table>
+</body>
+</html>

@@ -195,6 +195,17 @@ Index artifacts use a flat `seam-index.tar.gz` format owned by
 producer, schema version, repository fingerprint, git metadata, and content flags so
 automation can inspect compatibility before touching `.seam/`.
 
+Bootstrap provenance is owned by `seam.indexer.bootstrap` and persisted as
+`.seam/bootstrap.json`, deliberately outside SQLite. It is setup evidence, not graph
+evidence: no dependency traversal, impact analysis, or architecture summary reads it as
+code structure. `seam init` records `source=local_init`; `seam fetch` and
+`seam import-index` record artifact source, verification status, checksum, schema/manifest
+summary, git SHA, hashed remote identity, sync summary, and semantic-sync status. The
+record is intentionally allowlisted so artifact URLs, credentials, source text, absolute
+CI paths, and raw remotes are not persisted. `seam_schema` and `/api/schema` expose this
+as `bootstrap.readiness`, letting agents branch on `local_index`, `verified_artifact`,
+`unverified_artifact`, `unknown`, `stale`, or `blocked` before relying on a shared index.
+
 Local artifact import is intentionally stricter than the legacy fetch path. The
 `seam inspect-index` and `seam import-index` commands require `seam-index.sha256`,
 reject unsafe or unexpected archive members, reject unsupported schema/manifest versions,
@@ -203,10 +214,13 @@ and refuse repository identity mismatches unless the caller passes
 is a fallback for non-git artifacts. Import extracts into a temporary staging directory,
 verifies that the staged SQLite database opens, rebases stored file paths to the local
 checkout by default, then swaps `.seam/` atomically. Validation, extraction, rebase, and
-swap failures preserve the previous index. `seam fetch` reuses manifest inspection when a
-checksum is published, but preserves older no-manifest artifacts as checksum-verified
-legacy artifacts with `artifact.manifest=null`, and preserves the no-checksum path with
-`artifact.verified=false`.
+swap failures preserve the previous index. `seam fetch --strict` applies the same trust
+bar to remote bootstrap: checksum sidecar required, manifest required, schema version no
+newer than the current reader, and repository/git identity checked before landing. Plain
+`seam fetch` remains compatibility mode for older artifact stores; it reuses manifest
+inspection when a checksum is published, preserves older no-manifest artifacts as
+checksum-verified legacy artifacts with `artifact.manifest=null`, and preserves the
+no-checksum path with `artifact.verified=false`.
 
 Infra graph extraction is schema-neutral: Docker Compose and Dockerfile evidence reuses
 `symbols.kind='resource'`, the `resources` table, and existing `uses`/`configures` edges. The

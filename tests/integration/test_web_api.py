@@ -181,10 +181,19 @@ def test_schema_happy_path(client: TestClient) -> None:
     assert "counts" in data
     assert "breakdowns" in data
     assert "capabilities" in data
+    assert "semantic" in data
+    assert "bootstrap" in data
     assert "tools" in data
     assert "recommended_next_calls" in data
     assert "warnings" in data
     assert data["counts"]["symbols"] > 0
+    assert data["bootstrap"]["artifacts_supported"] is True
+    assert data["bootstrap"]["readiness"]["status"] in {
+        "local_index",
+        "unknown",
+        "verified_artifact",
+        "unverified_artifact",
+    }
     assert data["tables"] is None
 
 

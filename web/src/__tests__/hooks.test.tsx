@@ -411,6 +411,13 @@ const SCHEMA_FIXTURE: SchemaResponse = {
     has_exception_edges: true,
     has_test_edges: true,
   },
+  semantic: {
+    readiness: { usable: false, status: "disabled", reason: "config_off" },
+  },
+  bootstrap: {
+    artifacts_supported: true,
+    readiness: { status: "local_index", reason: "fresh" },
+  },
   tools: [
     {
       name: "seam_schema",

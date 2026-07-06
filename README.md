@@ -165,13 +165,18 @@ export SEAM_INDEX_ARTIFACT_URL="https://github.com/<owner>/<repo>/releases/downl
 **Step 3 — run `seam fetch`**
 
 ```bash
-seam fetch           # download, verify checksum, rebase CI paths to local, sync delta
+seam fetch --strict  # require checksum + manifest identity before landing the index
+seam fetch           # compatibility mode: download, verify checksum when present, sync delta
 seam fetch --semantic  # also embed any symbols added locally after the CI cut-point
 ```
 
 `seam fetch` is the **one intentional setup-time network path** in Seam. Every other command is fully offline — query time makes zero network calls (verified at the syscall level by `.github/workflows/no-egress.yml`). `seam fetch` is excluded from that proof because it is a deliberate one-time provisioning download, exactly like `seam init --semantic`'s model bootstrap.
 
-When a checksum sidecar is available, `seam fetch --json` also reports `artifact.verified`, the checksum, and the embedded manifest when present. Pre-manifest artifacts with a valid checksum still fetch as verified legacy artifacts and report `artifact.manifest=null`. Older artifact stores that do not publish `seam-index.sha256` still work, but they are reported as unverified so automation can decide whether to reject them.
+Use `--strict` for automation and team setup scripts. Strict fetch refuses to replace the local index unless the checksum sidecar exists, the archive has a manifest, the schema version is supported, and the artifact identity matches the resolved git revision/repository. Compatibility fetch still supports older artifact stores, but those paths are surfaced as permissive/unverified when checksum or manifest evidence is absent.
+
+When a checksum sidecar is available, `seam fetch --json` also reports `artifact.verified`, the checksum, and the embedded manifest when present. Pre-manifest artifacts with a valid checksum still fetch as verified legacy artifacts in compatibility mode and report `artifact.manifest=null`. Older artifact stores that do not publish `seam-index.sha256` still work in compatibility mode, but they are reported as unverified so automation can reject them or move to `--strict`.
+
+After `seam init`, `seam fetch`, or `seam import-index`, `seam schema --json` includes a `bootstrap` block. That block tells agents whether the current index is a local build, a verified artifact, an unverified artifact, stale, or provenance-unknown. The persisted record lives in `.seam/bootstrap.json` and stores only safe metadata: source, verification state, checksum, manifest/schema version, git SHA, a hash of the remote, sync summary, and semantic-sync status. It never stores artifact URLs, bearer tokens, source text, or absolute CI paths.
 
 **Local archive workflow**
 

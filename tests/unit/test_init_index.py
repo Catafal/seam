@@ -46,6 +46,7 @@ def test_run_init_creates_db(tmp_path: Path) -> None:
 
     assert isinstance(result, InitResult)
     assert result.db_path.exists(), "DB file must be created"
+    assert (result.db_path.parent / "bootstrap.json").is_file()
     assert result.indexed_files >= 1, "At least one file must be indexed"
     assert result.total_symbols >= 1, "At least one symbol (class/function) must be found"
     assert result.total_edges >= 0, "Edge count must be non-negative"

@@ -227,6 +227,9 @@ def test_describe_schema_summary_reports_capabilities(schema_repo, monkeypatch) 
     assert result["semantic"]["index"]["embedding_count"] == 1
     assert result["semantic"]["index"]["embedding_models"] == {"test-model": 1}
     assert result["semantic"]["retrieval"]["available_modes"] == ["keyword"]
+    assert result["bootstrap"]["artifacts_supported"] is True
+    assert result["bootstrap"]["readiness"]["status"] == "unknown"
+    assert result["bootstrap"]["readiness"]["reason"] == "provenance_missing"
     assert result["capabilities"]["has_synthesized_edges"] is True
     assert result["capabilities"]["has_routes_table"] is True
     assert result["capabilities"]["has_route_nodes"] is True
@@ -247,6 +250,41 @@ def test_describe_schema_summary_reports_capabilities(schema_repo, monkeypatch) 
     assert any("seam_snippet" in call for call in result["recommended_next_calls"])
     assert result["recommended_next_calls"]
     assert "tables" not in result
+
+
+def test_describe_schema_reports_verified_imported_artifact(schema_repo) -> None:
+    """Schema exposes bootstrap provenance as trust evidence, not graph evidence."""
+    from seam.indexer.bootstrap import write_artifact_bootstrap
+    from seam.query.schema import describe_schema
+
+    conn, root, db_path = schema_repo
+    write_artifact_bootstrap(
+        db_path.parent,
+        source="import",
+        verified=True,
+        checksum="c" * 64,
+        manifest={
+            "manifest_version": 1,
+            "schema_version": 16,
+            "producer": {"version": "0.5.0"},
+            "repository": {
+                "git_head": "abc123",
+                "git_remote": "https://token@example.com/acme/project.git",
+            },
+            "contents": {"has_source_text": False, "files": ["seam.db"]},
+        },
+        files_rebased=2,
+        sync=None,
+        artifact_url="https://token@example.com/private/seam-index.tar.gz",
+    )
+
+    result = describe_schema(conn, root=root)
+
+    assert result["bootstrap"]["readiness"]["status"] == "verified_artifact"
+    assert result["bootstrap"]["readiness"]["reason"] == "fresh"
+    assert result["bootstrap"]["provenance"]["source"] == "import"
+    assert result["bootstrap"]["provenance"]["checksum"] == "c" * 64
+    assert "token" not in json.dumps(result["bootstrap"])
 
 
 def test_describe_schema_reports_semantic_usable_when_config_on(schema_repo, monkeypatch) -> None:
@@ -422,6 +460,9 @@ def test_schema_web_endpoint(schema_repo) -> None:
     body = response.json()
     assert body["counts"]["symbols"] == 3
     assert body["capabilities"]["has_clusters"] is True
+    assert body["bootstrap"]["artifacts_supported"] is True
+    assert body["bootstrap"]["readiness"]["status"] == "unknown"
+    assert body["bootstrap"]["readiness"]["reason"] == "provenance_missing"
     assert "important reason" not in json.dumps(body)
 
     verbose = client.get("/api/schema?verbose=true")

@@ -14,6 +14,7 @@ from typing import Any
 import seam
 import seam.config as config
 from seam.analysis.staleness import check_staleness
+from seam.indexer.bootstrap import describe_bootstrap
 from seam.query import semantic_contract
 from seam.query.graph_recipes import list_graph_search_recipes
 
@@ -112,6 +113,17 @@ def _metadata(conn: sqlite3.Connection) -> dict[str, str]:
     except Exception:  # noqa: BLE001
         return {}
     return {str(row["key"]): str(row["value"]) for row in rows}
+
+
+def _database_path(conn: sqlite3.Connection, root: Path) -> Path:
+    try:
+        rows = conn.execute("PRAGMA database_list").fetchall()
+    except sqlite3.Error:
+        return config.get_db_path(root)
+    for row in rows:
+        if str(row["name"]) == "main" and row["file"]:
+            return Path(str(row["file"]))
+    return config.get_db_path(root)
 
 
 def _table_metadata(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -481,6 +493,13 @@ def describe_schema(
                 "caveat": semantic_contract.SEMANTIC_DISCOVERY_CAVEAT,
             },
         },
+        "bootstrap": describe_bootstrap(
+            project_root=root,
+            db_path=_database_path(conn, root),
+            freshness=freshness,
+            semantic_readiness=semantic_readiness,
+            artifact_url_configured=bool(config.SEAM_INDEX_ARTIFACT_URL),
+        ),
         "tools": _tool_registry(),
         "recommended_next_calls": [
             "Call seam_schema first to inspect index capability and freshness.",

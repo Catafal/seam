@@ -117,6 +117,18 @@ tools:
           optional_extra_unavailable, or keyword_only_override.
           `retrieval.available_modes` reports high-level engines (`keyword`, plus
           `hybrid` when usable); per-result `retrieval_mode` uses the finer modes below.
+        bootstrap:
+          (object) — setup-time trust/readiness contract for the local `.seam/` index.
+          `bootstrap.artifacts_supported` is true for this reader. `bootstrap.readiness.status`
+          is one of blocked, stale, unknown, local_index, verified_artifact, or
+          unverified_artifact; `reason` explains no_index, index_stale,
+          provenance_missing, or fresh. `bootstrap.provenance` is null when no safe
+          provenance record exists, otherwise it includes only allowlisted fields such as
+          source, landed_at, verified, checksum, schema/manifest version, git_sha,
+          remote_fingerprint, content flags, sync summary, and semantic_sync status.
+          Raw artifact URLs, credentials, source text, absolute CI paths, and raw git
+          remotes are intentionally absent. `bootstrap.fetch.strict_recommended` tells
+          setup automation to prefer `seam fetch --strict`.
         tools:
           (list) — read-only tool guide entries with transports, dependencies, and use_when.
         recommended_next_calls:

@@ -86,6 +86,8 @@ def test_export_and_inspect_json_include_manifest_without_mutating_index(tmp_pat
 
 def test_import_index_lands_queryable_index(tmp_path: Path) -> None:
     """A local artifact can restore .seam/ into the same checkout without network config."""
+    from seam.indexer.bootstrap import read_bootstrap_provenance
+
     project = tmp_path / "project"
     _make_indexed_project(project)
     out = tmp_path / "artifacts"
@@ -103,6 +105,14 @@ def test_import_index_lands_queryable_index(tmp_path: Path) -> None:
     import_data = json.loads(imported.output)["data"]
     assert import_data["repo_match"] is True
     assert (project / ".seam" / "seam.db").is_file()
+    provenance = read_bootstrap_provenance(project / ".seam")
+    assert provenance is not None
+    assert provenance["source"] == "import"
+    assert provenance["verified"] is True
+    assert provenance["checksum"] == export_data["checksum"]
+    assert provenance["semantic_sync"] == {"requested": False, "status": "not_requested"}
+    assert import_data["bootstrap"]["source"] == "import"
+    assert import_data["bootstrap"]["verified"] is True
     conn = connect(project / ".seam" / "seam.db")
     try:
         results = query(conn, "greet")
