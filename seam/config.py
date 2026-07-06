@@ -711,6 +711,24 @@ SEAM_DIAGNOSTICS_PATH: str = os.getenv("SEAM_DIAGNOSTICS_PATH", ".seam/diagnosti
 SEAM_DIAGNOSTICS_SLOW_MS: int = int(os.getenv("SEAM_DIAGNOSTICS_SLOW_MS", "100"))
 
 
+# ── WS6.1: Agent-trace-derived eval goldens (trace-capture loop) ─────────────
+
+# Master switch for opt-in local trace capture (WS6.1; default: "0" = off).
+# Set to "1" to enable the TraceRecorder, which records each read-path tool call
+# (query args + returned symbol NAMES + counts — symbols only, never full result
+# bodies or source text) to a local NDJSON file under SEAM_TRACE_CAPTURE_PATH.
+# When "0": no file is created, no atexit handler is registered, and the read path
+# is byte-identical to today. WHY opt-in: capture stores query text (unlike
+# SEAM_DIAGNOSTICS which stores only numeric metrics), so the user must
+# explicitly consent. Local-only; never networked.
+SEAM_TRACE_CAPTURE: str = os.getenv("SEAM_TRACE_CAPTURE", "0")
+
+# Directory for captured trace NDJSON files. Default is inside .seam/ (already
+# gitignored via `seam init`'s .seam/.gitignore) so traces are never committed.
+# Each trace session writes one .ndjson file keyed to the session UUID.
+SEAM_TRACE_CAPTURE_PATH: str = os.getenv("SEAM_TRACE_CAPTURE_PATH", ".seam/traces/")
+
+
 # ── WS4 S2: Index artifact distribution ─────────────────────────────────────
 
 # HTTPS URL template for downloading a pre-built index artifact.

@@ -19,6 +19,7 @@ from rich.table import Table
 
 import seam.config as config
 from seam.analysis.diagnostics import get_recorder, run_query
+from seam.analysis.trace_capture import trace_run_query
 from seam.cli.file_sink import write_output_file
 from seam.cli.output import (
     check_mutual_exclusion,
@@ -186,10 +187,16 @@ def search_command(
         # --no-semantic: pass semantic=False to bypass the hybrid path without mutating
         # global config. This is safe for both single-threaded CLI use and any future
         # concurrent context. (DRIFT-1 fix: no more module-attribute patching.)
-        result = run_query(
+        # WS6.1: trace_run_query wraps run_query so the handler executes once;
+        # diagnostics timing is inner, trace timing is outer (negligible difference).
+        result = trace_run_query(
             "seam_search",
-            lambda: handle_seam_search(
-                conn, text, project_root, limit=limit, semantic=not no_semantic
+            {"query": text, "limit": limit},
+            lambda: run_query(
+                "seam_search",
+                lambda: handle_seam_search(
+                    conn, text, project_root, limit=limit, semantic=not no_semantic
+                ),
             ),
         )
     finally:
@@ -231,10 +238,15 @@ def query_command(
 
     conn, project_root = _open_index(path, db_dir, json_)
     try:
-        result = run_query(
+        # WS6.1: trace_run_query wraps run_query (diagnostics) so the handler runs once.
+        result = trace_run_query(
             "seam_query",
-            lambda: handle_seam_query(
-                conn, concept, project_root, limit=limit, semantic=not no_semantic
+            {"concept": concept, "limit": limit},
+            lambda: run_query(
+                "seam_query",
+                lambda: handle_seam_query(
+                    conn, concept, project_root, limit=limit, semantic=not no_semantic
+                ),
             ),
         )
     finally:
@@ -293,9 +305,14 @@ def context_command(
     db_path = config.get_db_path(Path(db_dir).resolve() if db_dir else project_root)
     try:
         # --lean maps to verbose=False — byte-identical to the MCP tool with verbose=False.
-        result = run_query(
+        # WS6.1: trace_run_query wraps run_query so the handler runs exactly once.
+        result = trace_run_query(
             "seam_context",
-            lambda: handle_seam_context(conn, symbol, project_root, verbose=not lean),
+            {"symbol": symbol},
+            lambda: run_query(
+                "seam_context",
+                lambda: handle_seam_context(conn, symbol, project_root, verbose=not lean),
+            ),
         )
     finally:
         conn.close()

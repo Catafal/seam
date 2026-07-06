@@ -49,6 +49,13 @@ from mcp.server.fastmcp.exceptions import ToolError
 import seam.config as config
 from seam.analysis.changes import DEFAULT_BASE_REF
 from seam.analysis.diagnostics import DiagnosticsRecorder, get_recorder, result_chars
+from seam.analysis.trace_capture import (
+    TraceRecorder,
+    extract_symbol_names,
+)
+from seam.analysis.trace_capture import (
+    get_recorder as get_trace_recorder,
+)
 from seam.server.tools import (
     handle_seam_affected,
     handle_seam_architecture,
@@ -109,20 +116,31 @@ def _finalize(result: Any) -> Any:
     return result
 
 
-def _make_instrument(recorder: DiagnosticsRecorder) -> Callable[[str], Callable[..., Any]]:
+def _make_instrument(
+    recorder: DiagnosticsRecorder,
+    *,
+    trace_rec: "TraceRecorder | None" = None,
+) -> Callable[[str], Callable[..., Any]]:
     """Build a per-tool timing decorator bound to a process diagnostics recorder.
 
     WHY a factory returning a decorator: the decision to wrap is made ONCE at
-    decoration time. When diagnostics is off (recorder.enabled is False) the
-    decorator returns the tool function UNCHANGED — so the running server has zero
-    per-call overhead and the tool schema FastMCP sees is byte-identical to pre-P5.5.
+    decoration time. When diagnostics is off (recorder.enabled is False) AND trace
+    capture is off (trace_rec.enabled is False or None), the decorator returns the
+    tool function UNCHANGED — zero per-call overhead, byte-identical to pre-P5.5.
     When on, the wrapper times the handler call and records (tool, duration_ms,
     result_chars) in a finally block so a ToolError raise is still counted as a query.
+
+    WS6.1: trace_rec is an optional TraceRecorder that receives per-tool trace records
+    (query args + returned symbol names) when SEAM_TRACE_CAPTURE=1. When None or
+    disabled it adds zero overhead. Both concerns share one wrapper so only ONE
+    decorator per tool is needed rather than stacking @_instrument + @_trace.
     """
+    diag_on = recorder.enabled
+    trace_on = trace_rec is not None and trace_rec.enabled
 
     def instrument(tool_name: str) -> Callable[..., Any]:
         def deco(fn: Callable[..., Any]) -> Callable[..., Any]:
-            if not recorder.enabled:
+            if not diag_on and not trace_on:
                 return fn  # zero-overhead passthrough — wrapper never installed
 
             @functools.wraps(fn)
@@ -134,7 +152,17 @@ def _make_instrument(recorder: DiagnosticsRecorder) -> Callable[[str], Callable[
                     return result
                 finally:
                     duration_ms = (time.perf_counter() - start) * 1000.0
-                    recorder.record_query(tool_name, duration_ms, result_chars(result))
+                    if diag_on:
+                        recorder.record_query(tool_name, duration_ms, result_chars(result))
+                    if trace_on and trace_rec is not None:
+                        symbols = extract_symbol_names(result)
+                        trace_rec.record_tool_call(
+                            tool=tool_name,
+                            args=dict(kwargs),
+                            symbol_names=symbols,
+                            result_count=len(symbols),
+                            elapsed_ms=duration_ms,
+                        )
 
             # Preserve the original signature so FastMCP builds the correct input
             # schema from the wrapper (functools.wraps sets __wrapped__, but pinning
@@ -187,7 +215,12 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
             recorder.set_db_path(_dbrow[2])
     except sqlite3.Error:
         pass
-    _instrument = _make_instrument(recorder)
+    # WS6.1: Process-level trace recorder — null recorder when SEAM_TRACE_CAPTURE != "1".
+    # Both diagnostics and trace instrumentation are combined into one decorator factory
+    # so no extra @_trace decorator needs to be added to every tool definition.
+    # When BOTH are off, the tool is returned UNCHANGED — zero per-call overhead.
+    trace_rec = get_trace_recorder()
+    _instrument = _make_instrument(recorder, trace_rec=trace_rec)
 
     @mcp.tool()
     @_instrument("seam_query")
