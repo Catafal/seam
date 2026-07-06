@@ -59,6 +59,7 @@ from seam.analysis.impact import (
     TIER_WILL_BREAK,
 )
 from seam.analysis.staleness import _watcher_is_alive, check_staleness
+from seam.analysis.trace_capture import trace_run_query
 from seam.cli.architecture import architecture_command
 from seam.cli.artifacts import (
     ArtifactLifecycleError,
@@ -968,6 +969,10 @@ def impact_cmd(
     # called with verbose=False — heavy fields absent from every tier entry.
     verbose = not lean
 
+    # WS6.1: The impact_args dict is captured for trace recording regardless of the
+    # --to-file vs normal path. Both paths use the same symbol/direction for the trace.
+    _impact_trace_args = {"symbol": symbol, "direction": direction}
+
     try:
         if to_file or to_file_path:
             # WHY full result for --to-file:
@@ -975,18 +980,22 @@ def impact_cmd(
             #   Passing limit=0 + max_bytes=0 + verbose=True overrides --lean/--limit/--max-bytes
             #   so the file always contains the full blast radius regardless of what the user
             #   passed for display purposes.
-            result = run_query(
+            result = trace_run_query(
                 "seam_impact",
-                lambda: handle_seam_impact(
-                    conn,
-                    target=symbol,
-                    root=project_root,
-                    direction=direction,
-                    max_depth=depth,
-                    include_tests=include_tests,
-                    verbose=True,
-                    limit=0,
-                    max_bytes=0,
+                _impact_trace_args,
+                lambda: run_query(
+                    "seam_impact",
+                    lambda: handle_seam_impact(
+                        conn,
+                        target=symbol,
+                        root=project_root,
+                        direction=direction,
+                        max_depth=depth,
+                        include_tests=include_tests,
+                        verbose=True,
+                        limit=0,
+                        max_bytes=0,
+                    ),
                 ),
             )
         else:
@@ -995,18 +1004,22 @@ def impact_cmd(
             # uniformly. The Rich path previously called impact() directly and so silently
             # ignored --limit and --lean (a confirmed parity bug). One handler = one source
             # of truth; Rich now renders the same capped result --json returns.
-            result = run_query(
+            result = trace_run_query(
                 "seam_impact",
-                lambda: handle_seam_impact(
-                    conn,
-                    target=symbol,
-                    root=project_root,
-                    direction=direction,
-                    max_depth=depth,
-                    include_tests=include_tests,
-                    verbose=verbose,
-                    limit=limit,
-                    max_bytes=max_bytes,
+                _impact_trace_args,
+                lambda: run_query(
+                    "seam_impact",
+                    lambda: handle_seam_impact(
+                        conn,
+                        target=symbol,
+                        root=project_root,
+                        direction=direction,
+                        max_depth=depth,
+                        include_tests=include_tests,
+                        verbose=verbose,
+                        limit=limit,
+                        max_bytes=max_bytes,
+                    ),
                 ),
             )
     finally:
@@ -1315,16 +1328,21 @@ def trace_cmd(
 
     try:
         # WHY: reuse handle_seam_trace for --json/--quiet/--to-file to ensure MCP/CLI parity.
+        # WS6.1: trace_run_query wraps run_query so the handler runs exactly once.
         if json_ or quiet or (to_file or to_file_path):
-            result = run_query(
+            result = trace_run_query(
                 "seam_trace",
-                lambda: handle_seam_trace(
-                    conn,
-                    source=source,
-                    target=target,
-                    root=project_root,
-                    max_depth=safe_depth,
-                    verbose=verbose,
+                {"source": source, "target": target},
+                lambda: run_query(
+                    "seam_trace",
+                    lambda: handle_seam_trace(
+                        conn,
+                        source=source,
+                        target=target,
+                        root=project_root,
+                        max_depth=safe_depth,
+                        verbose=verbose,
+                    ),
                 ),
             )
         else:
