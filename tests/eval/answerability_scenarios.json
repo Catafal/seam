@@ -120,6 +120,19 @@
       "product_gap_tags": ["dead-code/orphan suspects"]
     },
     {
+      "id": "cleanup-risk-stages-suspect-review",
+      "category": "cleanup-risk",
+      "question": "Should DataPipeline.stages be treated as a cleanup suspect?",
+      "target": {"kind": "fixture", "name": "eval-fixture"},
+      "expected_facts": [{"kind": "symbol", "value": "DataPipeline.stages"}, {"kind": "blocker", "value": "field_access_evidence"}, {"kind": "suspect_strength", "value": "weak"}],
+      "required_evidence": [{"kind": "edge_kind", "value": "reads"}, {"kind": "edge_kind", "value": "writes"}, {"kind": "removal_risk", "value": "medium"}],
+      "acceptable_caveats": ["Static graph evidence is not deletion proof."],
+      "tool_plan": [{"tool": "suspects", "args": {"mode": "symbols", "target": "DataPipeline.stages"}}],
+      "fallback_plan": [{"tool": "context_field_readers", "args": {"symbol": "DataPipeline.stages"}}, {"tool": "context_field_writers", "args": {"symbol": "DataPipeline.stages"}}],
+      "capability_tags": ["suspects", "field-access", "cleanup-risk"],
+      "product_gap_tags": []
+    },
+    {
       "id": "discovery-event-emitter",
       "category": "discovery",
       "question": "Where is the event emitter subscribe flow implemented?",

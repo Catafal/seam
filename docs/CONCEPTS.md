@@ -119,6 +119,12 @@ compiles into typed filters such as `kind`, `edge_kind`, degree thresholds,
 caller overrides, caveats, required capabilities, and suggested follow-up calls.
 See [`graph-search-recipes.md`](graph-search-recipes.md).
 
+`seam_suspects` is the cleanup-review surface built on top of those graph facts. It
+uses raw absence signals such as no incoming production edge, then deliberately adds
+blockers for public/exported APIs, static tests, routes, config/resource conventions,
+field readers and writers, inheritance relationships, imports, and contained-symbol
+usage. Its contract is "review this with caution," never "delete this."
+
 ### Why composition and field edges are conservative
 
 `holds`, `uses`, `reads`, and `writes` all follow the same **conservatism contract**: emit
@@ -216,6 +222,11 @@ the current git change set and combines changed-symbol risk with affected test f
 planner never executes tests and never claims runtime proof; it returns explicit caveats,
 omitted counts, and follow-up calls so an agent can decide what to read next and which test
 command to run.
+
+`seam_suspects` uses the same anti-false-safe posture for cleanup. A strong candidate only
+means the index saw multiple weak-connection signals and no known blockers; a weak candidate
+may still be important because dynamic dispatch, framework loading, reflection, generated
+code, or external consumers can be invisible to static extraction.
 
 ---
 
@@ -366,6 +377,10 @@ test files, and enriched target evidence independently, then reports `omitted` c
 caveat when a cap hides lower-ranked work. The planner's output is intentionally smaller
 than chaining `context_pack`, `impact`, and `affected` manually; when an agent needs exact
 source, the plan points to `seam_snippet` rather than embedding implementation bodies.
+
+`seam_suspects` caps candidates, evidence, and signals separately so cleanup review remains
+agent-readable without hiding uncertainty. When caps apply, the response includes caveats
+and follow-up calls instead of implying the visible candidates are exhaustive.
 
 ---
 

@@ -444,7 +444,7 @@ def test_mcp_tool_count_13_after_schema(tmp_path: Path) -> None:
     conn.close()
 
     tools = list(server._tool_manager._tools.keys())
-    assert len(tools) == 17, f"Expected 17 tools, got {len(tools)}: {sorted(tools)}"
+    assert len(tools) == 18, f"Expected 18 tools, got {len(tools)}: {sorted(tools)}"
 
 
 # ── MCP_E4_2: seam_impact docstring documents kind field ─────────────────────

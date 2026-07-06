@@ -336,6 +336,18 @@ SEAM_PLAN_MAX_TEST_FILES: int = int(os.getenv("SEAM_PLAN_MAX_TEST_FILES", "20"))
 # Maximum changed symbols enriched with target-style context in diff mode.
 SEAM_PLAN_MAX_ENRICHED_TARGETS: int = int(os.getenv("SEAM_PLAN_MAX_ENRICHED_TARGETS", "5"))
 
+# ── Cleanup suspect analysis configuration ───────────────────────────────────
+
+# Maximum candidates returned by seam_suspects. Cleanup review can produce many
+# weak signals in large repos, so the default is sized for agent context windows.
+SEAM_SUSPECTS_MAX_CANDIDATES: int = int(os.getenv("SEAM_SUSPECTS_MAX_CANDIDATES", "25"))
+
+# Maximum evidence references kept per suspect before reporting omitted counts.
+SEAM_SUSPECTS_MAX_EVIDENCE: int = int(os.getenv("SEAM_SUSPECTS_MAX_EVIDENCE", "5"))
+
+# Maximum reasons/blockers kept per suspect before reporting omitted counts.
+SEAM_SUSPECTS_MAX_SIGNALS: int = int(os.getenv("SEAM_SUSPECTS_MAX_SIGNALS", "8"))
+
 # ── Execution flows configuration (seam_flows) ───────────────────────────────
 
 # Max entry points returned by seam_flows in list mode.

@@ -350,7 +350,8 @@ def test_schema_mcp_registration(schema_repo) -> None:
     assert "seam_architecture" in tool_names
     assert "seam_snippet" in tool_names
     assert "seam_graph_search" in tool_names
-    assert len(tool_names) == 17
+    assert "seam_suspects" in tool_names
+    assert len(tool_names) == 18
 
 
 def test_schema_web_endpoint(schema_repo) -> None:

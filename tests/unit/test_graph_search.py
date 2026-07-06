@@ -313,7 +313,7 @@ def test_graph_search_handler_and_mcp_registration(tmp_path: Path) -> None:
     server = create_server(conn, root)
     tool_names = list(server._tool_manager._tools.keys())
     assert "seam_graph_search" in tool_names
-    assert len(tool_names) == 17
+    assert len(tool_names) == 18
 
 
 def test_graph_search_recipe_adds_transparent_metadata(tmp_path: Path) -> None:

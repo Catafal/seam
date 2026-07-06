@@ -1,4 +1,4 @@
-"""MCP server setup — FastMCP stdio transport, seventeen tools registered.
+"""MCP server setup — FastMCP stdio transport, eighteen tools registered.
 
 Creates and configures the MCP server instance.
 Tool handlers in tools.py are thin adapters; this module wires them to FastMCP.
@@ -25,6 +25,7 @@ Tools registered (Phase 0 + Phase 1 + Phase 1b + Phase 2 + Phase 3 + Phase 6 + T
     seam_snippet      — exact bounded source retrieval for one indexed symbol (Phase 11)
     seam_graph_search — typed structural graph discovery over symbols/edges (Phase 11)
     seam_plan         — bounded inspect-and-test plan for a symbol or diff (Phase 11)
+    seam_suspects     — conservative cleanup suspects, not deletion proof (Phase 11)
 
 Design:
 - One FastMCP instance per process; connection is injected at creation time.
@@ -64,6 +65,7 @@ from seam.server.tools import (
     handle_seam_search,
     handle_seam_snippet,
     handle_seam_structure,
+    handle_seam_suspects,
     handle_seam_trace,
     handle_seam_why,
 )
@@ -149,7 +151,7 @@ def _make_instrument(recorder: DiagnosticsRecorder) -> Callable[[str], Callable[
 
 
 def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
-    """Configure and return a FastMCP server with all seventeen Seam tools registered.
+    """Configure and return a FastMCP server with all eighteen Seam tools registered.
 
     Phase 0:  seam_query, seam_context, seam_search
     Phase 1:  seam_impact, seam_trace, seam_changes
@@ -161,6 +163,7 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
     Flows:    seam_flows
     Tier D11: seam_structure
     Phase 11: seam_schema, seam_architecture, seam_snippet, seam_graph_search
+    Phase 11: seam_suspects
 
     Args:
         conn: Open SQLite connection to the Seam index DB.
@@ -371,6 +374,41 @@ def create_server(conn: sqlite3.Connection, root: Path) -> FastMCP:
                 preview_limit=preview_limit,
                 regex=regex,
                 recipe=recipe,
+            )
+        )
+
+    @mcp.tool()
+    @_instrument("seam_suspects")
+    def seam_suspects(
+        mode: str = "symbols",
+        target: str | None = None,
+        file_pattern: str | None = None,
+        kind: str | None = None,
+        language: str | None = None,
+        visibility: str | None = None,
+        is_exported: bool | None = None,
+        test_scope: str = "source",
+        limit: int | None = None,
+    ) -> Any:
+        """Find conservative cleanup suspects without claiming deletion safety.
+
+        Use this before removing apparently unused symbols or files. Results are
+        review leads with reasons, blockers, caveats, and follow-up calls; absence
+        of indexed usage is never treated as proof that code is safe to delete.
+        """
+        return _finalize(
+            handle_seam_suspects(
+                conn,
+                root,
+                mode=mode,
+                target=target,
+                file_pattern=file_pattern,
+                kind=kind,
+                language=language,
+                visibility=visibility,
+                is_exported=is_exported,
+                test_scope=test_scope,
+                limit=limit,
             )
         )
 
