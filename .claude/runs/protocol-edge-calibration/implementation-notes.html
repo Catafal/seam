@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Protocol Edge Calibration · Implementation Notes</title>
+  <style>
+    body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; max-width: 880px;
+           margin: 40px auto; padding: 0 24px; color: #292524; line-height: 1.55; }
+    h1 { border-bottom: 3px solid #0181c9; padding-bottom: 8px; }
+    h2 { margin-top: 36px; color: #0181c9; border-bottom: 1px solid #e5e5e5; padding-bottom: 4px; }
+    code { background: #f5f5f4; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+    .decision { background: #f0f9ff; border-left: 4px solid #0181c9; padding: 12px 16px; margin: 14px 0; }
+    .deviation { background: #fffbeb; border-left: 4px solid #d97706; padding: 12px 16px; margin: 14px 0; }
+    .tradeoff { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 12px 16px; margin: 14px 0; }
+    .open { background: #fef2f2; border-left: 4px solid #dc2626; padding: 12px 16px; margin: 14px 0; }
+    .tag { display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase;
+           letter-spacing: 0.5px; padding: 2px 8px; border-radius: 10px; color: #fff; }
+    .t-dec { background: #0181c9; } .t-dev { background: #d97706; }
+    .t-trade { background: #7c3aed; } .t-open { background: #dc2626; }
+    ul { margin-top: 6px; } .meta { color: #78716c; font-size: 0.9em; }
+    .done { color: #16a34a; font-weight: 600; }
+    table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+    th, td { border: 1px solid #e5e5e5; padding: 6px 10px; text-align: left; font-size: 0.92em; }
+    th { background: #fafaf9; }
+  </style>
+</head>
+<body>
+  <h1>Protocol Edge Calibration</h1>
+  <p class="meta">Branch <code>codex/protocol-edge-calibration</code> · started 2026-07-06 · parent issue #418, implementation issues #419-#421.</p>
+  <p>This is a <strong>living document</strong> capturing how the implementation interprets,
+     diverges from, or trades off against the spec. Updated as each slice lands.</p>
+
+  <h2>The spec, in one line</h2>
+  <p>Calibrate the answerability benchmark and coherence checks so shipped route-node and
+     <code>http_calls</code> evidence is treated as passing protocol behavior. The goal is
+     to stop stale route-capability expectations from driving a protocol-roadmap
+     recommendation while preserving honest failure signals for real missing evidence.</p>
+
+  <!-- ============================================================= -->
+  <!-- Add a callout block per item. Delete the example, keep the shape. -->
+  <!-- ============================================================= -->
+
+  <h2>Design decisions <span class="meta">(spec was ambiguous → here's the call I made)</span></h2>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Use the existing benchmark harness as the public interface.</strong>
+    The PRD is about answerability calibration, not extractor internals, so tests will
+    exercise scenario scoring, report summaries, and coherence checks through existing
+    eval entry points rather than private route extraction helpers.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Keep #419-#421 as the canonical child issues.</strong>
+    Four duplicate issues were accidentally created during concurrent publishing
+    (#422-#425). They were closed as duplicates, and implementation will target the
+    already-present vertical slices #419, #420, and #421.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Use per-scenario output budgets for known bounded protocol answers.</strong>
+    The route-caller scenario returned complete facts and evidence but exceeded the global
+    500-token default by a small amount. A scenario-local budget keeps the default strict for
+    most cases while avoiding a false protocol-extraction failure for a verified graph-search
+    answer.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Keep protocol coherence schema-based in this slice.</strong>
+    The implemented guard compares scenario capability expectations with the fixture schema.
+    Graph-search evidence coherence is intentionally not part of this pass because the stale
+    failure being fixed is a schema-capability contradiction, and adding graph-search replay
+    would broaden the scope beyond calibration.</div>
+
+  <h2>Deviations <span class="meta">(intentional departures from the spec/convention)</span></h2>
+
+  <div class="deviation"><span class="tag t-dev">Deviation</span> <strong>No new HTTP extractor scope.</strong>
+    The live worktree schema reports populated route nodes and <code>http_calls</code>
+    evidence, so this implementation deliberately avoids rebuilding extraction and focuses
+    on stale scenario expectations, failure classification, and coherence protection.</div>
+
+  <h2>Tradeoffs <span class="meta">(alternatives considered)</span></h2>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>Positive route scenario vs. unsupported-honest route scenario.</strong>
+    Keeping the old unsupported route scenario would preserve a deferral signal but make the
+    benchmark contradict the fixture. Updating it to positive route evidence gives future
+    agents a truthful regression guard for shipped protocol support.</div>
+
+  <h2>Open questions <span class="meta">(want your confirm/revise)</span></h2>
+
+  <div class="open"><span class="tag t-open">Open</span> <strong>None currently blocking.</strong>
+    The implementation assumes protocol calibration should pass the current fixture and move
+    the roadmap recommendation away from protocol unless another non-passing protocol
+    scenario remains.</div>
+
+  <h2>Build / verification</h2>
+  <ul>
+    <li>Initial checks: <code>uv run seam init</code>, <code>uv run seam schema --json</code>, and
+        impact checks for <code>score_scenario</code>, <code>summarize_results</code>, and
+        <code>check_answerability_docs_coherence</code>.</li>
+    <li>Focused eval checks: 20 tests passing across <code>tests/eval/test_answerability.py</code>
+        and <code>tests/eval/test_answerability_coherence.py</code>.</li>
+    <li>Full eval checks: 69 tests passing under <code>uv run pytest tests/eval -q</code>.</li>
+    <li>Static checks: <code>uv run ruff check ...</code>, <code>uv run mypy ...</code>, and
+        <code>git diff --check</code> passed for the changed Python/docs surface.</li>
+    <li>Project gate: <code>make gate</code> passed with ruff, mypy over
+        <code>seam/</code>, and the full pytest suite. The only emitted warning was the
+        existing Starlette/httpx deprecation warning from the test client dependency.</li>
+    <li>Answerability report now shows no top failure gaps, protocol 2/2 passing, no
+        coherence findings, and <code>infra graph</code> as demand-gated roadmap pressure.</li>
+    <li>Review agents completed: docs/comment review found stale PRD wording and an
+        over-broad coherence promise, both corrected; code/QA review found a custom-fixture
+        coherence bug, corrected with a regression test.</li>
+    <li><code>make eval-answerability</code> passes but still prints the existing
+        fixture-path <code>load_import_mappings</code> warning even after <code>seam init</code>;
+        this is documented as a fixture warning, not a stale worktree index.</li>
+    <li>No migrations, new dependencies, runtime probes, or new MCP tools are planned.</li>
+  </ul>
+
+  <h2>Progress</h2>
+  <table>
+    <tr><th>Slice</th><th>What</th><th>Status</th></tr>
+    <tr><td>1</td><td>#419 positive route capability and caller scoring</td><td class="done">✓ done</td></tr>
+    <tr><td>2</td><td>#420 capability expectation coherence guard</td><td class="done">✓ done</td></tr>
+    <tr><td>3</td><td>#421 roadmap signal docs and acceptance</td><td class="done">✓ done</td></tr>
+  </table>
+</body>
+</html>

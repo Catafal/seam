@@ -9,7 +9,9 @@ import pytest
 from tests.eval.answerability_harness import (
     AnswerabilityRunner,
     ScenarioValidationError,
+    SeamFixtureAdapter,
     ToolStepResult,
+    build_fixture_index_context,
     load_scenarios,
     load_scenarios_from_dict,
     normalize_evidence,
@@ -17,7 +19,7 @@ from tests.eval.answerability_harness import (
     score_scenario,
     summarize_results,
 )
-from tests.eval.answerability_report import run_answerability_benchmark
+from tests.eval.answerability_report import FIXTURE_DIR, SCENARIO_PATH, run_answerability_benchmark
 
 
 class FakeAdapter:
@@ -288,6 +290,69 @@ def test_report_treats_failing_regression_coverage_as_failure_gap() -> None:
     assert summary["recommendation"]["kind"] == "failure_gap"
 
 
+def test_score_respects_scenario_output_token_budget() -> None:
+    scenario = load_scenarios_from_dict(
+        {
+            "version": "test",
+            "scenarios": [
+                _scenario(
+                    expected_facts=[{"kind": "symbol", "value": "route_handler"}],
+                    required_evidence=[{"kind": "provenance", "value": "http-literal"}],
+                    product_gap_tags=[],
+                    max_estimated_tokens=700,
+                )
+            ],
+        }
+    )[0]
+    result = score_scenario(
+        scenario,
+        [
+            ToolStepResult.from_payload(
+                "fake_symbol",
+                {},
+                {
+                    "symbol": "route_handler",
+                    "provenance": "http-literal",
+                    "padding": "x" * 2400,
+                },
+                elapsed_ms=1.0,
+            )
+        ],
+    )
+
+    assert result.estimated_tokens > 500
+    assert result.scores["output_cost"] == 2
+    assert result.status == "passed"
+
+
+def test_protocol_route_node_capability_passes_when_fixture_routes_are_populated() -> None:
+    scenarios = load_scenarios(SCENARIO_PATH)
+    scenario = next(item for item in scenarios if item.id == "protocol-route-node-capability")
+    with build_fixture_index_context(FIXTURE_DIR) as fixture_index:
+        runner = AnswerabilityRunner(SeamFixtureAdapter(fixture_index.conn), FIXTURE_DIR)
+        result = runner.run(scenario)
+
+    assert result.status == "passed"
+    assert result.scores["answer"] == 2
+    assert result.scores["evidence"] == 2
+    assert result.missing_facts == []
+    assert result.missing_evidence == []
+
+
+def test_protocol_route_caller_discovery_passes_with_complete_route_evidence() -> None:
+    scenarios = load_scenarios(SCENARIO_PATH)
+    scenario = next(item for item in scenarios if item.id == "protocol-http-route-caller-discovery")
+    with build_fixture_index_context(FIXTURE_DIR) as fixture_index:
+        runner = AnswerabilityRunner(SeamFixtureAdapter(fixture_index.conn), FIXTURE_DIR)
+        result = runner.run(scenario)
+
+    assert result.status == "passed"
+    assert result.scores["answer"] == 2
+    assert result.scores["evidence"] == 2
+    assert result.missing_facts == []
+    assert result.missing_evidence == []
+
+
 def test_maintained_scenario_suite_runs_against_fixture() -> None:
     summary, markdown = run_answerability_benchmark()
 
@@ -297,5 +362,6 @@ def test_maintained_scenario_suite_runs_against_fixture() -> None:
     assert summary["fixture_hash"] == "3207085f908caad8"
     assert summary["totals"]["scenarios"] == 26
     assert summary["totals"]["average_score"] >= 1.8
-    assert "protocol-edge quality" in summary["top_failure_gaps"]
+    assert "protocol-edge quality" not in summary["top_failure_gaps"]
+    assert summary["categories"]["protocol"]["passed"] == 2
     assert "infra-kubernetes-capability-honesty" in markdown

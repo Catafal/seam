@@ -67,6 +67,7 @@ class Scenario:
     failure_gap_tags: list[str]
     roadmap_pressure_tags: list[str]
     regression_tags: list[str]
+    max_estimated_tokens: int
 
 
 @dataclass(frozen=True)
@@ -373,7 +374,10 @@ def score_scenario(scenario: Scenario, tool_results: list[ToolStepResult]) -> Sc
     byte_count = sum(result.byte_count for result in tool_results)
     estimated_tokens = sum(result.estimated_tokens for result in tool_results)
     elapsed_ms = round(sum(result.elapsed_ms for result in tool_results), 3)
-    output_cost_score = 2 if estimated_tokens <= 500 else 1 if estimated_tokens <= 2000 else 0
+    output_budget = scenario.max_estimated_tokens
+    output_cost_score = (
+        2 if estimated_tokens <= output_budget else 1 if estimated_tokens <= 2000 else 0
+    )
     round_trip_score = 2 if len(tool_results) <= 2 else 1 if len(tool_results) <= 5 else 0
     latency_score = 2 if elapsed_ms <= 500 else 1 if elapsed_ms <= 2000 else 0
     scores = {
@@ -605,6 +609,7 @@ def _scenario_from_dict(raw: dict[str, Any]) -> Scenario:
         failure_gap_tags=[str(item) for item in raw.get("failure_gap_tags", [])],
         roadmap_pressure_tags=[str(item) for item in raw.get("roadmap_pressure_tags", [])],
         regression_tags=[str(item) for item in raw.get("regression_tags", [])],
+        max_estimated_tokens=int(raw.get("max_estimated_tokens", 500)),
     )
 
 

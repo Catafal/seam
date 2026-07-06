@@ -6,8 +6,10 @@ from pathlib import Path
 from tests.eval.answerability_coherence import (
     check_answerability_docs_coherence,
     check_capability_architecture_coherence,
+    check_protocol_scenario_coherence,
     check_tracker_issue_coherence,
 )
+from tests.eval.answerability_report import run_answerability_coherence
 
 
 def test_benchmark_docs_metadata_drift_is_reported(tmp_path: Path) -> None:
@@ -121,3 +123,76 @@ def test_tracker_issue_coherence_classifies_implemented_and_deferred_prds() -> N
     ]
     assert findings[0].suggested_fix == "Close or update #371; local implementation evidence exists."
     assert findings[1].suggested_fix == "Keep #316 open only as demand-gated roadmap pressure."
+
+
+def test_protocol_scenario_coherence_flags_stale_negative_route_capability() -> None:
+    catalog = {
+        "scenarios": [
+            {
+                "id": "protocol-route-node-capability",
+                "category": "protocol",
+                "expected_facts": [{"kind": "capability", "value": "has_route_nodes:false"}],
+                "required_evidence": [{"kind": "warning", "value": "UNSUPPORTED"}],
+                "tool_plan": [{"tool": "schema_capability", "args": {"capability": "has_route_nodes"}}],
+            }
+        ]
+    }
+    schema = {"capabilities": {"has_route_nodes": True}, "counts": {"routes": 1}}
+
+    findings = check_protocol_scenario_coherence(catalog, schema)
+
+    assert [finding.code for finding in findings] == [
+        "protocol-scenario-capability-contradiction"
+    ]
+    assert findings[0].severity == "error"
+    assert "protocol-route-node-capability" in findings[0].evidence
+    assert "has_route_nodes:false" in findings[0].evidence
+    assert "has_route_nodes:true" in findings[0].suggested_fix
+
+
+def test_answerability_coherence_uses_the_requested_fixture_dir(tmp_path: Path) -> None:
+    scenario_path = tmp_path / "answerability_scenarios.json"
+    docs_path = tmp_path / "agent-answerability-benchmark.md"
+    fixture_dir = tmp_path / "fixture"
+    fixture_dir.mkdir()
+    (fixture_dir / "plain.py").write_text("def plain() -> None:\n    pass\n", encoding="utf-8")
+    scenario_path.write_text(
+        json.dumps(
+            {
+                "version": "2026-07-06",
+                "fixture_hash": "custom",
+                "scenarios": [
+                    {
+                        "id": "protocol-route-node-capability",
+                        "category": "protocol",
+                        "expected_facts": [
+                            {"kind": "capability", "value": "has_route_nodes:false"}
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    docs_path.write_text(
+        "\n".join(
+            [
+                "> Scenario set: `2026-07-06`.",
+                "> Current fixture: `tests/eval/fixtures` with SHA `custom`.",
+                "The maintained scenario set contains 1 natural-language questions.",
+                "Run `make eval-answerability`.",
+                "Run `uv run python -m tests.eval.answerability_report --json`.",
+                "Run `uv run python -m tests.eval.answerability_report --markdown-out out.md`.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        run_answerability_coherence(
+            scenario_path=scenario_path,
+            docs_path=docs_path,
+            fixture_dir=fixture_dir,
+        )
+        == []
+    )

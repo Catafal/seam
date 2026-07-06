@@ -307,21 +307,40 @@
       ],
       "fallback_plan": [{"tool": "grep", "args": {"query": "requests.request"}}],
       "capability_tags": ["graph-search", "http-calls", "routes"],
-      "product_gap_tags": []
+      "product_gap_tags": [],
+      "regression_tags": ["protocol-edge calibration"],
+      "max_estimated_tokens": 750
     },
     {
       "id": "protocol-route-node-capability",
       "category": "protocol",
       "question": "Can Seam represent route nodes in this fixture?",
       "target": {"kind": "fixture", "name": "eval-fixture"},
-      "expected_facts": [{"kind": "capability", "value": "has_route_nodes:false"}],
-      "required_evidence": [{"kind": "warning", "value": "UNSUPPORTED"}],
-      "acceptable_caveats": ["has_route_nodes is unsupported or empty in this fixture."],
-      "tool_plan": [{"tool": "schema_capability", "args": {"capability": "has_route_nodes"}}],
+      "expected_facts": [
+        {"kind": "capability", "value": "has_route_nodes:true"},
+        {"kind": "symbol", "value": "ROUTE GET /api/accounts/{param}/status"}
+      ],
+      "required_evidence": [
+        {"kind": "capability", "value": "has_route_nodes:true"},
+        {"kind": "file", "value": "protocol.py"}
+      ],
+      "acceptable_caveats": [],
+      "tool_plan": [
+        {"tool": "schema_capability", "args": {"capability": "has_route_nodes"}},
+        {
+          "tool": "graph_search",
+          "args": {
+            "recipe": "route-entrypoints",
+            "name_pattern": "*accounts*",
+            "limit": 5
+          }
+        }
+      ],
       "fallback_plan": [{"tool": "grep", "args": {"query": "@app.get"}}],
       "capability_tags": ["schema", "routes"],
       "product_gap_tags": [],
-      "failure_gap_tags": ["protocol-edge quality"]
+      "regression_tags": ["protocol-edge calibration"],
+      "max_estimated_tokens": 750
     },
     {
       "id": "architecture-hotspot-processor-classes",

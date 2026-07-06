@@ -12,7 +12,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-from tests.eval.answerability_coherence import check_answerability_docs_coherence
+from tests.eval.answerability_coherence import (
+    check_answerability_docs_coherence,
+    check_protocol_scenario_coherence,
+)
 from tests.eval.answerability_harness import (
     AnswerabilityRunner,
     SeamFixtureAdapter,
@@ -62,8 +65,14 @@ def run_answerability_coherence(
     *,
     scenario_path: Path = SCENARIO_PATH,
     docs_path: Path = DOCS_PATH,
+    fixture_dir: Path = FIXTURE_DIR,
 ) -> list[dict[str, str]]:
+    catalog = json.loads(scenario_path.read_text(encoding="utf-8"))
     findings = check_answerability_docs_coherence(scenario_path, docs_path)
+    with build_fixture_index_context(fixture_dir) as fixture_index:
+        adapter = SeamFixtureAdapter(fixture_index.conn)
+        schema = adapter.execute("schema", {}, fixture_dir).payload
+    findings.extend(check_protocol_scenario_coherence(catalog, schema))
     return [
         {
             "severity": finding.severity,

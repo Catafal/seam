@@ -34,6 +34,11 @@ The runner executes the tool plan against the deterministic eval fixture, normal
 the returned evidence, scores the scenario on a 0-2 rubric, and emits a Markdown
 and machine-readable summary.
 
+Scenarios may set `max_estimated_tokens` when a correct evidence bundle is
+slightly larger than the default 500-token budget. This is a scenario-level
+budget, not a free pass for noisy output; use it only when the expected answer
+needs multiple independent evidence lines to be useful to an agent.
+
 ## What This Does Not Measure
 
 - It is not a live agent-session A/B.
@@ -57,13 +62,20 @@ The maintained scenario set contains 26 natural-language questions across:
 - change-safety;
 - cleanup and risk;
 - architecture;
-- protocol capability honesty;
+- protocol route and HTTP-call capability coverage;
 - infra capability honesty.
 
 Unsupported protocol or infra capability scenarios can still pass when Seam is
-honest. For example, the fixture has no HTTP-call or infra graph evidence, so a
-correct answer is not "no risk"; it is an explicit unsupported/empty capability
-with an acceptable caveat.
+honest. For example, the fixture has no infra graph evidence, so a correct
+answer is not "no risk"; it is an explicit unsupported/empty capability with an
+acceptable caveat.
+
+Protocol scenarios now exercise shipped behavior, not absence. Route inventory
+and HTTP caller evidence are intentionally scored as separate capabilities: route
+nodes prove Seam can enumerate server entrypoints, while HTTP-call caller
+evidence proves Seam can trace client-side protocol usage back to the calling
+symbol. A protocol scenario that expects `has_route_nodes:false` against a
+fixture whose schema reports route support is stale and should fail coherence.
 
 ## Scoring
 
@@ -123,6 +135,12 @@ To include local docs/scenario coherence checks:
 uv run python -m tests.eval.answerability_report --coherence --json
 ```
 
+The coherence pass also compares protocol capability expectations against the
+fixture schema. If a protocol scenario says a capability is absent while the
+schema exposes it as present, the report emits
+`protocol-scenario-capability-contradiction` so stale negative fixtures cannot
+keep producing roadmap work after the feature ships.
+
 ## Adding Scenarios
 
 Edit `tests/eval/answerability_scenarios.json`.
@@ -152,3 +170,8 @@ When scores are high, roadmap-pressure labels remain visible but do not outrank
 real failing answerability gaps. This keeps Kubernetes/Kustomize and similar
 competitor-inspired ideas demand-gated until the benchmark shows that agents are
 actually failing those daily questions.
+
+As of the protocol calibration pass, the current fixture report has no top
+failing answerability gaps. Protocol scenarios are regression coverage for shipped
+route and HTTP-call behavior, while `infra graph` remains roadmap pressure rather
+than an implementation mandate.
