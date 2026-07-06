@@ -381,6 +381,7 @@ def describe_schema(
         "symbol_kinds": _group_counts(conn, "symbols", "kind"),
         "edge_kinds": _group_counts(conn, "edges", "kind"),
         "edge_confidence": _group_counts(conn, "edges", "confidence"),
+        "edge_provenance": _group_counts(conn, "edges", "provenance"),
         "synthesized_edges": _group_counts(
             conn,
             "edges",
@@ -397,6 +398,14 @@ def describe_schema(
     }
     symbols_columns = _column_names(conn, "symbols")
     edges_columns = _column_names(conn, "edges")
+    exact_receiver_edges = any(
+        breakdowns["edge_provenance"].get(provenance, 0) > 0
+        for provenance in (
+            "python-receiver-type",
+            "typescript-receiver-type",
+            "javascript-receiver-type",
+        )
+    )
     capabilities = {
         "has_clusters": counts["clusters"] > 0,
         "has_comments": counts["comments"] > 0,
@@ -430,6 +439,8 @@ def describe_schema(
         "has_signature_column": "signature" in symbols_columns,
         "has_synthesized_by_column": "synthesized_by" in edges_columns,
         "has_edge_provenance_column": "provenance" in edges_columns,
+        "has_exact_receiver_provenance": "provenance" in edges_columns,
+        "has_exact_receiver_edges": exact_receiver_edges,
     }
 
     result: dict[str, Any] = {

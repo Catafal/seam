@@ -34,8 +34,14 @@ def _sym(name: str, file: str, kind: str = "function", line: int = 1) -> Symbol:
     )
 
 
-def _edge(source: str, target: str, file: str, kind: str = "call") -> Edge:
-    return Edge(
+def _edge(
+    source: str,
+    target: str,
+    file: str,
+    kind: str = "call",
+    provenance: str | None = None,
+) -> Edge:
+    edge = Edge(
         source=source,
         target=target,
         kind=kind,
@@ -43,6 +49,9 @@ def _edge(source: str, target: str, file: str, kind: str = "call") -> Edge:
         line=1,
         confidence="EXTRACTED",
     )
+    if provenance is not None:
+        edge["provenance"] = provenance
+    return edge
 
 
 def _make_v11_db(db_path: Path) -> None:
@@ -132,7 +141,7 @@ def schema_repo() -> tuple[sqlite3.Connection, Path, Path]:
                 _sym("ROUTE GET /health", str(src), kind="route", line=1),
             ],
             [
-                _edge("entry", "helper", str(src)),
+                _edge("entry", "helper", str(src), provenance="python-receiver-type"),
                 _edge("entry", "ROUTE GET /health", str(src), kind="http_calls"),
                 _edge("entry", "ValueError", str(src), kind="raises"),
                 _edge("entry", "Exception", str(src), kind="catches"),
@@ -209,6 +218,7 @@ def test_describe_schema_summary_reports_capabilities(schema_repo, monkeypatch) 
     assert result["breakdowns"]["edge_kinds"]["catches"] == 1
     assert result["breakdowns"]["edge_kinds"]["http_calls"] == 1
     assert result["breakdowns"]["edge_confidence"]["EXTRACTED"] == 4
+    assert result["breakdowns"]["edge_provenance"]["python-receiver-type"] == 1
     assert result["capabilities"]["has_clusters"] is True
     assert result["capabilities"]["has_embeddings"] is True
     assert result["capabilities"]["embedding_model_matches"] is True
@@ -217,6 +227,9 @@ def test_describe_schema_summary_reports_capabilities(schema_repo, monkeypatch) 
     assert result["capabilities"]["has_route_nodes"] is True
     assert result["capabilities"]["has_http_calls"] is True
     assert result["capabilities"]["has_exception_edges"] is True
+    assert result["capabilities"]["has_edge_provenance_column"] is True
+    assert result["capabilities"]["has_exact_receiver_provenance"] is True
+    assert result["capabilities"]["has_exact_receiver_edges"] is True
     assert result["freshness"]["stale"] is False
     assert any(t["name"] == "seam_schema" for t in result["tools"])
     assert any(t["name"] == "seam_architecture" for t in result["tools"])
@@ -229,6 +242,23 @@ def test_describe_schema_summary_reports_capabilities(schema_repo, monkeypatch) 
     assert any("seam_snippet" in call for call in result["recommended_next_calls"])
     assert result["recommended_next_calls"]
     assert "tables" not in result
+
+
+def test_describe_schema_distinguishes_exact_receiver_support_from_population(
+    schema_repo,
+) -> None:
+    """A current index can support exact receiver provenance even with no matching edges."""
+    from seam.query.schema import describe_schema
+
+    conn, root, _ = schema_repo
+    conn.execute("UPDATE edges SET provenance = NULL WHERE provenance = 'python-receiver-type'")
+    conn.commit()
+
+    result = describe_schema(conn, root=root)
+
+    assert result["capabilities"]["has_edge_provenance_column"] is True
+    assert result["capabilities"]["has_exact_receiver_provenance"] is True
+    assert result["capabilities"]["has_exact_receiver_edges"] is False
 
 
 def test_describe_schema_verbose_reports_missing_optional_table(schema_repo) -> None:

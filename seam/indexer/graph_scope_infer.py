@@ -59,6 +59,82 @@ _PY_SELF_NAMES: frozenset[str] = frozenset({"self", "cls"})
 _TS_SELF_NAMES: frozenset[str] = frozenset({"this"})
 
 
+# ── Shared: local import alias canonicalization ──────────────────────────────
+
+
+def _canonical_type_name(
+    type_name: str | None,
+    type_aliases: dict[str, str] | None,
+    builtin_types: frozenset[str] | None = None,
+) -> str | None:
+    """Normalize a local annotation name through same-file import aliases."""
+    if not type_name:
+        return None
+    if type_aliases is None:
+        canonical = type_name
+    else:
+        canonical = type_aliases.get(type_name, type_name)
+    if builtin_types is not None and canonical in builtin_types:
+        return None
+    return canonical
+
+
+def collect_python_type_aliases(root: Node) -> dict[str, str]:
+    """Collect `from module import Type as Local` aliases for annotation resolution."""
+    aliases: dict[str, str] = {}
+    try:
+        for stmt in root.children:
+            if stmt.type != "import_from_statement":
+                continue
+            for child in stmt.children:
+                if child.type != "aliased_import":
+                    continue
+                name_node = child.child_by_field_name("name")
+                if name_node is None:
+                    continue
+                imported = _text(name_node).split(".")[-1]
+                identifiers = [c for c in child.children if c.type == "identifier"]
+                if imported and identifiers:
+                    aliases[_text(identifiers[-1])] = imported
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("collect_python_type_aliases: failed: %r", exc)
+    return aliases
+
+
+def collect_typescript_type_aliases(root: Node) -> dict[str, str]:
+    """Collect named import aliases such as `import { Client as C }`."""
+    aliases: dict[str, str] = {}
+    try:
+        for stmt in root.children:
+            if stmt.type != "import_statement":
+                continue
+            for spec in _walk_named(stmt):
+                if spec.type != "import_specifier":
+                    continue
+                name_node = spec.child_by_field_name("name")
+                if name_node is None:
+                    continue
+                imported = _text(name_node)
+                identifiers = [c for c in spec.children if c.type == "identifier"]
+                if imported and len(identifiers) >= 2:
+                    aliases[_text(identifiers[-1])] = imported
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("collect_typescript_type_aliases: failed: %r", exc)
+    return aliases
+
+
+def _walk_named(node: Node) -> list[Node]:
+    """Return a small pre-order list of named descendants."""
+    out: list[Node] = []
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if current.is_named:
+            out.append(current)
+        stack.extend(reversed(current.children))
+    return out
+
+
 # ── Shared: resolve a receiver expression to a type name ─────────────────────
 
 
@@ -183,14 +259,43 @@ def _py_plain_type_from_annotation(ann_node: Node) -> str | None:
 
 # Python built-in type names that are NOT user classes. Seeing one of these as
 # the annotation means we must NOT try to resolve .method() calls on it.
-_PY_BUILTIN_TYPES: frozenset[str] = frozenset({
-    "int", "float", "str", "bytes", "bool", "None", "object",
-    "list", "dict", "tuple", "set", "frozenset",
-    "List", "Dict", "Tuple", "Set", "FrozenSet", "Optional", "Union",
-    "Any", "Type", "Callable", "Generator", "Iterator", "Iterable",
-    "Sequence", "Mapping", "MutableMapping", "MutableSequence",
-    "ClassVar", "Final", "Literal", "TypeVar",
-})
+_PY_BUILTIN_TYPES: frozenset[str] = frozenset(
+    {
+        "int",
+        "float",
+        "str",
+        "bytes",
+        "bool",
+        "None",
+        "object",
+        "list",
+        "dict",
+        "tuple",
+        "set",
+        "frozenset",
+        "List",
+        "Dict",
+        "Tuple",
+        "Set",
+        "FrozenSet",
+        "Optional",
+        "Union",
+        "Any",
+        "Type",
+        "Callable",
+        "Generator",
+        "Iterator",
+        "Iterable",
+        "Sequence",
+        "Mapping",
+        "MutableMapping",
+        "MutableSequence",
+        "ClassVar",
+        "Final",
+        "Literal",
+        "TypeVar",
+    }
+)
 
 
 def _py_constructor_class(value_node: Node) -> str | None:
@@ -214,7 +319,10 @@ def _py_constructor_class(value_node: Node) -> str | None:
 # ── Python: field pre-scan ────────────────────────────────────────────────────
 
 
-def scan_class_fields_python(class_node: Node) -> dict[str, str]:
+def scan_class_fields_python(
+    class_node: Node,
+    type_aliases: dict[str, str] | None = None,
+) -> dict[str, str]:
     """Pre-scan a Python class_definition body for field-level type bindings.
 
     WHY a pre-scan: methods may reference a field before its declaration in source
@@ -224,6 +332,7 @@ def scan_class_fields_python(class_node: Node) -> dict[str, str]:
       field: Type          (annotated class variable, no value)
       field: Type = ...    (annotated class variable with value)
       field = ClassName()  (plain assignment with constructor; conservative)
+      self.field: Type = ... / self.field = ClassName() inside __init__
 
     Returns name → type dict for direct class body members only (not nested classes).
     Never raises.
@@ -234,13 +343,23 @@ def scan_class_fields_python(class_node: Node) -> dict[str, str]:
         if body is None:
             return out
         for stmt in body.children:
-            _py_scan_field_stmt(stmt, out)
+            _py_scan_field_stmt(stmt, out, type_aliases)
+            init_fn = _py_get_init_function(stmt)
+            if init_fn is not None:
+                init_body = init_fn.child_by_field_name("body")
+                if init_body is not None:
+                    for init_stmt in init_body.children:
+                        _py_scan_self_field_stmt(init_stmt, out, type_aliases)
     except Exception as exc:  # noqa: BLE001
         logger.debug("scan_class_fields_python: failed: %r", exc)
     return out
 
 
-def _py_scan_field_stmt(stmt: Node, out: dict[str, str]) -> None:
+def _py_scan_field_stmt(
+    stmt: Node,
+    out: dict[str, str],
+    type_aliases: dict[str, str] | None = None,
+) -> None:
     """Record a single class body statement's field binding if it has a plain type.
 
     Handles:
@@ -260,15 +379,60 @@ def _py_scan_field_stmt(stmt: Node, out: dict[str, str]) -> None:
                 # Check for type annotation field first (covers x: Type and x: Type = val)
                 ann = inner.child_by_field_name("type")
                 if ann is not None:
-                    _py_record_annotated_assignment(inner, out)
+                    _py_record_annotated_assignment(inner, out, type_aliases)
                 else:
                     # Plain assignment — check if RHS is a constructor call.
-                    _py_record_constructor_assignment(inner, out)
+                    _py_record_constructor_assignment(inner, out, type_aliases)
     except Exception as exc:  # noqa: BLE001
         logger.debug("_py_scan_field_stmt: failed: %r", exc)
 
 
-def _py_record_annotated_assignment(node: Node, out: dict[str, str]) -> None:
+def _py_scan_self_field_stmt(
+    stmt: Node,
+    out: dict[str, str],
+    type_aliases: dict[str, str] | None = None,
+) -> None:
+    """Record `self.field` bindings from an __init__ statement."""
+    try:
+        if stmt.type != "expression_statement" or not stmt.children:
+            return
+        inner = stmt.children[0]
+        if inner.type not in ("assignment", "annotated_assignment"):
+            return
+        left = inner.child_by_field_name("left")
+        if left is None or left.type != "attribute":
+            return
+        obj = left.child_by_field_name("object")
+        attr = left.child_by_field_name("attribute")
+        if obj is None or attr is None or _text(obj) not in _PY_SELF_NAMES:
+            return
+        field_name = _text(attr)
+        if not field_name:
+            return
+        ann = inner.child_by_field_name("type")
+        if ann is not None:
+            type_name = _canonical_type_name(
+                _py_plain_type_from_annotation(ann), type_aliases, _PY_BUILTIN_TYPES
+            )
+            if type_name:
+                out[field_name] = type_name
+            return
+        right = inner.child_by_field_name("right")
+        if right is not None:
+            cls = _canonical_type_name(
+                _py_constructor_class(right), type_aliases, _PY_BUILTIN_TYPES
+            )
+            if cls:
+                out[field_name] = cls
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_py_scan_self_field_stmt: failed: %r", exc)
+
+
+def _py_record_annotated_assignment(
+    node: Node,
+    out: dict[str, str],
+    type_aliases: dict[str, str] | None = None,
+) -> None:
     """Record binding from `name: Type` or `name: Type = value`.
 
     Handles both `annotated_assignment` and `assignment` nodes with a `type` field.
@@ -287,14 +451,20 @@ def _py_record_annotated_assignment(node: Node, out: dict[str, str]) -> None:
         name = _text(left)
         if not name:
             return
-        type_name = _py_plain_type_from_annotation(ann)
+        type_name = _canonical_type_name(
+            _py_plain_type_from_annotation(ann), type_aliases, _PY_BUILTIN_TYPES
+        )
         if type_name:
             out[name] = type_name
     except Exception as exc:  # noqa: BLE001
         logger.debug("_py_record_annotated_assignment: failed: %r", exc)
 
 
-def _py_record_constructor_assignment(node: Node, out: dict[str, str]) -> None:
+def _py_record_constructor_assignment(
+    node: Node,
+    out: dict[str, str],
+    type_aliases: dict[str, str] | None = None,
+) -> None:
     """Record binding from `name = ClassName()`.
 
     tree-sitter Python: assignment has left + right children.
@@ -309,7 +479,7 @@ def _py_record_constructor_assignment(node: Node, out: dict[str, str]) -> None:
         name = _text(left)
         if not name:
             return
-        cls = _py_constructor_class(right)
+        cls = _canonical_type_name(_py_constructor_class(right), type_aliases, _PY_BUILTIN_TYPES)
         if cls:
             out[name] = cls
     except Exception as exc:  # noqa: BLE001
@@ -319,7 +489,11 @@ def _py_record_constructor_assignment(node: Node, out: dict[str, str]) -> None:
 # ── Python: per-function scope ────────────────────────────────────────────────
 
 
-def record_py_param_types(func_node: Node, var_types: dict[str, str]) -> None:
+def record_py_param_types(
+    func_node: Node,
+    var_types: dict[str, str],
+    type_aliases: dict[str, str] | None = None,
+) -> None:
     """Bind each function parameter's name → declared type into var_types.
 
     Handles:
@@ -334,12 +508,16 @@ def record_py_param_types(func_node: Node, var_types: dict[str, str]) -> None:
         if params_node is None:
             return
         for param in params_node.children:
-            _py_record_single_param(param, var_types)
+            _py_record_single_param(param, var_types, type_aliases)
     except Exception as exc:  # noqa: BLE001
         logger.debug("record_py_param_types: failed: %r", exc)
 
 
-def _py_record_single_param(param: Node, var_types: dict[str, str]) -> None:
+def _py_record_single_param(
+    param: Node,
+    var_types: dict[str, str],
+    type_aliases: dict[str, str] | None = None,
+) -> None:
     """Record name → type for a single parameter node.
 
     tree-sitter Python parameter shapes:
@@ -358,7 +536,9 @@ def _py_record_single_param(param: Node, var_types: dict[str, str]) -> None:
             if names and ann:
                 pname = _text(names[0])
                 if pname and pname not in _PY_SELF_NAMES:
-                    type_name = _py_plain_type_from_annotation(ann)
+                    type_name = _canonical_type_name(
+                        _py_plain_type_from_annotation(ann), type_aliases, _PY_BUILTIN_TYPES
+                    )
                     if type_name:
                         var_types[pname] = type_name
         elif t == "typed_default_parameter":
@@ -367,14 +547,20 @@ def _py_record_single_param(param: Node, var_types: dict[str, str]) -> None:
             if name_node and ann:
                 pname = _text(name_node)
                 if pname and pname not in _PY_SELF_NAMES:
-                    type_name = _py_plain_type_from_annotation(ann)
+                    type_name = _canonical_type_name(
+                        _py_plain_type_from_annotation(ann), type_aliases, _PY_BUILTIN_TYPES
+                    )
                     if type_name:
                         var_types[pname] = type_name
     except Exception as exc:  # noqa: BLE001
         logger.debug("_py_record_single_param: failed: %r", exc)
 
 
-def record_py_local_types(stmt_node: Node, var_types: dict[str, str]) -> None:
+def record_py_local_types(
+    stmt_node: Node,
+    var_types: dict[str, str],
+    type_aliases: dict[str, str] | None = None,
+) -> None:
     """Record type bindings from a local statement (annotated assignment or constructor).
 
     Handles two patterns inside function bodies:
@@ -393,9 +579,9 @@ def record_py_local_types(stmt_node: Node, var_types: dict[str, str]) -> None:
             if inner.type in ("assignment", "annotated_assignment"):
                 ann = inner.child_by_field_name("type")
                 if ann is not None:
-                    _py_record_annotated_assignment(inner, var_types)
+                    _py_record_annotated_assignment(inner, var_types, type_aliases)
                 else:
-                    _py_record_constructor_assignment(inner, var_types)
+                    _py_record_constructor_assignment(inner, var_types, type_aliases)
     except Exception as exc:  # noqa: BLE001
         logger.debug("record_py_local_types: failed: %r", exc)
 
@@ -448,17 +634,53 @@ def _ts_plain_type_from_annotation(type_node: Node) -> str | None:
 
 
 # TypeScript built-in / primitive type names that are not user classes.
-_TS_BUILTIN_TYPES: frozenset[str] = frozenset({
-    "string", "number", "boolean", "void", "any", "unknown", "never", "object",
-    "symbol", "bigint", "null", "undefined",
-    "Array", "Map", "Set", "WeakMap", "WeakSet", "WeakRef",
-    "Promise", "Function", "Object", "Error",
-    "String", "Number", "Boolean", "Symbol", "BigInt",
-    "Readonly", "Record", "Partial", "Required", "Pick", "Omit",
-    "Exclude", "Extract", "NonNullable", "ReturnType", "InstanceType",
-    "Parameters", "ConstructorParameters",
-    "ReadonlyArray", "ReadonlyMap", "ReadonlySet",
-})
+_TS_BUILTIN_TYPES: frozenset[str] = frozenset(
+    {
+        "string",
+        "number",
+        "boolean",
+        "void",
+        "any",
+        "unknown",
+        "never",
+        "object",
+        "symbol",
+        "bigint",
+        "null",
+        "undefined",
+        "Array",
+        "Map",
+        "Set",
+        "WeakMap",
+        "WeakSet",
+        "WeakRef",
+        "Promise",
+        "Function",
+        "Object",
+        "Error",
+        "String",
+        "Number",
+        "Boolean",
+        "Symbol",
+        "BigInt",
+        "Readonly",
+        "Record",
+        "Partial",
+        "Required",
+        "Pick",
+        "Omit",
+        "Exclude",
+        "Extract",
+        "NonNullable",
+        "ReturnType",
+        "InstanceType",
+        "Parameters",
+        "ConstructorParameters",
+        "ReadonlyArray",
+        "ReadonlyMap",
+        "ReadonlySet",
+    }
+)
 
 
 def _ts_constructor_class(value_node: Node) -> str | None:
@@ -483,7 +705,10 @@ def _ts_constructor_class(value_node: Node) -> str | None:
 # ── TypeScript: class field pre-scan ─────────────────────────────────────────
 
 
-def scan_class_fields_typescript(class_node: Node) -> dict[str, str]:
+def scan_class_fields_typescript(
+    class_node: Node,
+    type_aliases: dict[str, str] | None = None,
+) -> dict[str, str]:
     """Pre-scan a TS class_declaration body for field-level type bindings.
 
     WHY pre-scan: same reason as Python — methods may reference a field declared
@@ -492,6 +717,8 @@ def scan_class_fields_typescript(class_node: Node) -> dict[str, str]:
     Captures:
       field: Type;               (public_field_definition or field_definition)
       field: Type = new Foo();   (field with initializer — take annotation type)
+      constructor(private field: Type)
+      this.field = new Type() inside the constructor
 
     Returns name → type dict for direct class members only (not nested classes).
     Never raises.
@@ -502,13 +729,18 @@ def scan_class_fields_typescript(class_node: Node) -> dict[str, str]:
         if body is None:
             return out
         for child in body.children:
-            _ts_scan_field_member(child, out)
+            _ts_scan_field_member(child, out, type_aliases)
+            _ts_scan_constructor_member(child, out, type_aliases)
     except Exception as exc:  # noqa: BLE001
         logger.debug("scan_class_fields_typescript: failed: %r", exc)
     return out
 
 
-def _ts_scan_field_member(member: Node, out: dict[str, str]) -> None:
+def _ts_scan_field_member(
+    member: Node,
+    out: dict[str, str],
+    type_aliases: dict[str, str] | None = None,
+) -> None:
     """Record a single class body member if it is a field with a plain type annotation.
 
     TypeScript grammar field shapes:
@@ -525,7 +757,9 @@ def _ts_scan_field_member(member: Node, out: dict[str, str]) -> None:
         field_name = _text(name_node)
         if not field_name:
             return
-        type_name = _ts_plain_type_from_annotation(type_node)
+        type_name = _canonical_type_name(
+            _ts_plain_type_from_annotation(type_node), type_aliases, _TS_BUILTIN_TYPES
+        )
         if type_name:
             out[field_name] = type_name
     except Exception as exc:  # noqa: BLE001
@@ -535,12 +769,98 @@ def _ts_scan_field_member(member: Node, out: dict[str, str]) -> None:
 # ── TypeScript: per-function scope ────────────────────────────────────────────
 
 
-def record_ts_param_types(func_node: Node, var_types: dict[str, str]) -> None:
+def _ts_scan_constructor_member(
+    member: Node,
+    out: dict[str, str],
+    type_aliases: dict[str, str] | None = None,
+) -> None:
+    """Record constructor-owned field bindings from parameter properties and new assignments."""
+    try:
+        if member.type != "method_definition":
+            return
+        name_node = member.child_by_field_name("name")
+        if name_node is None or _text(name_node) != "constructor":
+            return
+        params = member.child_by_field_name("parameters")
+        if params is not None:
+            for param in params.children:
+                _ts_record_parameter_property(param, out, type_aliases)
+        body = member.child_by_field_name("body")
+        if body is not None:
+            for stmt in body.children:
+                _ts_record_this_field_assignment(stmt, out, type_aliases)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_ts_scan_constructor_member: failed: %r", exc)
+
+
+def _ts_record_parameter_property(
+    param: Node,
+    out: dict[str, str],
+    type_aliases: dict[str, str] | None = None,
+) -> None:
+    """Record `constructor(private field: Type)` as a class field binding."""
+    try:
+        if param.type == "optional_parameter":
+            return
+        has_access_modifier = any(
+            child.type == "accessibility_modifier" for child in param.children
+        )
+        if param.type != "public_field_definition" and not has_access_modifier:
+            return
+        name_node = param.child_by_field_name("pattern") or param.child_by_field_name("name")
+        type_node = param.child_by_field_name("type")
+        if name_node is None or type_node is None:
+            return
+        if name_node.type not in ("identifier", "property_identifier"):
+            return
+        field_name = _text(name_node)
+        type_name = _canonical_type_name(
+            _ts_plain_type_from_annotation(type_node), type_aliases, _TS_BUILTIN_TYPES
+        )
+        if field_name and type_name:
+            out[field_name] = type_name
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_ts_record_parameter_property: failed: %r", exc)
+
+
+def _ts_record_this_field_assignment(
+    stmt: Node,
+    out: dict[str, str],
+    type_aliases: dict[str, str] | None = None,
+) -> None:
+    """Record `this.field = new Type()` constructor assignments."""
+    try:
+        if stmt.type != "expression_statement" or not stmt.children:
+            return
+        inner = stmt.children[0]
+        if inner.type != "assignment_expression":
+            return
+        left = inner.child_by_field_name("left")
+        right = inner.child_by_field_name("right")
+        if left is None or right is None or left.type != "member_expression":
+            return
+        obj = left.child_by_field_name("object")
+        prop = left.child_by_field_name("property")
+        if obj is None or prop is None or obj.type != "this":
+            return
+        field_name = _text(prop)
+        cls = _canonical_type_name(_ts_constructor_class(right), type_aliases, _TS_BUILTIN_TYPES)
+        if field_name and cls:
+            out[field_name] = cls
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_ts_record_this_field_assignment: failed: %r", exc)
+
+
+def record_ts_param_types(
+    func_node: Node,
+    var_types: dict[str, str],
+    type_aliases: dict[str, str] | None = None,
+) -> None:
     """Bind each TS/JS function parameter's name → declared type into var_types.
 
     Handles:
       required_parameter  (x: Foo)
-      optional_parameter  (x?: Foo)
+      optional_parameter  (x?: Foo) is deliberately skipped.
 
     Conservative: only plain type_identifier annotations bind. Never raises.
     """
@@ -549,15 +869,19 @@ def record_ts_param_types(func_node: Node, var_types: dict[str, str]) -> None:
         if params_node is None:
             return
         for param in params_node.children:
-            _ts_record_single_param(param, var_types)
+            _ts_record_single_param(param, var_types, type_aliases)
     except Exception as exc:  # noqa: BLE001
         logger.debug("record_ts_param_types: failed: %r", exc)
 
 
-def _ts_record_single_param(param: Node, var_types: dict[str, str]) -> None:
+def _ts_record_single_param(
+    param: Node,
+    var_types: dict[str, str],
+    type_aliases: dict[str, str] | None = None,
+) -> None:
     """Record name → type for a single TS/JS parameter node."""
     try:
-        if param.type not in ("required_parameter", "optional_parameter"):
+        if param.type != "required_parameter":
             return
         name_node = param.child_by_field_name("pattern")
         type_node = param.child_by_field_name("type")
@@ -568,14 +892,20 @@ def _ts_record_single_param(param: Node, var_types: dict[str, str]) -> None:
         pname = _text(name_node)
         if not pname or pname in _TS_SELF_NAMES:
             return
-        type_name = _ts_plain_type_from_annotation(type_node)
+        type_name = _canonical_type_name(
+            _ts_plain_type_from_annotation(type_node), type_aliases, _TS_BUILTIN_TYPES
+        )
         if type_name:
             var_types[pname] = type_name
     except Exception as exc:  # noqa: BLE001
         logger.debug("_ts_record_single_param: failed: %r", exc)
 
 
-def record_ts_local_types(stmt_node: Node, var_types: dict[str, str]) -> None:
+def record_ts_local_types(
+    stmt_node: Node,
+    var_types: dict[str, str],
+    type_aliases: dict[str, str] | None = None,
+) -> None:
     """Record type bindings from a local TS/JS statement.
 
     Handles:
@@ -590,12 +920,16 @@ def record_ts_local_types(stmt_node: Node, var_types: dict[str, str]) -> None:
             return
         for child in stmt_node.children:
             if child.type == "variable_declarator":
-                _ts_record_single_declarator(child, var_types)
+                _ts_record_single_declarator(child, var_types, type_aliases)
     except Exception as exc:  # noqa: BLE001
         logger.debug("record_ts_local_types: failed: %r", exc)
 
 
-def _ts_record_single_declarator(decl: Node, var_types: dict[str, str]) -> None:
+def _ts_record_single_declarator(
+    decl: Node,
+    var_types: dict[str, str],
+    type_aliases: dict[str, str] | None = None,
+) -> None:
     """Record one variable_declarator's name → type binding.
 
     Two forms:
@@ -614,7 +948,9 @@ def _ts_record_single_declarator(decl: Node, var_types: dict[str, str]) -> None:
         # Prefer explicit type annotation.
         type_node = decl.child_by_field_name("type")
         if type_node is not None:
-            type_name = _ts_plain_type_from_annotation(type_node)
+            type_name = _canonical_type_name(
+                _ts_plain_type_from_annotation(type_node), type_aliases, _TS_BUILTIN_TYPES
+            )
             if type_name:
                 var_types[var_name] = type_name
                 return
@@ -622,7 +958,9 @@ def _ts_record_single_declarator(decl: Node, var_types: dict[str, str]) -> None:
         # Fall back to constructor-call inference.
         value_node = decl.child_by_field_name("value")
         if value_node is not None:
-            cls = _ts_constructor_class(value_node)
+            cls = _canonical_type_name(
+                _ts_constructor_class(value_node), type_aliases, _TS_BUILTIN_TYPES
+            )
             if cls:
                 var_types[var_name] = cls
     except Exception as exc:  # noqa: BLE001

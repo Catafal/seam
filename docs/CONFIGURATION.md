@@ -54,7 +54,7 @@ All extraction-time. `off` = byte-identical to before that edge kind existed; to
 | `SEAM_COMPOSITION_EDGES` | `on` | Emit `holds` edges (typed stored fields + constructor params). |
 | `SEAM_PARAM_EDGES` | `on` | Emit `uses` edges (function → user types referenced as parameters). Higher-volume than `holds` → widens blast radius. |
 | `SEAM_FIELD_ACCESS_EDGES` | `on` | Emit `reads` / `writes` edges + index fields as `kind='field'` symbols. |
-| `SEAM_TYPE_INFERENCE` | `on` | Receiver-type inference (Python + TS/JS): resolve `obj.method()` to `Type.method`. |
+| `SEAM_TYPE_INFERENCE` | `on` | Receiver-type inference (Python + TS/JS): resolve `obj.method()` to `Type.method` from plain params, locals, fields, constructor-owned dependencies, and syntactic local import aliases. |
 | `SEAM_SWIFT_TYPE_INFERENCE` | `on` | Swift-specific receiver-type inference (independent of the above). |
 | `SEAM_TOKENIZE_IDENTIFIERS` | `on` | Write camelCase/snake_case-split tokens into `search_text` so `"push to talk"` matches `PushToTalkMonitor`. |
 

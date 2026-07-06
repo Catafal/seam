@@ -45,6 +45,7 @@ from seam.indexer.graph_scope_infer import (
     _TS_SELF_NAMES,
     collect_composition_types_typescript,
     collect_param_types_typescript,
+    collect_typescript_type_aliases,
     record_ts_local_types,
     record_ts_param_types,
     resolve_receiver_type,
@@ -287,6 +288,7 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
     composition_on = config.SEAM_COMPOSITION_EDGES == "on"
     field_access_on = config.SEAM_FIELD_ACCESS_EDGES == "on"
     param_edges_on = config.SEAM_PARAM_EDGES == "on"
+    type_aliases = collect_typescript_type_aliases(root) if type_inference_on else {}
 
     def _emit_ts_inheritance(node: Node) -> None:
         name_node = node.child_by_field_name("name")
@@ -450,6 +452,7 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
             line=node.start_point[0] + 1,
             confidence="INFERRED",
             receiver=receiver_text,
+            provenance=f"{language}-receiver-type" if target != method_name else None,
         ))
 
     def _walk_ts_function_body(
@@ -462,7 +465,7 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
         # WHY copy not reference: param/local bindings must not bleed between methods.
         # class_fields is immutable from the caller's perspective (Layer 1 pre-scan).
         var_types: dict[str, str] = dict(class_fields)
-        record_ts_param_types(func_node, var_types)
+        record_ts_param_types(func_node, var_types, type_aliases)
 
         # 'uses' edges: this function references plain user types as parameters.
         # source_fn derived exactly like the field-access block below (named function →
@@ -494,7 +497,7 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
             # Accumulate local type bindings BEFORE emitting call edges for this
             # statement so that a call on the same line as a declaration can still
             # see that declaration (e.g. `const e = new Engine(); e.start()`).
-            record_ts_local_types(stmt, var_types)
+            record_ts_local_types(stmt, var_types, type_aliases)
             _walk_ts_stmt(stmt, class_name, var_types, class_fields, language)
 
         # A3 Slice 2: emit reads/writes edges for field accesses in this function body.
@@ -570,7 +573,7 @@ def _extract_edges_typescript(root: Node, filepath: Path) -> list[Edge]:
 
         class_fields: dict[str, str] = {}
         if type_inference_on and cls_name:
-            class_fields = scan_class_fields_typescript(class_node)
+            class_fields = scan_class_fields_typescript(class_node, type_aliases)
 
         # Slice #77: emit composition (holds) edges for this TS class.
         # Mirrors the Python approach: collect deduped (type, line) pairs and emit

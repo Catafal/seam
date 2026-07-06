@@ -54,6 +54,7 @@ def _edge(
     confidence: str = "EXTRACTED",
     receiver: str | None = None,
     synthesized_by: str | None = None,
+    provenance: str | None = None,
 ) -> Edge:
     edge = Edge(
         source=source,
@@ -67,6 +68,8 @@ def _edge(
         edge["receiver"] = receiver
     if synthesized_by is not None:
         edge["synthesized_by"] = synthesized_by
+    if provenance is not None:
+        edge["provenance"] = provenance
     return edge
 
 
@@ -202,6 +205,155 @@ def test_graph_search_edge_filters_and_sorting_use_filtered_degrees(tmp_path: Pa
     item = result["items"][0]
     assert item["symbol"] == "entry"
     assert item["degrees"] == {"incoming": 0, "outgoing": 1, "total": 1}
+
+
+def test_graph_search_promotes_exact_receiver_provenance_to_extracted(
+    tmp_path: Path,
+) -> None:
+    """Exact receiver provenance should work with confidence filters and previews."""
+    from seam.query.graph_search import graph_search
+
+    root = tmp_path.resolve()
+    service = root / "service.py"
+    service.write_text(
+        "class Service:\n"
+        "    def run(self):\n"
+        "        self.client.send()\n"
+        "\n"
+        "class Client:\n"
+        "    def send(self):\n"
+        "        pass\n",
+        encoding="utf-8",
+    )
+    db_path = root / ".seam" / "seam.db"
+    db_path.parent.mkdir()
+    conn = init_db(db_path)
+    upsert_file(
+        conn,
+        service,
+        "python",
+        _hash(service.read_text(encoding="utf-8")),
+        [
+            _sym("Service.run", service, kind="method", start=2, end=3),
+            _sym("Client.send", service, kind="method", start=6, end=7),
+            _sym("Other.send", service, kind="method", start=9, end=10),
+        ],
+        [
+            _edge(
+                "Service.run",
+                "Client.send",
+                service,
+                confidence="INFERRED",
+                receiver="self.client",
+                provenance="python-receiver-type",
+            )
+        ],
+    )
+
+    result = graph_search(
+        conn,
+        root=root,
+        kind="method",
+        name_pattern="Client.send",
+        edge_kind="call",
+        direction="incoming",
+        confidence="EXTRACTED",
+        include_preview=True,
+    )
+
+    assert not isinstance(result, dict) or "error" not in result
+    assert result["total"] == 1
+    item = result["items"][0]
+    assert item["symbol"] == "Client.send"
+    assert item["degrees"]["incoming"] == 1
+    preview = item["preview"][0]
+    assert preview["confidence"] == "EXTRACTED"
+    assert preview["receiver"] == "self.client"
+    assert preview["provenance"] == "python-receiver-type"
+
+
+def test_graph_search_exact_receiver_confidence_respects_test_scope(
+    tmp_path: Path,
+) -> None:
+    """A test-only homonym should not hide source-scoped exact receiver evidence."""
+    from seam.query.graph_search import graph_search
+
+    root = tmp_path.resolve()
+    service = root / "service.py"
+    test_service = root / "tests" / "test_service.py"
+    test_service.parent.mkdir()
+    service_src = (
+        "class Service:\n"
+        "    def run(self):\n"
+        "        self.client.send()\n"
+        "\n"
+        "class Client:\n"
+        "    def send(self):\n"
+        "        pass\n"
+    )
+    test_src = "class Client:\n    def send(self):\n        pass\n"
+    service.write_text(service_src, encoding="utf-8")
+    test_service.write_text(test_src, encoding="utf-8")
+    db_path = root / ".seam" / "seam.db"
+    db_path.parent.mkdir()
+    conn = init_db(db_path)
+    upsert_file(
+        conn,
+        service,
+        "python",
+        _hash(service_src),
+        [
+            _sym("Service.run", service, kind="method", start=2, end=3),
+            _sym("Client.send", service, kind="method", start=6, end=7),
+        ],
+        [
+            _edge(
+                "Service.run",
+                "Client.send",
+                service,
+                confidence="INFERRED",
+                receiver="self.client",
+                provenance="python-receiver-type",
+            )
+        ],
+    )
+    upsert_file(
+        conn,
+        test_service,
+        "python",
+        _hash(test_src),
+        [_sym("Client.send", test_service, kind="method", start=2, end=3)],
+        [],
+    )
+
+    source_result = graph_search(
+        conn,
+        root=root,
+        kind="method",
+        name_pattern="Client.send",
+        edge_kind="call",
+        direction="incoming",
+        confidence="EXTRACTED",
+        test_scope="source",
+        include_preview=True,
+    )
+    all_result = graph_search(
+        conn,
+        root=root,
+        kind="method",
+        name_pattern="Client.send",
+        edge_kind="call",
+        direction="incoming",
+        confidence="EXTRACTED",
+        test_scope="any",
+    )
+
+    assert not isinstance(source_result, dict) or "error" not in source_result
+    assert source_result["total"] == 1
+    assert source_result["items"][0]["file"] == "service.py"
+    assert source_result["items"][0]["preview"][0]["confidence"] == "EXTRACTED"
+    assert not isinstance(all_result, dict) or "error" not in all_result
+    assert all_result["total"] == 0
 
 
 def test_graph_search_accepts_exception_edge_filters(tmp_path: Path) -> None:
