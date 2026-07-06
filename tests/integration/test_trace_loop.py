@@ -24,6 +24,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 # Make repo root importable so `from benchmarks.trace_loop import ...` works
 # even when pytest is run from a subdirectory. Mirrors the pattern in
 # tests/unit/test_semantic_ann_bench_smoke.py.
@@ -364,6 +366,78 @@ class TestPromoteIdempotent:
         queries = [q["query"] for q in live.get("queries", [])]
         # Should appear exactly once
         assert queries.count("auth") == 1
+
+
+# ── TL8: No fixture_hash in live set ─────────────────────────────────────────
+
+
+# ── M1: _assert_not_fixture guard fires when fixture path is used ─────────────
+
+
+class TestAssertNotFixtureGuard:
+    """CRITICAL guard: the trace loop must NEVER write to the fixture golden.json.
+
+    M1 review finding: no test proved the guard fires. These tests directly exercise
+    the failure mode — passing the fixture path as the output target — and assert that
+    (a) ValueError is raised, and (b) the fixture is byte-unchanged after the attempt.
+    """
+
+    def test_derive_raises_value_error_for_fixture_review_path(
+        self, tmp_path: Path
+    ) -> None:
+        """derive_from_trace must raise ValueError when review_path IS the fixture golden."""
+        from benchmarks.trace_loop import derive_from_trace  # noqa: PLC0415
+
+        before = _read_fixture_golden_bytes()
+        trace_file = _make_trace_ndjson(tmp_path, [
+            _make_trace_record(symbol_names=["Auth.validate"]),
+        ])
+        with pytest.raises(ValueError, match="fixture golden"):
+            derive_from_trace(
+                trace_path=trace_file,
+                outcome={"Auth.validate"},
+                review_path=_FIXTURE_GOLDEN,  # <-- the forbidden path
+            )
+        # Guard must have fired BEFORE any write — fixture is byte-unchanged.
+        after = _read_fixture_golden_bytes()
+        assert before == after, (
+            "BUG: _assert_not_fixture guard fired but fixture was still modified!"
+        )
+
+    def test_promote_raises_value_error_for_fixture_live_path(
+        self, tmp_path: Path
+    ) -> None:
+        """promote_candidates must raise ValueError when live_golden_path IS the fixture."""
+        from benchmarks.trace_loop import derive_from_trace, promote_candidates  # noqa: PLC0415
+
+        # First derive into a valid review file (not the fixture).
+        trace_file = _make_trace_ndjson(tmp_path, [
+            _make_trace_record(symbol_names=["Auth.validate"]),
+        ])
+        review_path = tmp_path / "review.json"
+        derive_from_trace(
+            trace_path=trace_file,
+            outcome={"Auth.validate"},
+            review_path=review_path,
+        )
+        # Approve the candidate.
+        review = _read_json(review_path)
+        review["candidates"][0]["approved"] = True
+        with open(review_path, "w") as f:
+            json.dump(review, f)
+
+        before = _read_fixture_golden_bytes()
+        with pytest.raises(ValueError, match="fixture golden"):
+            promote_candidates(
+                review_path=review_path,
+                live_golden_path=_FIXTURE_GOLDEN,  # <-- the forbidden path
+                repo_sha="test-sha",
+            )
+        # Guard must have fired BEFORE any write — fixture is byte-unchanged.
+        after = _read_fixture_golden_bytes()
+        assert before == after, (
+            "BUG: _assert_not_fixture guard fired but fixture was still modified!"
+        )
 
 
 # ── TL8: No fixture_hash in live set ─────────────────────────────────────────

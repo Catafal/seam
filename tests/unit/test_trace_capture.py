@@ -433,3 +433,231 @@ class TestAtexitRegistration:
         # close() on a disabled recorder is a no-op, never raises
         rec.close()
         assert not rec.enabled
+
+
+# ── TC11: extract_symbol_names — result shape coverage (H1 fix) ──────────────
+
+
+class TestExtractSymbolNames:
+    """Verify that extract_symbol_names handles seam_impact and seam_trace shapes.
+
+    These are the two most important tools for the change-safety loop, and the
+    original implementation returned [] for both (H1 review finding). Each test
+    constructs a representative result shape and asserts the expected names come out.
+    """
+
+    def _esn(self, result: object) -> list[str]:
+        import seam.analysis.trace_capture as tc_mod  # noqa: PLC0415
+
+        return tc_mod.extract_symbol_names(result)
+
+    # ── seam_impact shape ─────────────────────────────────────────────────────
+
+    def test_impact_upstream_single_tier(self) -> None:
+        """seam_impact upstream with one tier returns all entry names."""
+        result = {
+            "found": True,
+            "target": "Client.connect",
+            "risk_summary": {"upstream": {"WILL_BREAK": 2}},
+            "upstream": {
+                "WILL_BREAK": [
+                    {"name": "Server.handle", "distance": 1, "confidence": "EXTRACTED"},
+                    {"name": "Router.dispatch", "distance": 2, "confidence": "INFERRED"},
+                ],
+            },
+        }
+        names = self._esn(result)
+        assert "Server.handle" in names
+        assert "Router.dispatch" in names
+
+    def test_impact_upstream_multiple_tiers(self) -> None:
+        """seam_impact with multiple tiers collects names across all tiers."""
+        result = {
+            "found": True,
+            "target": "DB.query",
+            "risk_summary": {},
+            "upstream": {
+                "WILL_BREAK": [{"name": "Service.run", "distance": 1, "confidence": "EXTRACTED"}],
+                "LIKELY_AFFECTED": [{"name": "Cache.get", "distance": 2, "confidence": "INFERRED"}],
+                "MAY_NEED_TESTING": [{"name": "Monitor.check", "distance": 3, "confidence": "INFERRED"}],
+            },
+        }
+        names = self._esn(result)
+        assert "Service.run" in names
+        assert "Cache.get" in names
+        assert "Monitor.check" in names
+
+    def test_impact_both_directions(self) -> None:
+        """seam_impact direction=both collects names from upstream and downstream."""
+        result = {
+            "found": True,
+            "target": "Encoder.encode",
+            "risk_summary": {},
+            "upstream": {
+                "WILL_BREAK": [{"name": "Pipeline.run", "distance": 1, "confidence": "EXTRACTED"}],
+            },
+            "downstream": {
+                "MAY_NEED_TESTING": [{"name": "Output.write", "distance": 1, "confidence": "INFERRED"}],
+            },
+        }
+        names = self._esn(result)
+        assert "Pipeline.run" in names
+        assert "Output.write" in names
+
+    def test_impact_found_false_no_entries(self) -> None:
+        """seam_impact found=False with empty tiers → empty name list."""
+        result = {
+            "found": False,
+            "target": "Unknown.sym",
+            "risk_summary": {},
+        }
+        names = self._esn(result)
+        assert names == []
+
+    def test_impact_empty_tiers(self) -> None:
+        """seam_impact with empty tier lists returns an empty name list."""
+        result = {
+            "found": True,
+            "target": "Foo.bar",
+            "risk_summary": {},
+            "upstream": {"WILL_BREAK": [], "MAY_NEED_TESTING": []},
+        }
+        names = self._esn(result)
+        assert names == []
+
+    # ── seam_trace shape ──────────────────────────────────────────────────────
+
+    def test_trace_single_path(self) -> None:
+        """seam_trace with one path returns from_name/to_name of each hop."""
+        result = {
+            "found": True,
+            "source": "A.call",
+            "target": "C.run",
+            "paths": [
+                [
+                    {"from_name": "A.call", "to_name": "B.process", "kind": "call", "confidence": "EXTRACTED"},
+                    {"from_name": "B.process", "to_name": "C.run", "kind": "call", "confidence": "EXTRACTED"},
+                ]
+            ],
+            "callers_source": [],
+            "callees_source": [],
+            "callers_target": [],
+            "callees_target": [],
+        }
+        names = self._esn(result)
+        assert "A.call" in names
+        assert "B.process" in names
+        assert "C.run" in names
+
+    def test_trace_deduplicates_hop_names(self) -> None:
+        """A→B→C hops give [A, B, C] not [A, B, B, C] (dedup while preserving order)."""
+        result = {
+            "found": True,
+            "source": "A",
+            "target": "C",
+            "paths": [
+                [
+                    {"from_name": "A", "to_name": "B", "kind": "call", "confidence": "EXTRACTED"},
+                    {"from_name": "B", "to_name": "C", "kind": "call", "confidence": "EXTRACTED"},
+                ]
+            ],
+            "callers_source": [],
+            "callees_source": [],
+            "callers_target": [],
+            "callees_target": [],
+        }
+        names = self._esn(result)
+        assert names.count("B") == 1, "intermediate hop name must appear exactly once"
+        assert set(names) == {"A", "B", "C"}
+
+    def test_trace_not_found_empty_paths(self) -> None:
+        """seam_trace found=False with empty paths → empty name list."""
+        result = {
+            "found": False,
+            "source": "X",
+            "target": "Y",
+            "paths": [],
+            "callers_source": [],
+            "callees_source": [],
+            "callers_target": [],
+            "callees_target": [],
+        }
+        names = self._esn(result)
+        assert names == []
+
+    # ── existing shapes still work ────────────────────────────────────────────
+
+    def test_search_query_list_of_dicts(self) -> None:
+        """seam_search/seam_query flat list result still works."""
+        result = [
+            {"name": "Auth.validate", "score": 0.9},
+            {"name": "Token.decode", "score": 0.8},
+        ]
+        names = self._esn(result)
+        assert names == ["Auth.validate", "Token.decode"]
+
+    def test_context_callers_callees(self) -> None:
+        """seam_context callers/callees shape still works."""
+        result = {
+            "symbol": "Parser.parse",
+            "callers": [{"name": "CLI.run"}, {"name": "Server.handle"}],
+            "callees": [{"name": "Lexer.tokenize"}],
+        }
+        names = self._esn(result)
+        assert "Parser.parse" in names
+        assert "CLI.run" in names
+        assert "Server.handle" in names
+        assert "Lexer.tokenize" in names
+
+    def test_none_returns_empty(self) -> None:
+        """None result → empty list (safe degradation)."""
+        assert self._esn(None) == []
+
+    def test_unknown_shape_returns_empty(self) -> None:
+        """An unrecognised result shape → empty list, never raises."""
+        assert self._esn(42) == []
+        assert self._esn("a string") == []
+        assert self._esn({"totally": "unknown"}) == []
+
+
+# ── TC12: result_count semantics (H2 fix) ────────────────────────────────────
+
+
+class TestResultCountSemantics:
+    """Lock the result_count == len(symbol_names) contract (H2 review finding).
+
+    The docstring was updated to document this as the invariant; these tests
+    enforce it so callers cannot drift from the contract.
+    """
+
+    def test_result_count_matches_len_symbol_names_in_written_record(
+        self, tmp_path: Path
+    ) -> None:
+        """The written NDJSON record must have result_count == len(symbol_names)."""
+        rec = _make_recorder(tmp_path)
+        symbols = ["Alpha.foo", "Beta.bar", "Gamma.baz"]
+        rec.record_tool_call(
+            tool="seam_search",
+            args={"query": "test"},
+            symbol_names=symbols,
+            result_count=len(symbols),
+            elapsed_ms=1.0,
+        )
+        lines = _read_lines(tmp_path / "traces")
+        assert len(lines) == 1
+        assert lines[0]["result_count"] == len(symbols)
+        assert lines[0]["result_count"] == len(lines[0]["symbol_names"])
+
+    def test_result_count_zero_for_empty_symbol_names(self, tmp_path: Path) -> None:
+        """When symbol_names=[], result_count must be 0."""
+        rec = _make_recorder(tmp_path)
+        rec.record_tool_call(
+            tool="seam_query",
+            args={"concept": "nothing"},
+            symbol_names=[],
+            result_count=0,
+            elapsed_ms=2.0,
+        )
+        lines = _read_lines(tmp_path / "traces")
+        assert lines[0]["result_count"] == 0
+        assert lines[0]["result_count"] == len(lines[0]["symbol_names"])

@@ -139,8 +139,10 @@ class TraceRecorder:
             tool:         MCP tool name or CLI command (e.g. "seam_search").
             args:         Query args dict passed to the tool (e.g. {"query": "auth"}).
             symbol_names: Ordered list of qualified symbol names returned by the tool.
-            result_count: Total number of results returned (may exceed len(symbol_names)
-                          if the caller extracted a subset).
+            result_count: Count of symbol names recorded — always equals
+                          len(symbol_names). Callers must pass len(symbol_names).
+                          Kept as an explicit field so the deriver can read it without
+                          computing len() on the list.
             elapsed_ms:   Wall-clock duration of the tool call in milliseconds.
         """
         if not self._enabled:
@@ -261,10 +263,16 @@ def extract_symbol_names(result: Any) -> list[str]:
     symbol names (strings) and discard everything else. The returned list is what
     gets stored in the trace file.
 
-    Handles the common Seam result shapes:
+    Handles all common Seam result shapes:
     - list of dicts with a "name" key (seam_search, seam_query results)
     - dict with a "data" key containing such a list
     - dict with "callers"/"callees" lists (seam_context)
+    - dict with "upstream"/"downstream" tier groups (seam_impact): each tier is a
+      list of entries, each entry has a "name" field
+      (confirmed: impact_handler.py _serialize_tier_entry → "name": entry["name"])
+    - dict with "paths" (seam_trace): each path is a list of hops with "from_name"
+      and "to_name" fields
+      (confirmed: handler_common.py _serialize_hop → "from_name", "to_name")
     - None or unexpected shape → empty list (safe degradation)
 
     Never raises.
@@ -279,8 +287,37 @@ def extract_symbol_names(result: Any) -> list[str]:
             elif "name" in result:
                 return [result["name"]] if isinstance(result["name"], str) else []
             else:
-                # For context-style results, pull callers + callees + the symbol itself.
                 names: list[str] = []
+
+                # seam_impact: {"upstream": {"WILL_BREAK": [{name: ...}, ...], ...}, ...}
+                # Each direction key → dict of tier name → list of tier entries.
+                # Extract the "name" field from every entry in every tier.
+                for dir_key in ("upstream", "downstream"):
+                    dir_group = result.get(dir_key)
+                    if isinstance(dir_group, dict):
+                        for tier_entries in dir_group.values():
+                            if isinstance(tier_entries, list):
+                                for e in tier_entries:
+                                    if isinstance(e, dict) and isinstance(e.get("name"), str):
+                                        names.append(e["name"])
+
+                # seam_trace: {"paths": [[{from_name, to_name, ...}, ...], ...], ...}
+                # Each path is a list of hops; each hop carries from_name and to_name.
+                # Deduplicate while preserving order (a→b→c gives [a,b,b,c] without dedup).
+                paths = result.get("paths")
+                if isinstance(paths, list):
+                    seen: set[str] = set()
+                    for path in paths:
+                        if isinstance(path, list):
+                            for hop in path:
+                                if isinstance(hop, dict):
+                                    for field in ("from_name", "to_name"):
+                                        val = hop.get(field)
+                                        if isinstance(val, str) and val not in seen:
+                                            names.append(val)
+                                            seen.add(val)
+
+                # seam_context: {"symbol": "...", "callers": [...], "callees": [...]}
                 if "symbol" in result and isinstance(result["symbol"], str):
                     names.append(result["symbol"])
                 for key in ("callers", "callees"):
@@ -291,6 +328,7 @@ def extract_symbol_names(result: Any) -> list[str]:
                                 names.append(e["name"])
                             elif isinstance(e, str):
                                 names.append(e)
+
                 return names
 
         if isinstance(result, list):
