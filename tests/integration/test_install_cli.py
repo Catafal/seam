@@ -118,6 +118,53 @@ def test_print_config_with_mcp_shows_mcp_servers(tmp_path: Path) -> None:
     assert "mcpServers" in res.stdout
 
 
+def test_auto_print_config_json_returns_preview_plan(tmp_path: Path) -> None:
+    res = runner.invoke(app, ["install", str(tmp_path), "--auto", "--print-config", "--json"])
+    assert res.exit_code == 0
+    payload = json.loads(res.stdout)
+    assert payload["ok"] is True
+
+    data = payload["data"]
+    assert data["auto"] is True
+    assert data["print_config"] is True
+    assert data["with_mcp"] is False
+    assert {r["target"] for r in data["results"]} == {
+        "claude",
+        "cursor",
+        "codex",
+        "vscode",
+        "gemini",
+        "zed",
+    }
+
+    claude = next(r for r in data["results"] if r["target"] == "claude")
+    assert claude["status"] == "supported"
+    assert claude["supported_locations"] == ["project", "user"]
+    assert claude["selected_location"] == "project"
+    assert claude["evidence"] == []
+    assert any(p.endswith("CLAUDE.md") for p in claude["guidance_preview_paths"])
+    assert claude["mcp_preview"] is None
+    assert "seam install" in claude["recommended_next_call"]
+
+
+def test_auto_without_print_config_fails_closed(tmp_path: Path) -> None:
+    res = runner.invoke(app, ["install", str(tmp_path), "--auto", "--json"])
+    assert res.exit_code == 1
+    payload = json.loads(res.stdout)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "INVALID_INPUT"
+    assert "--auto" in payload["error"]["message"]
+    assert not (tmp_path / "CLAUDE.md").exists()
+
+
+def test_install_help_describes_auto_preview_only() -> None:
+    res = runner.invoke(app, ["install", "--help"])
+    assert res.exit_code == 0
+    assert "--auto" in res.stdout
+    assert "requires --print-config" in res.stdout
+    assert "writes nothing" in res.stdout
+
+
 # ── warnings + validation ─────────────────────────────────────────────────────
 
 

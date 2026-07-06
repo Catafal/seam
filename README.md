@@ -113,15 +113,21 @@ uv run seam structure                  # whole-repo directory/container map
 
 ### Wire it to an AI agent
 
-`seam install` defaults to writing a **token-lean CLI playbook** into the repo so the agent queries via the `seam` CLI (cheaper than MCP — the CLI's `--quiet` mode is ~14× leaner than the leanest MCP call, and there's no ~6k-token standing tool-schema cost). It renders into each agent's cheapest native mechanism: a Claude Code skill, a Cursor agent-requested rule, and an `AGENTS.md` block for Codex.
+`seam install` defaults to writing a **token-lean CLI playbook** into the repo so the agent queries via the `seam` CLI (cheaper than MCP — the CLI's `--quiet` mode is ~14× leaner than the leanest MCP call, and there's no ~6k-token standing tool-schema cost). It renders into each agent's cheapest native mechanism: a Claude Code skill, a Cursor agent-requested rule, an `AGENTS.md` block for Codex/Zed, VS Code Copilot instructions, or `GEMINI.md`.
 
 ```bash
 uv run seam install                       # CLI guidance for Claude Code (skill + CLAUDE.md hook)
-uv run seam install --target all          # guidance for Claude Code + Cursor + Codex
+uv run seam install --target all          # guidance for every registered target
+uv run seam install --auto --print-config # detect supported/relevant targets; write nothing
 uv run seam install --with-mcp            # ALSO wire the MCP server (needs the `server` extra)
 uv run seam install --print-config        # preview everything, write nothing
 uv run seam uninstall                     # reverse it (removes guidance + MCP config)
 ```
+
+Use `--auto --print-config` when you want a compact setup plan first: it reports
+detected/supported targets, exact guidance paths, optional MCP preview paths when
+combined with `--with-mcp`, and explicit follow-up install commands. Auto mode is
+preview-only; choose `--target <name>` or `--target all` for writes.
 
 The guidance teaches the agent the escalation ladder (`--quiet` → `--json --lean` → full `--json`), how to keep the index fresh (`seam init` / `seam sync`), and when to reach for each command. It's idempotent (a marker-delimited block in `AGENTS.md`/`CLAUDE.md`, never duplicated, foreign content preserved) and reversible.
 

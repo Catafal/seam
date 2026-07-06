@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Installer Autodetect · Implementation Notes</title>
+  <style>
+    body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; max-width: 880px;
+           margin: 40px auto; padding: 0 24px; color: #292524; line-height: 1.55; }
+    h1 { border-bottom: 3px solid #0181c9; padding-bottom: 8px; }
+    h2 { margin-top: 36px; color: #0181c9; border-bottom: 1px solid #e5e5e5; padding-bottom: 4px; }
+    code { background: #f5f5f4; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+    .decision { background: #f0f9ff; border-left: 4px solid #0181c9; padding: 12px 16px; margin: 14px 0; }
+    .deviation { background: #fffbeb; border-left: 4px solid #d97706; padding: 12px 16px; margin: 14px 0; }
+    .tradeoff { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 12px 16px; margin: 14px 0; }
+    .open { background: #fef2f2; border-left: 4px solid #dc2626; padding: 12px 16px; margin: 14px 0; }
+    .tag { display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase;
+           letter-spacing: 0.5px; padding: 2px 8px; border-radius: 10px; color: #fff; }
+    .t-dec { background: #0181c9; } .t-dev { background: #d97706; }
+    .t-trade { background: #7c3aed; } .t-open { background: #dc2626; }
+    ul { margin-top: 6px; } .meta { color: #78716c; font-size: 0.9em; }
+    .done { color: #16a34a; font-weight: 600; }
+    table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+    th, td { border: 1px solid #e5e5e5; padding: 6px 10px; text-align: left; font-size: 0.92em; }
+    th { background: #fafaf9; }
+  </style>
+</head>
+<body>
+  <h1>Installer Autodetect</h1>
+  <p class="meta">Branch <code>codex/installer-autodetect</code> · started 2026-07-06 · PRD #406 / issues #407-#410.</p>
+  <p>This is a <strong>living document</strong> capturing how the implementation interprets,
+     diverges from, or trades off against the spec. Updated as each slice lands.</p>
+
+  <h2>The spec, in one line</h2>
+  <p>Add a preview-only installer autodetect plan that lets agents see supported integrations,
+     evidence, exact would-write paths, and explicit follow-up commands without mutating files.</p>
+
+  <h2>Design decisions <span class="meta">(spec was ambiguous → here's the call I made)</span></h2>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Keep autodetect outside <code>AgentTarget</code>.</strong>
+    Seam impact shows <code>AgentTarget</code> is a broad public contract. The first implementation uses a new planner
+    module that consumes existing target methods instead of adding abstract methods to every target.</div>
+
+  <div class="decision"><span class="tag t-dec">Decision</span> <strong>Auto preview uses compact human output.</strong>
+    Explicit <code>--target ... --print-config</code> keeps the existing full content preview. Auto mode prints statuses and
+    recommended commands because its job is selection guidance, not dumping every generated guide body.</div>
+
+  <h2>Deviations <span class="meta">(intentional departures from the spec/convention)</span></h2>
+
+  <div class="deviation"><span class="tag t-dev">Deviation</span> <strong>None yet.</strong>
+    The implementation is still aligned with the PRD: CLI-only, preview-only, no new graph/index behavior.</div>
+
+  <h2>Tradeoffs <span class="meta">(alternatives considered)</span></h2>
+
+  <div class="tradeoff"><span class="tag t-trade">Tradeoff</span> <strong>Planner module vs target polymorphism.</strong>
+    Target polymorphism would make future target-specific detection extensible, but it would widen a public ABC used across
+    installer tests and target implementations. A planner module keeps this slice smaller and can evolve into target hooks later.</div>
+
+  <h2>Open questions <span class="meta">(want your confirm/revise)</span></h2>
+
+  <div class="decision"><span class="tag t-dec">Resolved</span> <strong>Should auto preview print full guidance bodies?</strong>
+    Resolved for this PR as no: compact human output keeps auto preview token-light, and explicit target preview remains the full-content path.</div>
+
+  <h2>Build / verification</h2>
+  <ul>
+    <li>Started from <code>origin/main</code> in worktree <code>/Users/jordicatafal/Documents/Github/seam-installer-autodetect</code>.</li>
+    <li>Ran <code>uv run seam init</code> because the worktree had no index.</li>
+    <li>Ran <code>uv run seam impact install_command --json</code> and <code>uv run seam impact AgentTarget --json</code> before editing.</li>
+    <li>RED: <code>uv run pytest tests/integration/test_install_cli.py::test_auto_print_config_json_returns_preview_plan tests/integration/test_install_cli.py::test_auto_without_print_config_fails_closed -q</code> failed because <code>--auto</code> did not exist.</li>
+    <li>GREEN focused: <code>uv run pytest tests/integration/test_install_cli.py::test_auto_print_config_json_returns_preview_plan tests/integration/test_install_cli.py::test_auto_without_print_config_fails_closed -q</code> passed.</li>
+    <li>Focused installer suite: <code>uv run pytest tests/unit/test_installer_plan.py tests/integration/test_install_cli.py tests/integration/test_installer_write_scope.py -q</code> passed.</li>
+    <li>Lint/type: <code>uv run ruff check ...</code> passed; <code>uv run mypy seam/cli/install.py seam/installer/plan.py</code> passed.</li>
+    <li>Review agent found two planner issues: shared markdown text <code>name: seam</code> could falsely mark guidance configured, and skipped MCP targets could recommend unsupported locations. Both were fixed with regression tests.</li>
+    <li>Regression RED/GREEN: <code>uv run pytest tests/unit/test_installer_plan.py::test_shared_markdown_name_seam_text_is_only_project_hint tests/unit/test_installer_plan.py::test_skipped_mcp_targets_recommend_supported_locations -q</code>.</li>
+    <li>Full gate: <code>make gate</code> passed after the review fixes.</li>
+    <li>Final self-check: <code>uv run seam sync</code> completed; <code>uv run seam changes --json</code> reports the expected public installer planner/CLI risk covered by the tests above.</li>
+    <li>New dependencies / migrations: none planned.</li>
+  </ul>
+
+  <h2>Progress</h2>
+  <table>
+    <tr><th>Slice</th><th>What</th><th>Status</th></tr>
+    <tr><td>1</td><td>#407 preview plan tracer bullet</td><td class="done">✓ done</td></tr>
+    <tr><td>2</td><td>#408 configured/blocked evidence</td><td class="done">✓ done</td></tr>
+    <tr><td>3</td><td>#409 zero-mutation hardening</td><td class="done">✓ done</td></tr>
+    <tr><td>4</td><td>#410 docs and closeout</td><td class="done">✓ done</td></tr>
+  </table>
+</body>
+</html>
