@@ -190,8 +190,12 @@ def promote_candidates(
 def _assert_not_fixture(path: Path) -> None:
     """Raise ValueError if path would resolve to the fixture golden.json.
 
-    Defense-in-depth guard — the fixture golden set must NEVER be modified
-    by the curation loop. This check is cheap and runs before any file write.
+    WHY this guard exists: the fixture golden set (tests/eval/golden.json) is
+    keyed to the eval fixture repo and runs in `make gate` — it must be
+    deterministic and reproducible on any CI machine. Real-session goldens are
+    repo-keyed (live repo state + commit SHA) and cannot be part of the gate.
+    This check is cheap and runs before any file write so the invariant holds
+    even if a caller passes the wrong path by mistake.
     """
     try:
         if path.resolve() == _FIXTURE_GOLDEN.resolve():

@@ -152,7 +152,9 @@ def derive_goldens(
 
     try:
         now_iso = datetime.datetime.now(datetime.UTC).isoformat()
-        # Accumulate records by (tool, query) key.
+        # Accumulate records by (tool, query) key so we emit exactly one candidate
+        # per unique query — deduplication across sessions is the right shape for
+        # a golden (a golden is a (query → expected_symbols) pair, not per-session).
         accum: dict[tuple[str, str], _Accumulator] = {}
 
         for rec in trace_records:
@@ -187,12 +189,18 @@ def derive_goldens(
 
         for (tool, query), acc in accum.items():
             # The combined result is the UNION of all result symbol sets for this
-            # (tool, query) across sessions (we ask: did this query EVER find the symbol?)
+            # (tool, query) across sessions — we ask: did this query EVER surface the
+            # symbol? Union is correct here because a symbol found in any session is
+            # evidence the retrieval path can reach it (the golden is a best-case target).
             combined_result: set[str] = set()
             for s in acc.result_symbol_sets:
                 combined_result |= s
 
-            # gap=True when ANY outcome symbol was NOT found in the combined result.
+            # gap=True = this query missed at least one symbol the agent later edited.
+            # Gap candidates are the highest-priority review targets: they represent
+            # provable retrieval failures on real work — the query ran but the needed
+            # symbol did not surface. Non-gap candidates are confirmations (the retrieval
+            # already worked; still valuable as a golden, but lower urgency to review).
             gap = not outcome.issubset(combined_result)
 
             prov = Provenance(
@@ -244,6 +252,12 @@ def derive_outcome_from_diff(
 
     try:
         # Build a file → list of (start_line, end_line, name) index for fast lookup.
+        # WHY reuse the index here: we already have exact file+line ranges for every
+        # indexed symbol, so mapping a diff hunk to a symbol is an interval-overlap
+        # check — no re-parsing required. The correctness assumption is that the index
+        # was built from the same file state as the diff base; stale index → wrong
+        # mapping, but the derive loop is research tooling (not safety-critical) and
+        # the human review step catches obvious misattributions.
         file_index: dict[str, list[tuple[int, int, str]]] = {}
         for sym in symbols:
             fp = sym.get("file_path", "")

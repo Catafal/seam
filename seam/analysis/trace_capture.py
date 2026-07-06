@@ -53,9 +53,13 @@ import seam.config as config
 logger = logging.getLogger(__name__)
 
 # ── Allowed tool_call line keys (symbols-only bound, enforced at write time) ──
-# Adding any key here requires review: keys that could carry source text or full
-# result bodies must never be added. args and symbol_names are the only content
-# fields; all others are numeric/string metadata.
+# This frozenset is the gatekeeper for the symbols-only capture policy. Every key
+# that appears in a tool_call NDJSON line MUST be listed here. Adding a new key
+# requires review: only metadata (numeric/string IDs) and the two bounded content
+# fields (args = query dict, symbol_names = list of qualified name strings) are
+# permitted. Full result bodies, source text, signatures, and docstrings must NEVER
+# appear as keys. The write-time assert in record_tool_call catches violations before
+# they reach disk.
 _TOOL_CALL_KEYS = frozenset({
     "event",
     "session_id",
@@ -158,7 +162,11 @@ class TraceRecorder:
                 "result_count": result_count,
                 "elapsed_ms": elapsed_ms,
             }
-            # Enforce the symbols-only bound at write time as a defense-in-depth check.
+            # Defense-in-depth: the _TOOL_CALL_KEYS frozenset is the single source of
+            # truth for what a tool_call line may contain. Any new field added to `line`
+            # that is NOT in _TOOL_CALL_KEYS (e.g. a result body or source text added
+            # by a future caller) triggers this assert before the line is written to disk.
+            # This is the capture-side analog of the diagnostics redaction gate test.
             assert set(line.keys()) == _TOOL_CALL_KEYS, (
                 f"BUG: tool_call line has unexpected keys: {set(line.keys())}"
             )

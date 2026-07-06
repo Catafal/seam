@@ -49,6 +49,8 @@ Local code intelligence MCP server — indexes codebases with tree-sitter, store
   CI-prebuilt index for the current git SHA (nearest-ancestor fallback up to
   `SEAM_FETCH_ANCESTOR_DEPTH`); requires `SEAM_INDEX_ARTIFACT_URL` to be set (WS4)
 - `uv sync` installs the CLI only; `uv sync --extra server` adds the optional MCP server (`mcp` package); `uv sync --extra semantic` adds fastembed for semantic search
+- `make trace-loop-derive TRACE=<path> REVIEW=<path> [OUTCOME="Sym1 Sym2"]` — Derive golden candidates from a captured NDJSON trace file (WS6.1). Reads the trace, runs `derive_goldens`, writes a review file with `approved: false` defaults. Requires an existing index. NOT part of `make gate`.
+- `make trace-loop-promote REVIEW=<path> LIVE=<path>` — Merge human-approved candidates from the review file into the separate live golden set (WS6.1). Never auto-merges — requires the human to have edited the review file setting `approved: true`. NOT part of `make gate`.
 
 ## File References
 - `DISCOVERY.md` — real goal (what we're building and why)
@@ -297,6 +299,23 @@ seam/config.py               ← all settings (env vars with defaults)
                                   default: 100). A query with duration_ms >= this appends a slow_query
                                   line; below it the query counter is still incremented (surfaced in
                                   the atexit snapshot) but no line is written (zero IO).
+                                SEAM_TRACE_CAPTURE: "0" | "1" — master switch for opt-in local
+                                  trace capture for the WS6.1 derive loop (default: "0" = off).
+                                  The DELIBERATE CONTENT-CAPTURING COUNTERPART to SEAM_DIAGNOSTICS:
+                                  where diagnostics applies structural redaction (only numeric metrics,
+                                  never query text or result content), trace capture intentionally
+                                  records query args + returned symbol NAMES so a golden can be
+                                  derived ("for this query, these symbols should surface"). The
+                                  reversal is tightly bounded — symbols only (never full result
+                                  bodies or source text), opt-in, local-only NDJSON under
+                                  .seam/traces/ (gitignored), never networked. "0" = no file,
+                                  no atexit handler, byte-identical read path. MCP + CLI both
+                                  contribute traces on the same terms as SEAM_DIAGNOSTICS.
+                                SEAM_TRACE_CAPTURE_PATH: directory for captured trace NDJSON files
+                                  (WS6.1; default: ".seam/traces/" — inside .seam/, already
+                                  gitignored via seam init's .seam/.gitignore). Each session writes
+                                  one file keyed to the session UUID. Configurable to redirect to a
+                                  scratch location outside .seam/.
                                 SEAM_INDEX_ARTIFACT_URL: str — HTTPS (or file://) URL template for
                                   downloading a pre-built index artifact (WS4 S2/S3; default: "" =
                                   feature inert). Must contain a `{sha}` placeholder which `seam fetch`
@@ -327,6 +346,39 @@ seam/analysis/diagnostics.py ← LEAF: opt-in local diagnostics recorder (P5.5)
                                 run_query(tool, thunk) — time + record a read-query, result unchanged
                                 result_chars(result) — serialized-length SIZE PROXY (measured, discarded)
                                 set_db_path / close / reset_recorder — resolved-db-path + test hygiene
+seam/analysis/trace_capture.py ← LEAF: opt-in local trace recorder for the WS6.1 derive loop
+                                TraceRecorder — null recorder (all no-op) when SEAM_TRACE_CAPTURE
+                                  != "1"; else records each read-path tool call as one NDJSON line
+                                  per call to a per-session file: session_id UUID, ts, tool name,
+                                  args dict, symbol_names list, result_count, elapsed_ms. Deliberately
+                                  records query args + symbol names (unlike diagnostics' structural
+                                  redaction) — the bounded reversal required to derive goldens.
+                                _TOOL_CALL_KEYS frozenset + write-time assert enforce the symbols-only
+                                  bound as defense-in-depth (analog of diagnostics' redaction key set).
+                                Never raises (leaf discipline, stdlib-only, no new dependency).
+                                get_recorder() — one-per-process singleton (MCP + CLI share it)
+                                extract_symbol_names(result) — extracts symbol names from any Seam
+                                  tool result shape (search/query/context/impact/trace); never raises
+                                trace_run_query(tool, args, thunk) — time + record, result unchanged
+                                reset_recorder() — test hygiene (unregisters atexit, clears singleton)
+seam/eval/trace_derive.py      ← LEAF: pure derive functions for the WS6.1 golden derive loop
+                                derive_outcome_from_diff(diff, symbols) → set[str]:
+                                  maps a unified git diff's changed hunks to the qualified symbol
+                                  names whose file+line ranges intersect — the hindsight outcome
+                                  signal (the symbols the agent actually edited). Empty diff → set().
+                                derive_goldens(trace_records, outcome) → list[GoldenCandidate]:
+                                  for each unique (tool, query) in trace records, emits one
+                                  GoldenCandidate (expected_symbols=outcome, gap=True when any
+                                  outcome symbol was absent from the captured result). Deduplicates
+                                  by (tool, query). Empty outcome → [] (read-only session, not error).
+                                  Pure: no IO, no config, no DB. Never raises.
+                                GoldenCandidate shape mirrors golden.json recall query shape so
+                                  approved candidates run through the existing recall_harness unchanged.
+                                benchmarks/trace_loop.py — human-in-the-loop curation glue:
+                                  derive_from_trace() reads trace → runs derive → writes review file;
+                                  promote_candidates() merges approved into SEPARATE live golden set.
+                                  _assert_not_fixture() guards against accidental fixture overwrite.
+                                  CLI: `python benchmarks/trace_loop.py derive/promote --help`
 seam/indexer/field_access.py ← LEAF: Python field-access extractor + facade re-exports (A3)
                                 extract_field_access_edges(node, language, path, symbols) →
                                   list[Edge] for Python; dispatches to family modules for other langs.
@@ -677,6 +729,21 @@ tests/eval/                  ← P1 recall harness (edge-synthesis phase): fixtu
 - **Edges use string names** (not symbol IDs) — required for independent re-indexing
 
 ## Current Phase
+WS6.1 — Agent-trace-derived eval goldens (trace-capture loop). Local, opt-in, offline only. No schema change, no new MCP tool (count stays 16), no new runtime dependency. Default behavior with `SEAM_TRACE_CAPTURE=0` (the default) is byte-identical to pre-WS6.1 for all tool calls and all CLI read commands.
+- **What this is (the hindsight gap it closes):** Seam's eval benchmark is only as good as its hand-authored goldens — a human encoding their mental model of "a good result" can never encode retrieval failures they never thought to test. WS6.1 closes the loop with three steps: **Capture** (record what the agent queried in a real session + what symbols came back) → **Derive** (correlate with the hindsight outcome: symbols the agent actually edited via `git diff`) → **Promote** (human-in-the-loop merge into a separate live golden set). Gap candidates — queries where an edited symbol was absent from the captured result — are the highest-value signal: provable retrieval failures on real work.
+- **Three modules, deliberately split by lifetime:**
+  - **`seam/analysis/trace_capture.py` (shipped, runtime):** `TraceRecorder` — a null recorder when `SEAM_TRACE_CAPTURE != "1"` (every method a no-op, no file opened, no `atexit` handler, byte-identical read path). When `"1"`: records each read-path tool call as one NDJSON line per call to a per-session file (session UUID, tool name, args, symbol_names, result_count, elapsed_ms). Wired via the same decoration seam as diagnostics (decorate-once MCP wrap; `trace_run_query()` passthrough on the CLI). Never raises; stdlib-only; one-per-process singleton.
+  - **`seam/eval/trace_derive.py` (offline, dev tooling):** pure `derive_goldens(trace_records, outcome) → list[GoldenCandidate]` and pure `derive_outcome_from_diff(diff, symbols) → set[str]`. No IO, no config, no DB. `GoldenCandidate` shape mirrors `golden.json` recall query shape so approved candidates run through the existing recall_harness metric unchanged. Never raises.
+  - **`benchmarks/trace_loop.py` (offline, dev tooling):** human-in-the-loop curation glue — `derive_from_trace()` reads trace → derives → writes review file; `promote_candidates()` merges approved candidates into the SEPARATE live golden set. Never auto-merges; never touches the fixture `golden.json`.
+- **Two correctness decisions (the load-bearing design choices):**
+  - **Fixture vs live separation:** `golden.json` / `answerability_scenarios.json` are keyed to the eval fixture (`fixture_hash`) — the deterministic gate. Real-session goldens are repo-keyed and MUST land in a separate live golden set. `_assert_not_fixture()` is a defense-in-depth guard that raises before any write to the fixture path. A human may hand-lift a generalizable insight into the fixture set — that transplant is always manual.
+  - **Symbols-only capture bound:** the capture policy deliberately reverses the diagnostics structural-redaction invariant (diagnostics records ONLY numeric metrics; trace capture records query text + result symbol names). The reversal is tightly bounded: only symbol NAMES (never full result bodies, signatures, docstrings, or source text), opt-in via `SEAM_TRACE_CAPTURE=1`, local NDJSON under `.seam/traces/` (gitignored), never networked. `_TOOL_CALL_KEYS` frozenset + write-time assert in `record_tool_call` enforce this bound as defense-in-depth.
+- **2 new config knobs:** `SEAM_TRACE_CAPTURE` (`"0"`/`"1"`, default `"0"` = byte-identical no-op) and `SEAM_TRACE_CAPTURE_PATH` (default `.seam/traces/`). No schema change, no migration, no re-index, no new MCP tool (count stays 16), no new runtime dependency.
+- **NOT part of `make gate`:** `make trace-loop-derive` and `make trace-loop-promote` are research tooling — like `make soak` and `make bench-semantic`. The deterministic fixture recall regression (`test_recall_regression.py`) remains the only eval in the gate.
+- **Tests:** `tests/unit/test_trace_capture.py` (null-when-off, NDJSON shape, symbols-only invariant gate test, never-raises, reset_recorder hygiene), `tests/unit/test_trace_derive.py` (derive_goldens: gap flag, dedup, provenance, empty outcome; derive_outcome_from_diff: hunk→symbol intersection), `tests/integration/test_trace_loop.py` (end-to-end: capture → derive → review → promote; fixture golden untouched; approved vs unapproved separation). Gate: ruff + mypy clean, full suite passes.
+See `progress.txt`.
+
+### Prior phase
 WS2b — sqlite-vec KNN scaffold for semantic search (issues #267/#268/#269/#270). Read-path + indexing-time; no schema change, no new MCP tool (count stays 16). Default behavior with `SEAM_VEC_ANN=off` (the default) is byte-identical to pre-WS2b for all queries and for `seam init --semantic`.
 - **What this is (honest framing after benchmark):** WS2b wires in a `sqlite-vec` vec0 KNN table as a forward-compatible scaffold in the three-tier cascade (vec0 KNN → mmap → SQL). sqlite-vec v0.1.9 performs **exact brute-force KNN** — it has no approximate-nearest-neighbour index (no HNSW, no IVF). A real-scale benchmark (synthetic 384-dim, 10k–250k rows) showed it is **~5× slower than the numpy mmap path** at every scale tested, with perfect recall@10 = 1.000. The feature is shipped off-by-default (`SEAM_VEC_ANN=off`) and is **not a performance win today** — it is a forward-compatible scaffold that will transparently upgrade to true ANN (without re-index) when sqlite-vec ships approximate indexing. Do NOT recommend `SEAM_VEC_ANN=on` for latency until then.
 - **Why the scaffold was still worth shipping:** The vec0 tier takes 0 ms when off (byte-identical path). The staleness token, three-tier cascade, and probe/load machinery are already correct and tested. When sqlite-vec adds HNSW/IVF, enabling it will require only `SEAM_VEC_ANN=on seam init --semantic` — no code change, no schema migration, no re-index of the embeddings table.
@@ -1159,6 +1226,12 @@ There are **sixteen MCP tools** (`seam_architecture` is the newest — Phase 11 
 - **The soak script requires an existing index and is NOT part of `make gate` (P5.5):** `benchmarks/soak.py` / `make soak` reconciles nothing — it drives read requests against an already-built `.seam/seam.db` (run `seam init` first) and errors with a non-zero exit if none exists. It is a local/optional-CI tool (like `make bench-semantic` / the no-egress job), never run by the gate. Run `SEAM_DIAGNOSTICS=1 make soak` to also capture an NDJSON trace and populate the RSS/FD/DB-size summary fields (they show `n/a` when diagnostics is off, since resource sampling is gated on the recorder being enabled).
 - **The atexit snapshot's `db_size_bytes` needs the resolved DB path — set via `set_db_path()` (P5.5):** the process-exit snapshot falls back to `config.SEAM_DB_PATH`, which is relative to the process CWD — wrong (null/incorrect `db_size_bytes`) under `--db-dir` or when a command runs from a directory other than the project root. The CLI (`_open_index`, the impact/trace commands), the MCP server (`create_server`, via `PRAGMA database_list`), and the watcher (`self._db_path`) all call `recorder.set_db_path(...)` with the resolved path, so `db_size_bytes` is correct on those paths. Only the RARE case of a custom caller that enables diagnostics without setting the path gets the CWD-relative fallback (and only `db_size_bytes` is affected — RSS/FDs/counters are path-independent).
 - **In-process tests that enable diagnostics must reset the recorder in teardown (P5.5):** enabling a recorder registers a process-lifetime `atexit` handler; a test that points it at a `TemporaryDirectory` and does not clean up leaves a dangling handler that fires (and harmlessly logs a caught failure) at interpreter exit once the dir is gone. Use `diagnostics.reset_recorder()` (closes + clears the singleton) in an autouse fixture, and — critically — do NOT `monkeypatch.setattr` the `_process_recorder` singleton (monkeypatch RESTORES it during teardown, BEFORE your reset runs, orphaning the enabled recorder). The existing diagnostics test modules show the correct pattern (autouse `_reset_diag` + `reset_recorder()` in the fixture `finally` while the temp dir still exists).
+- **`SEAM_TRACE_CAPTURE=0` (default) is a TRUE no-op — byte-identical to pre-WS6.1 (WS6.1):** when off, no NDJSON file is created, no `atexit` handler is registered, and the MCP decoration and CLI `trace_run_query()` wrapper both return the tool/result UNCHANGED with a single attribute check. There is zero measurable read-path overhead. No cost for any user who does not set `SEAM_TRACE_CAPTURE=1`.
+- **Trace capture reverses the diagnostics structural-redaction invariant ON PURPOSE, tightly bounded (WS6.1):** `SEAM_DIAGNOSTICS` stores ONLY numeric metrics — query text and result content can never reach the diagnostics file. `SEAM_TRACE_CAPTURE` deliberately records query args + returned symbol NAMES, because deriving a golden requires knowing both the query and what came back. The mitigation is: (1) symbols-only — only symbol NAMES, never full result bodies, signatures, docstrings, or source text; (2) opt-in — the user sets `SEAM_TRACE_CAPTURE=1`; (3) local-only — NDJSON lands in `.seam/traces/` (gitignored); (4) never networked. The `_TOOL_CALL_KEYS` frozenset + a write-time assertion in `record_tool_call` enforce the symbols-only bound as defense-in-depth. The captured trace file lives entirely in `.seam/` and can be deleted at any time with no residue elsewhere.
+- **Derived live goldens are SEPARATE from the fixture golden.json — never merge them (WS6.1):** `tests/eval/golden.json` is keyed to the eval fixture (`fixture_hash`) and runs in `make gate` — it must be deterministic and reproducible on any machine. Real-session goldens are repo-keyed (they include the live repo's symbol graph and a commit SHA) and derive from your specific codebase at a specific point in time. Merging them into `golden.json` would break reproducibility on CI (which checks out a fixture repo, not your live repo). The `_assert_not_fixture()` guard in `benchmarks/trace_loop.py` raises a `ValueError` before any write to the fixture path. If a derived golden is genuinely generalizable, hand-lift it as a new fixture scenario manually — no automatic promotion path exists.
+- **The derive loop is research tooling, NOT part of `make gate` (WS6.1):** `make trace-loop-derive` and `make trace-loop-promote` require an existing capture trace (so the session must have run with `SEAM_TRACE_CAPTURE=1`) and a git diff (so the session must have produced edits). They are explicitly excluded from the gate, like `make bench-semantic`, `make soak`, and the no-egress job. The gate runs only the fixture-based `test_recall_regression.py`. Do NOT wire the loop into CI without understanding that it operates on the live repo's index, not the eval fixture.
+- **A captured trace with no correlating git diff derives zero candidates — not an error (WS6.1):** `derive_goldens(trace_records, outcome=set())` returns `[]` immediately when the outcome set is empty. A read-only session (browsing, not editing) produces an empty git diff and therefore an empty outcome signal. The loop degrades cleanly to zero candidates; it does not error or produce misleading empty-expected_symbols goldens.
+- **In-process tests that enable trace capture must reset the recorder in teardown (WS6.1):** the `TraceRecorder` follows the same `atexit`-handler lifecycle as `DiagnosticsRecorder`. Use `trace_capture.reset_recorder()` in an autouse fixture `finally` block while the temp directory still exists. Do NOT use `monkeypatch.setattr` on `_process_recorder` — monkeypatch restores the old value BEFORE your `finally` block runs, orphaning the enabled recorder. The existing `tests/unit/test_trace_capture.py` shows the correct pattern (mirrors `test_diagnostics.py`).
 - **`seam fetch` is the ONLY network path in Seam — runtime stays 100% local after fetch completes (WS4):** all read commands (`seam search`, `seam context`, `seam impact`, the 16 MCP tools, `seam serve`, the watcher) make zero network calls. `seam fetch` downloads ONE artifact from `SEAM_INDEX_ARTIFACT_URL` at setup time and then the runtime path is offline. The no-egress CI proof explicitly excludes `seam fetch` from its strace probes (alongside `seam init --semantic`). When `SEAM_INDEX_ARTIFACT_URL` is not set (the default), `seam fetch` exits immediately with `INVALID_INPUT` — zero network access, zero effect on the local index.
 - **`SEAM_INDEX_ARTIFACT_URL` unset = feature completely inert — no behavioral change (WS4):** the default value is `""` (empty string). With an empty URL, `seam fetch` raises `FetchError(INVALID_INPUT)` before any file I/O or network access. The URL is only consumed by `seam fetch`; no other command or code path reads it. Every existing Seam command is byte-identical to pre-WS4 when `SEAM_INDEX_ARTIFACT_URL` is unset.
 - **The fetched index's embedding model must match `SEAM_EMBED_MODEL` or semantic search degrades to FTS5-only (WS4):** `seam fetch` does not validate the embedded model in the fetched `seam.db` — it calls `sync_embeddings` with the CURRENT `SEAM_EMBED_MODEL`, which will find all existing embeddings already present (matching the CI model) OR find them as "wrong model" rows (if CI used a different model) and degrade silently to FTS5. To ensure hybrid semantic search works after `seam fetch --semantic`, the CI producer and local consumer must use the same `SEAM_EMBED_MODEL`. Run `seam status` to confirm the model row matches; run `seam init --semantic` to rebuild if it mismatches.

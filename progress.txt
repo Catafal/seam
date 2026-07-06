@@ -3,6 +3,62 @@
 # Update this EVERY session. It is the first thing the agent reads.
 
 # ─────────────────────────────────────────────────────────────────────────────
+# WS6.1 — Agent-trace-derived eval goldens (trace-capture loop)
+# (worktree seam-ws6, branch feat/ws6-1-trace-capture)
+# Session: 2026-07-06 · documentation pass (this entry)
+# ─────────────────────────────────────────────────────────────────────────────
+#   WHY this feature exists:
+#     Seam's eval benchmark is only as good as its hand-authored goldens — a
+#     human author encodes their mental model of "a good result" but cannot
+#     encode retrieval failures they never thought to test. WS6.1 closes the
+#     hindsight gap with an opt-in local trace-capture loop:
+#       Capture (SEAM_TRACE_CAPTURE=1) → Derive (git diff outcome signal) →
+#       Promote (human-in-the-loop into a SEPARATE live golden set).
+#     Gap candidates (queries where an edited symbol was absent from the result)
+#     are the highest-value signal: provable retrieval failures on real work.
+#
+#   S1 — TraceRecorder (seam/analysis/trace_capture.py):
+#     Null recorder when SEAM_TRACE_CAPTURE != "1". When enabled: one-per-process
+#     singleton, per-session NDJSON file (session UUID, ts, tool, args,
+#     symbol_names, result_count, elapsed_ms — symbols only, never bodies/source).
+#     _TOOL_CALL_KEYS frozenset + write-time assert enforce the symbols-only bound.
+#     Wired into the MCP server (decorate-once wrap) and CLI read commands
+#     (trace_run_query() passthrough). Never raises; stdlib-only; no new dep.
+#
+#   S2 — Pure derive functions (seam/eval/trace_derive.py):
+#     derive_outcome_from_diff(diff, symbols) → set[str]: maps git diff hunks to
+#       qualified symbols via file+line range intersection (hindsight signal).
+#     derive_goldens(trace_records, outcome) → list[GoldenCandidate]: one candidate
+#       per unique (tool, query); gap=True when any outcome symbol absent from result;
+#       deduplicates across sessions; mirrors golden.json recall shape. Pure, no IO.
+#
+#   S3 — Curation glue (benchmarks/trace_loop.py):
+#     derive_from_trace() reads trace → derives → writes review file (approved=False).
+#     promote_candidates() merges human-approved candidates into SEPARATE live golden
+#       set (repo-keyed, includes commit SHA for audit). Never auto-merges.
+#     _assert_not_fixture() defense-in-depth guard prevents fixture golden overwrite.
+#     make trace-loop-derive / make trace-loop-promote Makefile targets.
+#
+#   Review fixes (c3860ae): impact/trace shape corrected in extract_symbol_names,
+#     result_count always == len(symbol_names), fixture guard OSError handled,
+#     lazy import of argparse, silent OSError on makedirs, misnamed test fixed.
+#
+#   Key correctness decisions:
+#     - Fixture vs live separation: golden.json NEVER touched; live goldens in
+#       separate repo-keyed file with commit SHA. _assert_not_fixture() enforces.
+#     - Symbols-only bound: deliberate bounded reversal of diagnostics redaction —
+#       capture stores query text + symbol names (not bodies/source) because deriving
+#       a golden requires knowing the query AND what came back.
+#
+#   2 new config knobs: SEAM_TRACE_CAPTURE ("0"/"1", default "0" = off),
+#     SEAM_TRACE_CAPTURE_PATH (default ".seam/traces/"). No schema change, no
+#     migration, no new MCP tool (count stays 16), no new runtime dependency.
+#
+#   NOT part of make gate. Loop is research tooling like bench-semantic / soak.
+#
+#   Gate: ruff + mypy clean, full suite passed (pre-existing fastembed skips only).
+#
+# ─────────────────────────────────────────────────────────────────────────────
 # Explorer cleanup — Topology 3D-only + error boundary + package exclusion
 # (issues #284/#285/#286/#287, worktree seam-cleanup)
 # Session: 2026-07-03 · documentation pass (this entry)
