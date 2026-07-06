@@ -2,11 +2,11 @@
  * ConstellationTab — the lazy-loaded 3D constellation Explorer tab.
  *
  * Three-column shell:
- *   [FilterPanel] | [ResizeHandle] | [ConstellationScene (flex-1)] | [ResizeHandle] | [NodeDetailPanel]
+ *   [FilterPanel] | [ResizeHandle] | [ConstellationScene (flex-1)] | [ResizeHandle] | [NodeIdentityCard]
  *
  * Owns the state machine for node selection:
  *   click node  → setSelectedNode → compute highlightedIds (node + direct neighbors)
- *               → compute cameraTarget → fly camera → open NodeDetailPanel
+ *               → compute cameraTarget → fly camera → open NodeIdentityCard
  *   click empty → deselect (handleClose) — full field restored
  *   Esc key     → deselect (handleClose) — keyboard deselect
  *
@@ -27,13 +27,13 @@
  *
  * localStorage keys:
  *   seam-left-w   — left FilterPanel width (pixels, clamped [150, 500])
- *   seam-right-w  — right NodeDetailPanel width (pixels, clamped [150, 500])
+ *   seam-right-w  — right NodeIdentityCard width (pixels, clamped [150, 500])
  */
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 
 import { ConstellationScene, computeCameraTarget } from "./ConstellationScene";
-import { NodeDetailPanel } from "./NodeDetailPanel";
+import { NodeIdentityCard } from "./NodeIdentityCard";
 import { FilterPanel } from "./FilterPanel";
 import { ConstellationHUD } from "./ConstellationHUD";
 import { ResizeHandle, clampPanelWidth, readPanelWidth } from "./ResizeHandle";
@@ -94,6 +94,13 @@ interface ConstellationTabProps {
    * navigate the 2D neighborhood (#263 isolation contract).
    */
   focusSymbol?: string | null;
+  /**
+   * Explicit hand-off to the 2D neighborhood centered on a symbol (#361).
+   * Invoked ONLY by the identity card's "Open in neighborhood →" button — a
+   * deliberate user action, NOT the node click (the click still only isolates,
+   * preserving the #263 no-navigate-on-click contract).
+   */
+  onOpenInNeighborhood?: (name: string) => void;
 }
 
 /**
@@ -101,6 +108,7 @@ interface ConstellationTabProps {
  */
 export default function ConstellationTab({
   focusSymbol,
+  onOpenInNeighborhood,
 }: ConstellationTabProps) {
   // ── Node cap (drives the react-query key) ─────────────────────────────────
   const [maxNodes, setMaxNodes] = useState<number>(GRAPH_RENDER_NODE_LIMIT);
@@ -161,18 +169,6 @@ export default function ConstellationTab({
       // Intentionally no onFocusSymbol call here — 3D click must NOT navigate (#263).
     },
     [data],
-  );
-
-  /**
-   * Navigate from the detail panel: find the named node and re-run selection.
-   */
-  const handleNavigate = useCallback(
-    (name: string) => {
-      if (!data) return;
-      const target = (data.nodes as LayoutNode[]).find((n) => n.name === name);
-      if (target) handleSelect(target);
-    },
-    [data, handleSelect],
   );
 
   /** Deselect: clear node, highlights, and camera target. */
@@ -335,7 +331,7 @@ export default function ConstellationTab({
         />
 
         {/* Discoverability hint — quiet one-liner at the bottom when nothing is selected.
-            Hidden once a node is selected so it doesn't compete with NodeDetailPanel.
+            Hidden once a node is selected so it doesn't compete with NodeIdentityCard.
             The hint surfaces BOTH interaction modes: click-to-isolate + empty/Esc reset. */}
         {!selectedNode && (
           <div
@@ -368,9 +364,13 @@ export default function ConstellationTab({
             className="flex-shrink-0 overflow-hidden bg-zinc-950 border-l border-zinc-800/60"
             style={{ width: rightW }}
           >
-            <NodeDetailPanel
+            {/* Identity card (#361): no fetch, no crash surface. connectionCount
+                is the direct-neighbor count from the local highlight set (the
+                selected node is in highlightedIds, so subtract 1). */}
+            <NodeIdentityCard
               node={selectedNode}
-              onNavigate={handleNavigate}
+              connectionCount={Math.max(0, highlightedIds.size - 1)}
+              onOpenInNeighborhood={(name) => onOpenInNeighborhood?.(name)}
               onClose={handleClose}
             />
           </div>

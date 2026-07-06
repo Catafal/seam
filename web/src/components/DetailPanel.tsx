@@ -153,7 +153,7 @@ interface CallerRowProps {
  * clear from context (the group heading already names the kind), so showing
  * "load" keeps the panel compact. The full name is the title tooltip.
  *
- * Mirrors the NavRow pattern in NodeDetailPanel.tsx.
+ * Mirrors the compact clickable-row pattern used across the panels.
  */
 function CallerRow({ entry, onNavigate }: CallerRowProps) {
   const handleClick = useCallback(
@@ -436,7 +436,7 @@ export interface DetailPanelProps {
    * Called when the user clicks a caller/callee row.
    * Updates the SELECTED symbol only — does NOT change the graph's center symbol
    * or lose the current graph view. This matches the 3D NavRow pattern in
-   * NodeDetailPanel.tsx.
+   * the 3D identity card (NodeIdentityCard).
    */
   onNavigate?: (name: string) => void;
 }
