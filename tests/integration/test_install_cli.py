@@ -8,7 +8,10 @@ developer's real agent configs.
 
 import json
 from pathlib import Path
+from typing import cast
 
+import click
+import typer.main
 from typer.testing import CliRunner
 
 from seam.cli.main import app
@@ -158,16 +161,22 @@ def test_auto_without_print_config_fails_closed(tmp_path: Path) -> None:
 
 
 def test_install_help_describes_auto_preview_only() -> None:
-    # Force a wide, fixed terminal width so the assertion is independent of the
-    # ambient COLUMNS. Rich renders the Typer help panel to the detected terminal
-    # width; under a CI runner with a degenerate/tiny COLUMNS the option column
-    # collapses to blank and "--auto" never appears in the output (see CI run
-    # 28826627718). Pinning COLUMNS=200 keeps every option name on one line.
-    res = runner.invoke(app, ["install", "--help"], env={"COLUMNS": "200"})
-    assert res.exit_code == 0
-    assert "--auto" in res.stdout
-    assert "requires --print-config" in res.stdout
-    assert "writes nothing" in res.stdout
+    # Assert the --auto option and its preview-only contract from the Click
+    # command definition, NOT the rendered Rich help panel. Scraping `--help`
+    # stdout is fragile: on some CI runners Rich renders the option-name column
+    # blank regardless of the forced COLUMNS width, so "--auto" never appears in
+    # the output (CI runs 28826627718 / 28848754659). Inspecting the command
+    # params tests the real contract this test protects — the flag exists and its
+    # help documents that it is preview-only.
+    group = cast(click.Group, typer.main.get_command(app))
+    install_cmd = group.commands["install"]
+    auto_opt = next(p for p in install_cmd.params if "--auto" in getattr(p, "opts", []))
+    # Typer vendors its own click fork, so auto_opt is a TyperOption (not the real
+    # click.Option) — read .help via getattr rather than an isinstance narrow.
+    help_text = getattr(auto_opt, "help", None)
+    assert help_text is not None
+    assert "requires --print-config" in help_text
+    assert "writes nothing" in help_text
 
 
 # ── warnings + validation ─────────────────────────────────────────────────────
