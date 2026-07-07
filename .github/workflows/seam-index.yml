@@ -78,7 +78,7 @@ jobs:
       - name: Checkout
         # Reusing the exact SHA already pinned in ci.yml — do NOT change this
         # without also updating ci.yml and release.yml (keep all three in sync).
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           # Full history lets `seam fetch` walk first-parent ancestors to find
           # the nearest published artifact when HEAD has no index yet.
