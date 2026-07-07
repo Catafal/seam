@@ -158,7 +158,12 @@ def test_auto_without_print_config_fails_closed(tmp_path: Path) -> None:
 
 
 def test_install_help_describes_auto_preview_only() -> None:
-    res = runner.invoke(app, ["install", "--help"])
+    # Force a wide, fixed terminal width so the assertion is independent of the
+    # ambient COLUMNS. Rich renders the Typer help panel to the detected terminal
+    # width; under a CI runner with a degenerate/tiny COLUMNS the option column
+    # collapses to blank and "--auto" never appears in the output (see CI run
+    # 28826627718). Pinning COLUMNS=200 keeps every option name on one line.
+    res = runner.invoke(app, ["install", "--help"], env={"COLUMNS": "200"})
     assert res.exit_code == 0
     assert "--auto" in res.stdout
     assert "requires --print-config" in res.stdout
