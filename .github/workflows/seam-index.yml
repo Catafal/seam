@@ -51,8 +51,13 @@ name: Seam Index — build and publish
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
-  push:
-    branches: [main]
+  # MANUAL-ONLY until the team actually wants CI-published shared indexes.
+  # This is an unwired TEMPLATE (see header) — the per-push publish never
+  # succeeded (startup failure on every main push), so it is gated behind
+  # workflow_dispatch to stop red-flagging every commit. To re-enable
+  # automatic per-commit publishing, restore the `push: branches: [main]`
+  # trigger below AND wire the TEAM-SWAPPABLE upload step.
+  workflow_dispatch:
 
 # One in-flight build per ref; cancel superseded runs to save CI minutes.
 concurrency:
